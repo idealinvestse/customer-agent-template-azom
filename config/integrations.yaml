@@ -1,0 +1,11 @@
+mailcow: true
+order_api: true
+selenium: true
+woocommerce_api: true
+wordpress_api: true
+email:
+  smtp: true
+  imap: true
+  pop3: true
+smart_handling: true
+full_agent_tools: true
