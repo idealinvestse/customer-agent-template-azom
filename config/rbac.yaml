@@ -1,0 +1,6 @@
+roles:
+  jonatan: viewer
+  oscar: full_admin
+escalation:
+  critical: oscar
+  code_edit: oscar
