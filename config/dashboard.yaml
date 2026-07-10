@@ -1,0 +1,9 @@
+auth:
+  jonatan_password: "{{HASHED}}"
+features:
+  install: true
+  monitor: true
+  manage: true
+  interact: true
+  logs: true
+  history: true
