@@ -1,3 +1,3 @@
-"""Azom ecom-ops V1: order-status, product-desc, support, SSH."""
+"""Azom ecom-ops V1: order-status, product-desc, support, SSH, mail."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

@@ -1,5 +1,44 @@
-version: '3.8'
+# Dev / local compose. For Hetzner production use docker-compose.prod.yml
 services:
   agent:
-    build: .
+    build:
+      context: ..
+      dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      AZOM_CONFIG_DIR: /app/config
+      AZOM_DATA_DIR: /app/.azom-data
+      AZOM_USE_MOCK: ${AZOM_USE_MOCK:-1}
+    volumes:
+      - ../config:/app/config:ro
+      - azom-data:/app/.azom-data
+      - ../logs:/app/logs
+    command: ["python", "-m", "ecom_ops", "--help"]
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      AZOM_CONFIG_DIR: /app/config
+      AZOM_DATA_DIR: /app/.azom-data
+      AZOM_USE_MOCK: ${AZOM_USE_MOCK:-1}
+      DASHBOARD_USER: ${DASHBOARD_USER:-jonatan}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: "8080"
+    volumes:
+      - ../config:/app/config:ro
+      - azom-data:/app/.azom-data:ro
+      - ../logs:/app/logs:ro
+    ports:
+      - "8080:8080"
+    command: ["python", "infrastructure/dashboard/app.py"]
+
+volumes:
+  azom-data:

@@ -30,9 +30,20 @@ else
   exit 1
 fi
 
+# Prefer project venv on Ubuntu servers
+if [[ ! -d "${ROOT}/.venv" ]]; then
+  echo "==> Creating .venv"
+  "$PY" -m venv "${ROOT}/.venv" || true
+fi
+if [[ -x "${ROOT}/.venv/bin/python" ]]; then
+  PY="${ROOT}/.venv/bin/python"
+fi
+
 if [[ -f "${ROOT}/requirements.txt" ]]; then
-  echo "==> Ensuring Python deps (user site ok)"
+  echo "==> Ensuring Python deps"
+  "$PY" -m pip install -q -U pip wheel || true
   "$PY" -m pip install -q -r "${ROOT}/requirements.txt" || true
+  "$PY" -m pip install -q -e "${ROOT}" || true
 fi
 
 export PYTHONPATH="${ROOT}/skills${PYTHONPATH:+:$PYTHONPATH}"
@@ -49,9 +60,11 @@ print(f"ecom_ops {__version__} customer={cfg.customer.customer} domains={cfg.cus
 print(f"escalation critical -> {cfg.rbac.escalation_critical}")
 PY
 
-echo "==> Smoke: order-status + support + ssh (mock)"
+echo "==> Smoke: order-status + support + ssh + mail (mock)"
 "$PY" -m ecom_ops --mock order-status --order-id 1001 --status completed >/dev/null
 "$PY" -m ecom_ops support --message "Order 1001 status?" >/dev/null
 "$PY" -m ecom_ops --mock ssh --command uptime >/dev/null
+"$PY" -m ecom_ops --mock mail fetch >/dev/null
 
 echo "==> Spinup complete (idempotent). Data dir: ${ROOT}/.azom-data"
+echo "    Production Ubuntu 24: see docs/DEPLOY_UBUNTU24_HETZNER.md"

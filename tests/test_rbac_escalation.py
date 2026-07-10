@@ -8,7 +8,9 @@ def test_jonatan_is_viewer():
     actor = resolve_actor("jonatan")
     assert actor.role == "viewer"
     assert actor.has(Permission.READ)
+    assert actor.has(Permission.MAIL_READ)
     assert not actor.has(Permission.ORDER_STATUS_UPDATE)
+    assert not actor.has(Permission.MAIL_SEND)
 
 
 def test_oscar_is_full_admin():
@@ -16,12 +18,14 @@ def test_oscar_is_full_admin():
     assert actor.role == "full_admin"
     assert actor.has(Permission.CODE_EDIT)
     assert actor.has(Permission.ORDER_STATUS_UPDATE)
+    assert actor.has(Permission.MAIL_SEND)
 
 
 def test_agent_is_operator():
     actor = resolve_actor("agent")
     assert actor.role == "operator"
     require_permission(actor, Permission.SUPPORT_REPLY)
+    require_permission(actor, Permission.MAIL_SEND)
     try:
         require_permission(actor, Permission.CODE_EDIT)
         assert False, "expected AccessDenied"

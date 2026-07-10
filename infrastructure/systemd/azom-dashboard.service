@@ -1,0 +1,28 @@
+[Unit]
+Description=Azom agent dashboard (Jonatan read-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=azom
+Group=azom
+WorkingDirectory=/opt/azom-agent
+EnvironmentFile=-/opt/azom-agent/.env
+Environment=PYTHONPATH=/opt/azom-agent/skills
+Environment=AZOM_CONFIG_DIR=/opt/azom-agent/config
+Environment=AZOM_DATA_DIR=/var/lib/azom
+Environment=DASHBOARD_HOST=127.0.0.1
+Environment=DASHBOARD_PORT=8080
+Environment=AZOM_USE_MOCK=0
+ExecStart=/opt/azom-agent/.venv/bin/python infrastructure/dashboard/app.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/azom /var/log/azom /opt/azom-agent/.azom-data
+
+[Install]
+WantedBy=multi-user.target

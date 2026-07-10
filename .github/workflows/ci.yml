@@ -13,7 +13,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # Ubuntu 24 ships 3.12; keep 3.11 in CI for slightly broader coverage
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -35,3 +36,10 @@ jobs:
 
       - name: Smoke spinup script
         run: bash tests/test_spinup.sh
+
+      - name: Validate systemd units exist
+        run: |
+          test -f infrastructure/systemd/azom-dashboard.service
+          test -f infrastructure/systemd/azom-bot.service
+          test -f infrastructure/systemd/azom-daily-brief.timer
+          test -f docs/DEPLOY_UBUNTU24_HETZNER.md

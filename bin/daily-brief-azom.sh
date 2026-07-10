@@ -8,7 +8,22 @@ export AZOM_CONFIG_DIR="${AZOM_CONFIG_DIR:-$ROOT/config}"
 export AZOM_DATA_DIR="${AZOM_DATA_DIR:-$ROOT/.azom-data}"
 export AZOM_USE_MOCK="${AZOM_USE_MOCK:-1}"
 
-python - <<'PY'
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+if [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PY="$ROOT/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PY=python3
+else
+  PY=python
+fi
+
+"$PY" - <<'PY'
 import json
 from pathlib import Path
 from ecom_ops.config import load_app_config

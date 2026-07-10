@@ -7,10 +7,12 @@ import json
 import sys
 from typing import Any
 
+from ecom_ops.actions.mail import MailService
 from ecom_ops.actions.order_status import OrderStatusService
 from ecom_ops.actions.product_desc import ProductDescService
 from ecom_ops.actions.ssh_ops import SSHOpsService
 from ecom_ops.actions.support import SupportService
+from ecom_ops.integrations.mail import client_from_env as mail_client_from_env
 from ecom_ops.integrations.woocommerce import client_from_env
 
 
@@ -25,7 +27,7 @@ def _print(result: Any) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ecom-ops",
-        description="Azom ecom-ops V1: order-status, product-desc, support, SSH",
+        description="Azom ecom-ops V1: order-status, product-desc, support, SSH, mail",
     )
     parser.add_argument("--site", default="azom", help="Customer/site id")
     parser.add_argument(
@@ -64,6 +66,41 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_health = sub.add_parser("ssh-health", help="Run SSH health checks")
     p_health.add_argument("--host")
+
+    p_mail = sub.add_parser("mail", help="Send / fetch / reply email")
+    mail_sub = p_mail.add_subparsers(dest="mail_command", required=True)
+
+    p_mail_send = mail_sub.add_parser("send", help="Send an email")
+    p_mail_send.add_argument("--to", required=True, help="Recipient (comma-separated ok)")
+    p_mail_send.add_argument("--subject", required=True)
+    p_mail_send.add_argument("--body", required=True)
+    p_mail_send.add_argument("--cc", default="")
+    p_mail_send.add_argument("--html-body", default="")
+    p_mail_send.add_argument(
+        "--provider",
+        help="gmail|outlook|exchange_graph|generic_imap|generic_pop3",
+    )
+
+    p_mail_fetch = mail_sub.add_parser("fetch", help="Fetch inbox messages")
+    p_mail_fetch.add_argument("--folder", default="INBOX")
+    p_mail_fetch.add_argument("--limit", type=int, default=20)
+    p_mail_fetch.add_argument(
+        "--all",
+        action="store_true",
+        help="Fetch all messages (not only unread)",
+    )
+    p_mail_fetch.add_argument(
+        "--provider",
+        help="gmail|outlook|exchange_graph|generic_imap|generic_pop3",
+    )
+
+    p_mail_reply = mail_sub.add_parser("reply", help="Reply to a sender")
+    p_mail_reply.add_argument("--to", required=True)
+    p_mail_reply.add_argument("--subject", required=True)
+    p_mail_reply.add_argument("--body", required=True)
+    p_mail_reply.add_argument("--uid", dest="original_uid")
+    p_mail_reply.add_argument("--html-body", default="")
+    p_mail_reply.add_argument("--provider")
 
     return parser
 
@@ -125,6 +162,50 @@ def main(argv: list[str] | None = None) -> int:
         payload = [r.to_dict() for r in results]
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if all(r.ok for r in results) else 1
+
+    if args.command == "mail":
+        provider = getattr(args, "provider", None)
+        mail_client = mail_client_from_env(
+            provider=provider, use_mock=args.mock or None
+        )
+        mail_svc = MailService(client=mail_client)
+
+        if args.mail_command == "send":
+            result = mail_svc.send(
+                to=args.to,
+                subject=args.subject,
+                body=args.body,
+                cc=args.cc or None,
+                html_body=args.html_body or None,
+                site=args.site,
+                actor=args.actor,
+            )
+            return _print(result)
+
+        if args.mail_command == "fetch":
+            result = mail_svc.fetch(
+                folder=args.folder,
+                unread_only=not args.all,
+                limit=args.limit,
+                site=args.site,
+                actor=args.actor,
+            )
+            return _print(result)
+
+        if args.mail_command == "reply":
+            result = mail_svc.reply(
+                to=args.to,
+                subject=args.subject,
+                body=args.body,
+                original_uid=args.original_uid,
+                html_body=args.html_body or None,
+                site=args.site,
+                actor=args.actor,
+            )
+            return _print(result)
+
+        parser.error(f"Unknown mail command: {args.mail_command}")
+        return 2
 
     parser.error(f"Unknown command: {args.command}")
     return 2

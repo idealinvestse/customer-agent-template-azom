@@ -14,10 +14,25 @@ export AZOM_CONFIG_DIR="${AZOM_CONFIG_DIR:-$ROOT/config}"
 export AZOM_DATA_DIR="${AZOM_DATA_DIR:-$ROOT/.azom-data}"
 export AZOM_USE_MOCK="${AZOM_USE_MOCK:-1}"
 
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
 cd "$ROOT"
 
+if [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PY="$ROOT/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PY=python3
+else
+  PY=python
+fi
+
 if [[ $# -lt 1 ]]; then
-  python -m ecom_ops --help
+  "$PY" -m ecom_ops --help
   exit 2
 fi
 
@@ -26,7 +41,7 @@ shift || true
 
 if [[ "$cmd" == "critical" ]]; then
   summary="${*:-unspecified critical event}"
-  python - <<PY
+  "$PY" - <<PY
 from ecom_ops.escalation import EscalationService
 t = EscalationService().escalate_critical(${summary@Q} if False else """${summary//\"/\\\"}""")
 print(f"Escalated to {t.assignee}: {t.id}")
@@ -37,21 +52,24 @@ fi
 # Map legacy names
 case "$cmd" in
   order-status|order_status|order_status_update)
-    exec python -m ecom_ops order-status "$@"
+    exec "$PY" -m ecom_ops order-status "$@"
     ;;
   product-desc|product_desc|product_desc_gen)
-    exec python -m ecom_ops product-desc "$@"
+    exec "$PY" -m ecom_ops product-desc "$@"
     ;;
   support|support_handler)
-    exec python -m ecom_ops support "$@"
+    exec "$PY" -m ecom_ops support "$@"
     ;;
   ssh|ssh-ops)
-    exec python -m ecom_ops ssh "$@"
+    exec "$PY" -m ecom_ops ssh "$@"
     ;;
   ssh-health|health)
-    exec python -m ecom_ops ssh-health "$@"
+    exec "$PY" -m ecom_ops ssh-health "$@"
+    ;;
+  mail|email)
+    exec "$PY" -m ecom_ops mail "$@"
     ;;
   *)
-    exec python -m ecom_ops "$cmd" "$@"
+    exec "$PY" -m ecom_ops "$cmd" "$@"
     ;;
 esac

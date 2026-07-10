@@ -2,15 +2,40 @@
 
 ## Budget & roller
 - Budget: 100$ OpenRouter (`config/limits.yaml`)
-- Jonatan: read-only / viewer
+- Jonatan: read-only / viewer (+ mail read, SSH read)
 - Oscar: full_admin + escalation target (critical + code_edit)
-- Agent automation: operator
+- Agent automation: operator (order/product/support/mail send+read/SSH read)
 
 ## Mål
 - 3 mån: 50% mindre support-tid + hög engagement
 - Onboarding (V2): dedikerad Telegram-bot + lösenordsskyddad webbdashboard
 
+## Runtime target
+- **OS:** Ubuntu 24.04 LTS
+- **Host:** Hetzner Cloud
+- **Rekommenderad storlek:** **CX22 / CPX21** (2 vCPU, **4 GB RAM**, 40 GB NVMe)
+- Deploy-guide: `docs/DEPLOY_UBUNTU24_HETZNER.md`
+- Bootstrap: `sudo bash bin/bootstrap-ubuntu24.sh`
+
 ## V1 (klart)
-- order-status, product-desc, support, SSH via `skills/ecom_ops`
+- order-status, product-desc, support, SSH, mail via `skills/ecom_ops`
+- Mail providers: gmail, outlook, exchange_graph, generic_imap, generic_pop3
+- Auth: app password **eller** OAuth2 (XOAUTH2 / Graph client credentials)
 - Kör: `python -m ecom_ops --help` eller `./bin/ecom-automation.sh`
+- Dashboard: systemd `azom-dashboard` eller `./bin/start-dashboard.sh` (127.0.0.1:8080)
+- Bot: systemd `azom-bot` eller `./bin/dedicated-bot.sh`
+- Docker prod: `docker compose -f infrastructure/docker-compose.prod.yml up -d`
 - Tester: `pytest`
+
+## Mail CLI
+```bash
+python -m ecom_ops --mock mail send --to a@b.co --subject "Test" --body "Hej"
+python -m ecom_ops --mock mail fetch
+python -m ecom_ops --mock mail reply --to a@b.co --subject "Re: ..." --body "..."
+```
+
+## Prod paths (Ubuntu)
+- Code: `/opt/azom-agent`
+- Data: `/var/lib/azom`
+- Logs: `/var/log/azom`
+- Env: `/opt/azom-agent/.env` (`AZOM_USE_MOCK=0`)

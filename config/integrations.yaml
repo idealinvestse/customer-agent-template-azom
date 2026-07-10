@@ -4,8 +4,34 @@ selenium: true
 woocommerce_api: true
 wordpress_api: true
 email:
+  enabled: true
+  # Default provider when MAIL_PROVIDER env is unset:
+  # gmail | outlook | exchange_graph | generic_imap | generic_pop3
+  default_provider: generic_imap
   smtp: true
   imap: true
   pop3: true
+  # Provider presets (credentials via env / .env only)
+  providers:
+    gmail:
+      smtp_host: smtp.gmail.com
+      smtp_port: 587
+      imap_host: imap.gmail.com
+      imap_port: 993
+      auth: oauth2_or_app_password
+    outlook:
+      smtp_host: smtp.office365.com
+      smtp_port: 587
+      imap_host: outlook.office365.com
+      imap_port: 993
+      auth: oauth2_or_app_password
+    exchange_graph:
+      graph_base_url: https://graph.microsoft.com/v1.0
+      auth: oauth2_client_credentials
+    generic_imap:
+      auth: password_or_oauth2
+    generic_pop3:
+      auth: password
+  smart_handling: true
 smart_handling: true
 full_agent_tools: true
