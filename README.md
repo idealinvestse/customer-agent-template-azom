@@ -2,7 +2,7 @@
 
 Template för dedikerad **AzomOps-Agent** + grund för Agent-as-a-Service.
 
-**Produktionstarget:** Ubuntu 24.04 LTS på Hetzner VPS.
+**Produktionstarget:** Ubuntu 26.x / 24.04 LTS på Hetzner VPS.
 
 ## V1 Pilot (implementerad)
 
@@ -33,19 +33,24 @@ python -m ecom_ops --mock mail send --to customer@example.com --subject "Test" -
 python -m ecom_ops --mock mail fetch
 ```
 
-## Production: Ubuntu 24 / Hetzner
+## Production: Ubuntu 26 / 24 (one-shot install)
 
 **Rekommenderad VPS: CX22 eller CPX21 (2 vCPU, 4 GB RAM, ~€4–7/mån).**
 
 ```bash
-# På servern (root)
-git clone <repo> /opt/azom-agent && cd /opt/azom-agent
-sudo bash bin/bootstrap-ubuntu24.sh
-sudo nano /opt/azom-agent/.env   # secrets + AZOM_USE_MOCK=0
-sudo systemctl enable --now azom-dashboard azom-bot azom-daily-brief.timer
+# One-shot från GitHub (root på ny VPS)
+curl -fsSL https://raw.githubusercontent.com/idealinvestse/customer-agent-template-azom/main/bin/install-ubuntu26.sh \
+  | sudo bash
+
+# Eller från clone
+git clone https://github.com/idealinvestse/customer-agent-template-azom.git
+sudo bash customer-agent-template-azom/bin/install.sh
 ```
 
-Full guide: [`docs/DEPLOY_UBUNTU24_HETZNER.md`](docs/DEPLOY_UBUNTU24_HETZNER.md)
+Installerar allt: paket, venv, projekt, `.env` (genererar lösenord), systemd, UFW, smoke-tester, startar dashboard + timer.
+
+- Guide: [`docs/AUTO_INSTALL.md`](docs/AUTO_INSTALL.md)
+- Hetzner sizing: [`docs/DEPLOY_UBUNTU24_HETZNER.md`](docs/DEPLOY_UBUNTU24_HETZNER.md)
 
 Docker prod:
 

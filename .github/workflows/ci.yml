@@ -27,6 +27,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
           shellcheck bin/*.sh
+          # install-ubuntu26 is long; still lint
+          shellcheck -x bin/install-ubuntu26.sh bin/install.sh
 
       - name: Pytest
         env:
@@ -37,9 +39,14 @@ jobs:
       - name: Smoke spinup script
         run: bash tests/test_spinup.sh
 
-      - name: Validate systemd units exist
+      - name: Validate systemd units + install scripts
         run: |
           test -f infrastructure/systemd/azom-dashboard.service
           test -f infrastructure/systemd/azom-bot.service
           test -f infrastructure/systemd/azom-daily-brief.timer
           test -f docs/DEPLOY_UBUNTU24_HETZNER.md
+          test -f docs/AUTO_INSTALL.md
+          test -x bin/install-ubuntu26.sh || chmod +x bin/install-ubuntu26.sh bin/install.sh
+          bash -n bin/install-ubuntu26.sh
+          bash -n bin/install.sh
+          bash bin/install-ubuntu26.sh --help | head -5

@@ -11,11 +11,11 @@
 - Onboarding (V2): dedikerad Telegram-bot + lösenordsskyddad webbdashboard
 
 ## Runtime target
-- **OS:** Ubuntu 24.04 LTS
+- **OS:** Ubuntu 26.x (primary) / 24.04 LTS
 - **Host:** Hetzner Cloud
 - **Rekommenderad storlek:** **CX22 / CPX21** (2 vCPU, **4 GB RAM**, 40 GB NVMe)
-- Deploy-guide: `docs/DEPLOY_UBUNTU24_HETZNER.md`
-- Bootstrap: `sudo bash bin/bootstrap-ubuntu24.sh`
+- **Auto-install (färdig miljö):** `sudo bash bin/install.sh` eller `bin/install-ubuntu26.sh`
+- Docs: `docs/AUTO_INSTALL.md`, `docs/DEPLOY_UBUNTU24_HETZNER.md`
 
 ## V1 (klart)
 - order-status, product-desc, support, SSH, mail via `skills/ecom_ops`

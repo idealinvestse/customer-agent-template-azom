@@ -37,32 +37,30 @@ V1-workloads (CLI, Flask dashboard, Telegram long-poll, mail IMAP/SMTP) är lät
 
 ---
 
-## Snabbstart (systemd + venv)
+## Snabbstart (one-shot auto-install)
 
 ```bash
-# På Hetzner CX22 Ubuntu 24.04 som root
+# På Hetzner CX22 Ubuntu 26/24 som root
 ssh root@YOUR_IP
 
-# 1) Kopiera repo till servern (git clone eller scp)
-git clone <repo-url> /opt/azom-agent
-cd /opt/azom-agent
+# Fully automatic — packages, clone, venv, systemd, firewall, smoke, start
+curl -fsSL https://raw.githubusercontent.com/idealinvestse/customer-agent-template-azom/main/bin/install-ubuntu26.sh \
+  | sudo bash
 
-# 2) Bootstrap
-sudo bash bin/bootstrap-ubuntu24.sh
+# Credentials (auto-generated)
+sudo cat /root/azom-install-credentials.txt
 
-# 3) Secrets
+# Optional: fill remaining secrets
 sudo nano /opt/azom-agent/.env
-# Sätt: WOO_*, MAIL_*, DASHBOARD_PASSWORD, TELEGRAM_BOT_TOKEN
-# AZOM_USE_MOCK=0
+```
 
-# 4) Starta tjänster
-sudo systemctl enable --now azom-dashboard.service
-sudo systemctl enable --now azom-bot.service          # kräver TELEGRAM_BOT_TOKEN
-sudo systemctl enable --now azom-daily-brief.timer
+Full flaggor och detaljer: [`docs/AUTO_INSTALL.md`](AUTO_INSTALL.md).
 
-# 5) Verifiera
-curl -u jonatan:YOUR_PASSWORD http://127.0.0.1:8080/health
-sudo -u azom /opt/azom-agent/.venv/bin/python -m ecom_ops ssh-health
+### Manuell väg (äldre bootstrap)
+
+```bash
+git clone <repo-url> /opt/azom-agent && cd /opt/azom-agent
+sudo bash bin/bootstrap-ubuntu24.sh   # wrapper → install-ubuntu26.sh
 ```
 
 Dashboard binds till **127.0.0.1:8080**. Exponera via nginx/Caddy + TLS, inte öppet i UFW.
