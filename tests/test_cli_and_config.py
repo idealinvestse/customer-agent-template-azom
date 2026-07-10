@@ -44,3 +44,19 @@ def test_cli_ssh_escalate(capsys):
     assert code == 1
     out = json.loads(capsys.readouterr().out)
     assert out["escalated"] is True
+
+
+def test_cli_version(capsys):
+    code = main(["version"])
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["version"] == "2.0.0"
+
+
+def test_cli_status(capsys):
+    code = main(["status"])
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert out["version"] == "2.0.0"
+    assert "customer" in out

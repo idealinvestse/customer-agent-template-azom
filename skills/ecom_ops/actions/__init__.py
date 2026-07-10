@@ -1,4 +1,4 @@
-"""V1 pilot actions."""
+"""Core ops actions (order, product, support, SSH, mail)."""
 
 from ecom_ops.actions.mail import MailService, fetch_mail, send_mail
 from ecom_ops.actions.order_status import OrderStatusService, update_order_status

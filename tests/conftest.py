@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for ecom-ops V1."""
+"""Shared pytest fixtures for ecom-ops V2."""
 
 from __future__ import annotations
 

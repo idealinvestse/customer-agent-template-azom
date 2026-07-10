@@ -1,4 +1,4 @@
-# Production compose for Ubuntu 24 / Hetzner.
+# Production compose for Ubuntu 26/24 / Hetzner.
 # Usage (from repo root):
 #   docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 services:
@@ -6,7 +6,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: azom-agent:1.1
+    image: azom-agent:2.0
     restart: unless-stopped
     env_file:
       - ../.env
@@ -45,7 +45,7 @@ services:
         max-file: "3"
 
   bot:
-    image: azom-agent:1.1
+    image: azom-agent:2.0
     build:
       context: ..
       dockerfile: Dockerfile

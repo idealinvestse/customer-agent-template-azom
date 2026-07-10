@@ -1,4 +1,4 @@
-"""Unified CLI for Azom ecom-ops V1."""
+"""Unified CLI for Azom ecom-ops V2."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import sys
 from typing import Any
 
+from ecom_ops import __version__
 from ecom_ops.actions.mail import MailService
 from ecom_ops.actions.order_status import OrderStatusService
 from ecom_ops.actions.product_desc import ProductDescService
@@ -27,7 +28,15 @@ def _print(result: Any) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ecom-ops",
-        description="Azom ecom-ops V1: order-status, product-desc, support, SSH, mail",
+        description=(
+            "Azom ecom-ops V2: order-status, product-desc, support, SSH, mail "
+            "(dashboard/OAuth/Telegram via separate entrypoints)"
+        ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"ecom-ops {__version__}",
     )
     parser.add_argument("--site", default="azom", help="Customer/site id")
     parser.add_argument(
@@ -66,6 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_health = sub.add_parser("ssh-health", help="Run SSH health checks")
     p_health.add_argument("--host")
+
+    sub.add_parser("version", help="Print package version")
+    sub.add_parser("status", help="Print runtime status (config + mock flags)")
 
     p_mail = sub.add_parser("mail", help="Send / fetch / reply email")
     mail_sub = p_mail.add_subparsers(dest="mail_command", required=True)
@@ -162,6 +174,36 @@ def main(argv: list[str] | None = None) -> int:
         payload = [r.to_dict() for r in results]
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0 if all(r.ok for r in results) else 1
+
+    if args.command == "version":
+        print(json.dumps({"version": __version__, "package": "azom-ecom-ops"}, indent=2))
+        return 0
+
+    if args.command == "status":
+        import os
+
+        from ecom_ops.config import load_app_config
+        from ecom_ops.oauth.gmail import GmailOAuthStore, gmail_oauth_configured
+
+        try:
+            cfg = load_app_config()
+            status = {
+                "ok": True,
+                "version": __version__,
+                "mock": os.environ.get("AZOM_USE_MOCK", "").lower()
+                in {"1", "true", "yes"},
+                "customer": cfg.customer.customer,
+                "domains": list(cfg.customer.domains),
+                "gmail_oauth_configured": gmail_oauth_configured(),
+                "gmail_tokens_stored": GmailOAuthStore().has_tokens(),
+                "telegram_configured": bool(
+                    os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+                ),
+            }
+        except Exception as exc:
+            status = {"ok": False, "version": __version__, "error": str(exc)}
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        return 0 if status.get("ok") else 1
 
     if args.command == "mail":
         provider = getattr(args, "provider", None)

@@ -11,8 +11,22 @@ Minska support-tid 50%, öka engagement, automatisera order/product/support/mail
 ## Exekvering
 
 1. **V1: Pilot med order-status, product-desc, support, SSH, mail.** ✅ IMPLEMENTED
-2. **V2: Dashboard onboarding + Gmail OAuth + Telegram state.** ✅ IMPLEMENTED
+2. **V2.0: Dashboard onboarding + Gmail OAuth + Telegram state + auto-install.** ✅ RELEASED (`2.0.0`)
 3. V3: SaaS skalning.
+
+### V2 acceptance criteria
+
+| Krav | Status | Var |
+|------|--------|-----|
+| Dashboard onboarding wizard | ✅ | `/onboarding`, `status.health_probe` |
+| Settings (Jonatan non-secret) | ✅ | `/settings`, `settings_store` |
+| Oscar admin secrets + resolve | ✅ | `/oscar/*` |
+| Gmail OAuth browser consent | ✅ | `ecom_ops.oauth.gmail` |
+| Telegram conversation state | ✅ | `ecom_ops.bot` |
+| One-shot Ubuntu install | ✅ | `bin/install-ubuntu26.sh` |
+| Version CLI | ✅ | `python -m ecom_ops version` |
+
+Release notes: `docs/V2_RELEASE.md`.
 
 ### V1 acceptance criteria
 

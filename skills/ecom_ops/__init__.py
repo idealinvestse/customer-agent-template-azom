@@ -1,3 +1,3 @@
-"""Azom ecom-ops V1: order-status, product-desc, support, SSH, mail."""
+"""Azom ecom-ops V2: order/product/support/SSH/mail + dashboard OAuth + Telegram state."""
 
-__version__ = "1.1.0"
+__version__ = "2.0.0"

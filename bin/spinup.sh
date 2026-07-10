@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Spin up Azom customer-agent template (V1 pilot).
+# Spin up Azom customer-agent template (V2).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,7 +51,7 @@ export AZOM_CONFIG_DIR="${ROOT}/config"
 export AZOM_DATA_DIR="${ROOT}/.azom-data"
 export AZOM_USE_MOCK="${AZOM_USE_MOCK:-1}"
 
-echo "==> Validating config + V1 modules"
+echo "==> Validating config + V2 modules"
 "$PY" - <<'PY'
 from ecom_ops.config import load_app_config
 from ecom_ops import __version__

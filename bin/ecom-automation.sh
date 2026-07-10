@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Azom ecom-ops V1 automation entrypoint.
+# Azom ecom-ops V2 automation entrypoint.
 # Usage:
 #   ./bin/ecom-automation.sh order-status --order-id 1001 --status completed
 #   ./bin/ecom-automation.sh product-desc --product-id 501 --language sv
