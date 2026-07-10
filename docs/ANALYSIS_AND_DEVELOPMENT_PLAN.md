@@ -45,9 +45,11 @@ Release notes: `docs/V2_RELEASE.md`.
 
 Detaljer: `docs/V1_IMPLEMENTATION.md`.
 
-## Grok-build prompt (V1)
+## Grok-build prompt (V2.0)
 
-Implementera V1 exakt: order-status, product-desc, support, SSH, mail. Clean code, tests, security, escalation till Oscar vid kritiskt. Mockbara integrationer, CLI `python -m ecom_ops`, bin/ecom-automation.sh, pytest i CI.
+**Full optimal prompt:** `docs/GROK_BUILD_PROMPT.md` (copy-paste block for Grok Build: fetch, venv, pytest, mock smoke, acceptance).
+
+Kort: Clone main, venv + `pip install -e .`, `AZOM_USE_MOCK=1`, `python -m ecom_ops version` (=2.0.0), `pytest`, mock smoke (order/product/support/ssh/mail). Fix only build breaks.
 
 ## Läs repo för implementation
 

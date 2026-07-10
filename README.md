@@ -83,3 +83,7 @@ bash tests/test_spinup.sh
 3. **V3** – SaaS multi-tenant skalning
 
 See `docs/V2_RELEASE.md`, `docs/V2_OAUTH_GMAIL.md`, `docs/ANALYSIS_AND_DEVELOPMENT_PLAN.md`.
+
+## Grok Build
+
+Optimal fetch+build prompt for coding agents: [`docs/GROK_BUILD_PROMPT.md`](docs/GROK_BUILD_PROMPT.md)
