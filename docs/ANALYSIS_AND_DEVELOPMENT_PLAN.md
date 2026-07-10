@@ -1,16 +1,38 @@
 # Bred och djup analys + full utvecklingsplan (top 1% nivå)
 
 ## Teori
+
 Agent-as-a-Service baserad på datalasse + azom-control-hub: dedikerad, isolerad Moss-agent per kund för operativ driving av WooCommerce e-com.
 
 ## Syfte
+
 Minska support-tid 50%, öka engagement, automatisera order/product/support, säker managering ner till SSH, telemetry för usage-fakturering, dashboard för Jonatan.
 
 ## Exekvering
-1. V1: Pilot med order-status, product-desc, support, SSH.
+
+1. **V1: Pilot med order-status, product-desc, support, SSH.** ✅ IMPLEMENTED
 2. V2: Dashboard + onboarding.
 3. V3: SaaS skalning.
 
-Grok-build prompt: ... (full prompt här)
+### V1 acceptance criteria
 
-Läs repo för implementation.
+| Krav | Status | Var |
+|------|--------|-----|
+| Order-status update (Woo) | ✅ | `ecom_ops.actions.order_status` |
+| Product description gen | ✅ | `ecom_ops.actions.product_desc` |
+| Support automation | ✅ | `ecom_ops.actions.support` |
+| SSH/VPS (safe allowlist) | ✅ | `ecom_ops.actions.ssh_ops` |
+| Escalation till Oscar (critical/code) | ✅ | `ecom_ops.escalation` + `config/rbac.yaml` |
+| RBAC Jonatan read-only | ✅ | `ecom_ops.rbac` |
+| Tests + CI | ✅ | `tests/`, `.github/workflows/ci.yml` |
+| Secret hygiene | ✅ | `ecom_ops.security`, `.env.example` |
+
+Detaljer: `docs/V1_IMPLEMENTATION.md`.
+
+## Grok-build prompt (V1)
+
+Implementera V1 exakt: order-status, product-desc, support, SSH. Clean code, tests, security, escalation till Oscar vid kritiskt. Mockbara integrationer, CLI `python -m ecom_ops`, bin/ecom-automation.sh, pytest i CI.
+
+## Läs repo för implementation
+
+Start: `skills/ecom_ops/`, `bin/ecom-automation.sh`, `tests/`.

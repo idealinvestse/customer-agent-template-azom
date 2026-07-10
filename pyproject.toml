@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "azom-ecom-ops"
+version = "1.0.0"
+description = "Azom ecom-ops agent: order-status, product-desc, support, SSH (V1 pilot)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyYAML>=6.0",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "responses>=0.25",
+]
+
+[project.scripts]
+ecom-ops = "ecom_ops.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["skills"]
+include = ["ecom_ops*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["skills"]
+addopts = "-q --tb=short"
+
+[tool.coverage.run]
+source = ["ecom_ops"]
+branch = true
