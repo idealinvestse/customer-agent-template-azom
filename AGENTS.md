@@ -31,7 +31,8 @@
 - Dashboard onboarding wizard + polish (Basic Auth behålls)
 - Gmail OAuth browser consent → `AZOM_DATA_DIR/oauth/gmail.json`
 - Telegram bot conversation state (`python -m ecom_ops.bot`)
-- Docs: `docs/V2_OAUTH_GMAIL.md`
+- Settings UI: Jonatan editerar icke-hemliga; Oscar editerar secrets (`/oscar`)
+- Docs: `docs/V2_OAUTH_GMAIL.md`, `docs/superpowers/specs/2026-07-11-dashboard-settings-design.md`
 
 ## Mail CLI
 ```bash

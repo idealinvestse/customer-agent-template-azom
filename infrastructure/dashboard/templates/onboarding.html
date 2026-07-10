@@ -2,12 +2,20 @@
 {% block title %}Onboarding – Azom Dashboard{% endblock %}
 {% block content %}
 <main>
+  {% if flash %}
+  {% if flash.startswith('error:') %}
+  <div class="flash error">{{ flash[6:] }}</div>
+  {% else %}
+  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
+  {% endif %}
+  {% endif %}
+
   <section class="card wide">
     <h2>Onboarding wizard</h2>
     <ol class="steps">
-      <li><strong>1. Kund &amp; domäner</strong> — {{ runtime.customer }} ({{ runtime.domains | join(', ') }})</li>
-      <li><strong>2. Mock vs live</strong> — {% if runtime.mock_mode %}Mock-läge (AZOM_USE_MOCK=1){% else %}Live (AZOM_USE_MOCK=0){% endif %}</li>
-      <li><strong>3. Secrets</strong> — se checklista nedan (värden visas aldrig)</li>
+      <li><strong>1. Kund &amp; domäner</strong> — {{ runtime.customer }} ({{ runtime.domains | join(', ') }}) · <a href="/settings">redigera</a></li>
+      <li><strong>2. Mock vs live</strong> — {% if runtime.mock_mode %}Mock-läge{% else %}Live{% endif %} · <a href="/settings">växla</a></li>
+      <li><strong>3. Secrets</strong> — <a href="/secrets">checklista</a>{% if is_oscar %} · <a href="/oscar/secrets">Oscar editor</a>{% endif %}</li>
       <li><strong>4. Gmail OAuth</strong> — <a class="btn" href="/oauth/gmail/start">Koppla Gmail</a></li>
       <li><strong>5. Health probe</strong> — {% if health.ok %}<span class="present">OK</span>{% else %}<span class="missing">Issues</span>{% endif %}</li>
     </ol>

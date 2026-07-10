@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Inställningar – Azom{% endblock %}
+{% block content %}
+<main>
+  {% if flash %}
+  {% if flash.startswith('error:') %}
+  <div class="flash error">{{ flash[6:] }}</div>
+  {% else %}
+  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
+  {% endif %}
+  {% endif %}
+
+  <section class="card wide">
+    <h2>Icke-hemliga inställningar</h2>
+    <p class="muted">Jonatan kan spara dessa. Secrets hanteras under Secrets / Oscar.</p>
+    <form method="post" action="/settings">
+      <label>Kund (customer)</label>
+      <input type="text" name="customer" value="{{ settings.customer }}" required />
+
+      <label>Domäner (kommaseparerade)</label>
+      <input type="text" name="domains" value="{{ settings.domains }}" required />
+
+      <label>LLM budget cap (sites)</label>
+      <input type="number" step="0.1" name="budget_cap_llm" value="{{ settings.budget_cap_llm }}" />
+
+      <label>OpenRouter cap (USD)</label>
+      <input type="number" step="0.1" name="openrouter_cap" value="{{ settings.openrouter_cap }}" />
+
+      <label>Mail provider</label>
+      <select name="mail_provider">
+        {% for p in settings.mail_providers %}
+        <option value="{{ p }}" {% if p == settings.mail_provider %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+
+      <label>Jonatan-roll (read-only)</label>
+      <input type="text" value="{{ settings.jonatan_role }}" disabled />
+
+      <h2 style="margin-top:1.25rem">Flaggor</h2>
+      <div class="grid-checks">
+        {% for key, label in [
+          ('mock_mode', 'Mock-läge (AZOM_USE_MOCK)'),
+          ('email_enabled', 'Email enabled'),
+          ('email_smtp', 'SMTP'),
+          ('email_imap', 'IMAP'),
+          ('email_pop3', 'POP3'),
+          ('mailcow', 'Mailcow'),
+          ('order_api', 'Order API'),
+          ('selenium', 'Selenium'),
+          ('woocommerce_api', 'WooCommerce API'),
+          ('wordpress_api', 'WordPress API'),
+          ('smart_handling', 'Smart handling'),
+          ('full_agent_tools', 'Full agent tools'),
+        ] %}
+        <label class="field-row">
+          <input type="checkbox" name="{{ key }}" value="1" {% if settings[key] %}checked{% endif %} />
+          {{ label }}
+        </label>
+        {% endfor %}
+      </div>
+
+      <p style="margin-top:1rem">
+        <button class="btn" type="submit">Spara</button>
+      </p>
+    </form>
+  </section>
+</main>
+{% endblock %}

@@ -1,4 +1,4 @@
-"""Flask webbdashboard för Jonatan (lösenordsskyddad, read-only)."""
+"""Flask webbdashboard för Jonatan (viewer) och Oscar (full_admin)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path
 from flask import (
     Flask,
     Response,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -20,7 +21,6 @@ from flask import (
     url_for,
 )
 
-# Allow imports from repo root when run as script
 _ROOT = Path(__file__).resolve().parents[2]
 _DASH_DIR = Path(__file__).resolve().parent
 if str(_ROOT / "skills") not in sys.path:
@@ -28,7 +28,16 @@ if str(_ROOT / "skills") not in sys.path:
 if str(_DASH_DIR) not in sys.path:
     sys.path.insert(0, str(_DASH_DIR))
 
-from status import health_probe, runtime_status, secrets_checklist  # noqa: E402
+from settings_store import (  # noqa: E402
+    EDITABLE_SECRET_KEYS,
+    apply_env_overlays,
+    load_settings_view,
+    resolve_escalation,
+    save_secrets,
+    save_settings,
+    secrets_status,
+)
+from status import health_probe, runtime_status  # noqa: E402
 
 app = Flask(__name__)
 
@@ -38,37 +47,67 @@ def _data_dir() -> Path:
 
 
 def _is_mock() -> bool:
+    apply_env_overlays()
     return os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
 
 
-def _check_password(password: str) -> bool:
-    expected_hash = os.environ.get("DASHBOARD_PASSWORD_HASH", "").strip()
-    expected_plain = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+def _password_ok(expected_plain: str, expected_hash: str, password: str) -> bool:
     if expected_hash:
         got = hashlib.sha256(password.encode("utf-8")).hexdigest()
         return secrets.compare_digest(got, expected_hash)
     if expected_plain:
         return secrets.compare_digest(password, expected_plain)
-    if not _is_mock():
-        return False
-    return password == "jonatan"
+    return False
+
+
+def _authenticate(username: str, password: str) -> dict | None:
+    """Return actor dict or None."""
+    apply_env_overlays()
+    user = (username or "").strip().lower()
+    if user == "jonatan":
+        plain = os.environ.get("DASHBOARD_PASSWORD", "").strip()
+        hashed = os.environ.get("DASHBOARD_PASSWORD_HASH", "").strip()
+        if _password_ok(plain, hashed, password):
+            return {"name": "jonatan", "role": "viewer", "is_oscar": False}
+        if not plain and not hashed and _is_mock() and password == "jonatan":
+            return {"name": "jonatan", "role": "viewer", "is_oscar": False}
+        return None
+    if user == "oscar":
+        plain = os.environ.get("DASHBOARD_OSCAR_PASSWORD", "").strip()
+        hashed = os.environ.get("DASHBOARD_OSCAR_PASSWORD_HASH", "").strip()
+        if _password_ok(plain, hashed, password):
+            return {"name": "oscar", "role": "full_admin", "is_oscar": True}
+        if not plain and not hashed and _is_mock() and password == "oscar":
+            return {"name": "oscar", "role": "full_admin", "is_oscar": True}
+        return None
+    return None
 
 
 def _auth_required(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
         auth = request.authorization
-        user = os.environ.get("DASHBOARD_USER", "jonatan")
-        if (
-            auth is None
-            or auth.username != user
-            or not _check_password(auth.password or "")
-        ):
+        actor = None
+        if auth is not None:
+            actor = _authenticate(auth.username or "", auth.password or "")
+        if actor is None:
             return Response(
-                "Authentication required",
+                "Authentication required (jonatan or oscar)",
                 401,
                 {"WWW-Authenticate": 'Basic realm="Azom Dashboard"'},
             )
+        g.actor = actor
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def _oscar_required(view):
+    @wraps(view)
+    @_auth_required
+    def wrapper(*args, **kwargs):
+        if not g.actor.get("is_oscar"):
+            return Response("Oscar only", 403)
         return view(*args, **kwargs)
 
     return wrapper
@@ -92,13 +131,34 @@ def _tail_jsonl(path: Path, limit: int = 50) -> list[dict]:
     return out
 
 
-def _dashboard_context() -> dict:
+def _flash_from_query() -> str | None:
+    msg = request.args.get("msg")
+    err = request.args.get("err")
+    if err:
+        return f"error:{err}"
+    if msg:
+        return f"ok:{msg}"
+    return None
+
+
+def _dashboard_context(**extra) -> dict:
+    apply_env_overlays()
     runtime = runtime_status()
-    return {
-        "user": os.environ.get("DASHBOARD_USER", "jonatan"),
-        "role": "viewer (read-only)",
+    actor = getattr(g, "actor", {"name": "?", "role": "?", "is_oscar": False})
+    ctx = {
+        "user": actor["name"],
+        "role": actor["role"],
+        "is_oscar": actor.get("is_oscar", False),
         "runtime": runtime,
+        "flash": _flash_from_query(),
     }
+    ctx.update(extra)
+    return ctx
+
+
+@app.before_request
+def _load_overlays():
+    apply_env_overlays()
 
 
 @app.route("/")
@@ -114,31 +174,30 @@ def index():
         except (TypeError, ValueError):
             pass
     runtime = runtime_status()
-    ctx = _dashboard_context()
-    ctx.update(
-        {
-            "telemetry": telemetry,
-            "escalations": escalations,
-            "cost_usd": round(cost, 4),
-            "openrouter_cap": runtime.get("openrouter_cap", 100),
-            "budget_cap_llm": runtime.get("budget_cap_llm", 80),
-        }
+    open_esc = sum(1 for e in escalations if e.get("status", "open") == "open")
+    cap = float(runtime.get("openrouter_cap") or 100)
+    cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
+    return render_template(
+        "index.html",
+        **_dashboard_context(
+            telemetry=telemetry,
+            escalations=escalations,
+            cost_usd=round(cost, 4),
+            openrouter_cap=runtime.get("openrouter_cap", 100),
+            budget_cap_llm=runtime.get("budget_cap_llm", 80),
+            open_escalations=open_esc,
+            cost_pct=cost_pct,
+        ),
     )
-    return render_template("index.html", **ctx)
 
 
 @app.route("/onboarding")
 @_auth_required
 def onboarding():
-    probe = health_probe()
-    ctx = _dashboard_context()
-    ctx.update(
-        {
-            "secrets": secrets_checklist(),
-            "health": probe,
-        }
+    return render_template(
+        "onboarding.html",
+        **_dashboard_context(secrets=secrets_status(), health=health_probe()),
     )
-    return render_template("onboarding.html", **ctx)
 
 
 @app.route("/onboarding/status")
@@ -147,9 +206,186 @@ def onboarding_status():
     return jsonify(
         {
             "runtime": runtime_status(),
-            "secrets": secrets_checklist(),
+            "secrets": secrets_status(),
             "health": health_probe(),
         }
+    )
+
+
+@app.route("/settings", methods=["GET", "POST"])
+@_auth_required
+def settings():
+    if request.method == "POST":
+        form = request.form.to_dict()
+        # checkboxes: missing = false
+        for flag in (
+            "email_enabled",
+            "email_smtp",
+            "email_imap",
+            "email_pop3",
+            "mailcow",
+            "order_api",
+            "selenium",
+            "woocommerce_api",
+            "wordpress_api",
+            "smart_handling",
+            "full_agent_tools",
+            "mock_mode",
+        ):
+            form[flag] = "1" if flag in request.form else "0"
+        try:
+            save_settings(form)
+            return redirect(url_for("settings") + "?msg=Sparat")
+        except ValueError as exc:
+            return redirect(url_for("settings") + f"?err={exc}")
+    return render_template(
+        "settings.html",
+        **_dashboard_context(settings=load_settings_view()),
+    )
+
+
+@app.route("/secrets", methods=["GET", "POST"])
+@_auth_required
+def secrets_page():
+    if request.method == "POST":
+        if g.actor.get("is_oscar"):
+            return redirect(url_for("oscar_secrets"))
+        keys_raw = request.form.get("keys", "")
+        note = request.form.get("note", "").strip()[:500]
+        keys = [k.strip() for k in keys_raw.replace(";", ",").split(",") if k.strip()]
+        if not keys:
+            keys = [k for k in request.form.getlist("key") if k]
+        if not keys:
+            return redirect(url_for("secrets_page") + "?err=Välj+minst+en+nyckel")
+        from ecom_ops.escalation import EscalationService
+
+        EscalationService().escalate_critical(
+            "Dashboard secret update requested by Jonatan",
+            details={
+                "requested_keys": keys,
+                "note": note,
+                "actor": g.actor["name"],
+            },
+        )
+        return redirect(url_for("secrets_page") + "?msg=Begäran+skickad+till+Oscar")
+    return render_template(
+        "secrets.html",
+        **_dashboard_context(secrets=secrets_status()),
+    )
+
+
+@app.route("/data/telemetry")
+@_auth_required
+def data_telemetry():
+    rows = _tail_jsonl(_data_dir() / "telemetry.jsonl", 200)
+    return render_template(
+        "data_telemetry.html",
+        **_dashboard_context(rows=rows),
+    )
+
+
+@app.route("/data/escalations")
+@_auth_required
+def data_escalations():
+    rows = _tail_jsonl(_data_dir() / "escalations.jsonl", 200)
+    return render_template(
+        "data_escalations.html",
+        **_dashboard_context(rows=rows),
+    )
+
+
+@app.route("/interact", methods=["GET", "POST"])
+@_auth_required
+def interact():
+    result = None
+    error = None
+    if request.method == "POST":
+        message = (
+            request.form.get("message")
+            or (request.get_json(silent=True) or {}).get("message")
+            or ""
+        ).strip()
+        if not message:
+            if request.is_json:
+                return jsonify({"ok": False, "error": "message required"}), 400
+            error = "Meddelande krävs"
+        else:
+            try:
+                from ecom_ops.actions.support import SupportService
+
+                out = SupportService().handle(message, actor="agent", language="sv")
+                result = out.to_dict()
+                result["note"] = "Draft only; send kräver operator/Oscar."
+                if request.is_json:
+                    return jsonify(result)
+            except Exception as exc:
+                if request.is_json:
+                    return jsonify({"ok": False, "error": str(exc)}), 500
+                error = str(exc)
+    if request.method == "GET" and request.accept_mimetypes.best == "application/json":
+        return jsonify({"hint": "POST message for support draft"})
+    return render_template(
+        "interact.html",
+        **_dashboard_context(result=result, error=error),
+    )
+
+
+@app.route("/oscar")
+@_oscar_required
+def oscar_home():
+    esc = _tail_jsonl(_data_dir() / "escalations.jsonl", 100)
+    open_esc = [e for e in esc if e.get("status", "open") == "open"]
+    secs = secrets_status()
+    present = sum(1 for s in secs if s["present"])
+    missing = sum(1 for s in secs if not s["present"])
+    from ecom_ops.oauth.gmail import GmailOAuthStore
+
+    store = GmailOAuthStore()
+    return render_template(
+        "oscar.html",
+        **_dashboard_context(
+            open_escalations=open_esc,
+            open_count=len(open_esc),
+            secrets_present=present,
+            secrets_missing=missing,
+            gmail_connected=store.has_tokens(),
+            settings=load_settings_view(),
+        ),
+    )
+
+
+@app.route("/oscar/secrets", methods=["GET", "POST"])
+@_oscar_required
+def oscar_secrets():
+    if request.method == "POST":
+        updates = {}
+        for key in EDITABLE_SECRET_KEYS:
+            if key in request.form:
+                updates[key] = request.form.get(key, "")
+        saved = save_secrets(updates)
+        msg = f"Sparade+{len(saved)}+nycklar" if saved else "Inga+ändringar"
+        return redirect(url_for("oscar_secrets") + f"?msg={msg}")
+    return render_template(
+        "oscar_secrets.html",
+        **_dashboard_context(
+            secrets=secrets_status(),
+            editable_keys=EDITABLE_SECRET_KEYS,
+        ),
+    )
+
+
+@app.route("/oscar/escalations", methods=["GET", "POST"])
+@_oscar_required
+def oscar_escalations():
+    if request.method == "POST":
+        ticket_id = request.form.get("ticket_id", "").strip()
+        if ticket_id and resolve_escalation(ticket_id):
+            return redirect(url_for("oscar_escalations") + "?msg=Markerad+som+löst")
+        return redirect(url_for("oscar_escalations") + "?err=Ticket+hittades+inte")
+    rows = _tail_jsonl(_data_dir() / "escalations.jsonl", 200)
+    return render_template(
+        "oscar_escalations.html",
+        **_dashboard_context(rows=rows),
     )
 
 
@@ -161,16 +397,11 @@ def oauth_gmail_start():
     store = GmailOAuthStore()
     if _is_mock():
         store.mock_connect()
-        return redirect(url_for("onboarding") + "?gmail=connected")
-
+        return redirect(url_for("onboarding") + "?msg=Gmail+kopplad+(mock)")
     if not gmail_oauth_configured():
-        return Response(
-            "Gmail OAuth not configured (MAIL_OAUTH_CLIENT_ID/SECRET)",
-            400,
-        )
+        return redirect(url_for("secrets_page") + "?err=MAIL_OAUTH_CLIENT_ID/SECRET+saknas")
     state = store.create_state()
-    url = store.build_authorize_url(state=state)
-    return redirect(url)
+    return redirect(store.build_authorize_url(state=state))
 
 
 @app.route("/oauth/gmail/callback")
@@ -180,24 +411,20 @@ def oauth_gmail_callback():
     error = request.args.get("error")
     if error:
         return Response(f"OAuth error: {error}", 400)
-
     code = request.args.get("code", "").strip()
     state = request.args.get("state", "").strip()
     if not code or not state:
         return Response("Missing code or state", 400)
-
     store = GmailOAuthStore()
     if not store.validate_state(state):
         return Response("Invalid or expired OAuth state", 400)
-
     try:
         store.exchange_code(code)
     except Exception as exc:
         return Response(f"Token exchange failed: {exc}", 502)
     finally:
         store.clear_state()
-
-    return redirect(url_for("onboarding") + "?gmail=connected")
+    return redirect(url_for("onboarding") + "?msg=Gmail+kopplad")
 
 
 @app.route("/oauth/gmail/status")
@@ -236,50 +463,33 @@ def logs():
 
 @app.route("/telemetry")
 @_auth_required
-def telemetry():
+def telemetry_json():
     return jsonify(_tail_jsonl(_data_dir() / "telemetry.jsonl", 200))
 
 
 @app.route("/escalations")
 @_auth_required
-def escalations():
+def escalations_json():
     return jsonify(_tail_jsonl(_data_dir() / "escalations.jsonl", 200))
 
 
 @app.route("/manage")
 @_auth_required
 def manage():
-    return jsonify(
-        {
-            "message": "Manage is read-only for Jonatan. Escalate writes to Oscar.",
-            "allowed": ["view_health", "view_logs", "view_telemetry"],
-            "denied": ["order_update", "product_publish", "mail_send", "ssh_write"],
-        }
-    )
-
-
-@app.route("/interact", methods=["GET", "POST"])
-@_auth_required
-def interact():
-    if request.method == "GET":
+    if g.actor.get("is_oscar"):
         return jsonify(
             {
-                "hint": "POST JSON {\"message\": \"...\"} for support draft (no send)",
+                "message": "Oscar full_admin — use /oscar for admin boxes",
+                "allowed": ["settings", "secrets", "escalations", "all"],
             }
         )
-    payload = request.get_json(silent=True) or {}
-    message = str(payload.get("message") or "").strip()
-    if not message:
-        return jsonify({"ok": False, "error": "message required"}), 400
-    try:
-        from ecom_ops.actions.support import SupportService
-
-        result = SupportService().handle(message, actor="agent", language="sv")
-        data = result.to_dict()
-        data["note"] = "Draft only; Jonatan cannot send. Operator/Oscar sends."
-        return jsonify(data)
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify(
+        {
+            "message": "Manage is limited for Jonatan. Escalate secret writes to Oscar.",
+            "allowed": ["view_health", "view_logs", "view_telemetry", "edit_settings"],
+            "denied": ["order_update", "product_publish", "mail_send", "ssh_write", "set_secrets"],
+        }
+    )
 
 
 if __name__ == "__main__":

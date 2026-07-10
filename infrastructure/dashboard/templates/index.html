@@ -1,10 +1,19 @@
 {% extends "base.html" %}
 {% block content %}
 <main>
+  {% if flash %}
+  {% if flash.startswith('error:') %}
+  <div class="flash error">{{ flash[6:] }}</div>
+  {% else %}
+  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
+  {% endif %}
+  {% endif %}
+
   <section class="card">
     <h2>Telemetry cost</h2>
     <div class="stat">${{ cost_usd }}</div>
-    <p class="muted">Cap: ${{ openrouter_cap }} (OpenRouter) · LLM budget: ${{ budget_cap_llm }}</p>
+    <p class="muted">Cap: ${{ openrouter_cap }} · LLM budget: ${{ budget_cap_llm }}</p>
+    <div class="progress"><span style="width: {{ cost_pct }}%"></span></div>
   </section>
 
   <section class="card">
@@ -12,31 +21,29 @@
     <p><strong>{{ runtime.customer }}</strong> · {{ runtime.domains | join(', ') }}</p>
     <p class="muted">Mail: {{ runtime.mail_provider }}</p>
     <p class="muted">
-      Gmail OAuth:
-      {% if runtime.gmail_tokens_stored %}
-      <span class="present">connected</span>
-      {% elif runtime.gmail_oauth_configured %}
-      <span class="badge warn">configured, not connected</span>
-      {% else %}
-      <span class="missing">not configured</span>
-      {% endif %}
+      Gmail:
+      {% if runtime.gmail_tokens_stored %}<span class="present">connected</span>
+      {% elif runtime.gmail_oauth_configured %}<span class="badge warn">configured</span>
+      {% else %}<span class="missing">not configured</span>{% endif %}
     </p>
+    <p class="muted">Öppna eskaleringar: <strong>{{ open_escalations }}</strong></p>
   </section>
 
   <section class="card">
-    <h2>Snabbnavigering</h2>
-    <p><a href="/onboarding">Onboarding wizard →</a></p>
-    <p><a href="/oauth/gmail/start">Koppla Gmail →</a></p>
-    <p class="muted">POST <code>/interact</code> för support-draft.</p>
+    <h2>Hantera</h2>
+    <p><a class="btn secondary" href="/settings">Inställningar</a></p>
+    <p><a class="btn secondary" href="/secrets">Secrets</a></p>
+    <p><a class="btn secondary" href="/interact">Support-draft</a></p>
+    {% if is_oscar %}
+    <p><a class="btn oscar" href="/oscar">Oscar-panel →</a></p>
+    {% endif %}
   </section>
 
   <section class="card wide">
     <h2>Recent telemetry</h2>
     {% if telemetry %}
     <table>
-      <thead>
-        <tr><th>When</th><th>Action</th><th>Site</th><th>Units</th></tr>
-      </thead>
+      <thead><tr><th>When</th><th>Action</th><th>Site</th><th>Units</th></tr></thead>
       <tbody>
         {% for e in telemetry %}
         <tr>
@@ -48,6 +55,7 @@
         {% endfor %}
       </tbody>
     </table>
+    <p><a href="/data/telemetry">Visa alla →</a></p>
     {% else %}
     <p class="muted">Inga telemetry-events ännu.</p>
     {% endif %}
@@ -57,22 +65,21 @@
     <h2>Escalations → Oscar</h2>
     {% if escalations %}
     <table>
-      <thead>
-        <tr><th>When</th><th>Severity</th><th>Reason</th><th>Summary</th></tr>
-      </thead>
+      <thead><tr><th>When</th><th>Status</th><th>Severity</th><th>Summary</th></tr></thead>
       <tbody>
         {% for e in escalations %}
         <tr>
           <td>{{ e.get('created_at', '')[:19] }}</td>
+          <td>{{ e.get('status', 'open') }}</td>
           <td>{{ e.get('severity', '') }}</td>
-          <td><code>{{ e.get('reason', '') }}</code></td>
           <td>{{ e.get('summary', '') }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
+    <p><a href="/data/escalations">Visa alla →</a></p>
     {% else %}
-    <p class="muted">Inga öppna eskaleringar.</p>
+    <p class="muted">Inga eskaleringar.</p>
     {% endif %}
   </section>
 </main>

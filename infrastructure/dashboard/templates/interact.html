@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Interagera – Azom{% endblock %}
+{% block content %}
+<main>
+  <section class="card wide">
+    <h2>Support-draft</h2>
+    <p class="muted">Genererar utkast via agent. Jonatan kan inte skicka mail.</p>
+    <form method="post" action="/interact">
+      <label>Meddelande</label>
+      <textarea name="message" required placeholder="Hej, var är min order?"></textarea>
+      <p><button class="btn" type="submit">Skapa draft</button></p>
+    </form>
+    {% if error %}
+    <div class="flash error">{{ error }}</div>
+    {% endif %}
+    {% if result %}
+    <h2 style="margin-top:1rem">Resultat</h2>
+    <p><strong>Kategori:</strong> {{ result.category }}</p>
+    <p><strong>OK:</strong> {{ result.ok }} · <strong>Eskalerad:</strong> {{ result.escalated }}</p>
+    {% if result.reply %}
+    <pre style="white-space:pre-wrap;background:#0c1017;padding:1rem;border-radius:8px">{{ result.reply }}</pre>
+    {% endif %}
+    <p class="muted">{{ result.note }}</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

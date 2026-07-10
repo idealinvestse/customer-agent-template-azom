@@ -70,11 +70,15 @@ docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 ./bin/dedicated-bot.sh            # Telegram (TELEGRAM_BOT_TOKEN, conversation state)
 ```
 
-Dashboard V2:
+Dashboard V2+:
 - `/onboarding` — wizard (secrets checklist, health probe, mock/live)
+- `/settings` — Jonatan redigerar icke-hemliga YAML/inställningar
+- `/secrets` — present/missing + begär Oscar-uppdatering
+- `/data/telemetry`, `/data/escalations`, `/interact` — tydliga HTML-vyer
+- `/oscar`, `/oscar/secrets`, `/oscar/escalations` — Oscar full_admin (Basic Auth user `oscar`)
 - `/oauth/gmail/start` — Gmail browser consent (mock stores tokens when `AZOM_USE_MOCK=1`)
 
-Telegram V2 flows: support draft → confirm escalate to Oscar, `/order [id]` read-only lookup, `/cancel`.
+Login: Basic Auth — `jonatan` / `DASHBOARD_PASSWORD` (mock: `jonatan`) eller `oscar` / `DASHBOARD_OSCAR_PASSWORD` (mock: `oscar`).
 
 ## Tests
 

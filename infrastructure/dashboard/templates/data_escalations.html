@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Eskaleringar – Azom{% endblock %}
+{% block content %}
+<main>
+  <section class="card wide">
+    <h2>Eskaleringar</h2>
+    {% if is_oscar %}
+    <p><a class="btn oscar" href="/oscar/escalations">Oscar: markera lösta →</a></p>
+    {% endif %}
+    {% if rows %}
+    <table>
+      <thead>
+        <tr><th>When</th><th>ID</th><th>Status</th><th>Severity</th><th>Reason</th><th>Summary</th></tr>
+      </thead>
+      <tbody>
+        {% for e in rows %}
+        <tr>
+          <td>{{ e.get('created_at', '')[:19] }}</td>
+          <td><code>{{ e.get('id', '')[:8] }}</code></td>
+          <td>{{ e.get('status', 'open') }}</td>
+          <td>{{ e.get('severity', '') }}</td>
+          <td><code>{{ e.get('reason', '') }}</code></td>
+          <td>{{ e.get('summary', '') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Inga eskaleringar.</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

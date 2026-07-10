@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Oscar – Azom{% endblock %}
+{% block content %}
+<main>
+  {% if flash %}
+  {% if flash.startswith('error:') %}
+  <div class="flash error">{{ flash[6:] }}</div>
+  {% else %}
+  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
+  {% endif %}
+  {% endif %}
+
+  <section class="card oscar-box">
+    <h2>Öppna eskaleringar</h2>
+    <div class="stat">{{ open_count }}</div>
+    <p class="muted">Tickets som väntar på Oscar</p>
+    <a class="btn oscar" href="/oscar/escalations">Hantera →</a>
+  </section>
+
+  <section class="card oscar-box">
+    <h2>Secrets</h2>
+    <p><span class="present">{{ secrets_present }} present</span> · <span class="missing">{{ secrets_missing }} missing</span></p>
+    <a class="btn oscar" href="/oscar/secrets">Redigera secrets →</a>
+  </section>
+
+  <section class="card oscar-box">
+    <h2>Runtime</h2>
+    <p>Mock: {% if settings.mock_mode %}<span class="badge warn">på</span>{% else %}<span class="present">live</span>{% endif %}</p>
+    <p class="muted">Mail: {{ settings.mail_provider }}</p>
+    <a class="btn secondary" href="/settings">Ändra i Inställningar</a>
+  </section>
+
+  <section class="card oscar-box">
+    <h2>Gmail OAuth</h2>
+    <p>{% if gmail_connected %}<span class="present">connected</span>{% else %}<span class="missing">not connected</span>{% endif %}</p>
+    <a class="btn secondary" href="/oauth/gmail/start">Koppla / förnya</a>
+  </section>
+
+  <section class="card oscar-box wide">
+    <h2>Snabblänkar</h2>
+    <a class="btn secondary" href="/settings">Inställningar</a>
+    <a class="btn secondary" href="/data/telemetry">Telemetry</a>
+    <a class="btn secondary" href="/data/escalations">Eskaleringar</a>
+    <a class="btn secondary" href="/interact">Interagera</a>
+    <a class="btn secondary" href="/onboarding">Onboarding</a>
+  </section>
+
+  {% if open_escalations %}
+  <section class="card oscar-box wide">
+    <h2>Senaste öppna tickets</h2>
+    <table>
+      <thead><tr><th>When</th><th>Severity</th><th>Summary</th></tr></thead>
+      <tbody>
+        {% for e in open_escalations[:8] %}
+        <tr>
+          <td>{{ e.get('created_at', '')[:19] }}</td>
+          <td>{{ e.get('severity', '') }}</td>
+          <td>{{ e.get('summary', '') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+</main>
+{% endblock %}

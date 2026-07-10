@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Oscar eskaleringar – Azom{% endblock %}
+{% block content %}
+<main>
+  {% if flash %}
+  {% if flash.startswith('error:') %}
+  <div class="flash error">{{ flash[6:] }}</div>
+  {% else %}
+  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
+  {% endif %}
+  {% endif %}
+
+  <section class="card wide oscar-box">
+    <h2>Eskaleringar (Oscar)</h2>
+    {% if rows %}
+    <table>
+      <thead>
+        <tr><th>When</th><th>Status</th><th>Severity</th><th>Summary</th><th>Action</th></tr>
+      </thead>
+      <tbody>
+        {% for e in rows %}
+        <tr>
+          <td>{{ e.get('created_at', '')[:19] }}</td>
+          <td>{{ e.get('status', 'open') }}</td>
+          <td>{{ e.get('severity', '') }}</td>
+          <td>
+            {{ e.get('summary', '') }}
+            {% if e.get('details') %}
+            <div class="muted">{{ e.get('details') }}</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if e.get('status', 'open') == 'open' and e.get('id') %}
+            <form method="post" action="/oscar/escalations" style="display:inline">
+              <input type="hidden" name="ticket_id" value="{{ e.get('id') }}" />
+              <button class="btn oscar" type="submit">Markera löst</button>
+            </form>
+            {% else %}
+            —
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Inga eskaleringar.</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}
