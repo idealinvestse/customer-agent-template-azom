@@ -1,168 +1,79 @@
-<!DOCTYPE html>
-<html lang="sv">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Azom Agent Dashboard</title>
-  <style>
-    :root {
-      --bg: #0f1419;
-      --card: #1a2332;
-      --text: #e7ecf3;
-      --muted: #8b9bb4;
-      --accent: #3d8bfd;
-      --ok: #3dd68c;
-      --warn: #f5a524;
-      --danger: #f31260;
-      --border: #2a3548;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-    }
-    header {
-      padding: 1.25rem 1.5rem;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-    }
-    h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
-    .badge {
-      font-size: 0.75rem;
-      padding: 0.25rem 0.6rem;
-      border-radius: 999px;
-      background: #243044;
-      color: var(--muted);
-    }
-    .badge.ok { background: rgba(61, 214, 140, 0.15); color: var(--ok); }
-    main {
-      padding: 1.5rem;
-      display: grid;
-      gap: 1rem;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 1rem 1.1rem;
-    }
-    .card h2 {
-      margin: 0 0 0.75rem;
-      font-size: 0.95rem;
-      font-weight: 600;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    .stat { font-size: 1.75rem; font-weight: 700; }
-    .muted { color: var(--muted); font-size: 0.875rem; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-    th, td {
-      text-align: left;
-      padding: 0.4rem 0.35rem;
-      border-bottom: 1px solid var(--border);
-      vertical-align: top;
-    }
-    th { color: var(--muted); font-weight: 500; }
-    nav a {
-      color: var(--accent);
-      text-decoration: none;
-      margin-right: 1rem;
-      font-size: 0.9rem;
-    }
-    nav a:hover { text-decoration: underline; }
-    .wide { grid-column: 1 / -1; }
-    code {
-      background: #0c1017;
-      padding: 0.1rem 0.35rem;
-      border-radius: 4px;
-      font-size: 0.8rem;
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <div>
-      <h1>Azom Agent Dashboard</h1>
-      <div class="muted">User: {{ user }} · {{ role }}</div>
-    </div>
-    <div>
-      <span class="badge ok">read-only</span>
-    </div>
-  </header>
+{% extends "base.html" %}
+{% block content %}
+<main>
+  <section class="card">
+    <h2>Telemetry cost</h2>
+    <div class="stat">${{ cost_usd }}</div>
+    <p class="muted">Cap: ${{ openrouter_cap }} (OpenRouter) · LLM budget: ${{ budget_cap_llm }}</p>
+  </section>
 
-  <main>
-    <section class="card">
-      <h2>Telemetry cost</h2>
-      <div class="stat">${{ cost_usd }}</div>
-      <p class="muted">Sum of local usage events (billing meter).</p>
-    </section>
-
-    <section class="card">
-      <h2>API endpoints</h2>
-      <nav>
-        <a href="/health">/health</a>
-        <a href="/logs">/logs</a>
-        <a href="/telemetry">/telemetry</a>
-        <a href="/escalations">/escalations</a>
-        <a href="/manage">/manage</a>
-      </nav>
-      <p class="muted">POST <code>/interact</code> with JSON message for support draft.</p>
-    </section>
-
-    <section class="card wide">
-      <h2>Recent telemetry</h2>
-      {% if telemetry %}
-      <table>
-        <thead>
-          <tr><th>When</th><th>Action</th><th>Site</th><th>Units</th></tr>
-        </thead>
-        <tbody>
-          {% for e in telemetry %}
-          <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
-            <td><code>{{ e.get('action', '') }}</code></td>
-            <td>{{ e.get('site', '') }}</td>
-            <td>{{ e.get('units', '') }} {{ e.get('unit_type', '') }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+  <section class="card">
+    <h2>Runtime</h2>
+    <p><strong>{{ runtime.customer }}</strong> · {{ runtime.domains | join(', ') }}</p>
+    <p class="muted">Mail: {{ runtime.mail_provider }}</p>
+    <p class="muted">
+      Gmail OAuth:
+      {% if runtime.gmail_tokens_stored %}
+      <span class="present">connected</span>
+      {% elif runtime.gmail_oauth_configured %}
+      <span class="badge warn">configured, not connected</span>
       {% else %}
-      <p class="muted">Inga telemetry-events ännu.</p>
+      <span class="missing">not configured</span>
       {% endif %}
-    </section>
+    </p>
+  </section>
 
-    <section class="card wide">
-      <h2>Escalations → Oscar</h2>
-      {% if escalations %}
-      <table>
-        <thead>
-          <tr><th>When</th><th>Severity</th><th>Reason</th><th>Summary</th></tr>
-        </thead>
-        <tbody>
-          {% for e in escalations %}
-          <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
-            <td>{{ e.get('severity', '') }}</td>
-            <td><code>{{ e.get('reason', '') }}</code></td>
-            <td>{{ e.get('summary', '') }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <p class="muted">Inga öppna eskaleringar.</p>
-      {% endif %}
-    </section>
-  </main>
-</body>
-</html>
+  <section class="card">
+    <h2>Snabbnavigering</h2>
+    <p><a href="/onboarding">Onboarding wizard →</a></p>
+    <p><a href="/oauth/gmail/start">Koppla Gmail →</a></p>
+    <p class="muted">POST <code>/interact</code> för support-draft.</p>
+  </section>
+
+  <section class="card wide">
+    <h2>Recent telemetry</h2>
+    {% if telemetry %}
+    <table>
+      <thead>
+        <tr><th>When</th><th>Action</th><th>Site</th><th>Units</th></tr>
+      </thead>
+      <tbody>
+        {% for e in telemetry %}
+        <tr>
+          <td>{{ e.get('created_at', '')[:19] }}</td>
+          <td><code>{{ e.get('action', '') }}</code></td>
+          <td>{{ e.get('site', '') }}</td>
+          <td>{{ e.get('units', '') }} {{ e.get('unit_type', '') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Inga telemetry-events ännu.</p>
+    {% endif %}
+  </section>
+
+  <section class="card wide">
+    <h2>Escalations → Oscar</h2>
+    {% if escalations %}
+    <table>
+      <thead>
+        <tr><th>When</th><th>Severity</th><th>Reason</th><th>Summary</th></tr>
+      </thead>
+      <tbody>
+        {% for e in escalations %}
+        <tr>
+          <td>{{ e.get('created_at', '')[:19] }}</td>
+          <td>{{ e.get('severity', '') }}</td>
+          <td><code>{{ e.get('reason', '') }}</code></td>
+          <td>{{ e.get('summary', '') }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Inga öppna eskaleringar.</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

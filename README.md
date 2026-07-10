@@ -67,8 +67,14 @@ docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 
 ```bash
 ./bin/start-dashboard.sh          # 127.0.0.1:8080 Basic Auth (Jonatan)
-./bin/dedicated-bot.sh            # Telegram (TELEGRAM_BOT_TOKEN)
+./bin/dedicated-bot.sh            # Telegram (TELEGRAM_BOT_TOKEN, conversation state)
 ```
+
+Dashboard V2:
+- `/onboarding` — wizard (secrets checklist, health probe, mock/live)
+- `/oauth/gmail/start` — Gmail browser consent (mock stores tokens when `AZOM_USE_MOCK=1`)
+
+Telegram V2 flows: support draft → confirm escalate to Oscar, `/order [id]` read-only lookup, `/cancel`.
 
 ## Tests
 
@@ -89,7 +95,7 @@ bash tests/test_spinup.sh
 ## Roadmap
 
 1. **V1** – Pilot: order-status, product-desc, support, SSH, mail ✅
-2. **V2** – Dashboard + onboarding polish
+2. **V2** – Dashboard onboarding + Gmail OAuth + Telegram state ✅
 3. **V3** – SaaS-skalning
 
-Se `docs/ANALYSIS_AND_DEVELOPMENT_PLAN.md` och `docs/V1_IMPLEMENTATION.md`.
+Se `docs/ANALYSIS_AND_DEVELOPMENT_PLAN.md`, `docs/V1_IMPLEMENTATION.md`, `docs/V2_OAUTH_GMAIL.md`.

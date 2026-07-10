@@ -683,7 +683,7 @@ def config_from_env(
             return default
         return raw.lower() in {"1", "true", "yes", "on"}
 
-    return MailConfig(
+    config = MailConfig(
         provider=prov,
         username=get_env("MAIL_USERNAME", "") or "",
         password=get_env("MAIL_PASSWORD", "") or get_env("SMTP_PASSWORD", "") or "",
@@ -713,6 +713,9 @@ def config_from_env(
         )
         or "https://graph.microsoft.com/v1.0",
     )
+    from ecom_ops.oauth.gmail import apply_stored_gmail_tokens
+
+    return apply_stored_gmail_tokens(config)
 
 
 def _transport_for(config: MailConfig) -> MailTransport:

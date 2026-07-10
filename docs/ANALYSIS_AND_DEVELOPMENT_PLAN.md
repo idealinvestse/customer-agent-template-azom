@@ -11,7 +11,7 @@ Minska support-tid 50%, öka engagement, automatisera order/product/support/mail
 ## Exekvering
 
 1. **V1: Pilot med order-status, product-desc, support, SSH, mail.** ✅ IMPLEMENTED
-2. V2: Dashboard + onboarding polish.
+2. **V2: Dashboard onboarding + Gmail OAuth + Telegram state.** ✅ IMPLEMENTED
 3. V3: SaaS skalning.
 
 ### V1 acceptance criteria

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Azom Agent Dashboard{% endblock %}</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d8bfd;
+      --ok: #3dd68c;
+      --warn: #f5a524;
+      --danger: #f31260;
+      --border: #2a3548;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: linear-gradient(165deg, #0f1419 0%, #121c28 45%, #0f1419 100%);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+    .badge {
+      font-size: 0.75rem;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      background: #243044;
+      color: var(--muted);
+    }
+    .badge.ok { background: rgba(61, 214, 140, 0.15); color: var(--ok); }
+    .badge.warn { background: rgba(245, 165, 36, 0.15); color: var(--warn); }
+    nav.top {
+      padding: 0.75rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 1.25rem;
+      flex-wrap: wrap;
+    }
+    nav.top a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+    nav.top a:hover { text-decoration: underline; }
+    main {
+      padding: 1.5rem;
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      max-width: 1200px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.1rem;
+    }
+    .card h2 {
+      margin: 0 0 0.75rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .stat { font-size: 1.75rem; font-weight: 700; }
+    .muted { color: var(--muted); font-size: 0.875rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td {
+      text-align: left;
+      padding: 0.4rem 0.35rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 500; }
+    .wide { grid-column: 1 / -1; }
+    code {
+      background: #0c1017;
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.45rem 0.9rem;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 0.875rem;
+      border: none;
+      cursor: pointer;
+    }
+    .btn.secondary {
+      background: #243044;
+      color: var(--text);
+    }
+    .present { color: var(--ok); }
+    .missing { color: var(--danger); }
+    .steps { list-style: none; padding: 0; margin: 0; }
+    .steps li {
+      padding: 0.65rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Azom Agent Dashboard</h1>
+      <div class="muted">User: {{ user }} · {{ role }}</div>
+    </div>
+    <div>
+      <span class="badge ok">read-only</span>
+      {% if runtime.mock_mode %}
+      <span class="badge warn">mock</span>
+      {% endif %}
+    </div>
+  </header>
+  <nav class="top">
+    <a href="/">Översikt</a>
+    <a href="/onboarding">Onboarding</a>
+    <a href="/oauth/gmail/start">Gmail OAuth</a>
+    <a href="/health">Health</a>
+  </nav>
+  {% block content %}{% endblock %}
+</body>
+</html>

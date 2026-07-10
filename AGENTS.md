@@ -27,6 +27,12 @@
 - Docker prod: `docker compose -f infrastructure/docker-compose.prod.yml up -d`
 - Tester: `pytest`
 
+## V2 (klart)
+- Dashboard onboarding wizard + polish (Basic Auth behålls)
+- Gmail OAuth browser consent → `AZOM_DATA_DIR/oauth/gmail.json`
+- Telegram bot conversation state (`python -m ecom_ops.bot`)
+- Docs: `docs/V2_OAUTH_GMAIL.md`
+
 ## Mail CLI
 ```bash
 python -m ecom_ops --mock mail send --to a@b.co --subject "Test" --body "Hej"
