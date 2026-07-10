@@ -1,0 +1,6 @@
+customer: azom
+domains:
+  - no
+  - se
+  - dk
+budget_cap_llm: 80
