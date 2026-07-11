@@ -1,193 +1,307 @@
 <!DOCTYPE html>
-<html lang="sv">
+<html lang="sv" class="h-full">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Azom Agent Dashboard{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: {
+              950: '#0b1017',
+              900: '#0f1621',
+              850: '#131c2a',
+              800: '#182334',
+              700: '#223044',
+              600: '#2c3d55',
+            },
+            steel: {
+              300: '#8eb6d8',
+              400: '#5b9ecf',
+              500: '#3d8bfd',
+              600: '#2f74d8',
+            },
+            teal: {
+              400: '#2dd4bf',
+              500: '#14b8a6',
+            },
+            mist: {
+              100: '#e8eef6',
+              300: '#a8b8cc',
+              400: '#8496ad',
+              500: '#6b7f97',
+            },
+            oscar: {
+              400: '#c4b5fd',
+              500: '#a78bfa',
+              600: '#7c5cbf',
+            },
+            ok: '#3dd68c',
+            warn: '#f5a524',
+            danger: '#f31260',
+          },
+          fontFamily: {
+            display: ['Sora', 'ui-sans-serif', 'sans-serif'],
+            sans: ['"Source Sans 3"', 'ui-sans-serif', 'sans-serif'],
+          },
+          boxShadow: {
+            panel: '0 1px 0 0 rgba(255,255,255,0.04) inset, 0 8px 24px -12px rgba(0,0,0,0.45)',
+          },
+          transitionTimingFunction: {
+            soft: 'cubic-bezier(0.22, 1, 0.36, 1)',
+          },
+        },
+      },
+    };
+  </script>
+  <style type="text/tailwindcss">
+    @layer components {
+      .az-card {
+        @apply rounded-xl border border-ink-700/80 bg-ink-850/90 p-5 shadow-panel backdrop-blur-sm;
+      }
+      .az-label {
+        @apply mb-1.5 block text-sm font-medium text-mist-400;
+      }
+      .az-input {
+        @apply w-full max-w-md rounded-lg border border-ink-600 bg-ink-950 px-3 py-2.5 text-sm text-mist-100
+               placeholder:text-mist-500
+               focus:border-steel-500 focus:outline-none focus:ring-2 focus:ring-steel-500/35
+               transition duration-200 ease-soft;
+      }
+      .az-textarea {
+        @apply az-input max-w-none min-h-[7rem];
+      }
+      .az-select {
+        @apply az-input appearance-none;
+      }
+      .az-btn {
+        @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold
+               transition duration-200 ease-soft focus:outline-none focus:ring-2 focus:ring-offset-2
+               focus:ring-offset-ink-900 disabled:opacity-50;
+      }
+      .az-btn-primary {
+        @apply az-btn bg-steel-500 text-white hover:bg-steel-600 focus:ring-steel-400/50;
+      }
+      .az-btn-secondary {
+        @apply az-btn border border-ink-600 bg-ink-800 text-mist-100 hover:border-ink-600 hover:bg-ink-700
+               focus:ring-steel-400/30;
+      }
+      .az-btn-danger {
+        @apply az-btn bg-danger text-white hover:brightness-110 focus:ring-danger/40;
+      }
+      .az-btn-oscar {
+        @apply az-btn bg-oscar-600 text-white hover:brightness-110 focus:ring-oscar-500/40;
+      }
+      .az-badge {
+        @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium tracking-wide;
+      }
+      .az-nav-link {
+        @apply flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-mist-300
+               transition duration-200 ease-soft hover:bg-ink-800 hover:text-mist-100;
+      }
+      .az-nav-link-active {
+        @apply bg-ink-800 text-steel-300 ring-1 ring-steel-500/25;
+      }
+      .az-nav-link-oscar {
+        @apply text-oscar-400 hover:bg-oscar-600/10 hover:text-oscar-400;
+      }
+      .az-nav-link-oscar-active {
+        @apply bg-oscar-600/15 text-oscar-400 ring-1 ring-oscar-500/30;
+      }
+      .az-table {
+        @apply w-full border-collapse text-left text-sm;
+      }
+      .az-table th {
+        @apply border-b border-ink-700 pb-2 pr-3 font-medium text-mist-400;
+      }
+      .az-table td {
+        @apply border-b border-ink-700/70 py-2.5 pr-3 align-top text-mist-100;
+      }
+      .az-code {
+        @apply rounded bg-ink-950 px-1.5 py-0.5 font-mono text-xs text-steel-300;
+      }
+      .az-present { @apply font-medium text-ok; }
+      .az-missing { @apply font-medium text-danger; }
+      .az-muted { @apply text-sm text-mist-400; }
+      .az-stat { @apply font-display text-3xl font-semibold tracking-tight text-mist-100; }
+      .az-section-title {
+        @apply mb-3 font-display text-xs font-semibold uppercase tracking-[0.08em] text-mist-400;
+      }
+      .az-page-title {
+        @apply font-display text-xl font-semibold tracking-tight text-mist-100 sm:text-2xl;
+      }
+    }
+  </style>
   <style>
-    :root {
-      --bg: #0f1419;
-      --card: #1a2332;
-      --text: #e7ecf3;
-      --muted: #8b9bb4;
-      --accent: #3d8bfd;
-      --ok: #3dd68c;
-      --warn: #f5a524;
-      --danger: #f31260;
-      --border: #2a3548;
-      --oscar: #a78bfa;
-    }
-    * { box-sizing: border-box; }
+    [x-cloak] { display: none !important; }
     body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: linear-gradient(165deg, #0f1419 0%, #121c28 45%, #0f1419 100%);
-      color: var(--text);
-      line-height: 1.5;
-      min-height: 100vh;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, rgba(61, 139, 253, 0.12), transparent 55%),
+        radial-gradient(900px 500px at 90% 0%, rgba(20, 184, 166, 0.08), transparent 50%),
+        linear-gradient(165deg, #0b1017 0%, #0f1621 42%, #0b1017 100%);
     }
-    header {
-      padding: 1.25rem 1.5rem;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 0.75rem;
-    }
-    h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
-    .badge {
-      font-size: 0.75rem;
-      padding: 0.25rem 0.6rem;
+    .az-progress {
+      height: 0.5rem;
       border-radius: 999px;
-      background: #243044;
-      color: var(--muted);
-    }
-    .badge.ok { background: rgba(61, 214, 140, 0.15); color: var(--ok); }
-    .badge.warn { background: rgba(245, 165, 36, 0.15); color: var(--warn); }
-    .badge.oscar { background: rgba(167, 139, 250, 0.2); color: var(--oscar); }
-    nav.top {
-      padding: 0.75rem 1.5rem;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
-    }
-    nav.top a {
-      color: var(--accent);
-      text-decoration: none;
-      font-size: 0.875rem;
-    }
-    nav.top a:hover { text-decoration: underline; }
-    nav.top a.oscar-link { color: var(--oscar); font-weight: 600; }
-    main {
-      padding: 1.5rem;
-      display: grid;
-      gap: 1rem;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      max-width: 1100px;
-    }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 1rem 1.1rem;
-    }
-    .card.oscar-box { border-color: rgba(167, 139, 250, 0.45); }
-    .card h2 {
-      margin: 0 0 0.75rem;
-      font-size: 0.95rem;
-      font-weight: 600;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    .stat { font-size: 1.75rem; font-weight: 700; }
-    .muted { color: var(--muted); font-size: 0.875rem; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-    th, td {
-      text-align: left;
-      padding: 0.4rem 0.35rem;
-      border-bottom: 1px solid var(--border);
-      vertical-align: top;
-    }
-    th { color: var(--muted); font-weight: 500; }
-    .wide { grid-column: 1 / -1; }
-    code {
-      background: #0c1017;
-      padding: 0.1rem 0.35rem;
-      border-radius: 4px;
-      font-size: 0.8rem;
-    }
-    .btn {
-      display: inline-block;
-      padding: 0.45rem 0.9rem;
-      background: var(--accent);
-      color: #fff;
-      border-radius: 8px;
-      text-decoration: none;
-      font-size: 0.875rem;
-      border: none;
-      cursor: pointer;
-      margin: 0.15rem 0.25rem 0.15rem 0;
-    }
-    .btn.secondary { background: #243044; color: var(--text); }
-    .btn.oscar { background: #7c5cbf; }
-    .btn.danger { background: var(--danger); }
-    .present { color: var(--ok); }
-    .missing { color: var(--danger); }
-    .flash {
-      grid-column: 1 / -1;
-      padding: 0.75rem 1rem;
-      border-radius: 8px;
-      font-size: 0.9rem;
-    }
-    .flash.ok { background: rgba(61, 214, 140, 0.12); color: var(--ok); }
-    .flash.error { background: rgba(243, 18, 96, 0.12); color: var(--danger); }
-    label { display: block; font-size: 0.8rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
-    input[type=text], input[type=password], input[type=number], select, textarea {
-      width: 100%;
-      max-width: 420px;
-      padding: 0.45rem 0.6rem;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: #0c1017;
-      color: var(--text);
-      font-size: 0.9rem;
-    }
-    textarea { min-height: 100px; max-width: 100%; }
-    .field-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.35rem 0; }
-    .progress {
-      height: 8px;
-      background: #0c1017;
-      border-radius: 4px;
+      background: #0b1017;
       overflow: hidden;
-      margin-top: 0.5rem;
     }
-    .progress > span {
+    .az-progress > span {
       display: block;
       height: 100%;
-      background: var(--accent);
+      border-radius: inherit;
+      background: linear-gradient(90deg, #3d8bfd, #14b8a6);
+      transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1);
     }
-    .steps { list-style: none; padding: 0; margin: 0; }
-    .steps li { padding: 0.65rem 0; border-bottom: 1px solid var(--border); }
-    .grid-checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.35rem; }
   </style>
   {% block head %}{% endblock %}
 </head>
-<body>
-  <header>
-    <div>
-      <h1>Azom Agent Dashboard</h1>
-      <div class="muted">User: {{ user }} · {{ role }}</div>
+<body
+  class="h-full font-sans text-mist-100 antialiased"
+  x-data="{ navOpen: false }"
+  @keydown.escape.window="navOpen = false"
+>
+  {% set path = request.path %}
+  <!-- Mobile overlay -->
+  <div
+    x-show="navOpen"
+    x-cloak
+    x-transition:enter="transition ease-soft duration-200"
+    x-transition:enter-start="opacity-0"
+    x-transition:enter-end="opacity-100"
+    x-transition:leave="transition ease-soft duration-150"
+    x-transition:leave-start="opacity-100"
+    x-transition:leave-end="opacity-0"
+    class="fixed inset-0 z-40 bg-ink-950/70 backdrop-blur-sm lg:hidden"
+    @click="navOpen = false"
+  ></div>
+
+  <div class="flex min-h-full">
+    <!-- Sidebar -->
+    <aside
+      class="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-ink-700/80 bg-ink-900/95 backdrop-blur-md
+             transition-transform duration-300 ease-soft lg:static lg:translate-x-0"
+      :class="navOpen ? 'translate-x-0' : '-translate-x-full'"
+      aria-label="Huvudnavigering"
+    >
+      <div class="flex h-16 items-center gap-2.5 border-b border-ink-700/80 px-5">
+        <span class="font-display text-lg font-bold tracking-tight text-mist-100">Azom</span>
+        <span class="text-xs font-medium text-mist-500">Agent</span>
+      </div>
+
+      <nav class="flex-1 space-y-6 overflow-y-auto px-3 py-4">
+        <div>
+          <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Översikt</p>
+          <a href="/" class="az-nav-link {{ 'az-nav-link-active' if path == '/' else '' }}">Översikt</a>
+          <a href="/onboarding" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/onboarding') else '' }}">Onboarding</a>
+        </div>
+
+        <div>
+          <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Drift</p>
+          <a href="/settings" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/settings') else '' }}">Inställningar</a>
+          <a href="/secrets" class="az-nav-link {{ 'az-nav-link-active' if path == '/secrets' else '' }}">Secrets</a>
+          <a href="/data/telemetry" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/telemetry') else '' }}">Telemetry</a>
+          <a href="/oauth/gmail/start" class="az-nav-link">Gmail OAuth</a>
+        </div>
+
+        <div>
+          <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Support</p>
+          <a href="/cases" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/cases') else '' }}">Ärenden</a>
+          <a href="/interact" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/interact') else '' }}">Interagera</a>
+          <a href="/data/escalations" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/escalations') else '' }}">Eskaleringar</a>
+        </div>
+
+        {% if is_oscar %}
+        <div>
+          <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-oscar-500/80">Oscar</p>
+          <a href="/oscar" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path == '/oscar' else '' }}">Oscar</a>
+          <a href="/oscar/secrets" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/secrets') else '' }}">Oscar secrets</a>
+          <a href="/oscar/escalations" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/escalations') else '' }}">Oscar eskaleringar</a>
+        </div>
+        {% endif %}
+      </nav>
+
+      <div class="border-t border-ink-700/80 px-4 py-3">
+        <p class="truncate text-xs text-mist-400">{{ user }} · {{ role }}</p>
+      </div>
+    </aside>
+
+    <!-- Main column -->
+    <div class="flex min-w-0 flex-1 flex-col">
+      <header class="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-ink-700/80 bg-ink-900/80 px-4 backdrop-blur-md sm:px-6">
+        <div class="flex items-center gap-3">
+          <button
+            type="button"
+            class="az-btn-secondary !px-2.5 lg:hidden"
+            @click="navOpen = !navOpen"
+            :aria-expanded="navOpen.toString()"
+            aria-label="Öppna meny"
+          >
+            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+          <div>
+            <h1 class="font-display text-base font-semibold tracking-tight text-mist-100 sm:text-lg">
+              Azom Agent Dashboard
+            </h1>
+            <p class="hidden text-xs text-mist-500 sm:block">{% block page_subtitle %}Ops control room{% endblock %}</p>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          {% if is_oscar %}
+          <span class="az-badge bg-oscar-600/20 text-oscar-400">Oscar · full_admin</span>
+          {% else %}
+          <span class="az-badge bg-ok/15 text-ok">Jonatan · viewer</span>
+          {% endif %}
+          {% if runtime and runtime.mock_mode %}
+          <span class="az-badge bg-warn/15 text-warn">mock</span>
+          {% endif %}
+        </div>
+      </header>
+
+      <main class="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+        <div class="mx-auto max-w-6xl space-y-5">
+          {% if flash is defined and flash %}
+          <div
+            x-data="{ show: true }"
+            x-show="show"
+            x-transition:leave="transition ease-soft duration-150"
+            x-transition:leave-start="opacity-100"
+            x-transition:leave-end="opacity-0"
+            class="flex items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm
+              {% if flash.startswith('error:') %}
+                border-danger/30 bg-danger/10 text-danger
+              {% else %}
+                border-ok/30 bg-ok/10 text-ok
+              {% endif %}"
+            role="status"
+          >
+            <span>
+              {% if flash.startswith('error:') %}{{ flash[6:] }}
+              {% elif flash.startswith('ok:') %}{{ flash[3:] }}
+              {% else %}{{ flash }}{% endif %}
+            </span>
+            <button type="button" class="shrink-0 opacity-70 hover:opacity-100" @click="show = false" aria-label="Stäng">
+              <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          {% endif %}
+
+          {% block content %}{% endblock %}
+        </div>
+      </main>
     </div>
-    <div>
-      {% if is_oscar %}
-      <span class="badge oscar">Oscar · full_admin</span>
-      {% else %}
-      <span class="badge ok">Jonatan · viewer</span>
-      {% endif %}
-      {% if runtime and runtime.mock_mode %}
-      <span class="badge warn">mock</span>
-      {% endif %}
-    </div>
-  </header>
-  <nav class="top">
-    <a href="/">Översikt</a>
-    <a href="/onboarding">Onboarding</a>
-    <a href="/settings">Inställningar</a>
-    <a href="/secrets">Secrets</a>
-    <a href="/data/telemetry">Telemetry</a>
-    <a href="/data/escalations">Eskaleringar</a>
-    <a href="/interact">Interagera</a>
-    <a href="/cases">Ärenden</a>
-    <a href="/oauth/gmail/start">Gmail OAuth</a>
-    {% if is_oscar %}
-    <a class="oscar-link" href="/oscar">Oscar</a>
-    <a class="oscar-link" href="/oscar/secrets">Oscar secrets</a>
-    <a class="oscar-link" href="/oscar/escalations">Oscar eskaleringar</a>
-    {% endif %}
-  </nav>
-  {% block content %}{% endblock %}
+  </div>
+
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
 </body>
 </html>

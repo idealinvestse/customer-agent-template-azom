@@ -1,79 +1,99 @@
 {% extends "base.html" %}
 {% block title %}Ärenden – Azom{% endblock %}
+{% block page_subtitle %}Ärenden{% endblock %}
 {% block content %}
-<main>
-  {% if flash %}
-  {% if flash.startswith('error:') %}
-  <div class="flash error">{{ flash[6:] }}</div>
-  {% else %}
-  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
-  {% endif %}
-  {% endif %}
+<div class="space-y-5" x-data="{ filterOpen: true }">
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h2 class="az-page-title">Ärenden</h2>
+      <p class="az-muted mt-1">Mail → case + draft. Godkänn för att skicka. Timer pollar var 5:e minut i prod.</p>
+    </div>
+  </div>
 
-  <section class="card wide">
-    <h2>Ärenden (v2)</h2>
-    <p class="muted">Mail → case + draft. Godkänn för att skicka. Timer pollar var 5:e minut i prod.</p>
-    <form method="post" action="/cases/poll" style="display:inline">
-      <button class="btn" type="submit">Hämta mail → skapa ärenden</button>
-    </form>
-    <a class="btn secondary" href="/cases?status=open,escalated">Kö</a>
-    <a class="btn secondary" href="/cases?status=open">Öppna</a>
-    <a class="btn secondary" href="/cases?status=escalated">Eskalerade</a>
-    <a class="btn secondary" href="/cases?status=replied">Besvarade</a>
-    <a class="btn secondary" href="/cases?status=closed">Stängda</a>
-    <a class="btn secondary" href="/cases?status=all">Alla</a>
+  <section class="az-card">
+    <h2 class="az-section-title">Ärenden (v2)</h2>
+    <div class="flex flex-wrap gap-2">
+      <form method="post" action="/cases/poll">
+        <button class="az-btn-primary" type="submit">Hämta mail → skapa ärenden</button>
+      </form>
+      <a class="az-btn-secondary" href="/cases?status=open,escalated">Kö</a>
+      <a class="az-btn-secondary" href="/cases?status=open">Öppna</a>
+      <a class="az-btn-secondary" href="/cases?status=escalated">Eskalerade</a>
+      <a class="az-btn-secondary" href="/cases?status=replied">Besvarade</a>
+      <a class="az-btn-secondary" href="/cases?status=closed">Stängda</a>
+      <a class="az-btn-secondary" href="/cases?status=all">Alla</a>
+    </div>
   </section>
 
-  <section class="card wide">
-    <h2>Filter</h2>
-    <form method="get" action="/cases" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:end">
-      <label>Status
-        <input name="status" value="{{ status_filter }}" placeholder="open,escalated" />
-      </label>
-      <label>Mailbox
-        <input name="mailbox" value="{{ mailbox_filter }}" placeholder="support_default" />
-      </label>
-      <label>Kategori
-        <input name="category" value="{{ category_filter }}" placeholder="return" />
-      </label>
-      <button class="btn secondary" type="submit">Filtrera</button>
+  <section class="az-card">
+    <button
+      type="button"
+      class="flex w-full items-center justify-between text-left"
+      @click="filterOpen = !filterOpen"
+    >
+      <h2 class="az-section-title !mb-0">Filter</h2>
+      <svg class="h-4 w-4 text-mist-400 transition duration-200" :class="filterOpen && 'rotate-180'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+      </svg>
+    </button>
+    <form
+      method="get"
+      action="/cases"
+      x-show="filterOpen"
+      class="mt-4 flex flex-wrap items-end gap-3"
+    >
+      <div>
+        <label class="az-label" for="status">Status</label>
+        <input class="az-input !max-w-[12rem]" id="status" name="status" value="{{ status_filter }}" placeholder="open,escalated" />
+      </div>
+      <div>
+        <label class="az-label" for="mailbox">Mailbox</label>
+        <input class="az-input !max-w-[12rem]" id="mailbox" name="mailbox" value="{{ mailbox_filter }}" placeholder="support_default" />
+      </div>
+      <div>
+        <label class="az-label" for="category">Kategori</label>
+        <input class="az-input !max-w-[12rem]" id="category" name="category" value="{{ category_filter }}" placeholder="return" />
+      </div>
+      <button class="az-btn-secondary" type="submit">Filtrera</button>
     </form>
   </section>
 
-  <section class="card wide">
-    <h2>Kö ({{ status_filter }})</h2>
+  <section class="az-card">
+    <h2 class="az-section-title">Kö ({{ status_filter }})</h2>
     {% if cases %}
-    <table>
-      <thead>
-        <tr>
-          <th>När</th><th>Ålder</th><th>Från</th><th>Ämne</th>
-          <th>Kategori</th><th>Prio</th><th>Status</th><th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for c in cases %}
-        <tr>
-          <td>{{ c.created_at[:19] }}</td>
-          <td class="muted">{{ case_age(c.created_at) }}</td>
-          <td>{{ c.from_addr }}</td>
-          <td>
-            {{ c.subject }}
-            {% if c.priority == 'high' %}<span class="badge warn">high</span>{% endif %}
-          </td>
-          <td><code>{{ c.category }}</code></td>
-          <td>{{ c.priority or 'normal' }}</td>
-          <td>
-            {% if c.status == 'escalated' %}<span class="badge warn">escalated</span>
-            {% else %}{{ c.status }}{% endif %}
-          </td>
-          <td><a href="/cases/{{ c.id }}">Öppna</a></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="overflow-x-auto">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th>När</th><th>Ålder</th><th>Från</th><th>Ämne</th>
+            <th>Kategori</th><th>Prio</th><th>Status</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in cases %}
+          <tr class="transition hover:bg-ink-800/40">
+            <td>{{ c.created_at[:19] }}</td>
+            <td class="az-muted">{{ case_age(c.created_at) }}</td>
+            <td>{{ c.from_addr }}</td>
+            <td>
+              {{ c.subject }}
+              {% if c.priority == 'high' %}<span class="az-badge bg-warn/15 text-warn ml-1">high</span>{% endif %}
+            </td>
+            <td><code class="az-code">{{ c.category }}</code></td>
+            <td>{{ c.priority or 'normal' }}</td>
+            <td>
+              {% if c.status == 'escalated' %}<span class="az-badge bg-warn/15 text-warn">escalated</span>
+              {% else %}{{ c.status }}{% endif %}
+            </td>
+            <td><a class="text-steel-400 hover:text-steel-300" href="/cases/{{ c.id }}">Öppna</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
     {% else %}
-    <p class="muted">Inga ärenden. Kör poll eller vänta på inkommande mail.</p>
+    <p class="az-muted">Inga ärenden. Kör poll eller vänta på inkommande mail.</p>
     {% endif %}
   </section>
-</main>
+</div>
 {% endblock %}

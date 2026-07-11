@@ -1,60 +1,86 @@
 {% extends "base.html" %}
 {% block title %}Onboarding – Azom Dashboard{% endblock %}
+{% block page_subtitle %}Onboarding{% endblock %}
 {% block content %}
-<main>
-  {% if flash %}
-  {% if flash.startswith('error:') %}
-  <div class="flash error">{{ flash[6:] }}</div>
-  {% else %}
-  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
-  {% endif %}
-  {% endif %}
+<div class="space-y-5">
+  <div>
+    <h2 class="az-page-title">Onboarding</h2>
+    <p class="az-muted mt-1">Steg-för-steg setup för Azom-agenten.</p>
+  </div>
 
-  <section class="card wide">
-    <h2>Onboarding wizard</h2>
-    <ol class="steps">
-      <li><strong>1. Kund &amp; domäner</strong> — {{ runtime.customer }} ({{ runtime.domains | join(', ') }}) · <a href="/settings">redigera</a></li>
-      <li><strong>2. Mock vs live</strong> — {% if runtime.mock_mode %}Mock-läge{% else %}Live{% endif %} · <a href="/settings">växla</a></li>
-      <li><strong>3. Secrets</strong> — <a href="/secrets">checklista</a>{% if is_oscar %} · <a href="/oscar/secrets">Oscar editor</a>{% endif %}</li>
-      <li><strong>4. Gmail OAuth</strong> — <a class="btn" href="/oauth/gmail/start">Koppla Gmail</a></li>
-      <li><strong>5. Health probe</strong> — {% if health.ok %}<span class="present">OK</span>{% else %}<span class="missing">Issues</span>{% endif %}</li>
+  <section class="az-card">
+    <h2 class="az-section-title">Onboarding wizard</h2>
+    <ol class="divide-y divide-ink-700/80">
+      <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5 first:pt-0">
+        <strong class="text-mist-100">1. Kund &amp; domäner</strong>
+        <span class="az-muted">— {{ runtime.customer }} ({{ runtime.domains | join(', ') }})</span>
+        <a class="text-sm text-steel-400 hover:text-steel-300" href="/settings">redigera</a>
+      </li>
+      <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5">
+        <strong class="text-mist-100">2. Mock vs live</strong>
+        <span class="az-muted">— {% if runtime.mock_mode %}Mock-läge{% else %}Live{% endif %}</span>
+        <a class="text-sm text-steel-400 hover:text-steel-300" href="/settings">växla</a>
+      </li>
+      <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5">
+        <strong class="text-mist-100">3. Secrets</strong>
+        <span class="az-muted">—</span>
+        <a class="text-sm text-steel-400 hover:text-steel-300" href="/secrets">checklista</a>
+        {% if is_oscar %}
+        <span class="az-muted">·</span>
+        <a class="text-sm text-oscar-400 hover:text-oscar-400/80" href="/oscar/secrets">Oscar editor</a>
+        {% endif %}
+      </li>
+      <li class="flex flex-wrap items-center gap-x-2 gap-y-2 py-3.5">
+        <strong class="text-mist-100">4. Gmail OAuth</strong>
+        <span class="az-muted">—</span>
+        <a class="az-btn-primary" href="/oauth/gmail/start">Koppla Gmail</a>
+      </li>
+      <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5 last:pb-0">
+        <strong class="text-mist-100">5. Health probe</strong>
+        <span class="az-muted">—</span>
+        {% if health.ok %}<span class="az-present">OK</span>{% else %}<span class="az-missing">Issues</span>{% endif %}
+      </li>
     </ol>
   </section>
 
-  <section class="card wide">
-    <h2>Secrets checklist</h2>
-    <table>
-      <thead>
-        <tr><th>Group</th><th>Env var</th><th>Status</th></tr>
-      </thead>
-      <tbody>
-        {% for s in secrets %}
-        <tr>
-          <td>{{ s.group }}</td>
-          <td><code>{{ s.name }}</code></td>
-          <td>{% if s.present %}<span class="present">present</span>{% else %}<span class="missing">missing</span>{% endif %}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <section class="az-card">
+    <h2 class="az-section-title">Secrets checklist</h2>
+    <div class="overflow-x-auto">
+      <table class="az-table">
+        <thead>
+          <tr><th>Group</th><th>Env var</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for s in secrets %}
+          <tr>
+            <td>{{ s.group }}</td>
+            <td><code class="az-code">{{ s.name }}</code></td>
+            <td>{% if s.present %}<span class="az-present">present</span>{% else %}<span class="az-missing">missing</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
 
-  <section class="card wide">
-    <h2>Health checks</h2>
-    <table>
-      <thead>
-        <tr><th>Check</th><th>Status</th><th>Detail</th></tr>
-      </thead>
-      <tbody>
-        {% for c in health.checks %}
-        <tr>
-          <td>{{ c.name }}</td>
-          <td>{% if c.ok %}<span class="present">ok</span>{% else %}<span class="missing">fail</span>{% endif %}</td>
-          <td>{{ c.detail }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <section class="az-card">
+    <h2 class="az-section-title">Health checks</h2>
+    <div class="overflow-x-auto">
+      <table class="az-table">
+        <thead>
+          <tr><th>Check</th><th>Status</th><th>Detail</th></tr>
+        </thead>
+        <tbody>
+          {% for c in health.checks %}
+          <tr>
+            <td>{{ c.name }}</td>
+            <td>{% if c.ok %}<span class="az-present">ok</span>{% else %}<span class="az-missing">fail</span>{% endif %}</td>
+            <td class="az-muted">{{ c.detail }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
-</main>
+</div>
 {% endblock %}

@@ -1,33 +1,41 @@
 {% extends "base.html" %}
 {% block title %}Eskaleringar – Azom{% endblock %}
+{% block page_subtitle %}Eskaleringar{% endblock %}
 {% block content %}
-<main>
-  <section class="card wide">
-    <h2>Eskaleringar</h2>
+<div class="space-y-5">
+  <div>
+    <h2 class="az-page-title">Eskaleringar</h2>
+    <p class="az-muted mt-1">Tickets som väntar på manuell hantering.</p>
+  </div>
+
+  <section class="az-card">
+    <h2 class="az-section-title">Eskaleringar</h2>
     {% if is_oscar %}
-    <p><a class="btn oscar" href="/oscar/escalations">Oscar: markera lösta →</a></p>
+    <p class="mb-4"><a class="az-btn-oscar" href="/oscar/escalations">Oscar: markera lösta →</a></p>
     {% endif %}
     {% if rows %}
-    <table>
-      <thead>
-        <tr><th>When</th><th>ID</th><th>Status</th><th>Severity</th><th>Reason</th><th>Summary</th></tr>
-      </thead>
-      <tbody>
-        {% for e in rows %}
-        <tr>
-          <td>{{ e.get('created_at', '')[:19] }}</td>
-          <td><code>{{ e.get('id', '')[:8] }}</code></td>
-          <td>{{ e.get('status', 'open') }}</td>
-          <td>{{ e.get('severity', '') }}</td>
-          <td><code>{{ e.get('reason', '') }}</code></td>
-          <td>{{ e.get('summary', '') }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="overflow-x-auto">
+      <table class="az-table">
+        <thead>
+          <tr><th>When</th><th>ID</th><th>Status</th><th>Severity</th><th>Reason</th><th>Summary</th></tr>
+        </thead>
+        <tbody>
+          {% for e in rows %}
+          <tr>
+            <td>{{ e.get('created_at', '')[:19] }}</td>
+            <td><code class="az-code">{{ e.get('id', '')[:8] }}</code></td>
+            <td>{{ e.get('status', 'open') }}</td>
+            <td>{{ e.get('severity', '') }}</td>
+            <td><code class="az-code">{{ e.get('reason', '') }}</code></td>
+            <td>{{ e.get('summary', '') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
     {% else %}
-    <p class="muted">Inga eskaleringar.</p>
+    <p class="az-muted">Inga eskaleringar.</p>
     {% endif %}
   </section>
-</main>
+</div>
 {% endblock %}

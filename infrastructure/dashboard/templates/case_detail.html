@@ -1,56 +1,49 @@
 {% extends "base.html" %}
 {% block title %}Ärende – Azom{% endblock %}
+{% block page_subtitle %}Ärendedetalj{% endblock %}
 {% block content %}
-<main>
-  {% if flash %}
-  {% if flash.startswith('error:') %}
-  <div class="flash error">{{ flash[6:] }}</div>
-  {% else %}
-  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
-  {% endif %}
-  {% endif %}
-
-  <section class="card wide">
-    <h2>{{ case.subject }}</h2>
-    <p class="muted">
-      Från: {{ case.from_addr }} · Mailbox: <code>{{ case.mailbox_id }}</code> ·
-      Status: {{ case.status }} · Kategori: <code>{{ case.category }}</code>
+<div class="space-y-5">
+  <section class="az-card">
+    <h2 class="az-page-title">{{ case.subject }}</h2>
+    <p class="az-muted mt-2">
+      Från: {{ case.from_addr }} · Mailbox: <code class="az-code">{{ case.mailbox_id }}</code> ·
+      Status: {{ case.status }} · Kategori: <code class="az-code">{{ case.category }}</code>
       · Prio: {{ case.priority or 'normal' }}
-      {% if case.order_id %} · Order: <strong>{{ case.order_id }}</strong>{% endif %}
-      {% if case.escalation_id %} · Eskalering: <code>{{ case.escalation_id }}</code>{% endif %}
+      {% if case.order_id %} · Order: <strong class="text-mist-100">{{ case.order_id }}</strong>{% endif %}
+      {% if case.escalation_id %} · Eskalering: <code class="az-code">{{ case.escalation_id }}</code>{% endif %}
       · Ålder: {{ case_age(case.created_at) }}
     </p>
   </section>
 
-  <section class="card wide">
-    <h2>Tråd</h2>
+  <section class="az-card">
+    <h2 class="az-section-title">Tråd</h2>
     {% for m in messages %}
-    <div style="margin-bottom:1rem;padding:0.75rem;background:#0c1017;border-radius:8px">
-      <div class="muted">{{ m.direction }} · {{ m.created_at[:19] }} · {{ m.from_addr }}</div>
-      <pre style="white-space:pre-wrap;margin:0.5rem 0 0">{{ m.body }}</pre>
+    <div class="mb-3 rounded-lg border border-ink-700/60 bg-ink-950/60 p-4 last:mb-0">
+      <div class="az-muted">{{ m.direction }} · {{ m.created_at[:19] }} · {{ m.from_addr }}</div>
+      <pre class="mt-2 whitespace-pre-wrap font-sans text-sm text-mist-100">{{ m.body }}</pre>
     </div>
     {% else %}
-    <p class="muted">Inga meddelanden.</p>
+    <p class="az-muted">Inga meddelanden.</p>
     {% endfor %}
   </section>
 
   {% if case.status in ('open', 'escalated') %}
-  <section class="card wide">
-    <h2>Föreslaget svar</h2>
-    <form method="post" action="/cases/{{ case.id }}">
-      <textarea name="body" required>{{ case.draft_reply or '' }}</textarea>
-      <p style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap">
-        <button class="btn" type="submit" name="action" value="reply">Godkänn och skicka</button>
-        <button class="btn secondary" type="submit" name="action" value="save_draft">Spara draft</button>
-        <button class="btn secondary" type="submit" name="action" value="close" formnovalidate>Stäng utan svar</button>
-        <a class="btn secondary" href="/cases">Tillbaka</a>
-      </p>
+  <section class="az-card">
+    <h2 class="az-section-title">Föreslaget svar</h2>
+    <form method="post" action="/cases/{{ case.id }}" class="space-y-4">
+      <textarea class="az-textarea" name="body" required>{{ case.draft_reply or '' }}</textarea>
+      <div class="flex flex-wrap gap-2">
+        <button class="az-btn-primary" type="submit" name="action" value="reply">Godkänn och skicka</button>
+        <button class="az-btn-secondary" type="submit" name="action" value="save_draft">Spara draft</button>
+        <button class="az-btn-secondary" type="submit" name="action" value="close" formnovalidate>Stäng utan svar</button>
+        <a class="az-btn-secondary" href="/cases">Tillbaka</a>
+      </div>
     </form>
   </section>
   {% else %}
-  <section class="card wide">
-    <p><a class="btn secondary" href="/cases">Tillbaka till kön</a></p>
+  <section class="az-card">
+    <a class="az-btn-secondary" href="/cases">Tillbaka till kön</a>
   </section>
   {% endif %}
-</main>
+</div>
 {% endblock %}

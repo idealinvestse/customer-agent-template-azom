@@ -1,66 +1,63 @@
 {% extends "base.html" %}
 {% block title %}Oscar – Azom{% endblock %}
+{% block page_subtitle %}Oscar admin{% endblock %}
 {% block content %}
-<main>
-  {% if flash %}
-  {% if flash.startswith('error:') %}
-  <div class="flash error">{{ flash[6:] }}</div>
-  {% else %}
-  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
-  {% endif %}
-  {% endif %}
-
-  <section class="card oscar-box">
-    <h2>Öppna eskaleringar</h2>
-    <div class="stat">{{ open_count }}</div>
-    <p class="muted">Tickets som väntar på Oscar</p>
-    <a class="btn oscar" href="/oscar/escalations">Hantera →</a>
+<div class="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+  <section class="az-card border-oscar-600/35">
+    <h2 class="az-section-title text-oscar-400/80">Öppna eskaleringar</h2>
+    <div class="az-stat">{{ open_count }}</div>
+    <p class="az-muted mt-1">Tickets som väntar på Oscar</p>
+    <p class="mt-4"><a class="az-btn-oscar" href="/oscar/escalations">Hantera →</a></p>
   </section>
 
-  <section class="card oscar-box">
-    <h2>Secrets</h2>
-    <p><span class="present">{{ secrets_present }} present</span> · <span class="missing">{{ secrets_missing }} missing</span></p>
-    <a class="btn oscar" href="/oscar/secrets">Redigera secrets →</a>
+  <section class="az-card border-oscar-600/35">
+    <h2 class="az-section-title text-oscar-400/80">Secrets</h2>
+    <p class="mt-1"><span class="az-present">{{ secrets_present }} present</span> · <span class="az-missing">{{ secrets_missing }} missing</span></p>
+    <p class="mt-4"><a class="az-btn-oscar" href="/oscar/secrets">Redigera secrets →</a></p>
   </section>
 
-  <section class="card oscar-box">
-    <h2>Runtime</h2>
-    <p>Mock: {% if settings.mock_mode %}<span class="badge warn">på</span>{% else %}<span class="present">live</span>{% endif %}</p>
-    <p class="muted">Mail: {{ settings.mail_provider }}</p>
-    <a class="btn secondary" href="/settings">Ändra i Inställningar</a>
+  <section class="az-card border-oscar-600/35">
+    <h2 class="az-section-title text-oscar-400/80">Runtime</h2>
+    <p>Mock: {% if settings.mock_mode %}<span class="az-badge bg-warn/15 text-warn">på</span>{% else %}<span class="az-present">live</span>{% endif %}</p>
+    <p class="az-muted mt-2">Mail: {{ settings.mail_provider }}</p>
+    <p class="mt-4"><a class="az-btn-secondary" href="/settings">Ändra i Inställningar</a></p>
   </section>
 
-  <section class="card oscar-box">
-    <h2>Gmail OAuth</h2>
-    <p>{% if gmail_connected %}<span class="present">connected</span>{% else %}<span class="missing">not connected</span>{% endif %}</p>
-    <a class="btn secondary" href="/oauth/gmail/start">Koppla / förnya</a>
+  <section class="az-card border-oscar-600/35">
+    <h2 class="az-section-title text-oscar-400/80">Gmail OAuth</h2>
+    <p>{% if gmail_connected %}<span class="az-present">connected</span>{% else %}<span class="az-missing">not connected</span>{% endif %}</p>
+    <p class="mt-4"><a class="az-btn-secondary" href="/oauth/gmail/start">Koppla / förnya</a></p>
   </section>
 
-  <section class="card oscar-box wide">
-    <h2>Snabblänkar</h2>
-    <a class="btn secondary" href="/settings">Inställningar</a>
-    <a class="btn secondary" href="/data/telemetry">Telemetry</a>
-    <a class="btn secondary" href="/data/escalations">Eskaleringar</a>
-    <a class="btn secondary" href="/interact">Interagera</a>
-    <a class="btn secondary" href="/onboarding">Onboarding</a>
+  <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
+    <h2 class="az-section-title text-oscar-400/80">Snabblänkar</h2>
+    <div class="flex flex-wrap gap-2">
+      <a class="az-btn-secondary" href="/settings">Inställningar</a>
+      <a class="az-btn-secondary" href="/data/telemetry">Telemetry</a>
+      <a class="az-btn-secondary" href="/data/escalations">Eskaleringar</a>
+      <a class="az-btn-secondary" href="/interact">Interagera</a>
+      <a class="az-btn-secondary" href="/onboarding">Onboarding</a>
+    </div>
   </section>
 
   {% if open_escalations %}
-  <section class="card oscar-box wide">
-    <h2>Senaste öppna tickets</h2>
-    <table>
-      <thead><tr><th>When</th><th>Severity</th><th>Summary</th></tr></thead>
-      <tbody>
-        {% for e in open_escalations[:8] %}
-        <tr>
-          <td>{{ e.get('created_at', '')[:19] }}</td>
-          <td>{{ e.get('severity', '') }}</td>
-          <td>{{ e.get('summary', '') }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
+    <h2 class="az-section-title text-oscar-400/80">Senaste öppna tickets</h2>
+    <div class="overflow-x-auto">
+      <table class="az-table">
+        <thead><tr><th>When</th><th>Severity</th><th>Summary</th></tr></thead>
+        <tbody>
+          {% for e in open_escalations[:8] %}
+          <tr>
+            <td>{{ e.get('created_at', '')[:19] }}</td>
+            <td>{{ e.get('severity', '') }}</td>
+            <td>{{ e.get('summary', '') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
   {% endif %}
-</main>
+</div>
 {% endblock %}

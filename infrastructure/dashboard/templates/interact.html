@@ -1,27 +1,36 @@
 {% extends "base.html" %}
 {% block title %}Interagera – Azom{% endblock %}
+{% block page_subtitle %}Interagera{% endblock %}
 {% block content %}
-<main>
-  <section class="card wide">
-    <h2>Support-draft</h2>
-    <p class="muted">Genererar utkast via agent. Jonatan kan inte skicka mail.</p>
-    <form method="post" action="/interact">
-      <label>Meddelande</label>
-      <textarea name="message" required placeholder="Hej, var är min order?"></textarea>
-      <p><button class="btn" type="submit">Skapa draft</button></p>
+<div class="space-y-5">
+  <div>
+    <h2 class="az-page-title">Interagera</h2>
+    <p class="az-muted mt-1">Genererar utkast via agent. Jonatan kan inte skicka mail.</p>
+  </div>
+
+  <section class="az-card">
+    <h2 class="az-section-title">Support-draft</h2>
+    <form method="post" action="/interact" class="space-y-4">
+      <div>
+        <label class="az-label" for="message">Meddelande</label>
+        <textarea class="az-textarea" id="message" name="message" required placeholder="Hej, var är min order?"></textarea>
+      </div>
+      <button class="az-btn-primary" type="submit">Skapa draft</button>
     </form>
     {% if error %}
-    <div class="flash error">{{ error }}</div>
+    <div class="mt-4 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger" role="alert">{{ error }}</div>
     {% endif %}
     {% if result %}
-    <h2 style="margin-top:1rem">Resultat</h2>
-    <p><strong>Kategori:</strong> {{ result.category }}</p>
-    <p><strong>OK:</strong> {{ result.ok }} · <strong>Eskalerad:</strong> {{ result.escalated }}</p>
-    {% if result.reply %}
-    <pre style="white-space:pre-wrap;background:#0c1017;padding:1rem;border-radius:8px">{{ result.reply }}</pre>
-    {% endif %}
-    <p class="muted">{{ result.note }}</p>
+    <div class="mt-6 space-y-3 border-t border-ink-700/80 pt-5">
+      <h3 class="az-section-title">Resultat</h3>
+      <p><strong class="text-mist-100">Kategori:</strong> {{ result.category }}</p>
+      <p><strong class="text-mist-100">OK:</strong> {{ result.ok }} · <strong class="text-mist-100">Eskalerad:</strong> {{ result.escalated }}</p>
+      {% if result.reply %}
+      <pre class="whitespace-pre-wrap rounded-lg border border-ink-700/60 bg-ink-950/60 p-4 font-sans text-sm text-mist-100">{{ result.reply }}</pre>
+      {% endif %}
+      <p class="az-muted">{{ result.note }}</p>
+    </div>
     {% endif %}
   </section>
-</main>
+</div>
 {% endblock %}
