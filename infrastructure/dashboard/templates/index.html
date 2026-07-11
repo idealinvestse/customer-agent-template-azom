@@ -24,6 +24,34 @@
   </section>
 
   <section class="card">
+    <h2>Integrationer</h2>
+    {% if integrations %}
+    <p class="muted">
+      ok {{ integrations.counts.ok }} ·
+      missing {{ integrations.counts.missing }} ·
+      error {{ integrations.counts.error }}
+    </p>
+    <ul class="muted" style="padding-left:1.1rem;margin:0.5rem 0">
+      {% for r in integrations.results %}
+      <li>
+        {% if r.status == 'ok' %}<span class="present">{{ r.label }}</span>
+        {% elif r.status == 'missing' %}<span class="missing">{{ r.label }}</span>
+        {% else %}<span class="badge warn">{{ r.label }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% if is_oscar %}
+    <p><a class="btn oscar" href="/oscar/secrets">Testa secrets →</a></p>
+    {% else %}
+    <p><a class="btn secondary" href="/secrets">Secrets-status →</a></p>
+    {% endif %}
+    {% else %}
+    <p class="muted">Ingen status.</p>
+    {% endif %}
+    <p><a class="btn secondary" href="/data/escalations">Eskaleringar →</a></p>
+  </section>
+
+  <section class="card">
     <h2>Runtime</h2>
     <p><strong>{{ runtime.customer }}</strong> · {{ runtime.domains | join(', ') }}</p>
     <p class="muted">Mail: {{ runtime.mail_provider }}</p>

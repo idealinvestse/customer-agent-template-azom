@@ -28,6 +28,7 @@
 - Settings UI: Jonatan (non-secret) · Oscar (secrets + resolve escalations)
 - Gmail OAuth browser consent → `AZOM_DATA_DIR/oauth/gmail.json`
 - Telegram bot: OpenClaw-style (`/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` …) + `/order` `/cases` (`python -m ecom_ops.bot`)
+- Oscar secrets: anslutningstester (`POST /oscar/secrets/test`) för Woo/mail/Telegram/OpenRouter/SSH/Gmail OAuth
 - One-shot Ubuntu install + systemd + prod Docker (`azom-agent:2.0`)
 - CLI: `python -m ecom_ops version` · `python -m ecom_ops status`
 

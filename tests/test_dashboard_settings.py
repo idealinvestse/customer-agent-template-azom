@@ -24,6 +24,7 @@ def _load_dashboard_app():
     sys.modules.pop("azom_dashboard", None)
     sys.modules.pop("settings_store", None)
     sys.modules.pop("status", None)
+    sys.modules.pop("secret_probes", None)
     spec = importlib.util.spec_from_file_location("azom_dashboard", DASH_DIR / "app.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -193,3 +194,61 @@ def test_settings_rejects_secret_key_via_store(tmp_path, monkeypatch, config_dir
 
     with pytest.raises(ValueError):
         save_settings({"WOO_CONSUMER_SECRET": "x"})
+
+
+def test_oscar_secret_probes_forbidden_for_jonatan(dash_client):
+    assert dash_client.post(
+        "/oscar/secrets/test",
+        headers=_auth("jonatan", "jonatan"),
+        data={"probe": "all"},
+    ).status_code == 403
+
+
+def test_oscar_secret_probes_run(dash_client):
+    resp = dash_client.get("/oscar/secrets", headers=_auth("oscar", "oscar"))
+    assert resp.status_code == 200
+    assert b"Anslutningstester" in resp.data or b"Testa" in resp.data
+
+    resp = dash_client.post(
+        "/oscar/secrets/test",
+        headers=_auth("oscar", "oscar"),
+        data={"probe": "ssh"},
+    )
+    assert resp.status_code == 200
+    assert b"SSH" in resp.data or b"ssh" in resp.data.lower()
+
+    hdrs = {**_auth("oscar", "oscar"), "Accept": "application/json"}
+    resp = dash_client.post(
+        "/oscar/secrets/test",
+        headers=hdrs,
+        data={"probe": "gmail_oauth"},
+    )
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload is not None
+    assert "results" in payload
+    assert payload["results"][0]["id"] == "gmail_oauth"
+
+
+def test_index_shows_integration_summary(dash_client):
+    resp = dash_client.get("/", headers=_auth())
+    assert resp.status_code == 200
+    assert b"Integrationer" in resp.data or b"integration" in resp.data.lower()
+
+
+def test_secret_probes_module_mock(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "key")
+    monkeypatch.setenv("WOO_BASE_URL", "https://example.com")
+    monkeypatch.setenv("WOO_CONSUMER_KEY", "ck")
+    monkeypatch.setenv("WOO_CONSUMER_SECRET", "cs")
+    sys.path.insert(0, str(DASH_DIR))
+    from secret_probes import probe_summary, run_probe
+
+    tg = run_probe("telegram")
+    assert tg.status == "ok"
+    summary = probe_summary()
+    assert "counts" in summary
+    assert len(summary["results"]) >= 6

@@ -37,6 +37,12 @@ from settings_store import (  # noqa: E402
     save_settings,
     secrets_status,
 )
+from secret_probes import (  # noqa: E402
+    PROBES,
+    probe_summary,
+    run_all_probes,
+    run_probe,
+)
 from status import health_probe, runtime_status  # noqa: E402
 
 app = Flask(__name__)
@@ -214,6 +220,7 @@ def index():
         escalated_cases = cs.store.count_by_status("escalated")
     except Exception:
         pass
+    integrations = probe_summary()
     return render_template(
         "index.html",
         **_dashboard_context(
@@ -226,6 +233,7 @@ def index():
             cost_pct=cost_pct,
             open_cases=open_cases,
             escalated_cases=escalated_cases,
+            integrations=integrations,
         ),
     )
 
@@ -490,11 +498,46 @@ def oscar_secrets():
         saved = save_secrets(updates)
         msg = f"Sparade+{len(saved)}+nycklar" if saved else "Inga+ändringar"
         return redirect(url_for("oscar_secrets") + f"?msg={msg}")
+    results = run_all_probes()
     return render_template(
         "oscar_secrets.html",
         **_dashboard_context(
             secrets=secrets_status(),
             editable_keys=EDITABLE_SECRET_KEYS,
+            probe_results=[r.to_dict() for r in results],
+        ),
+    )
+
+
+@app.route("/oscar/secrets/test", methods=["POST"])
+@_oscar_required
+def oscar_secrets_test():
+    apply_env_overlays()
+    probe = (request.form.get("probe") or "all").strip().lower()
+    if probe in {"", "all"}:
+        results = run_all_probes()
+    else:
+        results = [run_probe(probe)]
+    # Persist last results in flash via query is noisy; re-render page with results
+    ok_n = sum(1 for r in results if r.status == "ok")
+    err_n = sum(1 for r in results if r.status in {"error", "missing"})
+    msg = f"Test+klart:+{ok_n}+ok,+{err_n}+problem"
+    # Store results in session-less way: redirect with summary; detail on GET re-runs
+    # Prefer POST→render for detail without losing results
+    if request.headers.get("Accept") == "application/json" or request.is_json:
+        return jsonify(
+            {
+                "ok": err_n == 0,
+                "results": [r.to_dict() for r in results],
+            }
+        )
+    return render_template(
+        "oscar_secrets.html",
+        **_dashboard_context(
+            secrets=secrets_status(),
+            editable_keys=EDITABLE_SECRET_KEYS,
+            probe_results=[r.to_dict() for r in results],
+            flash=f"ok:{msg.replace('+', ' ')}",
         ),
     )
 
