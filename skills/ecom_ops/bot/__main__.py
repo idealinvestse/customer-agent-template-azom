@@ -11,14 +11,25 @@ import urllib.parse
 import urllib.request
 
 from ecom_ops.bot.handlers import BotHandler
+from ecom_ops.bot.openclaw_commands import TELEGRAM_MENU_COMMANDS
 
 
 def _api(token: str, method: str, **params: object) -> dict:
     api_base = f"https://api.telegram.org/bot{token}"
-    data = urllib.parse.urlencode(params).encode()
+    data = urllib.parse.urlencode(
+        {k: (json.dumps(v) if isinstance(v, (list, dict)) else v) for k, v in params.items()}
+    ).encode()
     req = urllib.request.Request(f"{api_base}/{method}", data=data, method="POST")
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.loads(resp.read().decode())
+
+
+def _register_commands(token: str) -> None:
+    try:
+        _api(token, "setMyCommands", commands=TELEGRAM_MENU_COMMANDS)
+        print(f"Registered {len(TELEGRAM_MENU_COMMANDS)} Telegram menu commands")
+    except Exception as exc:
+        print(f"setMyCommands skipped: {exc}", file=sys.stderr)
 
 
 def main() -> int:
@@ -27,9 +38,10 @@ def main() -> int:
         print("TELEGRAM_BOT_TOKEN missing; dry-run exit.")
         return 0
 
+    _register_commands(token)
     handler = BotHandler()
     offset = 0
-    print("Telegram long-poll loop started (conversation state enabled)")
+    print("Telegram long-poll loop started (OpenClaw-style commands)")
     while True:
         try:
             payload = _api(token, "getUpdates", offset=offset, timeout=50)
