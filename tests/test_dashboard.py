@@ -91,3 +91,27 @@ def test_gmail_oauth_mock_connect(dash_client, tmp_path, monkeypatch):
     status = dash_client.get("/oauth/gmail/status", headers=_auth_headers())
     assert status.status_code == 200
     assert status.get_json()["connected"] is True
+
+
+def test_index_presence_not_live_probe_storm(dash_client):
+    """Home uses presence/runtime chrome; does not require live probe labels."""
+    resp = dash_client.get("/", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Integrationer" in body or "integration" in body.lower()
+    # Presence summary / counts chrome (not Oscar live probe table)
+    assert "Öppna" in body or "open_cases" in body or "Ärenden" in body
+
+
+def test_gmail_status_authenticated(dash_client):
+    resp = dash_client.get("/oauth/gmail/status", headers=_auth_headers())
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "connected" in data
+
+
+def test_onboarding_refresh_markup(dash_client):
+    resp = dash_client.get("/onboarding", headers=_auth_headers())
+    assert resp.status_code == 200
+    assert b"/onboarding/status" in resp.data
+    assert b"Uppdatera status" in resp.data

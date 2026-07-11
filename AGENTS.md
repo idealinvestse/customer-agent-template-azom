@@ -29,8 +29,10 @@
 - Gmail OAuth browser consent → `AZOM_DATA_DIR/oauth/gmail.json`
 - Telegram bot: OpenClaw-style (`/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` …) + `/order` `/cases` (`python -m ecom_ops.bot`)
 - Oscar secrets: anslutningstester (`POST /oscar/secrets/test`) för Woo/mail/Telegram/OpenRouter/SSH/Gmail OAuth
+- Dashboard ops polish: nav-badges (ärenden/eskaleringar), snabb översikt (presence + `probe_last.json`), live onboarding/Gmail-status via Alpine, case-triage + approve-confirm
 - One-shot Ubuntu install + systemd + prod Docker (`azom-agent:2.0`)
 - CLI: `python -m ecom_ops version` · `python -m ecom_ops status`
+- Spec: `docs/superpowers/specs/2026-07-11-dashboard-ops-polish-design.md`
 
 ## Cases 2.0 (mail → ärende)
 - Status: `open` \| `escalated` \| `replied` \| `closed`

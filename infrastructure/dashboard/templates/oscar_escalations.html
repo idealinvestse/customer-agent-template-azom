@@ -3,13 +3,19 @@
 {% block page_subtitle %}Oscar eskaleringar{% endblock %}
 {% block content %}
 <div class="space-y-5">
-  <div>
-    <h2 class="az-page-title">Oscar eskaleringar</h2>
-    <p class="az-muted mt-1">Markera tickets som lösta.</p>
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h2 class="az-page-title">Oscar eskaleringar</h2>
+      <p class="az-muted mt-1">Markera tickets som lösta.</p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <a class="az-btn-secondary {{ 'ring-1 ring-oscar-500' if show_filter != 'all' else '' }}" href="/oscar/escalations?show=open">Öppna</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-oscar-500' if show_filter == 'all' else '' }}" href="/oscar/escalations?show=all">Visa lösta</a>
+    </div>
   </div>
 
   <section class="az-card border-oscar-600/35">
-    <h2 class="az-section-title text-oscar-400/80">Eskaleringar (Oscar)</h2>
+    <h2 class="az-section-title text-oscar-400/80">Eskaleringar ({{ show_filter or 'open' }})</h2>
     {% if rows %}
     <div class="overflow-x-auto">
       <table class="az-table">
@@ -30,7 +36,7 @@
             </td>
             <td>
               {% if e.get('status', 'open') == 'open' and e.get('id') %}
-              <form method="post" action="/oscar/escalations" class="inline">
+              <form method="post" action="/oscar/escalations?show={{ show_filter or 'open' }}" class="inline">
                 <input type="hidden" name="ticket_id" value="{{ e.get('id') }}" />
                 <button class="az-btn-oscar" type="submit">Markera löst</button>
               </form>
@@ -44,7 +50,7 @@
       </table>
     </div>
     {% else %}
-    <p class="az-muted">Inga eskaleringar.</p>
+    <p class="az-muted">Inga eskaleringar{% if show_filter != 'all' %} öppna{% endif %}.</p>
     {% endif %}
   </section>
 </div>

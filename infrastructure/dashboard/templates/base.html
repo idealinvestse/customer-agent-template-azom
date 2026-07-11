@@ -207,14 +207,28 @@
           <a href="/settings" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/settings') else '' }}">Inställningar</a>
           <a href="/secrets" class="az-nav-link {{ 'az-nav-link-active' if path == '/secrets' else '' }}">Secrets</a>
           <a href="/data/telemetry" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/telemetry') else '' }}">Telemetry</a>
-          <a href="/oauth/gmail/start" class="az-nav-link">Gmail OAuth</a>
+          <a href="/oauth/gmail/start" class="az-nav-link" x-data="{ connected: {{ 'true' if gmail_connected else 'false' }}, email: '' }" x-init="
+            fetch('/oauth/gmail/status').then(r => r.json()).then(d => { connected = !!d.connected; email = d.email || ''; }).catch(() => {})
+          ">
+            <span x-text="connected ? (email ? ('Gmail · ' + email) : 'Gmail · connected') : 'Gmail · anslut'"></span>
+          </a>
         </div>
 
         <div>
           <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Support</p>
-          <a href="/cases" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/cases') else '' }}">Ärenden</a>
+          <a href="/cases?status=open,escalated" class="az-nav-link flex items-center justify-between gap-2 {{ 'az-nav-link-active' if path.startswith('/cases') else '' }}">
+            <span>Ärenden</span>
+            {% if queue_cases %}
+            <span class="az-badge bg-steel-500/20 text-steel-300">{{ queue_cases }}</span>
+            {% endif %}
+          </a>
           <a href="/interact" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/interact') else '' }}">Interagera</a>
-          <a href="/data/escalations" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/escalations') else '' }}">Eskaleringar</a>
+          <a href="/data/escalations" class="az-nav-link flex items-center justify-between gap-2 {{ 'az-nav-link-active' if path.startswith('/data/escalations') else '' }}">
+            <span>Eskaleringar</span>
+            {% if open_escalations %}
+            <span class="az-badge bg-warn/15 text-warn">{{ open_escalations }}</span>
+            {% endif %}
+          </a>
         </div>
 
         {% if is_oscar %}
@@ -222,7 +236,12 @@
           <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-oscar-500/80">Oscar</p>
           <a href="/oscar" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path == '/oscar' else '' }}">Oscar</a>
           <a href="/oscar/secrets" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/secrets') else '' }}">Oscar secrets</a>
-          <a href="/oscar/escalations" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/escalations') else '' }}">Oscar eskaleringar</a>
+          <a href="/oscar/escalations" class="az-nav-link az-nav-link-oscar flex items-center justify-between gap-2 {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/escalations') else '' }}">
+            <span>Oscar eskaleringar</span>
+            {% if open_escalations %}
+            <span class="az-badge bg-oscar-600/25 text-oscar-400">{{ open_escalations }}</span>
+            {% endif %}
+          </a>
         </div>
         {% endif %}
       </nav>

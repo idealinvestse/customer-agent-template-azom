@@ -234,6 +234,111 @@ def test_index_shows_integration_summary(dash_client):
     resp = dash_client.get("/", headers=_auth())
     assert resp.status_code == 200
     assert b"Integrationer" in resp.data or b"integration" in resp.data.lower()
+    # Presence-only: no requirement for live probe ok/error table on home
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Senaste Oscar-test" in body or "Integrationer" in body
+
+
+def test_nav_badges_when_cases_exist(dash_client):
+    import os
+
+    from ecom_ops.cases.store import CaseStore
+
+    store = CaseStore(Path(os.environ["AZOM_DATA_DIR"]) / "cases.db")
+    store.create_case(
+        mailbox_id="support_default",
+        subject="Ops polish badge",
+        from_addr="a@b.co",
+        body="hej",
+        category="other",
+        draft_reply="Hej",
+        order_id=None,
+        message_id="<ops-badge@x>",
+        status="open",
+    )
+    resp = dash_client.get("/", headers=_auth())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "az-badge" in body
+    assert ">1<" in body or "Öppna" in body
+    cases = dash_client.get("/cases", headers=_auth())
+    assert cases.status_code == 200
+    assert b"Ops polish badge" in cases.data
+
+
+def test_oscar_escalations_default_open(dash_client):
+    import os
+
+    data_dir = Path(os.environ["AZOM_DATA_DIR"])
+    esc = data_dir / "escalations.jsonl"
+    esc.write_text(
+        '{"id":"esc-open-1","status":"open","summary":"need help open"}\n'
+        '{"id":"esc-done-1","status":"resolved","summary":"already resolved done"}\n',
+        encoding="utf-8",
+    )
+    resp = dash_client.get("/oscar/escalations", headers=_auth("oscar", "oscar"))
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "need help open" in body
+    assert "already resolved done" not in body
+    assert "show=open" in body or "Öppna" in body
+
+    all_resp = dash_client.get(
+        "/oscar/escalations?show=all", headers=_auth("oscar", "oscar")
+    )
+    assert all_resp.status_code == 200
+    assert b"already resolved done" in all_resp.data
+
+
+def test_case_detail_approve_guard(dash_client):
+    import os
+
+    from ecom_ops.cases.store import CaseStore
+
+    store = CaseStore(Path(os.environ["AZOM_DATA_DIR"]) / "cases.db")
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Approve guard",
+        from_addr="a@b.co",
+        body="hej",
+        category="other",
+        draft_reply="Tack for ditt mail",
+        order_id=None,
+        message_id="<approve-guard@x>",
+        status="open",
+    )
+    resp = dash_client.get(f"/cases/{case.id}", headers=_auth())
+    assert resp.status_code == 200
+    assert b"data-approve-guard" in resp.data
+    assert b"confirm(" in resp.data or b"Skicka svar" in resp.data
+
+
+def test_interact_escalate_cta(dash_client):
+    resp = dash_client.get("/interact", headers=_auth())
+    assert resp.status_code == 200
+    post = dash_client.post(
+        "/interact",
+        headers=_auth(),
+        data={"message": "Var ar min order?"},
+    )
+    assert post.status_code == 200
+    assert b"Eskalera till Oscar" in post.data
+
+
+def test_probe_last_cached_after_oscar_test(dash_client):
+    import os
+
+    data_dir = Path(os.environ["AZOM_DATA_DIR"])
+    resp = dash_client.post(
+        "/oscar/secrets/test",
+        headers=_auth("oscar", "oscar"),
+        data={"probe": "all"},
+    )
+    assert resp.status_code == 200
+    assert (data_dir / "probe_last.json").is_file()
+    home = dash_client.get("/", headers=_auth())
+    assert home.status_code == 200
+    assert b"Senaste Oscar-test" in home.data
 
 
 def test_secret_probes_module_mock(tmp_path, monkeypatch):

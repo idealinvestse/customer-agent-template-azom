@@ -18,21 +18,25 @@
 
   <section class="az-card">
     <h2 class="az-section-title">Integrationer</h2>
+    <p class="az-muted text-xs">Presence (inga live-probes på översikt)</p>
     {% if integrations %}
-    <p class="az-muted">
+    <p class="az-muted mt-2">
       ok {{ integrations.counts.ok }} ·
-      missing {{ integrations.counts.missing }} ·
-      error {{ integrations.counts.error }}
+      partial {{ integrations.counts.partial }} ·
+      missing {{ integrations.counts.missing }}
     </p>
     <ul class="az-muted mt-3 list-disc space-y-1 pl-4">
       {% for r in integrations.results %}
       <li>
         {% if r.status == 'ok' %}<span class="az-present">{{ r.label }}</span>
-        {% elif r.status == 'missing' %}<span class="az-missing">{{ r.label }}</span>
-        {% else %}<span class="az-badge bg-warn/15 text-warn">{{ r.label }}</span>{% endif %}
+        {% elif r.status == 'partial' %}<span class="az-badge bg-warn/15 text-warn">{{ r.label }}</span>
+        {% else %}<span class="az-missing">{{ r.label }}</span>{% endif %}
       </li>
       {% endfor %}
     </ul>
+    {% if last_probe and last_probe.checked_at %}
+    <p class="az-muted mt-3 text-xs">Senaste Oscar-test: {{ last_probe.checked_at[:19] }}</p>
+    {% endif %}
     {% if is_oscar %}
     <p class="mt-4"><a class="az-btn-oscar" href="/oscar/secrets">Testa secrets →</a></p>
     {% else %}
@@ -41,7 +45,7 @@
     {% else %}
     <p class="az-muted">Ingen status.</p>
     {% endif %}
-    <p class="mt-3"><a class="az-btn-secondary" href="/data/escalations">Eskaleringar →</a></p>
+    <p class="mt-3"><a class="az-btn-secondary" href="/data/escalations">Eskaleringar ({{ open_escalations }}) →</a></p>
   </section>
 
   <section class="az-card">

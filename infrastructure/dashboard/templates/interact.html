@@ -11,6 +11,7 @@
   <section class="az-card">
     <h2 class="az-section-title">Support-draft</h2>
     <form method="post" action="/interact" class="space-y-4">
+      <input type="hidden" name="action" value="draft" />
       <div>
         <label class="az-label" for="message">Meddelande</label>
         <textarea class="az-textarea" id="message" name="message" required placeholder="Hej, var är min order?"></textarea>
@@ -29,6 +30,15 @@
       <pre class="whitespace-pre-wrap rounded-lg border border-ink-700/60 bg-ink-950/60 p-4 font-sans text-sm text-mist-100">{{ result.reply }}</pre>
       {% endif %}
       <p class="az-muted">{{ result.note }}</p>
+      <div class="flex flex-wrap gap-2 pt-2">
+        <form method="post" action="/interact">
+          <input type="hidden" name="action" value="escalate" />
+          <input type="hidden" name="category" value="{{ result.category }}" />
+          <input type="hidden" name="draft" value="{{ result.reply or '' }}" />
+          <button class="az-btn-oscar" type="submit">Eskalera till Oscar</button>
+        </form>
+        <a class="az-btn-secondary" href="/cases?status=open,escalated">Öppna ärenden</a>
+      </div>
     </div>
     {% endif %}
   </section>

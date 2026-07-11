@@ -2,7 +2,7 @@
 {% block title %}Ärenden – Azom{% endblock %}
 {% block page_subtitle %}Ärenden{% endblock %}
 {% block content %}
-<div class="space-y-5" x-data="{ filterOpen: true }">
+<div class="space-y-5" x-data="{ filterOpen: false, polling: false }">
   <div class="flex flex-wrap items-end justify-between gap-3">
     <div>
       <h2 class="az-page-title">Ärenden</h2>
@@ -11,44 +11,47 @@
   </div>
 
   <section class="az-card">
-    <h2 class="az-section-title">Ärenden (v2)</h2>
+    <h2 class="az-section-title">Kö</h2>
     <div class="flex flex-wrap gap-2">
-      <form method="post" action="/cases/poll">
-        <button class="az-btn-primary" type="submit">Hämta mail → skapa ärenden</button>
+      <form method="post" action="/cases/poll" @submit="polling = true">
+        <button class="az-btn-primary" type="submit" :disabled="polling" x-text="polling ? 'Hämtar…' : 'Hämta mail → skapa ärenden'"></button>
       </form>
-      <a class="az-btn-secondary" href="/cases?status=open,escalated">Kö</a>
-      <a class="az-btn-secondary" href="/cases?status=open">Öppna</a>
-      <a class="az-btn-secondary" href="/cases?status=escalated">Eskalerade</a>
-      <a class="az-btn-secondary" href="/cases?status=replied">Besvarade</a>
-      <a class="az-btn-secondary" href="/cases?status=closed">Stängda</a>
-      <a class="az-btn-secondary" href="/cases?status=all">Alla</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open,escalated' else '' }}" href="/cases?status=open,escalated">Kö</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open' else '' }}" href="/cases?status=open">Öppna</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'escalated' else '' }}" href="/cases?status=escalated">Eskalerade</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'replied' else '' }}" href="/cases?status=replied">Besvarade</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'closed' else '' }}" href="/cases?status=closed">Stängda</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'all' else '' }}" href="/cases?status=all">Alla</a>
     </div>
   </section>
 
   <section class="az-card">
-    <button
-      type="button"
-      class="flex w-full items-center justify-between text-left"
-      @click="filterOpen = !filterOpen"
-    >
+    <button type="button" class="flex w-full items-center justify-between text-left" @click="filterOpen = !filterOpen">
       <h2 class="az-section-title !mb-0">Filter</h2>
       <svg class="h-4 w-4 text-mist-400 transition duration-200" :class="filterOpen && 'rotate-180'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
         <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
       </svg>
     </button>
-    <form
-      method="get"
-      action="/cases"
-      x-show="filterOpen"
-      class="mt-4 flex flex-wrap items-end gap-3"
-    >
+    <form method="get" action="/cases" x-show="filterOpen" x-cloak class="mt-4 flex flex-wrap items-end gap-3">
       <div>
         <label class="az-label" for="status">Status</label>
-        <input class="az-input !max-w-[12rem]" id="status" name="status" value="{{ status_filter }}" placeholder="open,escalated" />
+        <select class="az-select !max-w-[12rem]" id="status" name="status">
+          <option value="open,escalated" {% if status_filter == 'open,escalated' %}selected{% endif %}>Kö (open+escalated)</option>
+          <option value="open" {% if status_filter == 'open' %}selected{% endif %}>open</option>
+          <option value="escalated" {% if status_filter == 'escalated' %}selected{% endif %}>escalated</option>
+          <option value="replied" {% if status_filter == 'replied' %}selected{% endif %}>replied</option>
+          <option value="closed" {% if status_filter == 'closed' %}selected{% endif %}>closed</option>
+          <option value="all" {% if status_filter == 'all' %}selected{% endif %}>all</option>
+        </select>
       </div>
       <div>
         <label class="az-label" for="mailbox">Mailbox</label>
-        <input class="az-input !max-w-[12rem]" id="mailbox" name="mailbox" value="{{ mailbox_filter }}" placeholder="support_default" />
+        <select class="az-select !max-w-[14rem]" id="mailbox" name="mailbox">
+          <option value="">Alla</option>
+          {% for mb in mailboxes or [] %}
+          <option value="{{ mb.id }}" {% if mailbox_filter == mb.id %}selected{% endif %}>{{ mb.label or mb.id }}</option>
+          {% endfor %}
+        </select>
       </div>
       <div>
         <label class="az-label" for="category">Kategori</label>
@@ -66,7 +69,7 @@
         <thead>
           <tr>
             <th>När</th><th>Ålder</th><th>Från</th><th>Ämne</th>
-            <th>Kategori</th><th>Prio</th><th>Status</th><th></th>
+            <th>Kategori</th><th>Prio</th><th>Status</th><th>Assignee</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -85,6 +88,7 @@
               {% if c.status == 'escalated' %}<span class="az-badge bg-warn/15 text-warn">escalated</span>
               {% else %}{{ c.status }}{% endif %}
             </td>
+            <td class="az-muted">{{ c.assignee or '—' }}</td>
             <td><a class="text-steel-400 hover:text-steel-300" href="/cases/{{ c.id }}">Öppna</a></td>
           </tr>
           {% endfor %}
@@ -92,7 +96,15 @@
       </table>
     </div>
     {% else %}
-    <p class="az-muted">Inga ärenden. Kör poll eller vänta på inkommande mail.</p>
+    <div class="space-y-3">
+      <p class="az-muted">Inga i kön för detta filter.</p>
+      <div class="flex flex-wrap gap-2">
+        <form method="post" action="/cases/poll">
+          <button class="az-btn-primary" type="submit">Hämta mail nu</button>
+        </form>
+        <a class="az-btn-secondary" href="/onboarding">Kolla onboarding / mail</a>
+      </div>
+    </div>
     {% endif %}
   </section>
 </div>

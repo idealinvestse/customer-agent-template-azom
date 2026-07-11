@@ -26,7 +26,13 @@
   <section class="az-card border-oscar-600/35">
     <h2 class="az-section-title text-oscar-400/80">Gmail OAuth</h2>
     <p>{% if gmail_connected %}<span class="az-present">connected</span>{% else %}<span class="az-missing">not connected</span>{% endif %}</p>
-    <p class="mt-4"><a class="az-btn-secondary" href="/oauth/gmail/start">Koppla / förnya</a></p>
+    <p class="mt-4">
+      {% if gmail_connected %}
+      <a class="az-btn-secondary" href="/oauth/gmail/start">Förnya</a>
+      {% else %}
+      <a class="az-btn-secondary" href="/oauth/gmail/start">Anslut Gmail</a>
+      {% endif %}
+    </p>
   </section>
 
   <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
@@ -40,14 +46,14 @@
     </div>
   </section>
 
-  {% if open_escalations %}
+  {% if open_escalation_tickets %}
   <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
     <h2 class="az-section-title text-oscar-400/80">Senaste öppna tickets</h2>
     <div class="overflow-x-auto">
       <table class="az-table">
         <thead><tr><th>When</th><th>Severity</th><th>Summary</th></tr></thead>
         <tbody>
-          {% for e in open_escalations[:8] %}
+          {% for e in open_escalation_tickets[:8] %}
           <tr>
             <td>{{ e.get('created_at', '')[:19] }}</td>
             <td>{{ e.get('severity', '') }}</td>

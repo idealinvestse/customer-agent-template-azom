@@ -9,8 +9,16 @@
       Från: {{ case.from_addr }} · Mailbox: <code class="az-code">{{ case.mailbox_id }}</code> ·
       Status: {{ case.status }} · Kategori: <code class="az-code">{{ case.category }}</code>
       · Prio: {{ case.priority or 'normal' }}
+      · Assignee: {{ case.assignee or '—' }}
       {% if case.order_id %} · Order: <strong class="text-mist-100">{{ case.order_id }}</strong>{% endif %}
-      {% if case.escalation_id %} · Eskalering: <code class="az-code">{{ case.escalation_id }}</code>{% endif %}
+      {% if case.escalation_id %}
+      · Eskalering:
+        {% if is_oscar %}
+        <a class="text-oscar-400 hover:underline" href="/oscar/escalations">{{ case.escalation_id }}</a>
+        {% else %}
+        <a class="text-steel-400 hover:underline" href="/data/escalations">{{ case.escalation_id }}</a>
+        {% endif %}
+      {% endif %}
       · Ålder: {{ case_age(case.created_at) }}
     </p>
   </section>
@@ -28,14 +36,24 @@
   </section>
 
   {% if case.status in ('open', 'escalated') %}
-  <section class="az-card">
+  <section class="az-card" x-data="{ submitting: false }">
     <h2 class="az-section-title">Föreslaget svar</h2>
-    <form method="post" action="/cases/{{ case.id }}" class="space-y-4">
-      <textarea class="az-textarea" name="body" required>{{ case.draft_reply or '' }}</textarea>
+    <form
+      method="post"
+      action="/cases/{{ case.id }}"
+      class="space-y-4"
+      @submit="
+        if ($event.submitter && $event.submitter.value === 'reply') {
+          if (!confirm('Skicka svar till kunden nu?')) { $event.preventDefault(); return; }
+        }
+        submitting = true;
+      "
+    >
+      <textarea class="az-textarea" name="body" required data-approve-guard>{{ case.draft_reply or '' }}</textarea>
       <div class="flex flex-wrap gap-2">
-        <button class="az-btn-primary" type="submit" name="action" value="reply">Godkänn och skicka</button>
-        <button class="az-btn-secondary" type="submit" name="action" value="save_draft">Spara draft</button>
-        <button class="az-btn-secondary" type="submit" name="action" value="close" formnovalidate>Stäng utan svar</button>
+        <button class="az-btn-primary" type="submit" name="action" value="reply" :disabled="submitting">Godkänn och skicka</button>
+        <button class="az-btn-secondary" type="submit" name="action" value="save_draft" :disabled="submitting">Spara draft</button>
+        <button class="az-btn-secondary" type="submit" name="action" value="close" formnovalidate :disabled="submitting">Stäng utan svar</button>
         <a class="az-btn-secondary" href="/cases">Tillbaka</a>
       </div>
     </form>

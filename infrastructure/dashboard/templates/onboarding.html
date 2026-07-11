@@ -2,10 +2,41 @@
 {% block title %}Onboarding – Azom Dashboard{% endblock %}
 {% block page_subtitle %}Onboarding{% endblock %}
 {% block content %}
-<div class="space-y-5">
-  <div>
-    <h2 class="az-page-title">Onboarding</h2>
-    <p class="az-muted mt-1">Steg-för-steg setup för Azom-agenten.</p>
+<div
+  class="space-y-5"
+  x-data="{
+    loading: false,
+    healthOk: {{ 'true' if health.ok else 'false' }},
+    gmailConnected: {{ 'true' if runtime.gmail_tokens_stored else 'false' }},
+    gmailEmail: '',
+    async refresh() {
+      this.loading = true;
+      try {
+        const [st, gm] = await Promise.all([
+          fetch('/onboarding/status').then(r => r.json()),
+          fetch('/oauth/gmail/status').then(r => r.json()),
+        ]);
+        this.healthOk = !!(st.health && st.health.ok);
+        this.gmailConnected = !!gm.connected;
+        this.gmailEmail = gm.email || '';
+        // Soft-refresh tables by reloading when secrets change count
+        if (st.secrets) {
+          const missing = st.secrets.filter(s => !s.present).length;
+          document.getElementById('secrets-missing-hint').textContent =
+            missing ? (missing + ' saknas') : 'alla present';
+        }
+      } catch (e) { console.error(e); }
+      this.loading = false;
+    }
+  }"
+  x-init="refresh()"
+>
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h2 class="az-page-title">Onboarding</h2>
+      <p class="az-muted mt-1">Steg-för-steg setup för Azom-agenten.</p>
+    </div>
+    <button type="button" class="az-btn-secondary" @click="refresh()" :disabled="loading" x-text="loading ? 'Uppdaterar…' : 'Uppdatera status'"></button>
   </div>
 
   <section class="az-card">
@@ -23,22 +54,25 @@
       </li>
       <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5">
         <strong class="text-mist-100">3. Secrets</strong>
-        <span class="az-muted">—</span>
-        <a class="text-sm text-steel-400 hover:text-steel-300" href="/secrets">checklista</a>
+        <span class="az-muted">— <span id="secrets-missing-hint">checklista</span></span>
+        <a class="text-sm text-steel-400 hover:text-steel-300" href="/secrets">öppna</a>
         {% if is_oscar %}
-        <span class="az-muted">·</span>
         <a class="text-sm text-oscar-400 hover:text-oscar-400/80" href="/oscar/secrets">Oscar editor</a>
         {% endif %}
       </li>
       <li class="flex flex-wrap items-center gap-x-2 gap-y-2 py-3.5">
         <strong class="text-mist-100">4. Gmail OAuth</strong>
         <span class="az-muted">—</span>
-        <a class="az-btn-primary" href="/oauth/gmail/start">Koppla Gmail</a>
+        <span x-show="gmailConnected" class="az-present" x-text="gmailEmail ? ('connected · ' + gmailEmail) : 'connected'"></span>
+        <span x-show="!gmailConnected" class="az-missing">not connected</span>
+        <a class="az-btn-primary" href="/oauth/gmail/start" x-show="!gmailConnected">Koppla Gmail</a>
+        <a class="az-btn-secondary" href="/oauth/gmail/start" x-show="gmailConnected">Förnya</a>
       </li>
       <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5 last:pb-0">
         <strong class="text-mist-100">5. Health probe</strong>
         <span class="az-muted">—</span>
-        {% if health.ok %}<span class="az-present">OK</span>{% else %}<span class="az-missing">Issues</span>{% endif %}
+        <span x-show="healthOk" class="az-present">OK</span>
+        <span x-show="!healthOk" class="az-missing">Issues</span>
       </li>
     </ol>
   </section>

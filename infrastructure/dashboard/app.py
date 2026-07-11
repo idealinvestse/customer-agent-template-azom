@@ -38,8 +38,6 @@ from settings_store import (  # noqa: E402
     secrets_status,
 )
 from secret_probes import (  # noqa: E402
-    PROBES,
-    probe_summary,
     run_all_probes,
     run_probe,
 )
@@ -174,16 +172,120 @@ def _flash_from_query() -> str | None:
     return None
 
 
+def _ops_counts() -> dict[str, int]:
+    """Cheap counts for nav badges / overview (no live probes)."""
+    open_cases = 0
+    escalated_cases = 0
+    try:
+        from ecom_ops.cases.service import CaseService
+
+        cs = CaseService()
+        open_cases = cs.store.count_by_status("open")
+        escalated_cases = cs.store.count_by_status("escalated")
+    except Exception:
+        pass
+    open_escalations = 0
+    try:
+        for e in _tail_jsonl(_data_dir() / "escalations.jsonl", 500):
+            if e.get("status", "open") == "open":
+                open_escalations += 1
+    except Exception:
+        pass
+    return {
+        "open_cases": open_cases,
+        "escalated_cases": escalated_cases,
+        "open_escalations": open_escalations,
+        "queue_cases": open_cases + escalated_cases,
+    }
+
+
+def _probe_last_path() -> Path:
+    return _data_dir() / "probe_last.json"
+
+
+def _save_probe_last(results: list) -> None:
+    from datetime import datetime, timezone
+
+    path = _probe_last_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "results": [r.to_dict() if hasattr(r, "to_dict") else r for r in results],
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _load_probe_last() -> dict | None:
+    path = _probe_last_path()
+    if not path.is_file():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _presence_integrations(runtime: dict) -> dict:
+    """Presence-only integration summary (no live HTTP probes)."""
+    secs = secrets_status()
+    by_group: dict[str, list] = {}
+    for s in secs:
+        by_group.setdefault(s.get("group") or "Other", []).append(s)
+
+    def group_status(keys_present: list[bool]) -> str:
+        if not keys_present:
+            return "missing"
+        if all(keys_present):
+            return "ok"
+        if any(keys_present):
+            return "partial"
+        return "missing"
+
+    rows = []
+    for group, items in by_group.items():
+        st = group_status([bool(i.get("present")) for i in items])
+        rows.append({"id": group.lower().replace(" ", "_"), "label": group, "status": st})
+
+    # Runtime-derived extras
+    rows.append(
+        {
+            "id": "gmail_oauth",
+            "label": "Gmail OAuth",
+            "status": "ok" if runtime.get("gmail_tokens_stored") else (
+                "partial" if runtime.get("gmail_oauth_configured") else "missing"
+            ),
+        }
+    )
+    rows.append(
+        {
+            "id": "telegram",
+            "label": "Telegram",
+            "status": "ok" if runtime.get("telegram_configured") else "missing",
+        }
+    )
+    counts = {"ok": 0, "missing": 0, "partial": 0, "error": 0}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    return {"counts": counts, "results": rows, "source": "presence"}
+
+
 def _dashboard_context(**extra) -> dict:
     apply_env_overlays()
     runtime = runtime_status()
     actor = getattr(g, "actor", {"name": "?", "role": "?", "is_oscar": False})
+    counts = _ops_counts()
     ctx = {
         "user": actor["name"],
         "role": actor["role"],
         "is_oscar": actor.get("is_oscar", False),
         "runtime": runtime,
         "flash": _flash_from_query(),
+        "open_cases": counts["open_cases"],
+        "escalated_cases": counts["escalated_cases"],
+        "open_escalations": counts["open_escalations"],
+        "queue_cases": counts["queue_cases"],
+        "gmail_connected": bool(runtime.get("gmail_tokens_stored")),
     }
     ctx.update(extra)
     return ctx
@@ -207,20 +309,10 @@ def index():
         except (TypeError, ValueError):
             pass
     runtime = runtime_status()
-    open_esc = sum(1 for e in escalations if e.get("status", "open") == "open")
     cap = float(runtime.get("openrouter_cap") or 100)
     cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
-    open_cases = 0
-    escalated_cases = 0
-    try:
-        from ecom_ops.cases.service import CaseService
-
-        cs = CaseService()
-        open_cases = cs.store.count_by_status("open")
-        escalated_cases = cs.store.count_by_status("escalated")
-    except Exception:
-        pass
-    integrations = probe_summary()
+    presence = _presence_integrations(runtime)
+    last_probe = _load_probe_last()
     return render_template(
         "index.html",
         **_dashboard_context(
@@ -229,11 +321,9 @@ def index():
             cost_usd=round(cost, 4),
             openrouter_cap=runtime.get("openrouter_cap", 100),
             budget_cap_llm=runtime.get("budget_cap_llm", 80),
-            open_escalations=open_esc,
             cost_pct=cost_pct,
-            open_cases=open_cases,
-            escalated_cases=escalated_cases,
-            integrations=integrations,
+            integrations=presence,
+            last_probe=last_probe,
         ),
     )
 
@@ -347,6 +437,22 @@ def interact():
     result = None
     error = None
     if request.method == "POST":
+        action = request.form.get("action", "draft")
+        if action == "escalate":
+            draft = (request.form.get("draft") or "").strip()[:2000]
+            category = (request.form.get("category") or "").strip()[:80]
+            from ecom_ops.escalation import EscalationService
+
+            EscalationService().escalate_critical(
+                "Interact draft escalated from dashboard",
+                details={
+                    "actor": g.actor["name"],
+                    "category": category,
+                    "draft": draft,
+                },
+            )
+            return redirect(url_for("interact") + "?msg=Eskalerat+till+Oscar")
+
         message = (
             request.form.get("message")
             or (request.get_json(silent=True) or {}).get("message")
@@ -380,6 +486,7 @@ def interact():
 @app.route("/cases")
 @_auth_required
 def cases_list():
+    from ecom_ops.cases.mailboxes import enabled_mailboxes
     from ecom_ops.cases.service import CaseService
 
     status = request.args.get("status", "open,escalated")
@@ -388,10 +495,14 @@ def cases_list():
     svc = CaseService()
     rows = svc.store.list_cases(
         status=status if status != "all" else None,
-        mailbox_id=mailbox_id,
-        category=category,
+        mailbox_id=mailbox_id or None,
+        category=category or None,
         limit=100,
     )
+    # Stable multi-key: escalated → high → newest
+    rows.sort(key=lambda c: c.created_at or "", reverse=True)
+    rows.sort(key=lambda c: 0 if (c.priority or "") == "high" else 1)
+    rows.sort(key=lambda c: 0 if c.status == "escalated" else 1)
     return render_template(
         "cases.html",
         **_dashboard_context(
@@ -399,6 +510,7 @@ def cases_list():
             status_filter=status,
             mailbox_filter=mailbox_id or "",
             category_filter=category or "",
+            mailboxes=enabled_mailboxes(),
         ),
     )
 
@@ -467,7 +579,7 @@ def case_detail(case_id: str):
 @_oscar_required
 def oscar_home():
     esc = _tail_jsonl(_data_dir() / "escalations.jsonl", 100)
-    open_esc = [e for e in esc if e.get("status", "open") == "open"]
+    open_esc_rows = [e for e in esc if e.get("status", "open") == "open"]
     secs = secrets_status()
     present = sum(1 for s in secs if s["present"])
     missing = sum(1 for s in secs if not s["present"])
@@ -477,8 +589,8 @@ def oscar_home():
     return render_template(
         "oscar.html",
         **_dashboard_context(
-            open_escalations=open_esc,
-            open_count=len(open_esc),
+            open_escalation_tickets=open_esc_rows,
+            open_count=len(open_esc_rows),
             secrets_present=present,
             secrets_missing=missing,
             gmail_connected=store.has_tokens(),
@@ -498,13 +610,19 @@ def oscar_secrets():
         saved = save_secrets(updates)
         msg = f"Sparade+{len(saved)}+nycklar" if saved else "Inga+ändringar"
         return redirect(url_for("oscar_secrets") + f"?msg={msg}")
-    results = run_all_probes()
+    last = _load_probe_last()
+    results = (last or {}).get("results") or [r.to_dict() for r in run_all_probes()]
+    # If no cache, run once and save
+    if not last:
+        live = run_all_probes()
+        _save_probe_last(live)
+        results = [r.to_dict() for r in live]
     return render_template(
         "oscar_secrets.html",
         **_dashboard_context(
             secrets=secrets_status(),
             editable_keys=EDITABLE_SECRET_KEYS,
-            probe_results=[r.to_dict() for r in results],
+            probe_results=results,
         ),
     )
 
@@ -518,12 +636,10 @@ def oscar_secrets_test():
         results = run_all_probes()
     else:
         results = [run_probe(probe)]
-    # Persist last results in flash via query is noisy; re-render page with results
+    _save_probe_last(results if probe in {"", "all"} else run_all_probes())
     ok_n = sum(1 for r in results if r.status == "ok")
     err_n = sum(1 for r in results if r.status in {"error", "missing"})
     msg = f"Test+klart:+{ok_n}+ok,+{err_n}+problem"
-    # Store results in session-less way: redirect with summary; detail on GET re-runs
-    # Prefer POST→render for detail without losing results
     if request.headers.get("Accept") == "application/json" or request.is_json:
         return jsonify(
             {
@@ -547,13 +663,21 @@ def oscar_secrets_test():
 def oscar_escalations():
     if request.method == "POST":
         ticket_id = request.form.get("ticket_id", "").strip()
+        show = request.args.get("show", "open")
         if ticket_id and resolve_escalation(ticket_id):
-            return redirect(url_for("oscar_escalations") + "?msg=Markerad+som+löst")
-        return redirect(url_for("oscar_escalations") + "?err=Ticket+hittades+inte")
+            return redirect(
+                url_for("oscar_escalations", show=show) + "?msg=Markerad+som+löst"
+            )
+        return redirect(
+            url_for("oscar_escalations", show=show) + "?err=Ticket+hittades+inte"
+        )
+    show = request.args.get("show", "open")
     rows = _tail_jsonl(_data_dir() / "escalations.jsonl", 200)
+    if show != "all":
+        rows = [e for e in rows if e.get("status", "open") == "open"]
     return render_template(
         "oscar_escalations.html",
-        **_dashboard_context(rows=rows),
+        **_dashboard_context(rows=rows, show_filter=show),
     )
 
 
