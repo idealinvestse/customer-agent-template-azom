@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Ärenden – Azom{% endblock %}
+{% block content %}
+<main>
+  {% if flash %}
+  {% if flash.startswith('error:') %}
+  <div class="flash error">{{ flash[6:] }}</div>
+  {% else %}
+  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
+  {% endif %}
+  {% endif %}
+
+  <section class="card wide">
+    <h2>Ärenden</h2>
+    <p class="muted">Automatiskt skapade från funktionsbrevlådor. Godkänn draft för att skicka.</p>
+    <form method="post" action="/cases/poll" style="display:inline">
+      <button class="btn" type="submit">Hämta mail → skapa ärenden</button>
+    </form>
+    <a class="btn secondary" href="/cases?status=open">Öppna</a>
+    <a class="btn secondary" href="/cases?status=replied">Besvarade</a>
+    <a class="btn secondary" href="/cases?status=all">Alla</a>
+  </section>
+
+  <section class="card wide">
+    <h2>Kö ({{ status_filter }})</h2>
+    {% if cases %}
+    <table>
+      <thead>
+        <tr><th>När</th><th>Från</th><th>Ämne</th><th>Kategori</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for c in cases %}
+        <tr>
+          <td>{{ c.created_at[:19] }}</td>
+          <td>{{ c.from_addr }}</td>
+          <td>{{ c.subject }}</td>
+          <td><code>{{ c.category }}</code></td>
+          <td>{{ c.status }}</td>
+          <td><a href="/cases/{{ c.id }}">Öppna</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">Inga ärenden. Kör poll eller vänta på inkommande mail.</p>
+    {% endif %}
+  </section>
+</main>
+{% endblock %}

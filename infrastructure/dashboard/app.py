@@ -330,6 +330,69 @@ def interact():
     )
 
 
+@app.route("/cases")
+@_auth_required
+def cases_list():
+    from ecom_ops.cases.service import CaseService
+
+    status = request.args.get("status", "open")
+    svc = CaseService()
+    rows = svc.store.list_cases(
+        status=status if status != "all" else None, limit=100
+    )
+    return render_template(
+        "cases.html",
+        **_dashboard_context(cases=rows, status_filter=status),
+    )
+
+
+@app.route("/cases/poll", methods=["POST"])
+@_auth_required
+def cases_poll():
+    from ecom_ops.cases.service import CaseService
+
+    result = CaseService().poll(actor=g.actor["name"], use_mock=_is_mock() or None)
+    if result.ok:
+        return redirect(
+            url_for("cases_list") + f"?msg=Skapade+{result.created}+ärenden"
+        )
+    return redirect(url_for("cases_list") + f"?err={result.message}")
+
+
+@app.route("/cases/<case_id>", methods=["GET", "POST"])
+@_auth_required
+def case_detail(case_id: str):
+    from ecom_ops.cases.service import CaseService
+
+    svc = CaseService()
+    if request.method == "POST":
+        action = request.form.get("action", "reply")
+        if action == "reply":
+            body = request.form.get("body") or None
+            result = svc.approve_and_send(
+                case_id, actor=g.actor["name"], body_override=body
+            )
+            if result.ok:
+                return redirect(
+                    url_for("case_detail", case_id=case_id) + "?msg=Skickat"
+                )
+            return redirect(
+                url_for("case_detail", case_id=case_id) + f"?err={result.message}"
+            )
+        if action == "close":
+            svc.store.close(case_id)
+            return redirect(url_for("cases_list") + "?msg=Stängt")
+
+    case = svc.get(case_id)
+    if not case:
+        return Response("Case not found", 404)
+    msgs = svc.store.messages(case_id)
+    return render_template(
+        "case_detail.html",
+        **_dashboard_context(case=case, messages=msgs),
+    )
+
+
 @app.route("/oscar")
 @_oscar_required
 def oscar_home():

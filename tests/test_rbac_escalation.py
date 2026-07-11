@@ -9,6 +9,7 @@ def test_jonatan_is_viewer():
     assert actor.role == "viewer"
     assert actor.has(Permission.READ)
     assert actor.has(Permission.MAIL_READ)
+    assert actor.has(Permission.CASE_REPLY)
     assert not actor.has(Permission.ORDER_STATUS_UPDATE)
     assert not actor.has(Permission.MAIL_SEND)
 

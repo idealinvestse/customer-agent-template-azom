@@ -2,9 +2,9 @@
 
 ## Budget & roller
 - Budget: 100$ OpenRouter (`config/limits.yaml`)
-- Jonatan: read-only / viewer (+ mail read, SSH read, non-secret settings)
+- Jonatan: viewer (+ mail read, SSH read, non-secret settings, **case reply approve/send**)
 - Oscar: full_admin + escalation target (critical + code_edit + secrets UI)
-- Agent automation: operator (order/product/support/mail send+read/SSH read)
+- Agent automation: operator (order/product/support/mail send+read/SSH read/case poll)
 
 ## Mål
 - 3 mån: 50% mindre support-tid + hög engagement
@@ -30,6 +30,17 @@
 - Telegram bot conversation state (`python -m ecom_ops.bot`)
 - One-shot Ubuntu install + systemd + prod Docker (`azom-agent:2.0`)
 - CLI: `python -m ecom_ops version` · `python -m ecom_ops status`
+
+## Cases (mail → ärende, semi-auto)
+- Config: `config/mailboxes.yaml` (N funktionsbrevlådor)
+- DB: `AZOM_DATA_DIR/cases.db` (SQLite)
+- Dashboard: `/cases` · poll + godkänn draft + skicka
+- CLI / poller:
+```bash
+python -m ecom_ops --mock cases poll
+python -m ecom_ops --mock cases list
+./bin/cases-poll.sh
+```
 
 ## Mail CLI
 ```bash

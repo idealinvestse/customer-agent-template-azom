@@ -16,6 +16,7 @@ class Permission(str, Enum):
     SUPPORT_REPLY = "support_reply"
     MAIL_READ = "mail_read"
     MAIL_SEND = "mail_send"
+    CASE_REPLY = "case_reply"
     SSH_READ = "ssh_read"
     SSH_WRITE = "ssh_write"
     CODE_EDIT = "code_edit"
@@ -25,10 +26,20 @@ class Permission(str, Enum):
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
     "viewer": frozenset(
-        {Permission.READ, Permission.SSH_READ, Permission.MAIL_READ}
+        {
+            Permission.READ,
+            Permission.SSH_READ,
+            Permission.MAIL_READ,
+            Permission.CASE_REPLY,
+        }
     ),
     "read_only": frozenset(
-        {Permission.READ, Permission.SSH_READ, Permission.MAIL_READ}
+        {
+            Permission.READ,
+            Permission.SSH_READ,
+            Permission.MAIL_READ,
+            Permission.CASE_REPLY,
+        }
     ),
     "operator": frozenset(
         {
@@ -38,6 +49,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.SUPPORT_REPLY,
             Permission.MAIL_READ,
             Permission.MAIL_SEND,
+            Permission.CASE_REPLY,
             Permission.SSH_READ,
         }
     ),

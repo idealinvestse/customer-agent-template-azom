@@ -1,0 +1,23 @@
+# Functional mailboxes for case ingest (N configurable).
+# Credentials still come from env / secrets.env; each mailbox can override provider.
+#
+# Example:
+# mailboxes:
+#   - id: support_se
+#     label: Support SE
+#     address: support@azom.se
+#     site: azom
+#     market: se
+#     language: sv
+#     enabled: true
+#     provider: gmail   # optional; default MAIL_PROVIDER
+#     # env_prefix: MAIL_SE_  # optional future: MAIL_SE_USERNAME etc.
+
+mailboxes:
+  - id: support_default
+    label: Support (default)
+    address: support@azom.se
+    site: azom
+    market: se
+    language: sv
+    enabled: true

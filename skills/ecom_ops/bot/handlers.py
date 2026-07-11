@@ -35,18 +35,23 @@ class BotHandler:
         if lower in {"/start", "/help"}:
             self.store.clear(chat_id)
             return (
-                "Azom Ops Bot (Jonatan read-only)\n"
+                "Azom Ops Bot (Jonatan)\n"
                 "/help – denna hjälp\n"
                 "/health – SSH health\n"
                 "/brief – KPI snapshot\n"
                 "/order [id] – orderstatus (read-only)\n"
+                "/cases – öppna mail-ärenden\n"
                 "/cancel – avbryt pågående dialog\n"
-                "Skriv ett meddelande för support-draft → eskalera till Oscar."
+                "Skriv ett meddelande för support-draft → eskalera till Oscar.\n"
+                "Godkänn case-svar i dashboard /cases."
             )
 
         if lower == "/cancel":
             self.store.clear(chat_id)
             return "Dialog avbruten."
+
+        if lower == "/cases":
+            return self._cmd_cases()
 
         if lower == "/health":
             return self._cmd_health()
@@ -171,3 +176,20 @@ class BotHandler:
             )
         except Exception as exc:
             return f"Brief error: {exc}"
+
+    def _cmd_cases(self) -> str:
+        try:
+            from ecom_ops.cases.service import CaseService
+
+            cases = CaseService().list_open(limit=10)
+            if not cases:
+                return "Inga öppna ärenden. Kör poll i dashboard eller CLI."
+            lines = [f"Öppna ärenden ({len(cases)}):"]
+            for c in cases:
+                lines.append(
+                    f"- {c.subject[:40]} | {c.from_addr} | {c.category} | {c.id[:8]}"
+                )
+            lines.append("Godkänn/skicka i dashboard: /cases")
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"Cases error: {exc}"

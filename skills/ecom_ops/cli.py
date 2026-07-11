@@ -114,6 +114,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_mail_reply.add_argument("--html-body", default="")
     p_mail_reply.add_argument("--provider")
 
+    p_cases = sub.add_parser("cases", help="Support cases from inbound mail")
+    cases_sub = p_cases.add_subparsers(dest="cases_command", required=True)
+
+    p_cases_poll = cases_sub.add_parser("poll", help="Fetch mailboxes and create cases")
+    p_cases_poll.add_argument("--limit", type=int, default=20)
+
+    p_cases_list = cases_sub.add_parser("list", help="List cases")
+    p_cases_list.add_argument("--status", default="open")
+    p_cases_list.add_argument("--limit", type=int, default=50)
+
+    p_cases_show = cases_sub.add_parser("show", help="Show one case")
+    p_cases_show.add_argument("--id", required=True, dest="case_id")
+
+    p_cases_reply = cases_sub.add_parser(
+        "reply", help="Approve draft and send reply"
+    )
+    p_cases_reply.add_argument("--id", required=True, dest="case_id")
+    p_cases_reply.add_argument("--body", help="Override draft body")
+
     return parser
 
 
@@ -247,6 +266,48 @@ def main(argv: list[str] | None = None) -> int:
             return _print(result)
 
         parser.error(f"Unknown mail command: {args.mail_command}")
+        return 2
+
+    if args.command == "cases":
+        from ecom_ops.cases.service import CaseService
+
+        case_svc = CaseService()
+        if args.cases_command == "poll":
+            result = case_svc.poll(
+                limit_per_mailbox=args.limit,
+                actor=args.actor,
+                use_mock=args.mock or None,
+            )
+            return _print(result)
+        if args.cases_command == "list":
+            cases = case_svc.store.list_cases(
+                status=args.status or None, limit=args.limit
+            )
+            payload = {"ok": True, "count": len(cases), "cases": [c.to_dict() for c in cases]}
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        if args.cases_command == "show":
+            case = case_svc.get(args.case_id)
+            if not case:
+                print(json.dumps({"ok": False, "message": "not found"}, indent=2))
+                return 1
+            msgs = [m.to_dict() for m in case_svc.store.messages(args.case_id)]
+            print(
+                json.dumps(
+                    {"ok": True, "case": case.to_dict(), "messages": msgs},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.cases_command == "reply":
+            result = case_svc.approve_and_send(
+                args.case_id,
+                actor=args.actor,
+                body_override=args.body,
+            )
+            return _print(result)
+        parser.error(f"Unknown cases command: {args.cases_command}")
         return 2
 
     parser.error(f"Unknown command: {args.command}")

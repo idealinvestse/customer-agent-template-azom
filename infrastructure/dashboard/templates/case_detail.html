@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Ärende – Azom{% endblock %}
+{% block content %}
+<main>
+  {% if flash %}
+  {% if flash.startswith('error:') %}
+  <div class="flash error">{{ flash[6:] }}</div>
+  {% else %}
+  <div class="flash ok">{{ flash[3:] if flash.startswith('ok:') else flash }}</div>
+  {% endif %}
+  {% endif %}
+
+  <section class="card wide">
+    <h2>{{ case.subject }}</h2>
+    <p class="muted">
+      Från: {{ case.from_addr }} · Mailbox: <code>{{ case.mailbox_id }}</code> ·
+      Status: {{ case.status }} · Kategori: <code>{{ case.category }}</code>
+      {% if case.order_id %} · Order: {{ case.order_id }}{% endif %}
+    </p>
+  </section>
+
+  <section class="card wide">
+    <h2>Tråd</h2>
+    {% for m in messages %}
+    <div style="margin-bottom:1rem;padding:0.75rem;background:#0c1017;border-radius:8px">
+      <div class="muted">{{ m.direction }} · {{ m.created_at[:19] }} · {{ m.from_addr }}</div>
+      <pre style="white-space:pre-wrap;margin:0.5rem 0 0">{{ m.body }}</pre>
+    </div>
+    {% else %}
+    <p class="muted">Inga meddelanden.</p>
+    {% endfor %}
+  </section>
+
+  {% if case.status == 'open' %}
+  <section class="card wide">
+    <h2>Föreslaget svar (godkänn &amp; skicka)</h2>
+    <form method="post" action="/cases/{{ case.id }}">
+      <input type="hidden" name="action" value="reply" />
+      <textarea name="body" required>{{ case.draft_reply or '' }}</textarea>
+      <p style="margin-top:0.75rem">
+        <button class="btn" type="submit">Godkänn och skicka</button>
+        <button class="btn secondary" type="submit" name="action" value="close" formnovalidate>Stäng utan svar</button>
+        <a class="btn secondary" href="/cases">Tillbaka</a>
+      </p>
+    </form>
+  </section>
+  {% else %}
+  <section class="card wide">
+    <p><a class="btn secondary" href="/cases">Tillbaka till kön</a></p>
+  </section>
+  {% endif %}
+</main>
+{% endblock %}
