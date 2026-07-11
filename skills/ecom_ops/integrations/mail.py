@@ -73,6 +73,8 @@ class MailMessage:
     date: str | None = None
     uid: str | None = None
     message_id: str | None = None
+    in_reply_to: str | None = None
+    references_header: str | None = None
     is_read: bool = False
     raw: dict[str, Any] | None = None
 
@@ -87,6 +89,8 @@ class MailMessage:
             "date": self.date,
             "uid": self.uid,
             "message_id": self.message_id,
+            "in_reply_to": self.in_reply_to,
+            "references_header": self.references_header,
             "is_read": self.is_read,
         }
 
@@ -586,6 +590,8 @@ class InMemoryMailTransport:
                     date=m.date,
                     uid=m.uid,
                     message_id=m.message_id,
+                    in_reply_to=m.in_reply_to,
+                    references_header=m.references_header,
                     is_read=True,
                     raw=m.raw,
                 )
@@ -598,6 +604,8 @@ def _parse_email_message(parsed: email.message.Message, *, uid: str) -> MailMess
     cc_raw = str(parsed.get("Cc") or "")
     date = str(parsed.get("Date") or "")
     message_id = str(parsed.get("Message-ID") or "") or None
+    in_reply_to = str(parsed.get("In-Reply-To") or "") or None
+    references_header = str(parsed.get("References") or "") or None
 
     body = ""
     html_body = None
@@ -644,6 +652,8 @@ def _parse_email_message(parsed: email.message.Message, *, uid: str) -> MailMess
         date=date or None,
         uid=uid,
         message_id=message_id,
+        in_reply_to=in_reply_to,
+        references_header=references_header,
         is_read=False,
     )
 

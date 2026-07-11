@@ -17,6 +17,13 @@
   </section>
 
   <section class="card">
+    <h2>Ärenden</h2>
+    <div class="stat">{{ open_cases }}</div>
+    <p class="muted">Öppna · Eskalerade: <strong>{{ escalated_cases }}</strong></p>
+    <p><a class="btn" href="/cases?status=open,escalated">Öppna kön →</a></p>
+  </section>
+
+  <section class="card">
     <h2>Runtime</h2>
     <p><strong>{{ runtime.customer }}</strong> · {{ runtime.domains | join(', ') }}</p>
     <p class="muted">Mail: {{ runtime.mail_provider }}</p>

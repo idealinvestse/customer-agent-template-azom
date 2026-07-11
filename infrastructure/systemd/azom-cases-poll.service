@@ -1,0 +1,16 @@
+[Unit]
+Description=Azom cases mail poll (oneshot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=azom
+Group=azom
+WorkingDirectory=/opt/azom-agent
+EnvironmentFile=-/opt/azom-agent/.env
+Environment=PYTHONPATH=/opt/azom-agent/skills
+Environment=AZOM_CONFIG_DIR=/opt/azom-agent/config
+Environment=AZOM_DATA_DIR=/var/lib/azom
+Environment=AZOM_USE_MOCK=0
+ExecStart=/opt/azom-agent/bin/cases-poll.sh
+Nice=10

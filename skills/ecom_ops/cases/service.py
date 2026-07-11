@@ -1,4 +1,4 @@
-"""Case ingest from mail + approve/send drafts."""
+"""Case ingest from mail + approve/send drafts (Cases 2.0)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ from ecom_ops.integrations.mail import MailClient, MailMessage, client_from_env
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
+
+_ACTIVE = ("open", "escalated")
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,32 @@ class CaseActionResult:
         }
 
 
+def _enrich_draft_with_order(
+    draft: str | None,
+    order_id: str | None,
+    *,
+    use_mock: bool | None = None,
+) -> str:
+    base = (draft or "").strip()
+    if not order_id:
+        return base
+    try:
+        from ecom_ops.integrations.woocommerce import client_from_env as woo_from_env
+
+        woo = woo_from_env(use_mock=use_mock)
+        order = woo.get_order(str(order_id))
+        block = (
+            f"[Order {order.id}]\n"
+            f"Status: {order.status}\n"
+            f"Total: {order.total} {order.currency}\n\n"
+        )
+        if block.strip() in base:
+            return base
+        return block + base
+    except Exception:
+        return base
+
+
 class CaseService:
     def __init__(
         self,
@@ -72,6 +100,7 @@ class CaseService:
         self.support = support or SupportService()
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
+        self._injected_mail_client = mail_client
 
     def poll(
         self,
@@ -104,9 +133,13 @@ class CaseService:
         created_cases: list[dict[str, Any]] = []
 
         for mb in mailboxes:
-            client = client_from_env(provider=mb.provider, use_mock=use_mock)
+            client = self._injected_mail_client or client_from_env(
+                provider=mb.provider, use_mock=use_mock
+            )
             try:
-                messages = client.fetch(folder="INBOX", unread_only=True, limit=limit_per_mailbox)
+                messages = client.fetch(
+                    folder="INBOX", unread_only=True, limit=limit_per_mailbox
+                )
             except Exception as exc:
                 self.telemetry.record(
                     action="case_poll_error",
@@ -116,7 +149,9 @@ class CaseService:
                 continue
 
             for msg in messages:
-                result = self._ingest_message(mb, msg, actor=actor_obj)
+                result = self._ingest_message(
+                    mb, msg, actor=actor_obj, client=client, use_mock=use_mock
+                )
                 if result is None:
                     skipped += 1
                 else:
@@ -142,22 +177,88 @@ class CaseService:
         msg: MailMessage,
         *,
         actor: Actor,
+        client: MailClient,
+        use_mock: bool | None = None,
     ) -> Case | None:
         mid = (msg.message_id or msg.uid or "").strip() or None
         if mid and self.store.find_by_message_id(mid):
+            self._best_effort_mark_read(client, msg)
             return None
 
         body = msg.body or ""
         subject = msg.subject or "(no subject)"
         from_addr = msg.from_addr or "unknown@unknown"
+        in_reply_to = getattr(msg, "in_reply_to", None)
+        references_header = getattr(msg, "references_header", None)
 
         support = self.support.handle(
             f"{subject}\n\n{body}",
             customer_email=from_addr if "@" in from_addr else None,
             language=mb.language,
             site=mb.site,
-            actor="agent",  # draft generation uses operator
+            actor="agent",
         )
+        draft = _enrich_draft_with_order(
+            support.reply, support.order_id, use_mock=use_mock
+        )
+
+        threaded = self.store.find_by_thread_headers(
+            in_reply_to=in_reply_to,
+            references_header=references_header,
+            from_addr=from_addr,
+            subject=subject,
+            mailbox_id=mb.id,
+        )
+
+        if threaded:
+            case = self.store.append_inbound(
+                threaded.id,
+                from_addr=from_addr,
+                to_addr=mb.address,
+                subject=subject,
+                body=body,
+                message_id=mid,
+                in_reply_to=in_reply_to,
+                references_header=references_header,
+                draft_reply=draft,
+                category=support.category.value,
+                order_id=support.order_id or threaded.order_id,
+            )
+            if case is None:
+                return None
+            case = self._maybe_escalate(case, support)
+            self.telemetry.record(
+                action="case_threaded",
+                site=mb.site,
+                meta={
+                    "case_id": case.id,
+                    "mailbox_id": mb.id,
+                    "category": case.category,
+                    "actor": actor.name,
+                },
+            )
+            self._best_effort_mark_read(client, msg)
+            return case
+
+        status = "open"
+        priority = "normal"
+        escalation_id = None
+        if support.escalated and support.ticket_id:
+            status = "escalated"
+            priority = "high"
+            escalation_id = support.ticket_id
+        elif support.escalated:
+            ticket = self.escalation.escalate_critical(
+                f"Case ingest escalated: {subject[:80]}",
+                details={
+                    "mailbox_id": mb.id,
+                    "from_addr": from_addr,
+                    "category": support.category.value,
+                },
+            )
+            status = "escalated"
+            priority = "high"
+            escalation_id = ticket.id
 
         case = self.store.create_case(
             mailbox_id=mb.id,
@@ -165,13 +266,18 @@ class CaseService:
             from_addr=from_addr,
             body=body,
             category=support.category.value,
-            draft_reply=support.reply,
+            draft_reply=draft,
             order_id=support.order_id,
             message_id=mid,
             site=validate_site(mb.site),
             market=mb.market,
             language=mb.language,
             to_addr=mb.address,
+            status=status,
+            priority=priority,
+            escalation_id=escalation_id,
+            in_reply_to=in_reply_to,
+            references_header=references_header,
         )
         self.telemetry.record(
             action="case_created",
@@ -180,16 +286,132 @@ class CaseService:
                 "case_id": case.id,
                 "mailbox_id": mb.id,
                 "category": case.category,
+                "status": case.status,
                 "actor": actor.name,
             },
         )
+        self._best_effort_mark_read(client, msg)
         return case
 
+    def _maybe_escalate(self, case: Case, support: Any) -> Case:
+        if not getattr(support, "escalated", False):
+            return case
+        if case.escalation_id:
+            return case
+        ticket_id = getattr(support, "ticket_id", None)
+        if not ticket_id:
+            ticket = self.escalation.escalate_critical(
+                f"Case threaded escalate: {case.subject[:80]}",
+                details={"case_id": case.id, "category": case.category},
+            )
+            ticket_id = ticket.id
+        updated = self.store.set_escalation(case.id, ticket_id)
+        return updated or case
+
+    def _best_effort_mark_read(self, client: MailClient, msg: MailMessage) -> None:
+        uid = (msg.uid or "").strip()
+        if not uid:
+            return
+        try:
+            client.mark_read(uid, folder="INBOX")
+        except Exception as exc:
+            self.telemetry.record(
+                action="case_mark_read_error",
+                site="azom",
+                meta={"uid": uid, "error": str(exc)[:200]},
+            )
+
     def list_open(self, *, limit: int = 50) -> list[Case]:
-        return self.store.list_cases(status="open", limit=limit)
+        return self.store.list_cases(status="open,escalated", limit=limit)
 
     def get(self, case_id: str) -> Case | None:
         return self.store.get(case_id)
+
+    def save_draft(
+        self,
+        case_id: str,
+        body: str,
+        *,
+        actor: Actor | str | None = None,
+    ) -> CaseActionResult:
+        actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
+        try:
+            require_permission(actor_obj, Permission.CASE_REPLY)
+            case = self.store.get(case_id)
+            if not case:
+                return CaseActionResult(ok=False, message="Case not found")
+            if case.status not in _ACTIVE:
+                return CaseActionResult(
+                    ok=False,
+                    message=f"Case status is {case.status}, expected open/escalated",
+                    case=case.to_dict(),
+                )
+            updated = self.store.update_draft(case_id, body)
+            self.telemetry.record(
+                action="case_draft_saved",
+                site=case.site,
+                meta={"case_id": case_id, "actor": actor_obj.name},
+            )
+            return CaseActionResult(
+                ok=True,
+                message="Draft saved",
+                case=updated.to_dict() if updated else case.to_dict(),
+            )
+        except AccessDenied as exc:
+            ticket = self.escalation.escalate_critical(
+                f"Case draft save denied for {actor_obj.name}",
+                details={"error": str(exc), "case_id": case_id},
+            )
+            return CaseActionResult(
+                ok=False,
+                message=str(exc),
+                escalated=True,
+                ticket_id=ticket.id,
+            )
+
+    def close(
+        self,
+        case_id: str,
+        *,
+        actor: Actor | str | None = None,
+        reason: str | None = None,
+    ) -> CaseActionResult:
+        actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
+        try:
+            require_permission(actor_obj, Permission.CASE_REPLY)
+            case = self.store.get(case_id)
+            if not case:
+                return CaseActionResult(ok=False, message="Case not found")
+            if case.status == "closed":
+                return CaseActionResult(
+                    ok=True, message="Already closed", case=case.to_dict()
+                )
+            updated = self.store.close(case_id)
+            self.telemetry.record(
+                action="case_closed",
+                site=case.site,
+                meta={
+                    "case_id": case_id,
+                    "actor": actor_obj.name,
+                    "reason": (reason or "")[:200],
+                },
+            )
+            return CaseActionResult(
+                ok=True,
+                message="Case closed",
+                case=updated.to_dict() if updated else case.to_dict(),
+            )
+        except AccessDenied as exc:
+            ticket = self.escalation.escalate_critical(
+                f"Case close denied for {actor_obj.name}",
+                details={"error": str(exc), "case_id": case_id},
+            )
+            return CaseActionResult(
+                ok=False,
+                message=str(exc),
+                escalated=True,
+                ticket_id=ticket.id,
+            )
 
     def approve_and_send(
         self,
@@ -204,10 +426,10 @@ class CaseService:
             case = self.store.get(case_id)
             if not case:
                 return CaseActionResult(ok=False, message="Case not found")
-            if case.status != "open":
+            if case.status not in _ACTIVE:
                 return CaseActionResult(
                     ok=False,
-                    message=f"Case status is {case.status}, expected open",
+                    message=f"Case status is {case.status}, expected open/escalated",
                     case=case.to_dict(),
                 )
             body = (body_override or case.draft_reply or "").strip()
@@ -223,7 +445,7 @@ class CaseService:
                 subject=subject,
                 body=body,
                 site=case.site,
-                actor="agent",  # mail send via operator; approval audited below
+                actor="agent",
             )
             if not send.ok:
                 return CaseActionResult(

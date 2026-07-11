@@ -31,16 +31,22 @@
 - One-shot Ubuntu install + systemd + prod Docker (`azom-agent:2.0`)
 - CLI: `python -m ecom_ops version` · `python -m ecom_ops status`
 
-## Cases (mail → ärende, semi-auto)
-- Config: `config/mailboxes.yaml` (N funktionsbrevlådor)
-- DB: `AZOM_DATA_DIR/cases.db` (SQLite)
-- Dashboard: `/cases` · poll + godkänn draft + skicka
-- CLI / poller:
+## Cases 2.0 (mail → ärende)
+- Status: `open` \| `escalated` \| `replied` \| `closed`
+- Trådning (In-Reply-To), mark_read, order-berikad draft, eskaleringslänk
+- Config: `config/mailboxes.yaml` · DB: `AZOM_DATA_DIR/cases.db`
+- Dashboard: `/cases` (filter, spara draft, RBAC close) · översikt med counts
+- Telegram: `/cases` · `show` · `approve` · `close`
+- systemd: `azom-cases-poll.timer` (5 min)
+- CLI:
 ```bash
 python -m ecom_ops --mock cases poll
-python -m ecom_ops --mock cases list
+python -m ecom_ops --mock cases list --status open,escalated
+python -m ecom_ops --mock cases draft --id <uuid> --body "..."
+python -m ecom_ops --mock cases close --id <uuid>
 ./bin/cases-poll.sh
 ```
+- Spec: `docs/superpowers/specs/2026-07-11-cases-v2-design.md`
 
 ## Mail CLI
 ```bash

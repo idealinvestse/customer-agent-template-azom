@@ -42,6 +42,33 @@ from status import health_probe, runtime_status  # noqa: E402
 app = Flask(__name__)
 
 
+def _case_age(iso: str | None) -> str:
+    """Human age from ISO timestamp for case queue."""
+    if not iso:
+        return ""
+    try:
+        from datetime import datetime, timezone
+
+        raw = str(iso).replace("Z", "+00:00")
+        created = datetime.fromisoformat(raw)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - created
+        secs = int(delta.total_seconds())
+        if secs < 60:
+            return f"{secs}s"
+        if secs < 3600:
+            return f"{secs // 60}m"
+        if secs < 86400:
+            return f"{secs // 3600}h"
+        return f"{secs // 86400}d"
+    except Exception:
+        return ""
+
+
+app.jinja_env.globals["case_age"] = _case_age
+
+
 def _data_dir() -> Path:
     return Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
 
@@ -177,6 +204,16 @@ def index():
     open_esc = sum(1 for e in escalations if e.get("status", "open") == "open")
     cap = float(runtime.get("openrouter_cap") or 100)
     cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
+    open_cases = 0
+    escalated_cases = 0
+    try:
+        from ecom_ops.cases.service import CaseService
+
+        cs = CaseService()
+        open_cases = cs.store.count_by_status("open")
+        escalated_cases = cs.store.count_by_status("escalated")
+    except Exception:
+        pass
     return render_template(
         "index.html",
         **_dashboard_context(
@@ -187,6 +224,8 @@ def index():
             budget_cap_llm=runtime.get("budget_cap_llm", 80),
             open_escalations=open_esc,
             cost_pct=cost_pct,
+            open_cases=open_cases,
+            escalated_cases=escalated_cases,
         ),
     )
 
@@ -335,14 +374,24 @@ def interact():
 def cases_list():
     from ecom_ops.cases.service import CaseService
 
-    status = request.args.get("status", "open")
+    status = request.args.get("status", "open,escalated")
+    mailbox_id = request.args.get("mailbox") or None
+    category = request.args.get("category") or None
     svc = CaseService()
     rows = svc.store.list_cases(
-        status=status if status != "all" else None, limit=100
+        status=status if status != "all" else None,
+        mailbox_id=mailbox_id,
+        category=category,
+        limit=100,
     )
     return render_template(
         "cases.html",
-        **_dashboard_context(cases=rows, status_filter=status),
+        **_dashboard_context(
+            cases=rows,
+            status_filter=status,
+            mailbox_filter=mailbox_id or "",
+            category_filter=category or "",
+        ),
     )
 
 
@@ -367,10 +416,10 @@ def case_detail(case_id: str):
     svc = CaseService()
     if request.method == "POST":
         action = request.form.get("action", "reply")
+        body = request.form.get("body") or ""
         if action == "reply":
-            body = request.form.get("body") or None
             result = svc.approve_and_send(
-                case_id, actor=g.actor["name"], body_override=body
+                case_id, actor=g.actor["name"], body_override=body or None
             )
             if result.ok:
                 return redirect(
@@ -379,9 +428,22 @@ def case_detail(case_id: str):
             return redirect(
                 url_for("case_detail", case_id=case_id) + f"?err={result.message}"
             )
+        if action == "save_draft":
+            result = svc.save_draft(case_id, body, actor=g.actor["name"])
+            if result.ok:
+                return redirect(
+                    url_for("case_detail", case_id=case_id) + "?msg=Draft+sparad"
+                )
+            return redirect(
+                url_for("case_detail", case_id=case_id) + f"?err={result.message}"
+            )
         if action == "close":
-            svc.store.close(case_id)
-            return redirect(url_for("cases_list") + "?msg=Stängt")
+            result = svc.close(case_id, actor=g.actor["name"], reason="dashboard")
+            if result.ok:
+                return redirect(url_for("cases_list") + "?msg=Stängt")
+            return redirect(
+                url_for("case_detail", case_id=case_id) + f"?err={result.message}"
+            )
 
     case = svc.get(case_id)
     if not case:

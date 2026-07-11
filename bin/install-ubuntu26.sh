@@ -365,7 +365,8 @@ if [[ ! -d "$UNIT_SRC" ]]; then
 fi
 
 for unit in azom-dashboard.service azom-bot.service \
-            azom-daily-brief.service azom-daily-brief.timer; do
+            azom-daily-brief.service azom-daily-brief.timer \
+            azom-cases-poll.service azom-cases-poll.timer; do
   [[ -f "${UNIT_SRC}/${unit}" ]] || die "Missing unit ${unit}"
   cp "${UNIT_SRC}/${unit}" /etc/systemd/system/
 done
@@ -449,8 +450,10 @@ if [[ "$START_SERVICES" == "1" ]]; then
   log "Enabling and starting services"
   systemctl enable azom-dashboard.service
   systemctl enable azom-daily-brief.timer
+  systemctl enable azom-cases-poll.timer
   systemctl restart azom-dashboard.service
   systemctl restart azom-daily-brief.timer
+  systemctl restart azom-cases-poll.timer
 
   # Bot only if token present
   BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"

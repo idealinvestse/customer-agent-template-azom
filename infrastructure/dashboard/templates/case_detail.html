@@ -15,7 +15,10 @@
     <p class="muted">
       Från: {{ case.from_addr }} · Mailbox: <code>{{ case.mailbox_id }}</code> ·
       Status: {{ case.status }} · Kategori: <code>{{ case.category }}</code>
-      {% if case.order_id %} · Order: {{ case.order_id }}{% endif %}
+      · Prio: {{ case.priority or 'normal' }}
+      {% if case.order_id %} · Order: <strong>{{ case.order_id }}</strong>{% endif %}
+      {% if case.escalation_id %} · Eskalering: <code>{{ case.escalation_id }}</code>{% endif %}
+      · Ålder: {{ case_age(case.created_at) }}
     </p>
   </section>
 
@@ -31,14 +34,14 @@
     {% endfor %}
   </section>
 
-  {% if case.status == 'open' %}
+  {% if case.status in ('open', 'escalated') %}
   <section class="card wide">
-    <h2>Föreslaget svar (godkänn &amp; skicka)</h2>
+    <h2>Föreslaget svar</h2>
     <form method="post" action="/cases/{{ case.id }}">
-      <input type="hidden" name="action" value="reply" />
       <textarea name="body" required>{{ case.draft_reply or '' }}</textarea>
-      <p style="margin-top:0.75rem">
-        <button class="btn" type="submit">Godkänn och skicka</button>
+      <p style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap">
+        <button class="btn" type="submit" name="action" value="reply">Godkänn och skicka</button>
+        <button class="btn secondary" type="submit" name="action" value="save_draft">Spara draft</button>
         <button class="btn secondary" type="submit" name="action" value="close" formnovalidate>Stäng utan svar</button>
         <a class="btn secondary" href="/cases">Tillbaka</a>
       </p>

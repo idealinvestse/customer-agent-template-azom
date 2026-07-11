@@ -324,21 +324,97 @@ def cmd_brief(ctx: CommandContext) -> str:
 
 
 def cmd_cases(ctx: CommandContext) -> str:
+    """ /cases | /cases show <id> | /cases approve <id> | /cases close <id> """
     try:
         from ecom_ops.cases.service import CaseService
 
-        cases = CaseService().list_open(limit=10)
-        if not cases:
-            return "Inga öppna ärenden. /tasks eller dashboard /cases."
-        lines = [f"Öppna ärenden ({len(cases)}):"]
-        for c in cases:
-            lines.append(
-                f"- {c.subject[:40]} | {c.from_addr} | {c.category} | {c.id[:8]}"
+        svc = CaseService()
+        parts = ctx.args.split(maxsplit=1)
+        sub = (parts[0].lower() if parts else "list")
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        if not ctx.args.strip():
+            sub = "list"
+
+        if sub in {"help", "?"}:
+            return (
+                "/cases — lista öppna+eskalerade\n"
+                "/cases show <id8> — detalj + draft\n"
+                "/cases approve <id8> — skicka draft\n"
+                "/cases close <id8> — stäng utan svar"
             )
-        lines.append("Godkänn/skicka i dashboard: /cases")
-        return "\n".join(lines)
+
+        if sub in {"list", "ls"}:
+            cases = svc.list_open(limit=10)
+            if not cases:
+                return "Inga öppna/eskalerade ärenden."
+            lines = [f"Kö ({len(cases)}):"]
+            for c in cases:
+                badge = "!" if c.priority == "high" or c.status == "escalated" else "-"
+                lines.append(
+                    f"{badge} {c.id[:8]} | {c.status} | {c.category} | {c.subject[:36]}"
+                )
+            lines.append("\n/cases show|approve|close <id8>")
+            return "\n".join(lines)
+
+        if sub in {"show", "get", "view"}:
+            if not rest:
+                return "Ange id: /cases show <id8>"
+            case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
+            if not case:
+                return f"Hittade inte case {rest!r}"
+            return _format_case_show(case)
+
+        if sub in {"approve", "reply", "send"}:
+            if not rest:
+                return "Ange id: /cases approve <id8>"
+            case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
+            if not case:
+                return f"Hittade inte case {rest!r}"
+            result = svc.approve_and_send(case.id, actor="jonatan")
+            if result.ok:
+                return f"Skickat. Case {case.id[:8]} → replied."
+            return f"Misslyckades: {result.message}"
+
+        if sub == "close":
+            if not rest:
+                return "Ange id: /cases close <id8>"
+            case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
+            if not case:
+                return f"Hittade inte case {rest!r}"
+            result = svc.close(case.id, actor="jonatan", reason="telegram")
+            if result.ok:
+                return f"Stängt. Case {case.id[:8]}."
+            return f"Misslyckades: {result.message}"
+
+        # Bare id prefix: /cases <id8>
+        case = svc.store.resolve_id_prefix(sub) or svc.get(sub)
+        if case:
+            return _format_case_show(case)
+
+        return (
+            f"Okänt: /cases {sub}\n"
+            "/cases · show · approve · close"
+        )
     except Exception as exc:
         return f"Cases error: {exc}"
+
+
+def _format_case_show(case: Any) -> str:
+    draft = (case.draft_reply or "")[:400]
+    lines = [
+        f"Case {case.id[:8]} ({case.status})",
+        f"Från: {case.from_addr}",
+        f"Ämne: {case.subject}",
+        f"Kategori: {case.category} · prio: {case.priority or 'normal'}",
+    ]
+    if case.order_id:
+        lines.append(f"Order: {case.order_id}")
+    if case.escalation_id:
+        lines.append(f"Eskalering: {case.escalation_id}")
+    lines.append(f"\nDraft:\n{draft or '(tom)'}")
+    lines.append(f"\n/cases approve {case.id[:8]} · /cases close {case.id[:8]}")
+    return "\n".join(lines)
 
 
 def cmd_order(ctx: CommandContext) -> str:
@@ -367,7 +443,7 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("context", "Session context", cmd_context),
     CommandSpec("health", "SSH health checks", cmd_health),
     CommandSpec("brief", "KPI brief", cmd_brief),
-    CommandSpec("cases", "Öppna mail-ärenden", cmd_cases),
+    CommandSpec("cases", "Ärenden: list|show|approve|close", cmd_cases),
     CommandSpec("order", "Orderstatus (read-only)", cmd_order),
 ]
 

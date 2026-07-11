@@ -1,7 +1,7 @@
 # Design: Semi-automated email case management (MVP)
 
-**Date:** 2026-07-11  
-**Status:** approved for implementation (Approach 1)
+**Status:** superseded by Cases 2.0 — see `2026-07-11-cases-v2-design.md`  
+**Date:** 2026-07-11 (MVP; retained for history)
 
 ## Locked decisions
 

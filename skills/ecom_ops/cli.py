@@ -133,6 +133,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_cases_reply.add_argument("--id", required=True, dest="case_id")
     p_cases_reply.add_argument("--body", help="Override draft body")
 
+    p_cases_close = cases_sub.add_parser("close", help="Close case without reply")
+    p_cases_close.add_argument("--id", required=True, dest="case_id")
+    p_cases_close.add_argument("--reason", default="")
+
+    p_cases_draft = cases_sub.add_parser("draft", help="Save draft without sending")
+    p_cases_draft.add_argument("--id", required=True, dest="case_id")
+    p_cases_draft.add_argument("--body", required=True)
+
     return parser
 
 
@@ -305,6 +313,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.case_id,
                 actor=args.actor,
                 body_override=args.body,
+            )
+            return _print(result)
+        if args.cases_command == "close":
+            result = case_svc.close(
+                args.case_id,
+                actor=args.actor,
+                reason=args.reason or None,
+            )
+            return _print(result)
+        if args.cases_command == "draft":
+            result = case_svc.save_draft(
+                args.case_id,
+                args.body,
+                actor=args.actor,
             )
             return _print(result)
         parser.error(f"Unknown cases command: {args.cases_command}")

@@ -11,14 +11,33 @@
   {% endif %}
 
   <section class="card wide">
-    <h2>Ärenden</h2>
-    <p class="muted">Automatiskt skapade från funktionsbrevlådor. Godkänn draft för att skicka.</p>
+    <h2>Ärenden (v2)</h2>
+    <p class="muted">Mail → case + draft. Godkänn för att skicka. Timer pollar var 5:e minut i prod.</p>
     <form method="post" action="/cases/poll" style="display:inline">
       <button class="btn" type="submit">Hämta mail → skapa ärenden</button>
     </form>
+    <a class="btn secondary" href="/cases?status=open,escalated">Kö</a>
     <a class="btn secondary" href="/cases?status=open">Öppna</a>
+    <a class="btn secondary" href="/cases?status=escalated">Eskalerade</a>
     <a class="btn secondary" href="/cases?status=replied">Besvarade</a>
+    <a class="btn secondary" href="/cases?status=closed">Stängda</a>
     <a class="btn secondary" href="/cases?status=all">Alla</a>
+  </section>
+
+  <section class="card wide">
+    <h2>Filter</h2>
+    <form method="get" action="/cases" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:end">
+      <label>Status
+        <input name="status" value="{{ status_filter }}" placeholder="open,escalated" />
+      </label>
+      <label>Mailbox
+        <input name="mailbox" value="{{ mailbox_filter }}" placeholder="support_default" />
+      </label>
+      <label>Kategori
+        <input name="category" value="{{ category_filter }}" placeholder="return" />
+      </label>
+      <button class="btn secondary" type="submit">Filtrera</button>
+    </form>
   </section>
 
   <section class="card wide">
@@ -26,16 +45,27 @@
     {% if cases %}
     <table>
       <thead>
-        <tr><th>När</th><th>Från</th><th>Ämne</th><th>Kategori</th><th>Status</th><th></th></tr>
+        <tr>
+          <th>När</th><th>Ålder</th><th>Från</th><th>Ämne</th>
+          <th>Kategori</th><th>Prio</th><th>Status</th><th></th>
+        </tr>
       </thead>
       <tbody>
         {% for c in cases %}
         <tr>
           <td>{{ c.created_at[:19] }}</td>
+          <td class="muted">{{ case_age(c.created_at) }}</td>
           <td>{{ c.from_addr }}</td>
-          <td>{{ c.subject }}</td>
+          <td>
+            {{ c.subject }}
+            {% if c.priority == 'high' %}<span class="badge warn">high</span>{% endif %}
+          </td>
           <td><code>{{ c.category }}</code></td>
-          <td>{{ c.status }}</td>
+          <td>{{ c.priority or 'normal' }}</td>
+          <td>
+            {% if c.status == 'escalated' %}<span class="badge warn">escalated</span>
+            {% else %}{{ c.status }}{% endif %}
+          </td>
           <td><a href="/cases/{{ c.id }}">Öppna</a></td>
         </tr>
         {% endfor %}
