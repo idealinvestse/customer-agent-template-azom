@@ -6,9 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ecom_ops import __version__
-from ecom_ops.bot.store import ConversationStore
+from ecom_ops.bot.reply import BotReply, approve_case_keyboard
+from ecom_ops.bot.store import ConversationStore, clamp_messages
 
-HandlerFn = Callable[["CommandContext"], str]
+HandlerFn = Callable[["CommandContext"], str | BotReply]
 
 
 @dataclass
@@ -30,11 +31,15 @@ class CommandContext:
             "flow": None,
             "step": None,
             "slots": {},
+            "messages": [],
+            "tool_digest": "",
             "updated_at": 0,
         }
         session = dict(state.get("session") or {})
         session.update(updates)
         state["session"] = session
+        state["messages"] = clamp_messages(state.get("messages"))
+        state["tool_digest"] = str(state.get("tool_digest") or "")
         # preserve flow if mid-dialog
         self.store.set(self.chat_id, state)
 
@@ -59,14 +64,15 @@ def _parse_command(text: str) -> tuple[str | None, str]:
 
 def cmd_help(ctx: CommandContext) -> str:
     return (
-        "AzomOps · OpenClaw-style agent (datalasse)\n"
+        "AzomOps · OpenClaw hybrid\n"
         "Skriv /commands för full katalog.\n\n"
-        "Vanliga:\n"
+        "Fråga fritt — jag hämtar order/ärenden/status när det behövs.\n"
+        "Approve via knapp eller /cases approve (aldrig silent send).\n\n"
+        "Vanliga kommandon:\n"
         "/status · /whoami · /new · /reset · /stop\n"
         "/tools · /tasks · /usage · /model\n"
         "/order · /cases · /health · /brief\n"
-        "/skill ecom-ops\n\n"
-        "Fritext → support-draft (godkänn i /cases eller eskalera)."
+        "/context — dialogminne + senaste tool-digest"
     )
 
 
@@ -130,11 +136,13 @@ def cmd_new(ctx: CommandContext) -> str:
                 "flow": None,
                 "step": None,
                 "slots": {},
+                "messages": [],
+                "tool_digest": "",
                 "session": {"model": model},
             },
         )
         return f"Ny session startad. Model pin: {model}"
-    return "Ny session startad (/new). Föregående dialog arkiverad lokalt."
+    return "Ny session startad (/new). Föregående dialog rensad."
 
 
 def cmd_reset(ctx: CommandContext) -> str:
@@ -144,7 +152,14 @@ def cmd_reset(ctx: CommandContext) -> str:
     if soft and session:
         ctx.store.set(
             ctx.chat_id,
-            {"flow": None, "step": None, "slots": {}, "session": session},
+            {
+                "flow": None,
+                "step": None,
+                "slots": {},
+                "messages": [],
+                "tool_digest": "",
+                "session": session,
+            },
         )
         return "Session reset (soft) — settings behållna, dialog rensad."
     return "Session reset. Skriv /status eller /help."
@@ -153,19 +168,33 @@ def cmd_reset(ctx: CommandContext) -> str:
 def cmd_stop(ctx: CommandContext) -> str:
     state = ctx.store.get(ctx.chat_id)
     session = (state or {}).get("session") or {}
+    messages = clamp_messages((state or {}).get("messages"))
+    digest = str((state or {}).get("tool_digest") or "")
     ctx.store.clear(ctx.chat_id)
-    if session:
+    if session or messages or digest:
         ctx.store.set(
             ctx.chat_id,
-            {"flow": None, "step": None, "slots": {}, "session": session},
+            {
+                "flow": None,
+                "step": None,
+                "slots": {},
+                "messages": messages,
+                "tool_digest": digest,
+                "session": session,
+            },
         )
     return "Stop — pågående flöde avbrutet."
 
 
 def cmd_tools(ctx: CommandContext) -> str:
     verbose = "verbose" in ctx.args.lower()
-    tools = [
-        ("order-status", "Uppdatera Woo orderstatus (operator)"),
+    chat_tools = [
+        ("lookup_order", "Orderstatus (read-only, via fritext)"),
+        ("list_cases / show_case", "Ärenden (read-only)"),
+        ("ops_snapshot", "Status/budget/cases-count"),
+    ]
+    slash_tools = [
+        ("order-status", "Uppdatera Woo orderstatus (operator/CLI)"),
         ("product-desc", "Generera produktbeskrivning"),
         ("support", "Klassificera + draft-svar"),
         ("mail", "Send/fetch/reply (RBAC)"),
@@ -173,12 +202,15 @@ def cmd_tools(ctx: CommandContext) -> str:
         ("ssh", "Allowlistad SSH health"),
         ("escalation", "Ticket till Oscar"),
     ]
-    lines = ["Tools:"]
-    for name, desc in tools:
+    lines = ["Chat-verktyg (fritext, read-only):"]
+    for name, desc in chat_tools:
+        lines.append(f"• {name} — {desc}" if verbose else f"• {name}")
+    lines.append("Slash / CLI:")
+    for name, desc in slash_tools:
         lines.append(f"• {name} — {desc}" if verbose else f"• {name}")
     if not verbose:
         lines.append("(/tools verbose för beskrivningar)")
-    lines.append("CLI: python -m ecom_ops …")
+    lines.append("Utskick kräver /cases approve (eller knappen).")
     return "\n".join(lines)
 
 
@@ -242,14 +274,14 @@ def cmd_model(ctx: CommandContext) -> str:
         return (
             f"Model\n"
             f"Session: {ctx.session.get('model', 'default')}\n"
-            f"Default: template/support (ingen LLM-chat i MVP)\n"
+            f"Default: OPENROUTER_MODEL / gpt-4o-mini (LLM-chat på fritext)\n"
             f"Sätt: /model <name> · /model default"
         )
     if arg == "default":
         ctx.save_session(model="default")
         return "Model pin cleared (default)."
     ctx.save_session(model=arg)
-    return f"Model pin: {arg} (används när LLM-chat aktiveras)."
+    return f"Model pin: {arg} (används i LLM-chat)."
 
 
 def cmd_verbose(ctx: CommandContext) -> str:
@@ -283,11 +315,18 @@ def cmd_skill(ctx: CommandContext) -> str:
 def cmd_context(ctx: CommandContext) -> str:
     state = ctx.store.get(ctx.chat_id)
     flow = (state or {}).get("flow")
+    n_msg = len((state or {}).get("messages") or [])
+    model = ctx.session.get("model", "default")
+    digest = str((state or {}).get("tool_digest") or "").strip()
+    digest_line = digest.replace("\n", " · ")[:200] if digest else "(none)"
     return (
         f"Context\n"
         f"flow: {flow or 'idle'}\n"
+        f"turns: {n_msg}\n"
+        f"model: {model}\n"
+        f"tool_digest: {digest_line}\n"
         f"session keys: {', '.join(sorted(ctx.session.keys())) or '(none)'}\n"
-        f"/context list — samma översikt"
+        f"/new rensar historik · /reset soft behåller settings"
     )
 
 
@@ -327,7 +366,7 @@ def cmd_brief(ctx: CommandContext) -> str:
         return f"Brief error: {exc}"
 
 
-def cmd_cases(ctx: CommandContext) -> str:
+def cmd_cases(ctx: CommandContext) -> str | BotReply:
     """ /cases | /cases show <id> | /cases approve <id> | /cases close <id> """
     try:
         from ecom_ops.bot.actors import resolve_telegram_actor
@@ -381,7 +420,7 @@ def cmd_cases(ctx: CommandContext) -> str:
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
                 return f"Hittade inte case {rest!r}"
-            return _format_case_show(case)
+            return _case_show_reply(case)
 
         if sub in {"approve", "reply", "send"}:
             if not rest:
@@ -408,7 +447,7 @@ def cmd_cases(ctx: CommandContext) -> str:
         # Bare id prefix: /cases <id8>
         case = svc.store.resolve_id_prefix(sub) or svc.get(sub)
         if case:
-            return _format_case_show(case)
+            return _case_show_reply(case)
 
         return (
             f"Okänt: /cases {sub}\n"
@@ -438,6 +477,15 @@ def _format_case_show(case: Any) -> str:
     lines.append(f"\nDraft:\n{draft or '(tom)'}")
     lines.append(f"\n/cases approve {case.id[:8]} · /cases close {case.id[:8]}")
     return "\n".join(lines)
+
+
+def _case_show_reply(case: Any) -> BotReply:
+    """Case show with explicit approve button (same path as /cases approve)."""
+    text = _format_case_show(case)
+    return BotReply(
+        text=text,
+        reply_markup=approve_case_keyboard(case.id[:8]),
+    )
 
 
 def cmd_order(ctx: CommandContext) -> str:
@@ -506,7 +554,7 @@ def dispatch_openclaw_command(
     chat_id: str | int,
     text: str,
     store: ConversationStore,
-) -> str | None:
+) -> str | BotReply | None:
     """Return reply if text is an OpenClaw/Azom slash command, else None."""
     name, args = _parse_command(text)
     if not name:

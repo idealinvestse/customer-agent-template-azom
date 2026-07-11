@@ -8,6 +8,27 @@ import time
 from pathlib import Path
 from typing import Any
 
+# Chat continuity: 8h idle TTL (refreshed on every set via updated_at).
+DEFAULT_TTL_SECONDS = 8 * 3600
+# Keep last N role/content turns (user+assistant pairs ≈ 10 exchanges).
+MAX_MESSAGES = 20
+
+
+def clamp_messages(messages: list[dict[str, Any]] | None, *, max_n: int = MAX_MESSAGES) -> list[dict[str, str]]:
+    """Return sanitized message history capped to the newest ``max_n`` turns."""
+    out: list[dict[str, str]] = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "").strip()
+        content = str(m.get("content") or "")
+        if role not in {"user", "assistant", "system"} or not content:
+            continue
+        out.append({"role": role, "content": content})
+    if len(out) > max_n:
+        out = out[-max_n:]
+    return out
+
 
 class ConversationStore:
     """Persist multi-turn bot state under AZOM_DATA_DIR/telegram_state.json."""
@@ -16,7 +37,7 @@ class ConversationStore:
         self,
         path: Path | None = None,
         *,
-        ttl_seconds: int = 3600,
+        ttl_seconds: int = DEFAULT_TTL_SECONDS,
     ) -> None:
         if path is None:
             base = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
@@ -53,11 +74,16 @@ class ConversationStore:
         if time.time() - updated > self.ttl_seconds:
             self.clear(chat_id)
             return None
-        return dict(entry)
+        out = dict(entry)
+        if "messages" in out:
+            out["messages"] = clamp_messages(out.get("messages"))
+        return out
 
     def set(self, chat_id: str | int, state: dict[str, Any]) -> None:
         key = str(chat_id)
         state = dict(state)
+        if "messages" in state:
+            state["messages"] = clamp_messages(state.get("messages"))
         state["updated_at"] = time.time()
         self._data[key] = state
         self._save()

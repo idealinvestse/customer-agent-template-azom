@@ -79,6 +79,9 @@ class InMemoryWooTransport:
                 "currency": "SEK",
                 "total": "499.00",
                 "billing": {"email": "customer@example.com"},
+                "line_items": [
+                    {"name": "Azom Pro Headset", "quantity": 1},
+                ],
             },
             "1002": {
                 "id": 1002,
