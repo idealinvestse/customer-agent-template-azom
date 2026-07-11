@@ -590,15 +590,19 @@ def cases_list():
     status = request.args.get("status", "open,escalated")
     mailbox_id = request.args.get("mailbox") or None
     category = request.args.get("category") or None
+    suggest_raw = (request.args.get("suggest") or "").strip().lower()
+    suggest_only = suggest_raw in {"1", "true", "yes", "on"}
     svc = CaseService()
     rows = svc.store.list_cases(
         status=status if status != "all" else None,
         mailbox_id=mailbox_id or None,
         category=category or None,
+        suggest_approve=True if suggest_only else None,
         limit=100,
     )
-    # Stable multi-key: escalated → high → newest
+    # Stable multi-key: escalated → high → suggest-approve → newest
     rows.sort(key=lambda c: c.created_at or "", reverse=True)
+    rows.sort(key=lambda c: 0 if getattr(c, "suggest_approve", False) else 1)
     rows.sort(key=lambda c: 0 if (c.priority or "") == "high" else 1)
     rows.sort(key=lambda c: 0 if c.status == "escalated" else 1)
     return render_template(
@@ -608,6 +612,7 @@ def cases_list():
             status_filter=status,
             mailbox_filter=mailbox_id or "",
             category_filter=category or "",
+            suggest_filter=suggest_only,
             mailboxes=enabled_mailboxes(),
         ),
     )

@@ -79,6 +79,122 @@ def chat_completion(
     return content, cost
 
 
+def classify_support_with_llm(
+    *,
+    customer_message: str,
+    language: str = "sv",
+    telemetry: Telemetry | None = None,
+    site: str = "azom",
+) -> tuple[str, float] | None:
+    """
+    Classify a support message via OpenRouter.
+    Returns (category_value, confidence) or None to use keyword fallback.
+    """
+    api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if not api_key:
+        return None
+    tel = telemetry or default_telemetry
+    cap = openrouter_cap_usd()
+    if not tel.within_budget(cap):
+        tel.record(
+            action="llm_budget_skip",
+            site=site,
+            cost_usd=0.0,
+            meta={"cap_usd": cap, "spent_usd": tel.sum_cost_usd(), "kind": "classify"},
+        )
+        return None
+
+    allowed = (
+        "order_status,shipping,product,return,billing,technical,abuse,other"
+    )
+    system = (
+        "You classify Nordic e-commerce support emails for Azom. "
+        "Reply with ONLY a single JSON object, no markdown: "
+        '{"category":"<one of: '
+        + allowed
+        + '>", "confidence": <float 0..1>}. '
+        "Use abuse for legal threats, chargebacks, self-harm, or violence. "
+        "Prefer order_status when the customer asks where an order is."
+    )
+    user = (
+        f"Language hint: {(language or 'sv').lower()}\n"
+        f"Customer message:\n{customer_message[:4000]}"
+    )
+    try:
+        content, cost = chat_completion(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=80,
+            temperature=0.0,
+        )
+    except Exception as exc:
+        tel.record(
+            action="llm_classify_error",
+            site=site,
+            cost_usd=0.0,
+            meta={"error": str(exc)[:200]},
+        )
+        return None
+
+    parsed = _parse_classify_json(content)
+    if not parsed:
+        tel.record(
+            action="llm_classify_error",
+            site=site,
+            cost_usd=0.0,
+            meta={"error": "unparseable classify", "excerpt": content[:120]},
+        )
+        return None
+
+    category, confidence = parsed
+    tel.record(
+        action="llm_support_classify",
+        site=site,
+        unit_type="tokens",
+        units=1.0,
+        cost_usd=cost,
+        meta={"category": category, "confidence": confidence, "model": DEFAULT_MODEL},
+    )
+    return category, confidence
+
+
+def _parse_classify_json(content: str) -> tuple[str, float] | None:
+    text = (content or "").strip()
+    if not text:
+        return None
+    # Strip optional fences
+    fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.I | re.S)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        import json
+
+        data = json.loads(text)
+    except Exception:
+        # Best-effort extract
+        cat_m = re.search(
+            r'"category"\s*:\s*"([a-z_]+)"', text, re.I
+        )
+        conf_m = re.search(r'"confidence"\s*:\s*([0-9]*\.?[0-9]+)', text, re.I)
+        if not cat_m or not conf_m:
+            return None
+        category = cat_m.group(1).lower()
+        confidence = float(conf_m.group(1))
+        return category, max(0.0, min(1.0, confidence))
+    if not isinstance(data, dict):
+        return None
+    category = str(data.get("category") or "").strip().lower()
+    try:
+        confidence = float(data.get("confidence"))
+    except (TypeError, ValueError):
+        return None
+    if not category:
+        return None
+    return category, max(0.0, min(1.0, confidence))
+
+
 def draft_support_with_llm(
     *,
     customer_message: str,
@@ -86,12 +202,17 @@ def draft_support_with_llm(
     language: str,
     customer_name: str | None,
     order_id: str | None,
+    order_context: str | None = None,
     telemetry: Telemetry | None = None,
     site: str = "azom",
 ) -> str | None:
     """
     Generate a support draft via OpenRouter when key + budget allow.
     Returns None to signal caller should use the template fallback.
+
+    When ``order_context`` is provided (Woo status/total/currency), include it
+    in the prompt so the model can reference real order data — never invent
+    tracking numbers.
     """
     api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
     if not api_key:
@@ -114,13 +235,17 @@ def draft_support_with_llm(
         "You write short, professional customer-support email drafts for Azom "
         "(Nordic e-commerce). Output only the email body — no subject line, "
         "no markdown fences. Sign as Azom Support. Do not invent tracking "
-        "numbers, refunds, or legal promises. Keep under 180 words."
+        "numbers, refunds, or legal promises. Use only order facts from the "
+        "provided order context when present. Keep under 180 words."
     )
+    ctx = (order_context or "").strip()
+    context_block = f"Order context:\n{ctx}\n" if ctx else "Order context: (none)\n"
     user = (
         f"Language: {lang}\n"
         f"Category: {category}\n"
         f"Customer name: {name}\n"
         f"Order id: {oid}\n"
+        f"{context_block}"
         f"Customer message:\n{customer_message[:4000]}"
     )
     try:

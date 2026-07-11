@@ -7,11 +7,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ecom_ops.actions.mail import MailService
-from ecom_ops.actions.support import SupportService
+from ecom_ops.actions.support import SupportService, extract_order_id
 from ecom_ops.cases.mailboxes import MailboxConfig, enabled_mailboxes
 from ecom_ops.cases.store import Case, CaseStore
 from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.integrations.mail import MailClient, MailMessage, client_from_env
+from ecom_ops.order_context import (
+    draft_has_order_block,
+    resolve_order_context,
+)
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
@@ -101,25 +105,21 @@ def _enrich_draft_with_order(
     order_id: str | None,
     *,
     use_mock: bool | None = None,
+    order_context: str | None = None,
 ) -> str:
     base = (draft or "").strip()
     if not order_id:
         return base
-    try:
-        from ecom_ops.integrations.woocommerce import client_from_env as woo_from_env
-
-        woo = woo_from_env(use_mock=use_mock)
-        order = woo.get_order(str(order_id))
-        block = (
-            f"[Order {order.id}]\n"
-            f"Status: {order.status}\n"
-            f"Total: {order.total} {order.currency}\n\n"
-        )
-        if block.strip() in base:
-            return base
-        return block + base
-    except Exception:
+    if draft_has_order_block(base, order_id):
         return base
+    block = (order_context or "").strip()
+    if not block:
+        block = resolve_order_context(order_id, use_mock=use_mock) or ""
+    if not block:
+        return base
+    if block in base:
+        return base
+    return f"{block}\n\n{base}"
 
 
 def _outbound_thread_headers(
@@ -168,6 +168,42 @@ class CaseService:
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
         self._injected_mail_client = mail_client
+
+    def evaluate_auto_send_eligibility(
+        self,
+        case: Case | dict[str, Any],
+        *,
+        auto_sends_today: int = 0,
+    ) -> bool:
+        """Rails-only checkpoint: eligibility for a future Oscar auto-send experiment.
+
+        Never sends mail. ``poll`` / ingest must not call this to dispatch outbound
+        mail — human ``approve_and_send`` remains the live path while
+        ``auto_send_enabled`` defaults to false (and even when True until an
+        experiment wires a sender).
+        """
+        from ecom_ops.cases.auto_send import should_auto_send
+
+        if isinstance(case, Case):
+            category = case.category
+            confidence = float(case.classify_confidence or 0.0)
+            order_id = case.order_id
+            escalated = case.status == "escalated" or bool(case.escalation_id)
+        else:
+            category = str(case.get("category") or "")
+            confidence = float(case.get("classify_confidence") or 0.0)
+            order_id = case.get("order_id")
+            escalated = (
+                str(case.get("status") or "") == "escalated"
+                or bool(case.get("escalation_id"))
+            )
+        return should_auto_send(
+            category=category,
+            confidence=confidence,
+            order_id=order_id,
+            escalated=escalated,
+            auto_sends_today=auto_sends_today,
+        )
 
     def poll(
         self,
@@ -300,15 +336,24 @@ class CaseService:
         in_reply_to = getattr(msg, "in_reply_to", None)
         references_header = getattr(msg, "references_header", None)
 
+        # Resolve Woo order once for LLM prompt + template prepend (avoid double-fetch).
+        preview_order_id = extract_order_id(f"{subject}\n\n{body}")
+        order_ctx = resolve_order_context(preview_order_id, use_mock=use_mock)
+
         support = self.support.handle(
             f"{subject}\n\n{body}",
             customer_email=from_addr if "@" in from_addr else None,
             language=mb.language,
             site=mb.site,
             actor="agent",
+            use_mock=use_mock,
+            order_context=order_ctx,
         )
         draft = _enrich_draft_with_order(
-            support.reply, support.order_id, use_mock=use_mock
+            support.reply,
+            support.order_id,
+            use_mock=use_mock,
+            order_context=order_ctx,
         )
 
         threaded = self.store.find_by_thread_headers(
@@ -332,6 +377,9 @@ class CaseService:
                 draft_reply=draft,
                 category=support.category.value,
                 order_id=support.order_id or threaded.order_id,
+                classify_confidence=getattr(support, "confidence", None),
+                classify_method=getattr(support, "classify_method", None),
+                suggest_approve=bool(getattr(support, "suggest_approve", False)),
             )
             if case is None:
                 return None
@@ -387,6 +435,10 @@ class CaseService:
             escalation_id=escalation_id,
             in_reply_to=in_reply_to,
             references_header=references_header,
+            classify_confidence=getattr(support, "confidence", None),
+            classify_method=getattr(support, "classify_method", None),
+            suggest_approve=bool(getattr(support, "suggest_approve", False))
+            and status != "escalated",
         )
         self.telemetry.record(
             action="case_created",

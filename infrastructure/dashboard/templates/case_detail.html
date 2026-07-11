@@ -3,11 +3,17 @@
 {% block page_subtitle %}Ärendedetalj{% endblock %}
 {% block content %}
 <div class="space-y-5">
-  <section class="az-card">
+  <section class="az-card {% if case.suggest_approve %}ring-1 ring-steel-500/40{% endif %}">
     <h2 class="az-page-title">{{ case.subject }}</h2>
     <p class="az-muted mt-2">
       Från: {{ case.from_addr }} · Mailbox: <code class="az-code">{{ case.mailbox_id }}</code> ·
       Status: {{ case.status }} · Kategori: <code class="az-code">{{ case.category }}</code>
+      {% if case.suggest_approve %}
+      · <span class="rounded bg-steel-600/60 px-2 py-0.5 text-xs font-medium text-steel-100">Föreslå godkänn</span>
+      {% endif %}
+      {% if case.classify_confidence is not none %}
+      · Confidence: {{ '%.0f'|format((case.classify_confidence or 0) * 100) }}%
+      {% endif %}
       · Prio: {{ case.priority or 'normal' }}
       · Assignee: {{ case.assignee or '—' }}
       {% if case.order_id %} · Order: <strong class="text-mist-100">{{ case.order_id }}</strong>{% endif %}
@@ -36,15 +42,20 @@
   </section>
 
   {% if case.status in ('open', 'escalated') %}
-  <section class="az-card" x-data="{ submitting: false }">
-    <h2 class="az-section-title">Föreslaget svar</h2>
+  <section class="az-card {% if case.suggest_approve %}border border-steel-500/50 bg-steel-950/30{% endif %}" x-data="{ submitting: false }">
+    <h2 class="az-section-title">
+      {% if case.suggest_approve %}Föreslaget svar — redo att godkänna{% else %}Föreslaget svar{% endif %}
+    </h2>
+    {% if case.suggest_approve %}
+    <p class="az-muted mb-3 text-sm">Klassningen ser rutinmässig ut. Du bekräftar fortfarande innan något skickas.</p>
+    {% endif %}
     <form
       method="post"
       action="/cases/{{ case.id }}"
       class="space-y-4"
       @submit="
         if ($event.submitter && $event.submitter.value === 'reply') {
-          if (!confirm('Skicka svar till kunden nu?')) {
+          if (!confirm({% if case.suggest_approve %}'Skicka nu?'{% else %}'Skicka svar till kunden nu?'{% endif %})) {
             $event.preventDefault();
             submitting = false;
             return;

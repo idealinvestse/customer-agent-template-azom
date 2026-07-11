@@ -2,6 +2,10 @@
 
 **Datum:** 2026-07-11 · **Package:** 2.0.0 · **Läge:** V2 shipped / pilot-ready
 
+**Decision doc (next steps — revised, decisions locked):** [`2026-07-11-azom-project-overview-next-steps-scope.md`](./2026-07-11-azom-project-overview-next-steps-scope.md) — **primary path = B (Cases/AI, high LLM appetite)**; measurement/engagement are thin-parallel / parked. This file stays the item inventory.
+
+> **Note:** Rows below that call OpenRouter a “stub” / AI “svag” are partly **stale** after the P0–P10 wave (LLM drafts + product-desc path shipped). Prefer the overview for current maturity and locked next-path scope.
+
 Interaktiv vy: Cursor Canvas `azom-status-improvement-backlog.canvas.tsx`.
 
 ## Produktmål

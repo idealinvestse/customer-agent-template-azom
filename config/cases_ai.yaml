@@ -1,0 +1,21 @@
+# Cases / AI quality guardrails (Path B)
+# Auto-send stays OFF by default — rails only until an explicit Oscar experiment.
+
+suggest_approve_categories:
+  - order_status
+  - shipping
+suggest_approve_min_confidence: 0.8
+suggest_approve_require_order_id: true
+never_suggest_categories:
+  - abuse
+  - return
+  - billing
+
+# Oscar-only: set true only for an explicit flagged experiment (never default-on).
+# Env kill-switch AZOM_AUTO_SEND_KILL=1 forces off even when enabled.
+auto_send_enabled: false
+auto_send_categories:
+  - order_status
+auto_send_min_confidence: 0.92
+max_auto_sends_per_day: 10
+kill_switch_env: AZOM_AUTO_SEND_KILL

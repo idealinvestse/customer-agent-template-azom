@@ -354,13 +354,25 @@ def cmd_cases(ctx: CommandContext) -> str:
             cases = svc.list_open(limit=10)
             if not cases:
                 return "Inga öppna/eskalerade ärenden."
+            # Escalated → high → suggest-approve → newest
+            cases = list(cases)
+            cases.sort(key=lambda c: c.created_at or "", reverse=True)
+            cases.sort(key=lambda c: 0 if getattr(c, "suggest_approve", False) else 1)
+            cases.sort(key=lambda c: 0 if (c.priority or "") == "high" else 1)
+            cases.sort(key=lambda c: 0 if c.status == "escalated" else 1)
             lines = [f"Kö ({len(cases)}):"]
             for c in cases:
                 badge = "!" if c.priority == "high" or c.status == "escalated" else "-"
+                if getattr(c, "suggest_approve", False):
+                    conf = getattr(c, "classify_confidence", None)
+                    conf_s = f" {conf:.0%}" if isinstance(conf, (int, float)) else ""
+                    suggest = f" ★föreslå{conf_s}"
+                else:
+                    suggest = ""
                 lines.append(
-                    f"{badge} {c.id[:8]} | {c.status} | {c.category} | {c.subject[:36]}"
+                    f"{badge} {c.id[:8]} | {c.status} | {c.category}{suggest} | {c.subject[:36]}"
                 )
-            lines.append("\n/cases show|approve|close <id8>")
+            lines.append("\n/cases show|approve|close <id8>  (★föreslå = bekräfta med approve)")
             return "\n".join(lines)
 
         if sub in {"show", "get", "view"}:
@@ -414,6 +426,11 @@ def _format_case_show(case: Any) -> str:
         f"Ämne: {case.subject}",
         f"Kategori: {case.category} · prio: {case.priority or 'normal'}",
     ]
+    if getattr(case, "suggest_approve", False):
+        conf = getattr(case, "classify_confidence", None)
+        conf_s = f" ({conf:.0%})" if isinstance(conf, (int, float)) else ""
+        lines.append(f"★ Föreslå godkänn{conf_s}")
+        lines.append(f"Bekräfta skicka: /cases approve {case.id[:8]}")
     if case.order_id:
         lines.append(f"Order: {case.order_id}")
     if case.escalation_id:

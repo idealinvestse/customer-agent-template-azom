@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 # Bump when adding breaking schema changes; _migrate() applies steps in order.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _default_db_path() -> Path:
@@ -55,6 +55,9 @@ class Case:
     escalation_id: str | None = None
     priority: str = "normal"
     assignee: str | None = "jonatan"
+    classify_confidence: float | None = None
+    classify_method: str | None = None
+    suggest_approve: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +78,9 @@ class Case:
             "escalation_id": self.escalation_id,
             "priority": self.priority,
             "assignee": self.assignee,
+            "classify_confidence": self.classify_confidence,
+            "classify_method": self.classify_method,
+            "suggest_approve": self.suggest_approve,
         }
 
 
@@ -220,6 +226,10 @@ class CaseStore:
         if current < 2:
             self._migrate_columns(conn)
             self._record_version(conn, 2)
+            current = 2
+        if current < 3:
+            self._migrate_v3_suggest(conn)
+            self._record_version(conn, 3)
 
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
         case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
@@ -242,6 +252,20 @@ class CaseStore:
         if "references_header" not in msg_cols:
             alters.append(
                 "ALTER TABLE case_messages ADD COLUMN references_header TEXT"
+            )
+        for sql in alters:
+            conn.execute(sql)
+
+    def _migrate_v3_suggest(self, conn: sqlite3.Connection) -> None:
+        case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
+        alters: list[str] = []
+        if "classify_confidence" not in case_cols:
+            alters.append("ALTER TABLE cases ADD COLUMN classify_confidence REAL")
+        if "classify_method" not in case_cols:
+            alters.append("ALTER TABLE cases ADD COLUMN classify_method TEXT")
+        if "suggest_approve" not in case_cols:
+            alters.append(
+                "ALTER TABLE cases ADD COLUMN suggest_approve INTEGER NOT NULL DEFAULT 0"
             )
         for sql in alters:
             conn.execute(sql)
@@ -361,6 +385,7 @@ class CaseStore:
         status: str | None = "open",
         mailbox_id: str | None = None,
         category: str | None = None,
+        suggest_approve: bool | None = None,
         limit: int = 50,
     ) -> list[Case]:
         sql = "SELECT * FROM cases WHERE 1=1"
@@ -380,6 +405,9 @@ class CaseStore:
         if category:
             sql += " AND category = ?"
             params.append(category)
+        if suggest_approve is not None:
+            sql += " AND suggest_approve = ?"
+            params.append(1 if suggest_approve else 0)
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         with self._conn() as conn:
@@ -414,6 +442,9 @@ class CaseStore:
         assignee: str | None = "jonatan",
         in_reply_to: str | None = None,
         references_header: str | None = None,
+        classify_confidence: float | None = None,
+        classify_method: str | None = None,
+        suggest_approve: bool = False,
     ) -> Case:
         if message_id:
             existing = self.find_by_message_id(message_id)
@@ -439,6 +470,9 @@ class CaseStore:
             escalation_id=escalation_id,
             priority=priority,
             assignee=assignee,
+            classify_confidence=classify_confidence,
+            classify_method=classify_method,
+            suggest_approve=bool(suggest_approve),
         )
         msg_id = str(uuid.uuid4())
         with self._conn() as conn:
@@ -447,8 +481,9 @@ class CaseStore:
                 INSERT INTO cases (
                     id, mailbox_id, subject, from_addr, category, status,
                     order_id, draft_reply, message_id, site, market, language,
-                    created_at, updated_at, escalation_id, priority, assignee
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    created_at, updated_at, escalation_id, priority, assignee,
+                    classify_confidence, classify_method, suggest_approve
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     case.id,
@@ -468,6 +503,9 @@ class CaseStore:
                     case.escalation_id,
                     case.priority,
                     case.assignee,
+                    case.classify_confidence,
+                    case.classify_method,
+                    1 if case.suggest_approve else 0,
                 ),
             )
             conn.execute(
@@ -506,6 +544,9 @@ class CaseStore:
         draft_reply: str | None = None,
         category: str | None = None,
         order_id: str | None = None,
+        classify_confidence: float | None = None,
+        classify_method: str | None = None,
+        suggest_approve: bool | None = None,
     ) -> Case | None:
         now = _now()
         with self._conn() as conn:
@@ -540,6 +581,15 @@ class CaseStore:
             if order_id is not None:
                 sets.append("order_id = ?")
                 params.append(order_id)
+            if classify_confidence is not None:
+                sets.append("classify_confidence = ?")
+                params.append(classify_confidence)
+            if classify_method is not None:
+                sets.append("classify_method = ?")
+                params.append(classify_method)
+            if suggest_approve is not None:
+                sets.append("suggest_approve = ?")
+                params.append(1 if suggest_approve else 0)
             params.append(case_id)
             conn.execute(
                 f"UPDATE cases SET {', '.join(sets)} WHERE id = ?",
@@ -627,6 +677,15 @@ class CaseStore:
     @staticmethod
     def _row_to_case(row: sqlite3.Row) -> Case:
         keys = row.keys()
+        conf = None
+        if "classify_confidence" in keys and row["classify_confidence"] is not None:
+            conf = float(row["classify_confidence"])
+        method = None
+        if "classify_method" in keys and row["classify_method"]:
+            method = str(row["classify_method"])
+        suggest = False
+        if "suggest_approve" in keys and row["suggest_approve"] is not None:
+            suggest = bool(int(row["suggest_approve"]))
         return Case(
             id=row["id"],
             mailbox_id=row["mailbox_id"],
@@ -645,6 +704,9 @@ class CaseStore:
             escalation_id=row["escalation_id"] if "escalation_id" in keys else None,
             priority=(row["priority"] if "priority" in keys and row["priority"] else "normal"),
             assignee=row["assignee"] if "assignee" in keys else "jonatan",
+            classify_confidence=conf,
+            classify_method=method,
+            suggest_approve=suggest,
         )
 
     @staticmethod

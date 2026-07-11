@@ -2,7 +2,10 @@
 {% block title %}Ärenden – Azom{% endblock %}
 {% block page_subtitle %}Ärenden{% endblock %}
 {% block content %}
-<div class="space-y-5" x-data="{ filterOpen: false, polling: false }">
+{% set q_mailbox = ('&mailbox=' ~ mailbox_filter) if mailbox_filter else '' %}
+{% set q_suggest = '&suggest=1' if suggest_filter else '' %}
+{% set q_category = ('&category=' ~ category_filter) if category_filter else '' %}
+<div class="space-y-5" x-data="{ filterOpen: {{ 'true' if suggest_filter or category_filter else 'false' }}, polling: false }">
   <div class="flex flex-wrap items-end justify-between gap-3">
     <div>
       <h2 class="az-page-title">Ärenden</h2>
@@ -17,15 +20,17 @@
         <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
         <button class="az-btn-primary" type="submit" :disabled="polling" x-text="polling ? 'Hämtar…' : 'Hämta mail → skapa ärenden'"></button>
       </form>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open,escalated' else '' }}" href="/cases?status=open,escalated{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Kö</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open' else '' }}" href="/cases?status=open{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Öppna</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'escalated' else '' }}" href="/cases?status=escalated{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Eskalerade</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'replied' else '' }}" href="/cases?status=replied{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Besvarade</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'closed' else '' }}" href="/cases?status=closed{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Stängda</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'all' else '' }}" href="/cases?status=all{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Alla</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open,escalated' and not suggest_filter else '' }}" href="/cases?status=open,escalated{{ q_mailbox }}{{ q_category }}">Kö</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open' and not suggest_filter else '' }}" href="/cases?status=open{{ q_mailbox }}{{ q_category }}">Öppna</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'escalated' and not suggest_filter else '' }}" href="/cases?status=escalated{{ q_mailbox }}{{ q_category }}">Eskalerade</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if suggest_filter else '' }}" href="/cases?status=open,escalated{{ q_mailbox }}{{ q_category }}&suggest=1">Föreslå godkänn</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'replied' and not suggest_filter else '' }}" href="/cases?status=replied{{ q_mailbox }}{{ q_category }}">Besvarade</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'closed' and not suggest_filter else '' }}" href="/cases?status=closed{{ q_mailbox }}{{ q_category }}">Stängda</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'all' and not suggest_filter else '' }}" href="/cases?status=all{{ q_mailbox }}{{ q_category }}">Alla</a>
       <form method="get" action="/cases" class="flex items-end gap-2">
         <input type="hidden" name="status" value="{{ status_filter }}" />
         {% if category_filter %}<input type="hidden" name="category" value="{{ category_filter }}" />{% endif %}
+        {% if suggest_filter %}<input type="hidden" name="suggest" value="1" />{% endif %}
         <div>
           <label class="az-label" for="mailbox-quick">Mailbox</label>
           <select class="az-select !max-w-[14rem]" id="mailbox-quick" name="mailbox" onchange="this.form.submit()">
@@ -71,12 +76,16 @@
         <label class="az-label" for="category">Kategori</label>
         <input class="az-input !max-w-[12rem]" id="category" name="category" value="{{ category_filter }}" placeholder="return" />
       </div>
+      <div class="flex items-center gap-2 pb-2">
+        <input type="checkbox" id="suggest" name="suggest" value="1" class="rounded border-ink-600" {% if suggest_filter %}checked{% endif %} />
+        <label class="az-label !mb-0" for="suggest">Endast föreslå godkänn</label>
+      </div>
       <button class="az-btn-secondary" type="submit">Filtrera</button>
     </form>
   </section>
 
   <section class="az-card">
-    <h2 class="az-section-title">Kö ({{ status_filter }})</h2>
+    <h2 class="az-section-title">Kö ({{ status_filter }}{% if suggest_filter %} · föreslå{% endif %})</h2>
     {% if cases %}
     <div class="overflow-x-auto">
       <table class="az-table">
@@ -88,16 +97,23 @@
         </thead>
         <tbody>
           {% for c in cases %}
-          <tr class="transition hover:bg-ink-800/40">
+          <tr class="transition hover:bg-ink-800/40 {% if c.suggest_approve %}bg-steel-900/25{% endif %}">
             <td>{{ c.created_at[:19] }}</td>
             <td class="az-muted">{{ case_age(c.created_at) }}</td>
             <td>{{ c.from_addr }}</td>
             <td>
               {{ c.subject }}
               {% if c.priority == 'high' %}<span class="az-badge bg-warn/15 text-warn ml-1">high</span>{% endif %}
+              {% if c.suggest_approve %}<span class="az-badge bg-steel-600/50 text-steel-100 ml-1" title="Låg-friktion godkänn — du bekräftar fortfarande">Föreslå godkänn</span>{% endif %}
             </td>
             <td><code class="az-code">{{ c.category }}</code></td>
-            <td>{{ c.priority or 'normal' }}</td>
+            <td>
+              {% if c.suggest_approve and (c.priority or 'normal') == 'normal' %}
+              <span class="text-steel-300">föreslå</span>
+              {% else %}
+              {{ c.priority or 'normal' }}
+              {% endif %}
+            </td>
             <td>
               {% if c.status == 'escalated' %}<span class="az-badge bg-warn/15 text-warn">escalated</span>
               {% else %}{{ c.status }}{% endif %}

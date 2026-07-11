@@ -7,11 +7,17 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from ecom_ops.cases.suggest import is_suggest_approve_eligible
 from ecom_ops.escalation import EscalationReason, EscalationService, Severity, default_escalation
-from ecom_ops.llm import draft_support_with_llm
+from ecom_ops.llm import classify_support_with_llm, draft_support_with_llm
+from ecom_ops.order_context import resolve_order_context
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, sanitize_text, validate_email, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
+
+# Keyword-only classifications stay below suggest-approve threshold by default.
+_KEYWORD_CONFIDENCE = 0.65
+_ABUSE_CONFIDENCE = 1.0
 
 
 class SupportCategory(str, Enum):
@@ -52,6 +58,9 @@ class SupportResult:
     escalated: bool
     ticket_id: str | None
     message: str
+    confidence: float = 0.0
+    classify_method: str = "keyword"
+    suggest_approve: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,7 +71,63 @@ class SupportResult:
             "escalated": self.escalated,
             "ticket_id": self.ticket_id,
             "message": self.message,
+            "confidence": self.confidence,
+            "classify_method": self.classify_method,
+            "suggest_approve": self.suggest_approve,
         }
+
+
+def _category_from_value(value: str) -> SupportCategory | None:
+    try:
+        return SupportCategory(str(value).strip().lower())
+    except ValueError:
+        return None
+
+
+def classify_with_llm(
+    *,
+    text: str,
+    language: str,
+    telemetry: Telemetry,
+    site: str,
+) -> tuple[SupportCategory, float, str] | None:
+    """LLM classify wrapper used by hybrid path (mockable in tests)."""
+    parsed = classify_support_with_llm(
+        customer_message=text,
+        language=language,
+        telemetry=telemetry,
+        site=site,
+    )
+    if not parsed:
+        return None
+    category_raw, confidence = parsed
+    category = _category_from_value(category_raw)
+    if category is None:
+        return None
+    return category, float(confidence), "llm"
+
+
+def hybrid_classify(
+    text: str,
+    *,
+    language: str = "sv",
+    telemetry: Telemetry | None = None,
+    site: str = "azom",
+) -> tuple[SupportCategory, float, str]:
+    """
+    Keyword gate for abuse/critical; otherwise LLM classify with keyword fallback.
+    Returns (category, confidence, method).
+    """
+    tel = telemetry or default_telemetry
+    lowered = text.lower()
+    if any(k in lowered for k in CRITICAL_KEYWORDS):
+        return SupportCategory.ABUSE, _ABUSE_CONFIDENCE, "keyword"
+
+    llm = classify_with_llm(text=text, language=language, telemetry=tel, site=site)
+    if llm is not None:
+        return llm
+
+    return classify_message(text), _KEYWORD_CONFIDENCE, "keyword"
 
 
 def classify_message(text: str) -> SupportCategory:
@@ -179,6 +244,8 @@ class SupportService:
         language: str = "sv",
         site: str = "azom",
         actor: Actor | str | None = None,
+        use_mock: bool | None = None,
+        order_context: str | None = None,
     ) -> SupportResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
@@ -189,8 +256,16 @@ class SupportService:
             if customer_email:
                 customer_email = validate_email(customer_email)
 
-            category = classify_message(text)
+            category, confidence, classify_method = hybrid_classify(
+                text,
+                language=language,
+                telemetry=self.telemetry,
+                site=site,
+            )
             order_id = extract_order_id(text)
+            resolved_context = order_context
+            if resolved_context is None and order_id:
+                resolved_context = resolve_order_context(order_id, use_mock=use_mock)
 
             if category == SupportCategory.ABUSE:
                 ticket = self.escalation.escalate(
@@ -213,7 +288,12 @@ class SupportService:
                 self.telemetry.record(
                     action="support_escalated",
                     site=site,
-                    meta={"category": category.value, "ticket_id": ticket.id},
+                    meta={
+                        "category": category.value,
+                        "ticket_id": ticket.id,
+                        "confidence": confidence,
+                        "classify_method": classify_method,
+                    },
                 )
                 return SupportResult(
                     ok=True,
@@ -223,6 +303,9 @@ class SupportService:
                     escalated=True,
                     ticket_id=ticket.id,
                     message="Escalated to Oscar",
+                    confidence=confidence,
+                    classify_method=classify_method,
+                    suggest_approve=False,
                 )
 
             reply = draft_support_with_llm(
@@ -231,6 +314,7 @@ class SupportService:
                 language=language,
                 customer_name=customer_name,
                 order_id=order_id,
+                order_context=resolved_context,
                 telemetry=self.telemetry,
                 site=site,
             )
@@ -241,6 +325,14 @@ class SupportService:
                     order_id=order_id,
                     language=language,
                 )
+                if resolved_context and resolved_context.strip() not in (reply or ""):
+                    reply = f"{resolved_context.strip()}\n\n{(reply or '').strip()}"
+            suggest = is_suggest_approve_eligible(
+                category=category.value,
+                confidence=confidence,
+                order_id=order_id,
+                escalated=False,
+            )
             self.telemetry.record(
                 action="support_reply",
                 site=site,
@@ -248,6 +340,9 @@ class SupportService:
                     "category": category.value,
                     "order_id": order_id,
                     "actor": actor_obj.name,
+                    "confidence": confidence,
+                    "classify_method": classify_method,
+                    "suggest_approve": suggest,
                 },
             )
             return SupportResult(
@@ -258,6 +353,9 @@ class SupportService:
                 escalated=False,
                 ticket_id=None,
                 message="Draft reply ready",
+                confidence=confidence,
+                classify_method=classify_method,
+                suggest_approve=suggest,
             )
         except AccessDenied as exc:
             ticket = self.escalation.escalate_critical(
@@ -272,6 +370,9 @@ class SupportService:
                 escalated=True,
                 ticket_id=ticket.id,
                 message=str(exc),
+                confidence=0.0,
+                classify_method="keyword",
+                suggest_approve=False,
             )
         except SecurityError as exc:
             return SupportResult(
@@ -282,6 +383,9 @@ class SupportService:
                 escalated=False,
                 ticket_id=None,
                 message=str(exc),
+                confidence=0.0,
+                classify_method="keyword",
+                suggest_approve=False,
             )
 
 
