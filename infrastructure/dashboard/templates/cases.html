@@ -12,16 +12,29 @@
 
   <section class="az-card">
     <h2 class="az-section-title">Kö</h2>
-    <div class="flex flex-wrap gap-2">
+    <div class="flex flex-wrap items-end gap-2">
       <form method="post" action="/cases/poll" @submit="polling = true">
         <button class="az-btn-primary" type="submit" :disabled="polling" x-text="polling ? 'Hämtar…' : 'Hämta mail → skapa ärenden'"></button>
       </form>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open,escalated' else '' }}" href="/cases?status=open,escalated">Kö</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open' else '' }}" href="/cases?status=open">Öppna</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'escalated' else '' }}" href="/cases?status=escalated">Eskalerade</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'replied' else '' }}" href="/cases?status=replied">Besvarade</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'closed' else '' }}" href="/cases?status=closed">Stängda</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'all' else '' }}" href="/cases?status=all">Alla</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open,escalated' else '' }}" href="/cases?status=open,escalated{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Kö</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open' else '' }}" href="/cases?status=open{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Öppna</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'escalated' else '' }}" href="/cases?status=escalated{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Eskalerade</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'replied' else '' }}" href="/cases?status=replied{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Besvarade</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'closed' else '' }}" href="/cases?status=closed{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Stängda</a>
+      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'all' else '' }}" href="/cases?status=all{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Alla</a>
+      <form method="get" action="/cases" class="flex items-end gap-2">
+        <input type="hidden" name="status" value="{{ status_filter }}" />
+        {% if category_filter %}<input type="hidden" name="category" value="{{ category_filter }}" />{% endif %}
+        <div>
+          <label class="az-label" for="mailbox-quick">Mailbox</label>
+          <select class="az-select !max-w-[14rem]" id="mailbox-quick" name="mailbox" onchange="this.form.submit()">
+            <option value="">Alla</option>
+            {% for mb in mailboxes or [] %}
+            <option value="{{ mb.id }}" {% if mailbox_filter == mb.id %}selected{% endif %}>{{ mb.label or mb.id }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </form>
     </div>
   </section>
 

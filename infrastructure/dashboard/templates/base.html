@@ -207,11 +207,26 @@
           <a href="/settings" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/settings') else '' }}">Inställningar</a>
           <a href="/secrets" class="az-nav-link {{ 'az-nav-link-active' if path == '/secrets' else '' }}">Secrets</a>
           <a href="/data/telemetry" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/telemetry') else '' }}">Telemetry</a>
-          <a href="/oauth/gmail/start" class="az-nav-link" x-data="{ connected: {{ 'true' if gmail_connected else 'false' }}, email: '' }" x-init="
-            fetch('/oauth/gmail/status').then(r => r.json()).then(d => { connected = !!d.connected; email = d.email || ''; }).catch(() => {})
-          ">
-            <span x-text="connected ? (email ? ('Gmail · ' + email) : 'Gmail · connected') : 'Gmail · anslut'"></span>
-          </a>
+          <div
+            class="px-1"
+            x-data="{ connected: {{ 'true' if gmail_connected else 'false' }}, email: '' }"
+            x-init="fetch('/oauth/gmail/status').then(r => r.json()).then(d => { connected = !!d.connected; email = d.email || ''; }).catch(() => {})"
+          >
+            <a
+              href="/oauth/gmail/start"
+              class="az-nav-link"
+              x-show="!connected"
+              x-cloak
+            >Gmail · anslut</a>
+            <a
+              href="/oauth/gmail/start"
+              class="az-nav-link"
+              x-show="connected"
+              title="Förnya Gmail OAuth"
+            >
+              <span x-text="email ? ('Gmail · ' + email) : 'Gmail · connected'"></span>
+            </a>
+          </div>
         </div>
 
         <div>

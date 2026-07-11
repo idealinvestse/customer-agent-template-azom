@@ -44,7 +44,11 @@
       class="space-y-4"
       @submit="
         if ($event.submitter && $event.submitter.value === 'reply') {
-          if (!confirm('Skicka svar till kunden nu?')) { $event.preventDefault(); return; }
+          if (!confirm('Skicka svar till kunden nu?')) {
+            $event.preventDefault();
+            submitting = false;
+            return;
+          }
         }
         submitting = true;
       "

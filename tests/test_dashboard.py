@@ -115,3 +115,5 @@ def test_onboarding_refresh_markup(dash_client):
     assert resp.status_code == 200
     assert b"/onboarding/status" in resp.data
     assert b"Uppdatera status" in resp.data
+    assert b"x-for=\"s in secrets\"" in resp.data or b"x-for='s in secrets'" in resp.data
+    assert b"x-for=\"c in checks\"" in resp.data or b"x-for='c in checks'" in resp.data

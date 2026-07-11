@@ -34,7 +34,20 @@
       </li>
       {% endfor %}
     </ul>
-    {% if last_probe and last_probe.checked_at %}
+    {% if last_probe and last_probe.results %}
+    <p class="az-muted mt-3 text-xs">
+      Senaste Oscar-test (cache{% if last_probe.checked_at %}, {{ last_probe.checked_at[:19] }}{% endif %}) — kan vara inaktuell
+    </p>
+    <ul class="az-muted mt-2 list-disc space-y-1 pl-4 text-xs">
+      {% for r in last_probe.results[:8] %}
+      <li>
+        {% if r.status == 'ok' %}<span class="az-present">{{ r.label or r.id }}</span>
+        {% elif r.status == 'missing' %}<span class="az-missing">{{ r.label or r.id }}</span>
+        {% else %}<span class="az-badge bg-warn/15 text-warn">{{ r.label or r.id }} · {{ r.status }}</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% elif last_probe and last_probe.checked_at %}
     <p class="az-muted mt-3 text-xs">Senaste Oscar-test: {{ last_probe.checked_at[:19] }}</p>
     {% endif %}
     {% if is_oscar %}

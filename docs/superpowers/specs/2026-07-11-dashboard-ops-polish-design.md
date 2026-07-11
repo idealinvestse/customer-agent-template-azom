@@ -48,8 +48,8 @@ Oscar `POST /oscar/secrets/test` writes `AZOM_DATA_DIR/probe_last.json`. Index m
 
 ### Live status wiring
 
-- Onboarding: Alpine `fetch('/onboarding/status')` + Gmail status refresh
-- Nav / Oscar / onboarding: Gmail control is status-aware (Anslut vs Förnya)
+- Onboarding: Alpine `fetch('/onboarding/status')` + Gmail status; secrets/health tables refresh without full page reload
+- Nav / Oscar / onboarding: Gmail control is status-aware (Anslut only when disconnected; connected shows email / Förnya)
 
 ### Oscar + Interact
 

@@ -341,6 +341,35 @@ def test_probe_last_cached_after_oscar_test(dash_client):
     assert b"Senaste Oscar-test" in home.data
 
 
+def test_index_shows_cached_probe_results(dash_client):
+    import json
+    import os
+
+    data_dir = Path(os.environ["AZOM_DATA_DIR"])
+    (data_dir / "probe_last.json").write_text(
+        json.dumps(
+            {
+                "checked_at": "2026-07-11T10:00:00+00:00",
+                "results": [
+                    {
+                        "id": "telegram",
+                        "label": "Telegram",
+                        "status": "ok",
+                        "message": "ok",
+                        "checked_at": "2026-07-11T10:00:00+00:00",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    home = dash_client.get("/", headers=_auth())
+    assert home.status_code == 200
+    assert b"Senaste Oscar-test" in home.data
+    assert b"Telegram" in home.data
+    assert b"kan vara inaktuell" in home.data
+
+
 def test_secret_probes_module_mock(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
