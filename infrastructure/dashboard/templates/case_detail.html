@@ -53,6 +53,7 @@
         submitting = true;
       "
     >
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <textarea class="az-textarea" name="body" required data-approve-guard>{{ case.draft_reply or '' }}</textarea>
       <div class="flex flex-wrap gap-2">
         <button class="az-btn-primary" type="submit" name="action" value="reply" :disabled="submitting">Godkänn och skicka</button>

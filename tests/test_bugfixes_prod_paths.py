@@ -158,6 +158,75 @@ def test_woo_list_orders_for_probe():
     assert len(orders) >= 1
 
 
+def test_approve_send_sets_in_reply_to_and_references(case_store_path, telemetry):
+    """Outbound case reply must thread with In-Reply-To / References."""
+    transport = InMemoryMailTransport()
+    client = MailClient(
+        config=MailConfig(
+            provider=MailProvider.GENERIC_IMAP,
+            from_addr="support@azom.se",
+        ),
+        transport=transport,
+    )
+    store = CaseStore(path=case_store_path)
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Order 1001?",
+        from_addr="kund@example.com",
+        body="Var är order 1001?",
+        category="order_status",
+        draft_reply="Vi kollar order 1001.",
+        order_id="1001",
+        message_id="<orig-thread@example.com>",
+        references_header="<root@example.com>",
+    )
+    mail = MailService(client=client, telemetry=telemetry)
+    svc = CaseService(store=store, mail=mail, telemetry=telemetry)
+    result = svc.approve_and_send(case.id, actor="jonatan")
+    assert result.ok, result.message
+    assert transport.outbox, "expected outbound message"
+    sent = transport.outbox[-1]
+    assert sent.in_reply_to == "<orig-thread@example.com>"
+    assert sent.references_header is not None
+    assert "<orig-thread@example.com>" in sent.references_header
+    assert "<root@example.com>" in sent.references_header
+
+
+def test_poll_mailbox_failure_escalates(case_store_path, monkeypatch, tmp_path):
+    """Any mailbox poll failure must escalate so ops can see it."""
+    from ecom_ops.cases.mailboxes import MailboxConfig
+    from ecom_ops.escalation import EscalationService
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    store = CaseStore(path=case_store_path)
+    esc = EscalationService(store_path=tmp_path / "escalations.jsonl")
+
+    class BoomClient:
+        def fetch(self, **kwargs):
+            raise RuntimeError("imap timeout")
+
+    monkeypatch.setattr(
+        "ecom_ops.cases.service.client_from_env",
+        lambda **kw: BoomClient(),
+    )
+    monkeypatch.setattr(
+        "ecom_ops.cases.service.enabled_mailboxes",
+        lambda: [
+            MailboxConfig(
+                id="support_default",
+                label="Support",
+                address="support@azom.se",
+            )
+        ],
+    )
+    svc = CaseService(store=store, escalation=esc)
+    result = svc.poll(actor="agent", use_mock=True)
+    assert result.ok is False
+    assert result.errors >= 1
+    assert result.escalated is True
+    assert result.ticket_id
+
+
 @pytest.fixture
 def case_store_path(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))

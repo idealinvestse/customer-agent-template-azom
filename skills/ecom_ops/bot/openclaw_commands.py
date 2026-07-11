@@ -110,10 +110,13 @@ def cmd_status(ctx: CommandContext) -> str:
 
 
 def cmd_whoami(ctx: CommandContext) -> str:
+    from ecom_ops.bot.actors import resolve_telegram_actor
+
+    actor = resolve_telegram_actor(ctx.chat_id)
     return (
         f"Sender / session\n"
         f"chat_id: {ctx.chat_id}\n"
-        f"actor: jonatan (viewer + CASE_REPLY)\n"
+        f"actor: {actor}\n"
         f"Alias: /id"
     )
 
@@ -294,8 +297,10 @@ def cmd_context(ctx: CommandContext) -> str:
 def cmd_health(ctx: CommandContext) -> str:
     try:
         from ecom_ops.actions.ssh_ops import SSHOpsService
+        from ecom_ops.bot.actors import resolve_telegram_actor
 
-        results = SSHOpsService().health(actor="jonatan")
+        actor = resolve_telegram_actor(ctx.chat_id)
+        results = SSHOpsService().health(actor=actor)
         lines = ["SSH health:"]
         for r in results:
             ok = "ok" if r.ok else "fail"
@@ -326,8 +331,10 @@ def cmd_brief(ctx: CommandContext) -> str:
 def cmd_cases(ctx: CommandContext) -> str:
     """ /cases | /cases show <id> | /cases approve <id> | /cases close <id> """
     try:
+        from ecom_ops.bot.actors import resolve_telegram_actor
         from ecom_ops.cases.service import CaseService
 
+        actor = resolve_telegram_actor(ctx.chat_id)
         svc = CaseService()
         parts = ctx.args.split(maxsplit=1)
         sub = (parts[0].lower() if parts else "list")
@@ -371,7 +378,7 @@ def cmd_cases(ctx: CommandContext) -> str:
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
                 return f"Hittade inte case {rest!r}"
-            result = svc.approve_and_send(case.id, actor="jonatan")
+            result = svc.approve_and_send(case.id, actor=actor)
             if result.ok:
                 return f"Skickat. Case {case.id[:8]} → replied."
             return f"Misslyckades: {result.message}"
@@ -382,7 +389,7 @@ def cmd_cases(ctx: CommandContext) -> str:
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
                 return f"Hittade inte case {rest!r}"
-            result = svc.close(case.id, actor="jonatan", reason="telegram")
+            result = svc.close(case.id, actor=actor, reason="telegram")
             if result.ok:
                 return f"Stängt. Case {case.id[:8]}."
             return f"Misslyckades: {result.message}"

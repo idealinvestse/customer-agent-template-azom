@@ -24,6 +24,7 @@ def _load_dashboard_app():
     mod = importlib.util.module_from_spec(spec)
     sys.modules["azom_dashboard"] = mod
     spec.loader.exec_module(mod)
+    mod._configure_secret_key()
     return mod.app
 
 
@@ -32,6 +33,7 @@ def dash_client(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
     monkeypatch.chdir(DASH_DIR)
     app = _load_dashboard_app()
     app.config["TESTING"] = True

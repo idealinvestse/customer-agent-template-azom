@@ -18,8 +18,10 @@ from flask import (
     redirect,
     render_template,
     request,
+    session,
     url_for,
 )
+from werkzeug.security import check_password_hash
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DASH_DIR = Path(__file__).resolve().parent
@@ -82,8 +84,40 @@ def _is_mock() -> bool:
     return os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
 
 
+def _configure_secret_key() -> None:
+    """Ensure Flask sessions work for CSRF tokens."""
+    apply_env_overlays()
+    key = os.environ.get("DASHBOARD_SECRET_KEY", "").strip()
+    if not key:
+        material = (
+            os.environ.get("DASHBOARD_PASSWORD_HASH")
+            or os.environ.get("DASHBOARD_OSCAR_PASSWORD_HASH")
+            or os.environ.get("DASHBOARD_PASSWORD")
+            or os.environ.get("DASHBOARD_OSCAR_PASSWORD")
+            or ""
+        )
+        if material:
+            key = hashlib.sha256(f"azom-dash:{material}".encode()).hexdigest()
+        elif _is_mock():
+            key = "azom-mock-dashboard-secret"
+        else:
+            key = secrets.token_hex(32)
+    app.secret_key = key
+
+
+# Bootstrap so the first request can open a session.
+_configure_secret_key()
+
+
 def _password_ok(expected_plain: str, expected_hash: str, password: str) -> bool:
     if expected_hash:
+        # Werkzeug / modern salted hashes
+        if expected_hash.startswith(("pbkdf2:", "scrypt:", "argon2:")):
+            try:
+                return check_password_hash(expected_hash, password)
+            except Exception:
+                return False
+        # Legacy unsalted SHA-256 hex digest
         got = hashlib.sha256(password.encode("utf-8")).hexdigest()
         return secrets.compare_digest(got, expected_hash)
     if expected_plain:
@@ -92,7 +126,7 @@ def _password_ok(expected_plain: str, expected_hash: str, password: str) -> bool
 
 
 def _authenticate(username: str, password: str) -> dict | None:
-    """Return actor dict or None."""
+    """Return actor dict or None. Mock default passwords only when AZOM_USE_MOCK."""
     apply_env_overlays()
     user = (username or "").strip().lower()
     if user == "jonatan":
@@ -100,6 +134,7 @@ def _authenticate(username: str, password: str) -> dict | None:
         hashed = os.environ.get("DASHBOARD_PASSWORD_HASH", "").strip()
         if _password_ok(plain, hashed, password):
             return {"name": "jonatan", "role": "viewer", "is_oscar": False}
+        # Explicit mock-only fallback — never in live/prod
         if not plain and not hashed and _is_mock() and password == "jonatan":
             return {"name": "jonatan", "role": "viewer", "is_oscar": False}
         return None
@@ -114,9 +149,39 @@ def _authenticate(username: str, password: str) -> dict | None:
     return None
 
 
+def _ensure_csrf_token() -> str:
+    _configure_secret_key()
+    tok = session.get("csrf_token")
+    if not tok:
+        tok = secrets.token_urlsafe(32)
+        session["csrf_token"] = tok
+    return str(tok)
+
+
+def _validate_csrf() -> Response | None:
+    expected = session.get("csrf_token")
+    got = (
+        request.headers.get("X-CSRF-Token")
+        or request.form.get("_csrf")
+        or ""
+    )
+    if not got:
+        body = request.get_json(silent=True)
+        if isinstance(body, dict):
+            got = str(body.get("_csrf") or "")
+    if (
+        not expected
+        or not got
+        or not secrets.compare_digest(str(got), str(expected))
+    ):
+        return Response("CSRF validation failed", 400)
+    return None
+
+
 def _auth_required(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
+        _configure_secret_key()
         auth = request.authorization
         actor = None
         if auth is not None:
@@ -128,9 +193,24 @@ def _auth_required(view):
                 {"WWW-Authenticate": 'Basic realm="Azom Dashboard"'},
             )
         g.actor = actor
+        _ensure_csrf_token()
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            failed = _validate_csrf()
+            if failed is not None:
+                return failed
         return view(*args, **kwargs)
 
     return wrapper
+
+
+@app.context_processor
+def _inject_csrf() -> dict[str, str]:
+    try:
+        if getattr(g, "actor", None):
+            return {"csrf_token": _ensure_csrf_token()}
+    except Exception:
+        pass
+    return {"csrf_token": ""}
 
 
 def _oscar_required(view):

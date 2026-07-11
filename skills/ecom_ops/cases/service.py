@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from ecom_ops.actions.mail import MailService
@@ -16,6 +17,41 @@ from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 _ACTIVE = ("open", "escalated")
+
+
+def _edit_distance_ratio(a: str, b: str) -> float:
+    """Normalized Levenshtein distance in [0, 1] (1 = totally different)."""
+    s1, s2 = a or "", b or ""
+    if s1 == s2:
+        return 0.0
+    n, m = len(s1), len(s2)
+    if n == 0 or m == 0:
+        return 1.0
+    # Bound work for long drafts
+    if n * m > 250_000:
+        # Cheap proxy: char set / length delta
+        return min(1.0, abs(n - m) / max(n, m) + (0.0 if s1[:80] == s2[:80] else 0.5))
+    prev = list(range(m + 1))
+    for i, c1 in enumerate(s1, 1):
+        cur = [i]
+        for j, c2 in enumerate(s2, 1):
+            ins, delete, sub = cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + (c1 != c2)
+            cur.append(min(ins, delete, sub))
+        prev = cur
+    return prev[m] / max(n, m)
+
+
+def _seconds_since(iso: str | None) -> float | None:
+    if not iso:
+        return None
+    try:
+        raw = str(iso).replace("Z", "+00:00")
+        created = datetime.fromisoformat(raw)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - created).total_seconds())
+    except Exception:
+        return None
 
 
 @dataclass(frozen=True)
@@ -86,6 +122,35 @@ def _enrich_draft_with_order(
         return base
 
 
+def _outbound_thread_headers(
+    case: Case, store: CaseStore
+) -> tuple[str | None, str | None]:
+    """Build In-Reply-To / References for an outbound case reply."""
+    msgs = store.messages(case.id)
+    inbound = [m for m in msgs if m.direction == "inbound"]
+    parent: str | None = None
+    refs: list[str] = []
+    if inbound:
+        last = inbound[-1]
+        parent = (last.message_id or case.message_id or "").strip() or None
+        if last.references_header:
+            refs.extend(last.references_header.split())
+        if last.in_reply_to:
+            refs.append(last.in_reply_to)
+    else:
+        parent = (case.message_id or "").strip() or None
+    if parent:
+        refs.append(parent)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for part in refs:
+        p = part.strip()
+        if p and p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return parent, (" ".join(unique) if unique else None)
+
+
 class CaseService:
     def __init__(
         self,
@@ -134,6 +199,7 @@ class CaseService:
         skipped = 0
         errors = 0
         created_cases: list[dict[str, Any]] = []
+        error_details: list[dict[str, str]] = []
 
         for mb in mailboxes:
             client = self._injected_mail_client or client_from_env(
@@ -145,10 +211,12 @@ class CaseService:
                 )
             except Exception as exc:
                 errors += 1
+                err_text = str(exc)[:200]
+                error_details.append({"mailbox_id": mb.id, "error": err_text})
                 self.telemetry.record(
                     action="case_poll_error",
                     site=mb.site,
-                    meta={"mailbox_id": mb.id, "error": str(exc)[:200]},
+                    meta={"mailbox_id": mb.id, "error": err_text},
                 )
                 continue
 
@@ -174,6 +242,19 @@ class CaseService:
         )
         # All mailboxes failed → not ok; partial success still ok=True
         all_failed = errors > 0 and errors == len(mailboxes)
+        escalated = False
+        ticket_id: str | None = None
+        if errors > 0:
+            ticket = self.escalation.escalate_critical(
+                f"Case poll: {errors} mailbox(es) failed",
+                details={
+                    "errors": errors,
+                    "mailboxes": len(mailboxes),
+                    "failures": error_details,
+                },
+            )
+            escalated = True
+            ticket_id = ticket.id
         return IngestResult(
             ok=not all_failed,
             message=(
@@ -184,6 +265,8 @@ class CaseService:
             skipped=skipped,
             errors=errors,
             cases=created_cases,
+            escalated=escalated,
+            ticket_id=ticket_id,
         )
 
     def _ingest_message(
@@ -361,11 +444,18 @@ class CaseService:
                     message=f"Case status is {case.status}, expected open/escalated",
                     case=case.to_dict(),
                 )
+            previous = case.draft_reply or ""
             updated = self.store.update_draft(case_id, body)
+            edit_dist = _edit_distance_ratio(previous, body)
             self.telemetry.record(
                 action="case_draft_saved",
                 site=case.site,
-                meta={"case_id": case_id, "actor": actor_obj.name},
+                meta={
+                    "case_id": case_id,
+                    "actor": actor_obj.name,
+                    "draft_edit_distance": round(edit_dist, 4),
+                    "time_to_first_edit_sec": _seconds_since(case.created_at),
+                },
             )
             return CaseActionResult(
                 ok=True,
@@ -455,6 +545,8 @@ class CaseService:
             if not subject.lower().startswith("re:"):
                 subject = f"Re: {subject}"
 
+            in_reply_to, references_header = _outbound_thread_headers(case, self.store)
+
             # Jonatan has CASE_REPLY but not MAIL_SEND — case approve is the
             # intentional send path; pass the real approving actor for audit.
             send = self.mail.send(
@@ -464,6 +556,8 @@ class CaseService:
                 site=case.site,
                 actor=actor_obj,
                 required_permission=Permission.CASE_REPLY,
+                in_reply_to=in_reply_to,
+                references_header=references_header,
             )
             if not send.ok:
                 return CaseActionResult(
@@ -488,6 +582,10 @@ class CaseService:
                     "case_id": case_id,
                     "approved_by": actor_obj.name,
                     "category": case.category,
+                    "time_to_approve_sec": _seconds_since(case.created_at),
+                    "draft_edit_distance": round(
+                        _edit_distance_ratio(case.draft_reply or "", body), 4
+                    ),
                 },
             )
             return CaseActionResult(

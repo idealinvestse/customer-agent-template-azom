@@ -214,6 +214,10 @@ class SmtpImapTransport:
         msg["To"] = ", ".join(message.to_addrs)
         if message.cc_addrs:
             msg["Cc"] = ", ".join(message.cc_addrs)
+        if message.in_reply_to:
+            msg["In-Reply-To"] = message.in_reply_to
+        if message.references_header:
+            msg["References"] = message.references_header
         if message.html_body:
             msg.set_content(message.body or "")
             msg.add_alternative(message.html_body, subtype="html")
@@ -427,20 +431,28 @@ class GraphMailTransport:
     def send(self, message: MailMessage) -> dict[str, Any]:
         base = self.config.graph_base_url.rstrip("/")
         url = f"{base}{self._user_path()}/sendMail"
-        payload = {
-            "message": {
-                "subject": message.subject,
-                "body": {
-                    "contentType": "HTML" if message.html_body else "Text",
-                    "content": message.html_body or message.body or "",
-                },
-                "toRecipients": [
-                    {"emailAddress": {"address": addr}} for addr in message.to_addrs
-                ],
-                "ccRecipients": [
-                    {"emailAddress": {"address": addr}} for addr in message.cc_addrs
-                ],
+        graph_msg: dict[str, Any] = {
+            "subject": message.subject,
+            "body": {
+                "contentType": "HTML" if message.html_body else "Text",
+                "content": message.html_body or message.body or "",
             },
+            "toRecipients": [
+                {"emailAddress": {"address": addr}} for addr in message.to_addrs
+            ],
+            "ccRecipients": [
+                {"emailAddress": {"address": addr}} for addr in message.cc_addrs
+            ],
+        }
+        headers: list[dict[str, str]] = []
+        if message.in_reply_to:
+            headers.append({"name": "In-Reply-To", "value": message.in_reply_to})
+        if message.references_header:
+            headers.append({"name": "References", "value": message.references_header})
+        if headers:
+            graph_msg["internetMessageHeaders"] = headers
+        payload = {
+            "message": graph_msg,
             "saveToSentItems": True,
         }
         resp = self.session.post(url, headers=self._headers(), json=payload, timeout=30)
@@ -758,6 +770,8 @@ class MailClient:
         cc: str | list[str] | None = None,
         html_body: str | None = None,
         from_addr: str | None = None,
+        in_reply_to: str | None = None,
+        references_header: str | None = None,
     ) -> dict[str, Any]:
         to_list = _normalize_addrs(to)
         cc_list = _normalize_addrs(cc) if cc else []
@@ -776,6 +790,8 @@ class MailClient:
             from_addr=sender or "",
             to_addrs=to_list,
             cc_addrs=cc_list,
+            in_reply_to=(in_reply_to or "").strip() or None,
+            references_header=(references_header or "").strip() or None,
         )
         return self.transport.send(message)
 
@@ -806,11 +822,26 @@ class MailClient:
         subject = original.subject
         if not subject.lower().startswith("re:"):
             subject = f"Re: {subject}"
+        parent = (original.message_id or "").strip() or None
+        refs_parts: list[str] = []
+        if original.references_header:
+            refs_parts.extend(original.references_header.split())
+        if parent:
+            refs_parts.append(parent)
+        seen: set[str] = set()
+        refs: list[str] = []
+        for part in refs_parts:
+            p = part.strip()
+            if p and p not in seen:
+                seen.add(p)
+                refs.append(p)
         return self.send(
             to=original.from_addr,
             subject=subject,
             body=body,
             html_body=html_body,
+            in_reply_to=parent,
+            references_header=" ".join(refs) if refs else None,
         )
 
 

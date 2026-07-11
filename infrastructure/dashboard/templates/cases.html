@@ -14,6 +14,7 @@
     <h2 class="az-section-title">Kö</h2>
     <div class="flex flex-wrap items-end gap-2">
       <form method="post" action="/cases/poll" @submit="polling = true">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
         <button class="az-btn-primary" type="submit" :disabled="polling" x-text="polling ? 'Hämtar…' : 'Hämta mail → skapa ärenden'"></button>
       </form>
       <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open,escalated' else '' }}" href="/cases?status=open,escalated{% if mailbox_filter %}&mailbox={{ mailbox_filter }}{% endif %}">Kö</a>
@@ -113,6 +114,7 @@
       <p class="az-muted">Inga i kön för detta filter.</p>
       <div class="flex flex-wrap gap-2">
         <form method="post" action="/cases/poll">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <button class="az-btn-primary" type="submit">Hämta mail nu</button>
         </form>
         <a class="az-btn-secondary" href="/onboarding">Kolla onboarding / mail</a>

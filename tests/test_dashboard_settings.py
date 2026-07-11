@@ -30,12 +30,20 @@ def _load_dashboard_app():
     mod = importlib.util.module_from_spec(spec)
     sys.modules["azom_dashboard"] = mod
     spec.loader.exec_module(mod)
+    mod._configure_secret_key()
     return mod.app
 
 
-def _auth(user="jonatan", password="jonatan"):
+def _auth(user="jonatan", password="jonatan", *, client=None):
     token = base64.b64encode(f"{user}:{password}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
+    headers = {"Authorization": f"Basic {token}"}
+    if client is not None:
+        client.get("/", headers=headers)
+        with client.session_transaction() as sess:
+            csrf = sess.get("csrf_token")
+        if csrf:
+            headers["X-CSRF-Token"] = csrf
+    return headers
 
 
 @pytest.fixture
@@ -84,6 +92,7 @@ def dash_client(tmp_path, monkeypatch, config_dir):
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
     monkeypatch.setenv("AZOM_DATA_DIR", str(data))
     monkeypatch.setenv("AZOM_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
     monkeypatch.chdir(DASH_DIR)
     app = _load_dashboard_app()
     app.config["TESTING"] = True
@@ -97,7 +106,7 @@ def test_settings_page_and_save(dash_client, config_dir):
 
     resp = dash_client.post(
         "/settings",
-        headers=_auth(),
+        headers=_auth(client=dash_client),
         data={
             "customer": "azom",
             "domains": "no, se, dk",
@@ -119,15 +128,11 @@ def test_settings_page_and_save(dash_client, config_dir):
 def test_jonatan_secret_request_escalates(dash_client, tmp_path):
     resp = dash_client.post(
         "/secrets",
-        headers=_auth(),
+        headers=_auth(client=dash_client),
         data={"key": "WOO_CONSUMER_SECRET", "note": "need new key"},
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    esc = Path(tmp_path / "data" / "escalations.jsonl")
-    # AZOM_DATA_DIR from fixture
-    data_dir = Path(dash_client.application.root_path)  # may not be data
-    # Read from env path used in fixture — re-get via listing
     from settings_store import _data_dir
 
     path = _data_dir() / "escalations.jsonl"
@@ -148,7 +153,7 @@ def test_oscar_home_and_secrets(dash_client, tmp_path, monkeypatch):
 
     resp = dash_client.post(
         "/oscar/secrets",
-        headers=_auth("oscar", "oscar"),
+        headers=_auth("oscar", "oscar", client=dash_client),
         data={"WOO_BASE_URL": "https://azom.se", "TELEGRAM_BOT_TOKEN": "tok-test"},
         follow_redirects=False,
     )
@@ -171,7 +176,7 @@ def test_oscar_resolve_escalation(dash_client):
     ).escalate_critical("test ticket")
     resp = dash_client.post(
         "/oscar/escalations",
-        headers=_auth("oscar", "oscar"),
+        headers=_auth("oscar", "oscar", client=dash_client),
         data={"ticket_id": ticket.id},
         follow_redirects=False,
     )
@@ -199,7 +204,7 @@ def test_settings_rejects_secret_key_via_store(tmp_path, monkeypatch, config_dir
 def test_oscar_secret_probes_forbidden_for_jonatan(dash_client):
     assert dash_client.post(
         "/oscar/secrets/test",
-        headers=_auth("jonatan", "jonatan"),
+        headers=_auth("jonatan", "jonatan", client=dash_client),
         data={"probe": "all"},
     ).status_code == 403
 
@@ -211,13 +216,16 @@ def test_oscar_secret_probes_run(dash_client):
 
     resp = dash_client.post(
         "/oscar/secrets/test",
-        headers=_auth("oscar", "oscar"),
+        headers=_auth("oscar", "oscar", client=dash_client),
         data={"probe": "ssh"},
     )
     assert resp.status_code == 200
     assert b"SSH" in resp.data or b"ssh" in resp.data.lower()
 
-    hdrs = {**_auth("oscar", "oscar"), "Accept": "application/json"}
+    hdrs = {
+        **_auth("oscar", "oscar", client=dash_client),
+        "Accept": "application/json",
+    }
     resp = dash_client.post(
         "/oscar/secrets/test",
         headers=hdrs,
@@ -318,7 +326,7 @@ def test_interact_escalate_cta(dash_client):
     assert resp.status_code == 200
     post = dash_client.post(
         "/interact",
-        headers=_auth(),
+        headers=_auth(client=dash_client),
         data={"message": "Var ar min order?"},
     )
     assert post.status_code == 200
@@ -331,7 +339,7 @@ def test_probe_last_cached_after_oscar_test(dash_client):
     data_dir = Path(os.environ["AZOM_DATA_DIR"])
     resp = dash_client.post(
         "/oscar/secrets/test",
-        headers=_auth("oscar", "oscar"),
+        headers=_auth("oscar", "oscar", client=dash_client),
         data={"probe": "all"},
     )
     assert resp.status_code == 200

@@ -11,6 +11,7 @@
   <section class="az-card">
     <h2 class="az-section-title">Support-draft</h2>
     <form method="post" action="/interact" class="space-y-4">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <input type="hidden" name="action" value="draft" />
       <div>
         <label class="az-label" for="message">Meddelande</label>
@@ -32,6 +33,7 @@
       <p class="az-muted">{{ result.note }}</p>
       <div class="flex flex-wrap gap-2 pt-2">
         <form method="post" action="/interact">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <input type="hidden" name="action" value="escalate" />
           <input type="hidden" name="category" value="{{ result.category }}" />
           <input type="hidden" name="draft" value="{{ result.reply or '' }}" />

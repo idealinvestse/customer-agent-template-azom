@@ -37,6 +37,7 @@
             <td>
               {% if e.get('status', 'open') == 'open' and e.get('id') %}
               <form method="post" action="/oscar/escalations?show={{ show_filter or 'open' }}" class="inline">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
                 <input type="hidden" name="ticket_id" value="{{ e.get('id') }}" />
                 <button class="az-btn-oscar" type="submit">Markera löst</button>
               </form>

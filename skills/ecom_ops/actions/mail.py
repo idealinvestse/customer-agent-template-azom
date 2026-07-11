@@ -77,6 +77,8 @@ class MailService:
         site: str = "azom",
         actor: Actor | str | None = None,
         required_permission: Permission | None = None,
+        in_reply_to: str | None = None,
+        references_header: str | None = None,
     ) -> MailSendResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
@@ -90,6 +92,8 @@ class MailService:
                 body=body,
                 cc=cc,
                 html_body=html_body,
+                in_reply_to=in_reply_to,
+                references_header=references_header,
             )
             to_list = status.get("to") or (
                 [to] if isinstance(to, str) else list(to)

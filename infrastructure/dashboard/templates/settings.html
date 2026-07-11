@@ -11,6 +11,7 @@
   <section class="az-card">
     <h2 class="az-section-title">Icke-hemliga inställningar</h2>
     <form method="post" action="/settings" class="space-y-5">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <div class="grid gap-5 sm:grid-cols-2">
         <div>
           <label class="az-label" for="customer">Kund (customer)</label>

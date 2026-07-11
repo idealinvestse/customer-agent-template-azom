@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any
 
 from ecom_ops.escalation import EscalationReason, EscalationService, Severity, default_escalation
+from ecom_ops.llm import draft_support_with_llm
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, sanitize_text, validate_email, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
@@ -224,12 +225,22 @@ class SupportService:
                     message="Escalated to Oscar",
                 )
 
-            reply = draft_reply(
-                category=category,
+            reply = draft_support_with_llm(
+                customer_message=text,
+                category=category.value,
+                language=language,
                 customer_name=customer_name,
                 order_id=order_id,
-                language=language,
+                telemetry=self.telemetry,
+                site=site,
             )
+            if not reply:
+                reply = draft_reply(
+                    category=category,
+                    customer_name=customer_name,
+                    order_id=order_id,
+                    language=language,
+                )
             self.telemetry.record(
                 action="support_reply",
                 site=site,
