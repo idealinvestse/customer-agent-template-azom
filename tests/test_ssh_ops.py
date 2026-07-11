@@ -46,10 +46,11 @@ def test_health_checks(ssh_client, telemetry, escalation):
 def test_jonatan_can_read_ssh():
     client = SSHClient(host="h", runner=LocalMockSSHRunner())
     # viewer has SSH_READ
+    import tempfile
+    from pathlib import Path
+
     from ecom_ops.escalation import EscalationService
     from ecom_ops.telemetry import Telemetry
-    from pathlib import Path
-    import tempfile
 
     with tempfile.TemporaryDirectory() as d:
         svc = SSHOpsService(

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from ecom_ops.actions.mail import MailService
 from ecom_ops.bot.actors import resolve_telegram_actor
 from ecom_ops.bot.openclaw_commands import dispatch_openclaw_command
 from ecom_ops.bot.store import ConversationStore
 from ecom_ops.cases.service import CaseService
 from ecom_ops.cases.store import CaseStore
-from ecom_ops.actions.mail import MailService
 from ecom_ops.integrations.mail import (
     InMemoryMailTransport,
     MailClient,

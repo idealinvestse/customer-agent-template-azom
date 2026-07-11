@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import json
-import time
 
-import pytest
-
-from ecom_ops.integrations.mail import MailConfig, MailProvider, config_from_env
-from ecom_ops.oauth.gmail import GmailOAuthStore, apply_stored_gmail_tokens
+from ecom_ops.integrations.mail import MailProvider, config_from_env
+from ecom_ops.oauth.gmail import GmailOAuthStore
 
 
 def test_mock_connect_persists_tokens(tmp_path, monkeypatch):
@@ -47,7 +44,7 @@ def test_exchange_code_mock(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     store = GmailOAuthStore()
-    state = store.create_state()
+    store.create_state()
     bundle = store.exchange_code("fake-code")
     assert bundle.access_token.startswith("mock-")
     store.clear_state()

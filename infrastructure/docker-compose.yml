@@ -34,8 +34,8 @@ services:
       DASHBOARD_PORT: "8080"
     volumes:
       - ../config:/app/config:ro
-      - azom-data:/app/.azom-data:ro
-      - ../logs:/app/logs:ro
+      - azom-data:/app/.azom-data
+      - ../logs:/app/logs
     ports:
       - "8080:8080"
     command: ["python", "infrastructure/dashboard/app.py"]

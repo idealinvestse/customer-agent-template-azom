@@ -1,6 +1,11 @@
 """Support automation tests."""
 
-from ecom_ops.actions.support import SupportCategory, SupportService, classify_message, extract_order_id
+from ecom_ops.actions.support import (
+    SupportCategory,
+    SupportService,
+    classify_message,
+    extract_order_id,
+)
 
 
 def test_classify_and_extract():

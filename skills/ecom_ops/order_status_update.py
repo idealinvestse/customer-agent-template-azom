@@ -1,4 +1,4 @@
-"""CLI module: python -m ecom_ops.order_status_update"""
+"""CLI module: python -m ecom_ops.order_status_update (DEPRECATED)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,16 @@ import argparse
 import json
 import os
 import sys
+import warnings
 
 from ecom_ops.actions.order_status import OrderStatusService
 from ecom_ops.integrations.woocommerce import client_from_env
+
+warnings.warn(
+    "ecom_ops.order_status_update is deprecated; use `python -m ecom_ops order-status`",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 def main(argv: list[str] | None = None) -> int:

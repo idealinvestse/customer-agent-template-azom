@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import requests
@@ -147,3 +148,106 @@ def draft_support_with_llm(
         meta={"category": category, "order_id": order_id, "model": DEFAULT_MODEL},
     )
     return content
+
+
+def _parse_short_long(content: str) -> tuple[str, str] | None:
+    """Parse SHORT:/LONG: blocks from model output."""
+    text = (content or "").strip()
+    if not text:
+        return None
+    short = ""
+    long = ""
+    short_m = re.search(r"(?is)\bSHORT\s*:\s*(.*?)(?=\bLONG\s*:|$)", text)
+    long_m = re.search(r"(?is)\bLONG\s*:\s*(.*)\Z", text)
+    if short_m:
+        short = short_m.group(1).strip()
+    if long_m:
+        long = long_m.group(1).strip()
+    if not short and not long:
+        paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        if not paras:
+            return None
+        short = paras[0][:500]
+        long = text if len(paras) == 1 else "\n\n".join(paras[1:])
+    if not short:
+        short = long[:200] if long else text[:200]
+    if not long:
+        long = f"<p>{short}</p>"
+    return short, long
+
+
+def generate_product_desc_with_llm(
+    *,
+    name: str,
+    features: str,
+    language: str,
+    telemetry: Telemetry | None = None,
+    site: str = "azom",
+) -> tuple[str, str] | None:
+    """
+    Generate short+long product copy via OpenRouter when key + budget allow.
+    Returns None so the caller can fall back to the template generator.
+    """
+    api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    if not api_key:
+        return None
+    tel = telemetry or default_telemetry
+    cap = openrouter_cap_usd()
+    if not tel.within_budget(cap):
+        tel.record(
+            action="llm_budget_skip",
+            site=site,
+            cost_usd=0.0,
+            meta={"cap_usd": cap, "spent_usd": tel.sum_cost_usd(), "kind": "product_desc"},
+        )
+        return None
+
+    lang = (language or "sv").lower()
+    system = (
+        "You write WooCommerce product copy for Azom (Nordic e-commerce). "
+        "Respond with exactly two labeled blocks:\n"
+        "SHORT: <one-line short_description, max ~120 chars>\n"
+        "LONG: <HTML long description with <p> and optional <ul><li>>\n"
+        "No markdown fences. Do not invent certifications or warranty claims."
+    )
+    user = (
+        f"Language: {lang}\n"
+        f"Product name: {name}\n"
+        f"Features: {features or 'premium quality'}"
+    )
+    try:
+        content, cost = chat_completion(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=600,
+        )
+    except Exception as exc:
+        tel.record(
+            action="llm_draft_error",
+            site=site,
+            cost_usd=0.0,
+            meta={"error": str(exc)[:200], "kind": "product_desc"},
+        )
+        return None
+
+    parsed = _parse_short_long(content)
+    if not parsed:
+        tel.record(
+            action="llm_draft_error",
+            site=site,
+            cost_usd=0.0,
+            meta={"error": "unparseable product desc", "kind": "product_desc"},
+        )
+        return None
+
+    tel.record(
+        action="llm_product_desc",
+        site=site,
+        unit_type="tokens",
+        units=1.0,
+        cost_usd=cost,
+        meta={"product_name": name[:80], "model": DEFAULT_MODEL},
+    )
+    return parsed

@@ -6,7 +6,11 @@ from ecom_ops.integrations.mail import (
     MailConfig,
     MailMessage,
     MailProvider,
+)
+from ecom_ops.integrations.mail import (
     client_from_env as mail_client_from_env,
+)
+from ecom_ops.integrations.mail import (
     config_from_env as mail_config_from_env,
 )
 from ecom_ops.integrations.ssh import SSHClient, SSHResult

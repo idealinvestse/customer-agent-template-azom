@@ -50,12 +50,6 @@ def _template_generator(name: str, features: str, language: str) -> tuple[str, s
     return sanitize_text(short, max_len=500), sanitize_text(long, max_len=8000)
 
 
-def _openrouter_generator(name: str, features: str, language: str) -> tuple[str, str]:
-    """Optional OpenRouter path when OPENROUTER_API_KEY is set (not required for V1 tests)."""
-    # V1 keeps deterministic template as fallback for reliability/cost control.
-    return _template_generator(name, features, language)
-
-
 @dataclass(frozen=True)
 class ProductDescResult:
     ok: bool
@@ -90,14 +84,32 @@ class ProductDescService:
         escalation: EscalationService | None = None,
     ) -> None:
         self.woo = woo or client_from_env(use_mock=None)
-        if generator:
-            self.generator = generator
-        elif os.environ.get("OPENROUTER_API_KEY"):
-            self.generator = _openrouter_generator
-        else:
-            self.generator = _template_generator
+        self.generator = generator  # None → LLM when key set, else template
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
+
+    def _resolve_copy(
+        self, name: str, features: str, language: str, *, site: str
+    ) -> tuple[str, str]:
+        if self.generator is not None:
+            return self.generator(name, features, language)
+        if os.environ.get("OPENROUTER_API_KEY"):
+            from ecom_ops.llm import generate_product_desc_with_llm
+
+            llm = generate_product_desc_with_llm(
+                name=name,
+                features=features,
+                language=language,
+                telemetry=self.telemetry,
+                site=site,
+            )
+            if llm is not None:
+                short, long_desc = llm
+                return (
+                    sanitize_text(short, max_len=500),
+                    sanitize_text(long_desc, max_len=8000),
+                )
+        return _template_generator(name, features, language)
 
     def generate(
         self,
@@ -130,7 +142,9 @@ class ProductDescService:
             product_name = sanitize_text(product_name, max_len=200)
             features_s = sanitize_text(features, max_len=2000) if features.strip() else "premium quality"
 
-            short, long_desc = self.generator(product_name, features_s, lang)
+            short, long_desc = self._resolve_copy(
+                product_name, features_s, lang, site=site
+            )
 
             published = False
             if publish:

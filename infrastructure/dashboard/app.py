@@ -838,7 +838,18 @@ def oauth_gmail_status():
 
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "service": "azom-dashboard"})
+    """Liveness always 200; readiness reflects last case-poll freshness."""
+    from ecom_ops.ops_status import readiness_from_last_poll
+
+    readiness = readiness_from_last_poll()
+    return jsonify(
+        {
+            "ok": True,
+            "service": "azom-dashboard",
+            "liveness": True,
+            "readiness": readiness,
+        }
+    )
 
 
 @app.route("/logs")

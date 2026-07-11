@@ -21,6 +21,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e .
+          pip install ruff
+
+      - name: Ruff
+        run: ruff check skills/ecom_ops tests
 
       - name: Shellcheck
         run: |
@@ -34,10 +38,17 @@ jobs:
         env:
           AZOM_USE_MOCK: "1"
           AZOM_CONFIG_DIR: ${{ github.workspace }}/config
-        run: pytest --cov=ecom_ops --cov-report=term-missing
+        run: pytest --cov=ecom_ops --cov-report=term-missing --cov-fail-under=65
 
       - name: Smoke spinup script
         run: bash tests/test_spinup.sh
+
+      - name: Mock integration smoke
+        env:
+          AZOM_USE_MOCK: "1"
+          AZOM_LIVE_SMOKE: "1"
+          AZOM_CONFIG_DIR: ${{ github.workspace }}/config
+        run: python -m ecom_ops --mock smoke --live
 
       - name: Validate systemd units + install scripts
         run: |

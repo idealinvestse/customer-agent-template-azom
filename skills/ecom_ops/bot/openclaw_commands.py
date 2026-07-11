@@ -8,7 +8,6 @@ from typing import Any, Callable
 from ecom_ops import __version__
 from ecom_ops.bot.store import ConversationStore
 
-
 HandlerFn = Callable[["CommandContext"], str]
 
 
@@ -195,9 +194,9 @@ def cmd_tasks(ctx: CommandContext) -> str:
     except Exception as exc:
         lines.append(f"Cases: error ({exc})")
     try:
-        from pathlib import Path
         import json
         import os
+        from pathlib import Path
 
         path = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data")) / "escalations.jsonl"
         open_n = 0

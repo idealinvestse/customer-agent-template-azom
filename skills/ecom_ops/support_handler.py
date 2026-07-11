@@ -1,12 +1,19 @@
-"""CLI module: python -m ecom_ops.support_handler"""
+"""CLI module: python -m ecom_ops.support_handler (DEPRECATED)."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import warnings
 
 from ecom_ops.actions.support import SupportService
+
+warnings.warn(
+    "ecom_ops.support_handler is deprecated; use `python -m ecom_ops support`",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 def main(argv: list[str] | None = None) -> int:

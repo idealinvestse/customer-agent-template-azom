@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ecom_ops.actions.mail import MailService
 from ecom_ops.integrations.mail import (
     InMemoryMailTransport,
@@ -14,7 +16,6 @@ from ecom_ops.integrations.mail import (
     config_from_env,
 )
 from ecom_ops.security import SecurityError
-import pytest
 
 
 def test_xoauth2_string():

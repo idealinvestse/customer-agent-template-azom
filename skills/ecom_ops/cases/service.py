@@ -255,6 +255,17 @@ class CaseService:
             )
             escalated = True
             ticket_id = ticket.id
+        try:
+            from ecom_ops.ops_status import write_last_case_poll
+
+            write_last_case_poll(
+                ok=not all_failed,
+                errors=errors,
+                created=created,
+                extra={"mailboxes": len(mailboxes), "skipped": skipped},
+            )
+        except Exception:
+            pass
         return IngestResult(
             ok=not all_failed,
             message=(

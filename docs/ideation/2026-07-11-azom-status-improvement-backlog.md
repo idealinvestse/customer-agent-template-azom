@@ -135,11 +135,10 @@ Flask Basic Auth, Oscar probes, OpenClaw-bot, one-shot install. Docker config ro
 
 ## Implementation i denna iteration
 
-- Publicerad analys (denna fil + Canvas `azom-status-improvement-backlog.canvas.tsx`)
-- P0: verifierade prod-path-tester (`tests/test_bugfixes_prod_paths.py`) — gröna
-- P1: `In-Reply-To`/`References` vid case approve + eskalering vid mailbox poll-fel
-- P2: Auth harden — Werkzeug/salted hashes, CSRF på POST, mock-lösen endast vid `AZOM_USE_MOCK=1`
-- P3: `TELEGRAM_ACTOR_MAP` (`ecom_ops.bot.actors`) för approve/close/health/whoami
-- P4: OpenRouter support/case-drafts via `ecom_ops.llm` med budget-cap + mall-fallback
-- P5: KPI i telemetry — `time_to_approve_sec`, `draft_edit_distance`, `time_to_first_edit_sec`
-- Nästa enligt canvas: P6 live smoke + readiness
+- Publicerad analys (denna fil + Canvas)
+- P0–P5: prod-path, mail threading, auth/CSRF, Telegram actors, LLM drafts, KPI
+- P6: `/health` readiness (last poll age) + `python -m ecom_ops smoke` (`AZOM_LIVE_SMOKE`)
+- P7: Docker data volume RW (dev) + `docs/DOCKER_CONFIG_OVERLAY.md`
+- P8: CI ruff + coverage fail_under 65%; mock smoke step
+- Nästa: P9 SQLite migrate / mail split · P10 product-desc LLM / GA4
+

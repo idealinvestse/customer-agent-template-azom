@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import responses
 
-from ecom_ops.actions.support import SupportService, draft_reply, SupportCategory
+from ecom_ops.actions.support import SupportService
 from ecom_ops.telemetry import Telemetry
 
 
@@ -97,11 +97,5 @@ def test_support_falls_back_on_openrouter_error(monkeypatch, tel, tmp_path):
     result = svc.handle("Var är order 1001?", language="sv", actor="agent")
     assert result.ok
     assert result.reply
-    template = draft_reply(
-        category=SupportCategory.ORDER_STATUS,
-        customer_name=None,
-        order_id="1001",
-        language="sv",
-    )
     # Should look like template (contains familiar sign-off)
     assert "Azom Support" in result.reply or "återkommer" in result.reply.lower()

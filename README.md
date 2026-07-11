@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/idealinvestse/customer-agent-templa
 # Credentials: sudo cat /root/azom-install-credentials.txt
 ```
 
-Docs: [`docs/AUTO_INSTALL.md`](docs/AUTO_INSTALL.md) · [`docs/V2_RELEASE.md`](docs/V2_RELEASE.md)
+Docs: [`docs/AUTO_INSTALL.md`](docs/AUTO_INSTALL.md) · [`docs/V2_RELEASE.md`](docs/V2_RELEASE.md) · [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md)
 
 Docker:
 

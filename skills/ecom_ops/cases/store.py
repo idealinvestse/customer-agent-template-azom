@@ -12,6 +12,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+# Bump when adding breaking schema changes; _migrate() applies steps in order.
+SCHEMA_VERSION = 2
+
 
 def _default_db_path() -> Path:
     base = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
@@ -127,6 +130,10 @@ class CaseStore:
         with self._conn() as conn:
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS cases (
                     id TEXT PRIMARY KEY,
                     mailbox_id TEXT NOT NULL,
@@ -165,7 +172,54 @@ class CaseStore:
                 CREATE INDEX IF NOT EXISTS idx_case_messages_mid ON case_messages(message_id);
                 """
             )
+            self._migrate(conn)
+
+    def schema_version(self) -> int:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(version) AS v FROM schema_migrations"
+            ).fetchone()
+            if row is None or row["v"] is None:
+                return 0
+            return int(row["v"])
+
+    def _current_version(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT MAX(version) AS v FROM schema_migrations"
+        ).fetchone()
+        if row is None or row["v"] is None:
+            return 0
+        return int(row["v"])
+
+    def _record_version(self, conn: sqlite3.Connection, version: int) -> None:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (version, _now()),
+        )
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Apply pending schema steps idempotently."""
+        current = self._current_version(conn)
+        # Legacy DBs created before schema_migrations: treat as v0 then apply.
+        if current == 0:
+            # Detect pre-versioned cases table
+            tables = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "cases" in tables:
+                self._migrate_columns(conn)
+                self._record_version(conn, 1)
+                self._record_version(conn, 2)
+                current = 2
+            else:
+                self._record_version(conn, 1)
+                current = 1
+        if current < 2:
             self._migrate_columns(conn)
+            self._record_version(conn, 2)
 
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
         case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}

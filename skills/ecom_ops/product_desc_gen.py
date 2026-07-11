@@ -1,4 +1,4 @@
-"""CLI module: python -m ecom_ops.product_desc_gen"""
+"""CLI module: python -m ecom_ops.product_desc_gen (DEPRECATED)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,16 @@ import argparse
 import json
 import os
 import sys
+import warnings
 
 from ecom_ops.actions.product_desc import ProductDescService
 from ecom_ops.integrations.woocommerce import client_from_env
+
+warnings.warn(
+    "ecom_ops.product_desc_gen is deprecated; use `python -m ecom_ops product-desc`",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -78,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("version", help="Print package version")
     sub.add_parser("status", help="Print runtime status (config + mock flags)")
+    p_smoke = sub.add_parser(
+        "smoke",
+        help="Opt-in integration smoke (requires AZOM_LIVE_SMOKE=1 or --live)",
+    )
+    p_smoke.add_argument(
+        "--live",
+        action="store_true",
+        help="Force smoke even without AZOM_LIVE_SMOKE=1",
+    )
 
     p_mail = sub.add_parser("mail", help="Send / fetch / reply email")
     mail_sub = p_mail.add_subparsers(dest="mail_command", required=True)
@@ -218,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
 
         from ecom_ops.config import load_app_config
         from ecom_ops.oauth.gmail import GmailOAuthStore, gmail_oauth_configured
+        from ecom_ops.ops_status import readiness_from_last_poll
 
         try:
             cfg = load_app_config()
@@ -233,11 +243,19 @@ def main(argv: list[str] | None = None) -> int:
                 "telegram_configured": bool(
                     os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
                 ),
+                "readiness": readiness_from_last_poll(),
             }
         except Exception as exc:
             status = {"ok": False, "version": __version__, "error": str(exc)}
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0 if status.get("ok") else 1
+
+    if args.command == "smoke":
+        from ecom_ops.smoke import run_live_smoke
+
+        result = run_live_smoke(force=bool(getattr(args, "live", False)))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok", False) else 1
 
     if args.command == "mail":
         provider = getattr(args, "provider", None)
