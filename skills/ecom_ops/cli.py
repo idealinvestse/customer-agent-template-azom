@@ -153,10 +153,17 @@ def main(argv: list[str] | None = None) -> int:
 
         os.environ["AZOM_USE_MOCK"] = "1"
 
-    woo = client_from_env(use_mock=args.mock or None)
+    # Defer Woo client — version/status/mail/cases must not require Woo secrets
+    woo = None
+
+    def _woo():
+        nonlocal woo
+        if woo is None:
+            woo = client_from_env(use_mock=args.mock or None)
+        return woo
 
     if args.command == "order-status":
-        svc = OrderStatusService(woo=woo)
+        svc = OrderStatusService(woo=_woo())
         result = svc.update(
             order_id=args.order_id,
             status=args.status,
@@ -166,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         return _print(result)
 
     if args.command == "product-desc":
-        svc = ProductDescService(woo=woo)
+        svc = ProductDescService(woo=_woo())
         result = svc.generate(
             product_id=args.product_id,
             name=args.name,

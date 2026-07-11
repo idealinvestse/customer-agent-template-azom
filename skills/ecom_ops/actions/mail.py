@@ -62,7 +62,7 @@ class MailService:
         telemetry: Telemetry | None = None,
         escalation: EscalationService | None = None,
     ) -> None:
-        self.client = client or client_from_env(use_mock=True)
+        self.client = client or client_from_env(use_mock=None)
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
 
@@ -76,11 +76,14 @@ class MailService:
         html_body: str | None = None,
         site: str = "azom",
         actor: Actor | str | None = None,
+        required_permission: Permission | None = None,
     ) -> MailSendResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
         try:
-            require_permission(actor_obj, Permission.MAIL_SEND)
+            require_permission(
+                actor_obj, required_permission or Permission.MAIL_SEND
+            )
             status = self.client.send(
                 to=to,
                 subject=subject,

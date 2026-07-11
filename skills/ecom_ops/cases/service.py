@@ -24,6 +24,7 @@ class IngestResult:
     message: str
     created: int = 0
     skipped: int = 0
+    errors: int = 0
     cases: list[dict[str, Any]] | None = None
     escalated: bool = False
     ticket_id: str | None = None
@@ -34,6 +35,7 @@ class IngestResult:
             "message": self.message,
             "created": self.created,
             "skipped": self.skipped,
+            "errors": self.errors,
             "cases": self.cases or [],
             "escalated": self.escalated,
             "ticket_id": self.ticket_id,
@@ -130,6 +132,7 @@ class CaseService:
 
         created = 0
         skipped = 0
+        errors = 0
         created_cases: list[dict[str, Any]] = []
 
         for mb in mailboxes:
@@ -141,6 +144,7 @@ class CaseService:
                     folder="INBOX", unread_only=True, limit=limit_per_mailbox
                 )
             except Exception as exc:
+                errors += 1
                 self.telemetry.record(
                     action="case_poll_error",
                     site=mb.site,
@@ -161,13 +165,24 @@ class CaseService:
         self.telemetry.record(
             action="case_poll",
             site="azom",
-            meta={"created": created, "skipped": skipped, "mailboxes": len(mailboxes)},
+            meta={
+                "created": created,
+                "skipped": skipped,
+                "errors": errors,
+                "mailboxes": len(mailboxes),
+            },
         )
+        # All mailboxes failed → not ok; partial success still ok=True
+        all_failed = errors > 0 and errors == len(mailboxes)
         return IngestResult(
-            ok=True,
-            message=f"Polled {len(mailboxes)} mailbox(es)",
+            ok=not all_failed,
+            message=(
+                f"Polled {len(mailboxes)} mailbox(es)"
+                + (f" ({errors} failed)" if errors else "")
+            ),
             created=created,
             skipped=skipped,
+            errors=errors,
             cases=created_cases,
         )
 
@@ -440,12 +455,15 @@ class CaseService:
             if not subject.lower().startswith("re:"):
                 subject = f"Re: {subject}"
 
+            # Jonatan has CASE_REPLY but not MAIL_SEND — case approve is the
+            # intentional send path; pass the real approving actor for audit.
             send = self.mail.send(
                 to=case.from_addr,
                 subject=subject,
                 body=body,
                 site=case.site,
-                actor="agent",
+                actor=actor_obj,
+                required_permission=Permission.CASE_REPLY,
             )
             if not send.ok:
                 return CaseActionResult(

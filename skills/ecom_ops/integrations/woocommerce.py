@@ -109,9 +109,14 @@ class InMemoryWooTransport:
         timeout: float = 30,
     ) -> Any:
         self.calls.append((method, url, json))
-        # /wp-json/wc/v3/orders/1001
-        if "/orders/" in url:
-            oid = url.rstrip("/").split("/")[-1].split("?")[0]
+        # /wp-json/wc/v3/orders or /wp-json/wc/v3/orders/1001
+        if "/orders" in url and "/products" not in url:
+            path_tail = url.split("/orders", 1)[-1]
+            oid = path_tail.lstrip("/").split("?")[0].strip("/")
+            if not oid:
+                if method.upper() == "GET":
+                    return list(self.orders.values())[: int((params or {}).get("per_page") or 10)]
+                raise SecurityError(f"Unhandled mock URL: {method} {url}")
             if method.upper() == "GET":
                 if oid not in self.orders:
                     raise SecurityError(f"WooCommerce API error 404: order {oid}")
@@ -170,6 +175,18 @@ class WooCommerceClient:
             auth=self._auth(),
         )
         return self._to_order(data)
+
+    def list_orders(self, *, per_page: int = 1) -> list[WooOrder]:
+        """Lightweight connectivity check / listing (no hardcoded order id)."""
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wc/v3/orders"),
+            auth=self._auth(),
+            params={"per_page": max(1, min(int(per_page), 100))},
+        )
+        if not isinstance(data, list):
+            return []
+        return [self._to_order(row) for row in data if isinstance(row, dict)]
 
     def update_order_status(self, order_id: str | int, status: str) -> WooOrder:
         oid = validate_order_id(order_id)

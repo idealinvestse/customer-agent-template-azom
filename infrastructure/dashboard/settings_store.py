@@ -59,6 +59,7 @@ EDITABLE_SECRET_KEYS = (
     "SSH_PASSWORD",
     "OPENROUTER_API_KEY",
     "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_ALLOWED_CHAT_IDS",
     "DASHBOARD_PASSWORD",
     "DASHBOARD_OSCAR_PASSWORD",
 )
@@ -303,7 +304,7 @@ def secrets_status() -> list[dict[str, Any]]:
         ("Graph", ["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_USER"]),
         ("SSH", ["SSH_HOST", "SSH_USER", "SSH_PORT", "SSH_PASSWORD"]),
         ("LLM", ["OPENROUTER_API_KEY"]),
-        ("Telegram", ["TELEGRAM_BOT_TOKEN"]),
+        ("Telegram", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHAT_IDS"]),
         ("Dashboard", ["DASHBOARD_PASSWORD", "DASHBOARD_OSCAR_PASSWORD"]),
     ]
     out: list[dict[str, Any]] = []

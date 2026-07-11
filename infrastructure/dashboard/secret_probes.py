@@ -46,14 +46,17 @@ def probe_woocommerce() -> ProbeResult:
 
         use_mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
         client = client_from_env(use_mock=use_mock if use_mock else None)
-        # Lightweight: fetch a known mock/live order id if possible
-        order = client.get_order("1001")
-        return _result(
-            "woocommerce",
-            label,
-            "ok",
-            f"Order {order.id} reachable (status={order.status})",
-        )
+        # List one order — validates credentials without requiring a fixed order id
+        orders = client.list_orders(per_page=1)
+        if orders:
+            order = orders[0]
+            return _result(
+                "woocommerce",
+                label,
+                "ok",
+                f"API ok · sample order {order.id} (status={order.status})",
+            )
+        return _result("woocommerce", label, "ok", "API ok · orders endpoint reachable")
     except Exception as exc:
         return _result("woocommerce", label, "error", str(exc)[:200])
 

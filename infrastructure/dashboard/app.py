@@ -215,6 +215,24 @@ def _save_probe_last(results: list) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+def _merge_probe_last(result) -> list:
+    """Merge a single probe result into cached probe_last.json; return full list."""
+    last = _load_probe_last()
+    rows = list((last or {}).get("results") or [])
+    row = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+    pid = row.get("id")
+    replaced = False
+    for i, existing in enumerate(rows):
+        if isinstance(existing, dict) and existing.get("id") == pid:
+            rows[i] = row
+            replaced = True
+            break
+    if not replaced:
+        rows.append(row)
+    _save_probe_last(rows)
+    return rows
+
+
 def _load_probe_last() -> dict | None:
     path = _probe_last_path()
     if not path.is_file():
@@ -634,9 +652,11 @@ def oscar_secrets_test():
     probe = (request.form.get("probe") or "all").strip().lower()
     if probe in {"", "all"}:
         results = run_all_probes()
+        _save_probe_last(results)
     else:
-        results = [run_probe(probe)]
-    _save_probe_last(results if probe in {"", "all"} else run_all_probes())
+        single = run_probe(probe)
+        results = [single]
+        _merge_probe_last(single)
     ok_n = sum(1 for r in results if r.status == "ok")
     err_n = sum(1 for r in results if r.status in {"error", "missing"})
     msg = f"Test+klart:+{ok_n}+ok,+{err_n}+problem"

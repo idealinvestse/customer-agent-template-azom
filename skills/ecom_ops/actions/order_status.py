@@ -42,7 +42,7 @@ class OrderStatusService:
         telemetry: Telemetry | None = None,
         escalation: EscalationService | None = None,
     ) -> None:
-        self.woo = woo or client_from_env(use_mock=True)
+        self.woo = woo or client_from_env(use_mock=None)
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
 

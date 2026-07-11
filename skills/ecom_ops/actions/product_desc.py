@@ -89,7 +89,7 @@ class ProductDescService:
         telemetry: Telemetry | None = None,
         escalation: EscalationService | None = None,
     ) -> None:
-        self.woo = woo or client_from_env(use_mock=True)
+        self.woo = woo or client_from_env(use_mock=None)
         if generator:
             self.generator = generator
         elif os.environ.get("OPENROUTER_API_KEY"):

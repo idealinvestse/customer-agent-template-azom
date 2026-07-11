@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -13,6 +14,15 @@ from ecom_ops.integrations.woocommerce import client_from_env
 from ecom_ops.security import validate_order_id
 
 ORDER_TEXT_RE = re.compile(r"\b(?:order|ordernr|#)\s*(\d{4,12})\b", re.I)
+
+
+def telegram_chat_allowed(chat_id: str | int) -> bool:
+    """Enforce TELEGRAM_ALLOWED_CHAT_IDS when set (comma-separated)."""
+    raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "").strip()
+    if not raw:
+        return True
+    allowed = {p.strip() for p in raw.split(",") if p.strip()}
+    return str(chat_id) in allowed
 
 
 class BotHandler:
@@ -42,6 +52,11 @@ class BotHandler:
         self.store.set(chat_id, state)
 
     def handle(self, chat_id: str | int, text: str) -> str:
+        if not telegram_chat_allowed(chat_id):
+            return (
+                "Du är inte behörig att använda denna bot. "
+                "Be Oscar lägga till din chat-id i TELEGRAM_ALLOWED_CHAT_IDS."
+            )
         raw = (text or "").strip()
         if not raw:
             return "Skriv /help eller /commands."
