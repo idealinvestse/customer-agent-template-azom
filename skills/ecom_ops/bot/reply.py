@@ -69,6 +69,33 @@ def triage_cases_keyboard(case_id8s: list[str]) -> dict[str, Any] | None:
     return inline_keyboard(rows)
 
 
+def order_status_confirm_keyboard(order_id: str, status: str) -> dict[str, Any]:
+    """Confirm Woo order status change (never silent)."""
+    oid = str(order_id)[:12]
+    st = str(status)[:20]
+    return inline_keyboard(
+        [
+            [
+                (f"Bekräfta {oid}→{st}", f"order:set:{oid}:{st}"),
+                ("Avbryt", "order:cancel"),
+            ]
+        ]
+    )
+
+
+def product_desc_confirm_keyboard(product_id: str, *, publish: bool = False) -> dict[str, Any]:
+    pid = str(product_id or "0")[:12]
+    flag = "1" if publish else "0"
+    return inline_keyboard(
+        [
+            [
+                (f"Generera produkt {pid}", f"product:desc:{pid}:{flag}"),
+                ("Avbryt", "product:cancel"),
+            ]
+        ]
+    )
+
+
 def as_reply(value: str | BotReply) -> BotReply:
     if isinstance(value, BotReply):
         return value

@@ -80,20 +80,39 @@ Suggest-approve rows show `★föreslå` (+ confidence when present).
 
 ---
 
-## Hybrid free-text tools (read-only)
+## Hybrid free-text (OpenClaw-like multi-turn)
 
-Prefetch heuristics in `chat_agent.py` may run:
+Thread state under `AZOM_DATA_DIR/telegram_state.json`:
+
+- **TTL:** 24h idle (refreshed on activity)
+- **History:** last ~40 message turns
+- **Sticky:** `session.last_order_id`, `session.last_case_id8`
+- **tool_digest** for follow-ups (“och frakten?”, “samma order”)
+
+Prefetch tools (`chat_agent.gather_tool_results`):
 
 | Tool | When |
 |------|------|
-| `lookup_order` | Order number / status intent |
-| `list_cases` / `show_case` | Ärende / triage / id8 |
-| suggest filter | “föreslagna”, “vad kan jag godkänna”, ★ |
-| `ops_snapshot` | status / budget / brief intent |
-| approve **confirm-only** | NL “godkänn abcdef01” → UX, no send |
-| soft escalate hint | abuse-ish or assistant mentions Oscar |
+| `lookup_order` | Order id **or** sticky follow-up |
+| `list_cases` / `show_case` | Ärende / triage / id8 / sticky case |
+| suggest filter | “föreslagna”, ★ |
+| `ops_snapshot` / capabilities | status / budget / “vad kan du” |
+| approve **confirm-only** | NL “godkänn id8” → UX, no send |
+| `propose_order_status` | “sätt order 1001 till completed” → **confirm button** |
+| `propose_product_desc` | “produktbeskrivning för 42” → **confirm button** |
+| `propose_regenerate` | “regenerera id8” → **confirm button** |
 
-Session stores `messages` (clamped) + `tool_digest` for multi-turn continuity (`/context`).
+### Site write rails (not silent)
+
+Mutations use `dialog_actions` + handler callbacks:
+
+| Action | Callback | RBAC |
+|--------|----------|------|
+| Order status | `order:set:{id}:{status}` | `ORDER_STATUS_UPDATE` (operator/Oscar) |
+| Product desc | `product:desc:{id}:{0\|1}` | `PRODUCT_DESC_WRITE` |
+| Regen draft | `cases:regen:{id8}` | `CASE_REPLY` (Jonatan OK) |
+
+Jonatan default actor can approve cases but **not** Woo order updates unless mapped via `TELEGRAM_ACTOR_MAP` to `agent`/`oscar`.
 
 ---
 

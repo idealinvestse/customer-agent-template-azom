@@ -65,14 +65,14 @@ def _parse_command(text: str) -> tuple[str | None, str]:
 def cmd_help(ctx: CommandContext) -> str:
     return (
         "AzomOps · OpenClaw hybrid\n"
-        "Skriv /commands för full katalog.\n\n"
-        "Fråga fritt — jag hämtar order/ärenden/status när det behövs.\n"
-        "Approve via knapp eller /cases approve (aldrig silent send).\n\n"
-        "Vanliga kommandon:\n"
+        "Skriv fritt som i vanlig chat — jag håller tråd, hämtar tools och "
+        "följer upp (“den ordern”, “samma ärende”).\n"
+        "Sajändringar (orderstatus, produkttext) bara efter bekräftelse-knapp.\n"
+        "Kundmail: /cases approve eller knappen — aldrig silent send.\n\n"
+        "Vanliga:\n"
         "/status · /whoami · /new · /reset · /stop\n"
-        "/tools · /tasks · /usage · /model\n"
-        "/order · /cases · /health · /brief\n"
-        "/context — dialogminne + senaste tool-digest"
+        "/tools · /tasks · /usage · /model · /context\n"
+        "/order · /cases · /health · /brief · /commands"
     )
 
 
@@ -194,16 +194,19 @@ def cmd_stop(ctx: CommandContext) -> str:
 def cmd_tools(ctx: CommandContext) -> str:
     verbose = "verbose" in ctx.args.lower()
     chat_tools = [
-        ("lookup_order", "Orderstatus (read-only, via fritext)"),
+        ("lookup_order", "Orderstatus (read-only + sticky follow-up)"),
         ("list_cases / show_case", "Ärenden (read-only)"),
-        ("ops_snapshot", "Status/budget/cases-count"),
+        ("ops_snapshot", "Status/budget/cases-count/readiness"),
+        ("propose_order_status", "Sajändring: orderstatus (kräver bekräftelse)"),
+        ("propose_product_desc", "Produktbeskrivning (kräver bekräftelse)"),
+        ("propose_regenerate", "Regenerera case-draft (kräver bekräftelse)"),
     ]
     slash_tools = [
         ("order-status", "Uppdatera Woo orderstatus (operator/CLI)"),
         ("product-desc", "Generera produktbeskrivning"),
         ("support", "Klassificera + draft-svar"),
         ("mail", "Send/fetch/reply (RBAC)"),
-        ("cases", "Mail→ärende poll + approve/send"),
+        ("cases", "Mail→ärende poll + approve/send/regenerate"),
         ("ssh", "Allowlistad SSH health"),
         ("escalation", "Ticket till Oscar"),
     ]

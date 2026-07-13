@@ -8,10 +8,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-# Chat continuity: 8h idle TTL (refreshed on every set via updated_at).
-DEFAULT_TTL_SECONDS = 8 * 3600
-# Keep last N role/content turns (user+assistant pairs ≈ 10 exchanges).
-MAX_MESSAGES = 20
+# Chat continuity: 24h idle TTL (refreshed on every set via updated_at).
+# Longer than classic short bots — closer to OpenClaw day-long thread feel.
+DEFAULT_TTL_SECONDS = 24 * 3600
+# Keep last N role/content turns (user+assistant ≈ 15–20 exchanges).
+MAX_MESSAGES = 40
 
 
 def clamp_messages(messages: list[dict[str, Any]] | None, *, max_n: int = MAX_MESSAGES) -> list[dict[str, str]]:

@@ -40,12 +40,14 @@ def test_store_ttl_expiry(store):
 
 
 def test_store_clamps_messages(store):
-    msgs = [{"role": "user", "content": f"m{i}"} for i in range(30)]
+    # OpenClaw-like longer memory: MAX_MESSAGES=40; force overflow
+    msgs = [{"role": "user", "content": f"m{i}"} for i in range(50)]
     store.set("1", {"flow": None, "messages": msgs, "session": {}})
     got = store.get("1")
     assert got is not None
-    assert len(got["messages"]) == 20
+    assert len(got["messages"]) == 40
     assert got["messages"][0]["content"] == "m10"
+    assert got["messages"][-1]["content"] == "m49"
 
 
 def test_clamp_messages_filters():
@@ -59,8 +61,16 @@ def test_help_command(handler):
     assert "OpenClaw" in reply or "AzomOps" in reply
     assert "/order" in reply
     assert "/commands" in reply
-    assert "hybrid" in reply.lower() or "fråga fritt" in reply.lower() or "fritext" in reply.lower()
-    assert "approve" in reply.lower() or "knapp" in reply.lower()
+    low = reply.lower()
+    assert (
+        "hybrid" in low
+        or "fråga" in low
+        or "fritext" in low
+        or "chat" in low
+        or "tråd" in low
+        or "skriv fritt" in low
+    )
+    assert "approve" in low or "knapp" in low or "bekräft" in low
 
 
 def test_commands_catalog(handler):
