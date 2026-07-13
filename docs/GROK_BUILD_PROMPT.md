@@ -92,6 +92,8 @@ python -m ecom_ops --mock ssh --command uptime
 python -m ecom_ops --mock ssh --command "rm -rf /"   # must escalate, not execute
 python -m ecom_ops --mock mail send --to customer@example.com --subject "Build" --body "OK"
 python -m ecom_ops --mock mail fetch
+python -m ecom_ops --mock cases poll --limit 5
+python -m ecom_ops --mock cases list --status open
 ```
 
 Optional spinup script (bash):
@@ -129,8 +131,10 @@ Read docs/AUTO_INSTALL.md first.
 - RBAC: Jonatan=viewer, Oscar=full_admin, agent=operator
 - SSH: allowlist only; destructive commands escalate to Oscar
 - Mail: mock transport when AZOM_USE_MOCK=1
+- Cases: human approve required for send; auto-send default off
 - Dashboard: Flask under `infrastructure/dashboard/`
 - Escalations/telemetry: JSONL under AZOM_DATA_DIR
+- Identity docs: `SOUL.md`, `docs/SYSTEM_OVERVIEW.md` (read-only; do not invent product scope)
 
 ## Acceptance checklist (must all be true)
 - [ ] `git log -1` shows recent main commit
@@ -167,7 +171,7 @@ Clone https://github.com/idealinvestse/customer-agent-template-azom (main).
 Create venv, pip install -r requirements.txt && pip install -e .
 Set AZOM_USE_MOCK=1, AZOM_CONFIG_DIR=./config, PYTHONPATH=./skills.
 Verify: python -m ecom_ops version (must be 2.0.0), pytest -q, then mock smoke:
-order-status, product-desc, support, ssh uptime, ssh "rm -rf /" (escalate), mail send+fetch.
+order-status, product-desc, support, ssh uptime, ssh "rm -rf /" (escalate), mail send+fetch, cases poll+list.
 Fix only build/install failures. Report results.
 ```
 

@@ -1,2 +1,4 @@
 openrouter_cap: 100
+# Soft warn when sum_cost_usd / cap exceeds this ratio (status, brief, dashboard).
+openrouter_warn_ratio: 0.8
 jonatan_role: read_only

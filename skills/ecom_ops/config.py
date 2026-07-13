@@ -65,6 +65,7 @@ class RbacConfig:
 class LimitsConfig:
     openrouter_cap: float
     jonatan_role: str
+    openrouter_warn_ratio: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -101,9 +102,13 @@ def load_app_config() -> AppConfig:
         escalation_critical=str(escalation.get("critical", "oscar")),
         escalation_code_edit=str(escalation.get("code_edit", "oscar")),
     )
+    warn_ratio = float(limits_raw.get("openrouter_warn_ratio", 0.8))
+    if warn_ratio <= 0 or warn_ratio > 1:
+        warn_ratio = 0.8
     limits = LimitsConfig(
         openrouter_cap=float(limits_raw.get("openrouter_cap", 100)),
         jonatan_role=str(limits_raw.get("jonatan_role", "read_only")),
+        openrouter_warn_ratio=warn_ratio,
     )
     return AppConfig(
         customer=customer,

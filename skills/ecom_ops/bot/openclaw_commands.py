@@ -89,20 +89,25 @@ def cmd_status(ctx: CommandContext) -> str:
 
     from ecom_ops.config import load_app_config
     from ecom_ops.oauth.gmail import GmailOAuthStore, gmail_oauth_configured
-    from ecom_ops.telemetry import Telemetry
 
     try:
+        from ecom_ops.budget import budget_status
+
         cfg = load_app_config()
-        cost = Telemetry().sum_cost_usd()
+        budget = budget_status()
         mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
         session = ctx.session
+        budget_line = (
+            f"OpenRouter: ${budget['used_usd']:.4f} / ${budget['cap_usd']:g}"
+            + (" WARN near cap" if budget.get("near_cap") else "")
+        )
         return (
             f"AzomOps status\n"
             f"Version: {__version__}\n"
             f"Runtime: {'mock' if mock else 'live'}\n"
             f"Customer: {cfg.customer.customer}\n"
             f"Domains: {', '.join(cfg.customer.domains)}\n"
-            f"OpenRouter cap: ${cfg.limits.openrouter_cap} · used ~${cost:.4f}\n"
+            f"{budget_line}\n"
             f"Gmail OAuth: {'connected' if GmailOAuthStore().has_tokens() else 'not connected'}"
             f" / configured={gmail_oauth_configured()}\n"
             f"Telegram: {'yes' if os.environ.get('TELEGRAM_BOT_TOKEN') else 'no'}\n"
@@ -386,6 +391,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
                 "/cases — lista öppna+eskalerade\n"
                 "/cases show <id8> — detalj + draft\n"
                 "/cases approve <id8> — skicka draft\n"
+                "/cases regenerate <id8> — nytt utkast (skickar inte)\n"
                 "/cases close <id8> — stäng utan svar"
             )
 
@@ -433,6 +439,18 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
                 return f"Skickat. Case {case.id[:8]} → replied."
             return f"Misslyckades: {result.message}"
 
+        if sub in {"regenerate", "regen", "redraft"}:
+            if not rest:
+                return "Ange id: /cases regenerate <id8>"
+            case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
+            if not case:
+                return f"Hittade inte case {rest!r}"
+            result = svc.regenerate_draft(case.id, actor=actor)
+            if result.ok:
+                refreshed = svc.get(case.id) or case
+                return _case_show_reply(refreshed)
+            return f"Misslyckades: {result.message}"
+
         if sub == "close":
             if not rest:
                 return "Ange id: /cases close <id8>"
@@ -451,7 +469,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
 
         return (
             f"Okänt: /cases {sub}\n"
-            "/cases · show · approve · close"
+            "/cases · show · approve · regenerate · close"
         )
     except Exception as exc:
         return f"Cases error: {exc}"
@@ -475,7 +493,10 @@ def _format_case_show(case: Any) -> str:
     if case.escalation_id:
         lines.append(f"Eskalering: {case.escalation_id}")
     lines.append(f"\nDraft:\n{draft or '(tom)'}")
-    lines.append(f"\n/cases approve {case.id[:8]} · /cases close {case.id[:8]}")
+    lines.append(
+        f"\n/cases approve {case.id[:8]} · /cases regenerate {case.id[:8]} · "
+        f"/cases close {case.id[:8]}"
+    )
     return "\n".join(lines)
 
 

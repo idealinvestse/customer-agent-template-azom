@@ -8,7 +8,7 @@
 
 | Decision | Choice |
 |----------|--------|
-| Auto-send | No — human approve still required |
+| Auto-send | No by default — human approve still required; Path B later added **disabled** rails only (`config/cases_ai.yaml`, kill-switch) |
 | FAQ/KB | Out of scope |
 | IMAP IDLE | Out of scope — systemd timer 5 min |
 | Statuses | `open` \| `escalated` \| `replied` \| `closed` |
@@ -33,4 +33,6 @@ Migrations via `ALTER TABLE` in `CaseStore._init_schema`.
 
 ## Non-goals
 
-Auto-send, FAQ/KB, IMAP IDLE, multi-tenant, per-mailbox OAuth, SLA automation.
+Default-on auto-send, FAQ/KB, IMAP IDLE, multi-tenant, per-mailbox OAuth, SLA automation.
+
+> **Path B note:** Suggest-approve + auto-send *rails* (default off) shipped on `main` without changing the human-approve production default. See `docs/CASES.md` and `docs/superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md`.

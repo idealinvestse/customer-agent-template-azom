@@ -25,7 +25,7 @@ sudo bash /tmp/azom/bin/install.sh
 4. Clone eller sync av projektet
 5. `python3 -m venv` + `pip install -r requirements.txt` + `pip install -e .`
 6. Skapar `.env` från `.env.example`, sätter prod-paths, **genererar** dashboard-lösenord
-7. Installerar systemd units (`azom-dashboard`, `azom-bot`, `azom-daily-brief.timer`, `azom-cases-poll.timer`)
+7. Installerar systemd units (`azom-dashboard`, `azom-bot`, `azom-daily-brief.timer`, `azom-cases-poll.timer` — cases poll every 5 min)
 8. UFW: endast SSH öppet (8080 stängd — använd reverse proxy)
 9. Logrotate + unattended-upgrades + fail2ban
 10. Smoke-tester (order-status, support, ssh, mail i mock)

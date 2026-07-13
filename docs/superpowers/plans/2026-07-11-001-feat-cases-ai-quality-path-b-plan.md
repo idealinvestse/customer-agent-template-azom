@@ -13,7 +13,9 @@ related:
 
 # feat: Cases & AI quality (Path B) — Implementation Plan
 
-> **For agentic workers:** Execute unit-by-unit with TDD. Progress is derived from git, not checkboxes in this file. First slice = **U1** only unless the operator expands scope.
+> **Status (2026-07-13):** U1–U5 effectively **shipped on `main`** (suggest-approve, order-context drafts, auto-send rails default-off, dashboard/Telegram UX, hybrid dialog). Residual Path B work (U6 regenerate, U7 baseline) and production finish sequencing live in **[`docs/DEVELOPMENT_PLAN_FINISH.md`](../../DEVELOPMENT_PLAN_FINISH.md)** — do not re-implement U1–U5.
+
+> **For agentic workers:** Execute unit-by-unit with TDD. Progress is derived from git, not checkboxes in this file. Historical first slice was **U1**; next work is **FU1+** in the finish plan.
 
 **Goal:** Raise triage/draft quality and cut Jonatan’s approve/send friction via hybrid classify, suggest-approve, and early auto-send guardrails — without enabling auto-send in production by default.
 

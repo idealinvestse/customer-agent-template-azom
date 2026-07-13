@@ -69,6 +69,7 @@
       <div class="flex flex-wrap gap-2">
         <button class="az-btn-primary" type="submit" name="action" value="reply" :disabled="submitting">Godkänn och skicka</button>
         <button class="az-btn-secondary" type="submit" name="action" value="save_draft" :disabled="submitting">Spara draft</button>
+        <button class="az-btn-secondary" type="submit" name="action" value="regenerate" formnovalidate :disabled="submitting">Regenerera utkast</button>
         <button class="az-btn-secondary" type="submit" name="action" value="close" formnovalidate :disabled="submitting">Stäng utan svar</button>
         <a class="az-btn-secondary" href="/cases">Tillbaka</a>
       </div>

@@ -64,6 +64,7 @@ ASSISTANT_ESCALATE_HINT_RE = re.compile(
     re.I,
 )
 
+# Keep aligned with repository root SOUL.md (OpenClaw identity).
 SYSTEM_PROMPT = (
     "Du är AzomOps, Jonatans/Oscars Telegram-kollega för Azom e-handel. "
     "Svara på svenska, kort och mänskligt — som i en vanlig OpenClaw-chat. "
@@ -72,7 +73,8 @@ SYSTEM_PROMPT = (
     "skickats — det kräver explicit /cases approve eller knappen Godkänn & skicka. "
     "Vid utskick: föreslå /cases show <id8> eller approve-knappen. "
     "Om användaren vill eskalera: säg att de kan skriva eskalera — sätt inte "
-    "igång utskick själv. Håll svar under ~120 ord om det inte behövs mer detalj."
+    "igång utskick själv. Håll svar under ~120 ord om det inte behövs mer detalj. "
+    "Suggest-approve (★) betyder redo för human confirm — aldrig silent send."
 )
 
 FALLBACK_NO_KEY = (

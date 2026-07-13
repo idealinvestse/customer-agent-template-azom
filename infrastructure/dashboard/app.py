@@ -411,6 +411,18 @@ def index():
     cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
     presence = _presence_integrations(runtime)
     last_probe = _load_probe_last()
+    budget = None
+    try:
+        from ecom_ops.budget import budget_status
+        from ecom_ops.telemetry import Telemetry
+
+        budget = budget_status(telemetry=Telemetry(path=_data_dir() / "telemetry.jsonl"))
+        # Prefer total from full telemetry file for progress when available
+        if budget.get("used_usd") is not None:
+            cost = float(budget["used_usd"])
+            cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
+    except Exception:
+        budget = None
     return render_template(
         "index.html",
         **_dashboard_context(
@@ -422,6 +434,7 @@ def index():
             cost_pct=cost_pct,
             integrations=presence,
             last_probe=last_probe,
+            budget=budget,
         ),
     )
 
@@ -664,6 +677,17 @@ def case_detail(case_id: str):
             result = svc.close(case_id, actor=g.actor["name"], reason="dashboard")
             if result.ok:
                 return redirect(url_for("cases_list") + "?msg=Stängt")
+            return redirect(
+                url_for("case_detail", case_id=case_id) + f"?err={result.message}"
+            )
+        if action == "regenerate":
+            result = svc.regenerate_draft(
+                case_id, actor=g.actor["name"], use_mock=_is_mock() or None
+            )
+            if result.ok:
+                return redirect(
+                    url_for("case_detail", case_id=case_id) + "?msg=Utkast+regenererat"
+                )
             return redirect(
                 url_for("case_detail", case_id=case_id) + f"?err={result.message}"
             )

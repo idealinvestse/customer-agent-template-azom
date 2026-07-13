@@ -9,15 +9,19 @@
 ```
 skills/ecom_ops/           # Python package (import ecom_ops)
   actions/                 # order_status, product_desc, support, ssh_ops, mail
+  cases/                   # Cases 2.0 + Path B suggest/auto_send rails (V2+)
+  bot/                     # Telegram OpenClaw hybrid (V2)
+  oauth/                   # Gmail OAuth (V2)
   integrations/            # WooCommerce + SSH + mail clients (+ mocks)
-  security.py, rbac.py, escalation.py, telemetry.py, config.py, cli.py
+  security.py, rbac.py, escalation.py, telemetry.py, config.py, cli.py, llm.py
 skills/ecom-ops/           # Moss skill metadata + shim
   SKILL.md
   integrations.py
 tests/                     # pytest suite
 bin/ecom-automation.sh     # operator entrypoint
-infrastructure/dashboard/  # Flask read-only dashboard (Jonatan)
+infrastructure/dashboard/  # Flask dashboard (Jonatan + Oscar)
 Dockerfile                 # container image
+SOUL.md / docs/SYSTEM_OVERVIEW.md  # identity + full system map (V2 docs)
 ```
 
 ## Security model
@@ -26,7 +30,7 @@ Dockerfile                 # container image
 2. Never log secrets (redaction in telemetry + escalation).
 3. SSH allowlist only for auto-exec; everything else → Oscar ticket.
 4. Shell metacharacters (`;`, `|`, `&&`, …) rejected.
-5. RBAC: Jonatan cannot mutate orders/products/support replies or send mail.
+5. RBAC: Jonatan cannot mutate orders/products; case reply approve/send is an explicit CASE_REPLY exception. Bulk mail send still operator/Oscar.
 6. Mail credentials only via env; support app password **and** OAuth2.
 
 ## Mail connector

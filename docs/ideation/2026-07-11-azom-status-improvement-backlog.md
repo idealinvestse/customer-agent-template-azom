@@ -4,7 +4,7 @@
 
 **Decision doc (next steps — revised, decisions locked):** [`2026-07-11-azom-project-overview-next-steps-scope.md`](./2026-07-11-azom-project-overview-next-steps-scope.md) — **primary path = B (Cases/AI, high LLM appetite)**; measurement/engagement are thin-parallel / parked. This file stays the item inventory.
 
-> **Note:** Rows below that call OpenRouter a “stub” / AI “svag” are partly **stale** after the P0–P10 wave (LLM drafts + product-desc path shipped). Prefer the overview for current maturity and locked next-path scope.
+> **Note (updated after Path B + hybrid dialog):** Rows that call OpenRouter a “stub”, AI “svag”, or “no suggest-approve” are **stale**. Prefer [`2026-07-11-azom-project-overview-next-steps-scope.md`](./2026-07-11-azom-project-overview-next-steps-scope.md) and [`../SYSTEM_OVERVIEW.md`](../SYSTEM_OVERVIEW.md). Shipped: LLM drafts, product-desc LLM path, suggest-approve, auto-send **rails default-off**, Telegram tool prefetch.
 
 Interaktiv vy: Cursor Canvas `azom-status-improvement-backlog.canvas.tsx`.
 
@@ -20,11 +20,11 @@ Interaktiv vy: Cursor Canvas `azom-status-improvement-backlog.canvas.tsx`.
 | Kärnops | Stark | order, mail, SSH, support, cases i mock |
 | Cases 2.0 | Stark (MVP) | SQLite, dashboard, Telegram, 5 min poll |
 | Dashboard | Stark UX, medel säkerhet | Basic Auth + osaltad SHA-256 |
-| AI-kvalitet | Svag vs mål | Keywords + mallar; OpenRouter stub |
-| Prod-blindspot | Medel–hög risk | CI bara `AZOM_USE_MOCK=1` |
+| AI-kvalitet | Medel vs 50%-mål | LLM drafts + suggest-approve; classify hybrid; auto-send off |
+| Prod-blindspot | Medel risk | CI mock-only; live smoke opt-in; readiness on `/health` |
 | Deploy | Stark | Install, systemd, Docker; UFW stänger 8080 |
 | SaaS/V3 | Inte påbörjat | Multi-tenant medvetet out of scope |
-| Process | Medel | ~116 tester; ingen lint/coverage-gate |
+| Process | Starkare | ruff + cov≥65% i CI; många testmoduler |
 
 ## Subsystem (djupdyk)
 

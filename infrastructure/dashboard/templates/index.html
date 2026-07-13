@@ -2,10 +2,13 @@
 {% block page_subtitle %}Översikt{% endblock %}
 {% block content %}
 <div class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-  <section class="az-card">
+  <section class="az-card {% if budget and budget.near_cap %}ring-1 ring-warn/50{% endif %}">
     <h2 class="az-section-title">Telemetry cost</h2>
     <div class="az-stat">${{ cost_usd }}</div>
     <p class="az-muted mt-1">Cap: ${{ openrouter_cap }} · LLM budget: ${{ budget_cap_llm }}</p>
+    {% if budget and budget.near_cap %}
+    <p class="mt-2 text-sm text-warn">{{ budget.message }}</p>
+    {% endif %}
     <div class="az-progress mt-3"><span style="width: {{ cost_pct }}%"></span></div>
   </section>
 

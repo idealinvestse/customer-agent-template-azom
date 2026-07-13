@@ -34,9 +34,11 @@ These six answers supersede the open questions in the earlier draft of this doc.
 | **V1 core** | Done | order-status, product-desc, support classify/draft, SSH allowlist, mail (Gmail/Outlook/Graph/IMAP/POP3/SMTP), RBAC + escalation |
 | **V2.0** | Done | Dashboard onboarding/settings/Oscar secrets, Gmail OAuth, OpenClaw-style Telegram bot, auto-install, CLI `version`/`status` |
 | **Cases 2.0** | MVP done | SQLite cases, 5‑min poll, threading headers, order-enriched drafts, dashboard `/cases`, Telegram `/cases`, human approve required |
-| **Hardening wave (same day)** | Shipped on `main` | Prod-path fixes, CSRF + salted passwords, Telegram actor map, OpenRouter drafts + cap, case KPIs in telemetry, schema migrate, mail provider split, smoke/readiness, CI ruff + cov≥65%, product-desc LLM path |
+| **Hardening wave** | Shipped on `main` | Prod-path fixes, CSRF + salted passwords, Telegram actor map, OpenRouter drafts + cap, case KPIs, schema migrate, mail split, smoke/readiness, CI ruff + cov≥65%, product-desc LLM |
+| **Path B Cases/AI** | Shipped on `main` | suggest-approve + confidence, richer order-context drafts, auto-send rails default-off + kill-switch, Telegram hybrid tool prefetch + NL confirm |
+| **Docs map (later)** | Current | `docs/SYSTEM_OVERVIEW.md`, `docs/CASES.md`, `docs/TELEGRAM_OPENCLAW.md`, expanded `SOUL.md` |
 
-Evidence: `AGENTS.md`, `README.md`, `docs/V2_RELEASE.md`, commits through `2e62309` (P6–P10 ops hardening).
+Evidence: `AGENTS.md`, `README.md`, `docs/V2_RELEASE.md`, `docs/SYSTEM_OVERVIEW.md`; commits through Path B + hybrid dialog vNext (`9e4be88`, `0c778c6`) and earlier P6–P10.
 
 ---
 
@@ -77,22 +79,22 @@ Evidence: `AGENTS.md`, `README.md`, `docs/V2_RELEASE.md`, commits through `2e623
 |-----------|-------|-------|
 | Feature completeness (pilot) | High | Enough to run a dedicated customer agent |
 | Production credibility | Medium | Live in use; CI remains mock-only (`AZOM_USE_MOCK=1`) |
-| AI quality vs 50% goal | Medium–low | Drafts can use LLM; **classify is still keyword-based**; no suggest-approve yet |
+| AI quality vs 50% goal | Medium | LLM drafts + order context + **suggest-approve shipped**; classify still largely keyword/heuristic hybrid; auto-send default off |
 | Measurement of support-time goal | Early | Telemetry records KPIs — **baseline not yet captured**; parallel track only |
 | Security posture | Improved, not “done” | Werkzeug hashes + CSRF + sessions; still Basic Auth (no SSO); CDN assets remote |
 | Platform / V3 | Not started | Correctly out of scope until core support loop improves further |
 
-### Known gaps (still open after P0–P10)
+### Known gaps (post Path B ship)
 
 Decision-relevant residuals — not a full backlog:
 
-1. **Support classify remains keywords** — abuse keywords + category regex; LLM drafts help replies, not triage accuracy.
-2. **Human-in-the-loop only today** — no suggest-approve; auto-send was a Cases non-goal (now **reopened as carefully scoped experiments** under high appetite).
-3. **Approve/send friction** — triage UX (diff, order panel), regenerate, confidence surfacing still thin.
-4. **Baseline not captured** — do not block B; capture when Jonatan is reachable.
-5. **Ops leftovers** — only as needed for live safety (budget near cap, poll/mail failure visibility).
-6. **Engagement / GA4** — researched (`ga-ads-api-feasibility.json`); **parked** for 4–6 weeks.
-7. **Docs drift** — backlog’s “AI-kvalitet: Svag / OpenRouter stub” is partly stale; this overview is current for decisions.
+1. **Classify depth** — abuse gate + confidence path exists; room to deepen LLM classify reliability vs pure keywords.
+2. **Human-in-the-loop remains default** — suggest-approve reduces friction; **auto-send live sender not wired** (rails only, Oscar experiment later).
+3. **Triage UX polish** — more regenerate/bulk/edit-distance dashboards still optional.
+4. **Baseline not captured** — do not block capability work; capture when Jonatan is reachable.
+5. **Ops leftovers** — budget near-cap alerts, poll/mail failure visibility hardening as live needs.
+6. **Engagement / GA4** — researched (`ga-ads-api-feasibility.json`); **parked**.
+7. **Docs** — prefer `docs/SYSTEM_OVERVIEW.md` + this file over older backlog rows that still call OpenRouter a stub.
 
 ---
 

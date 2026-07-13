@@ -150,6 +150,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_cases_draft.add_argument("--id", required=True, dest="case_id")
     p_cases_draft.add_argument("--body", required=True)
 
+    cases_sub.add_parser(
+        "regenerate", help="Regenerate draft from inbound (never sends)"
+    ).add_argument("--id", required=True, dest="case_id")
+
     return parser
 
 
@@ -225,12 +229,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         import os
 
+        from ecom_ops.budget import budget_status
         from ecom_ops.config import load_app_config
         from ecom_ops.oauth.gmail import GmailOAuthStore, gmail_oauth_configured
         from ecom_ops.ops_status import readiness_from_last_poll
 
         try:
             cfg = load_app_config()
+            budget = budget_status()
             status = {
                 "ok": True,
                 "version": __version__,
@@ -244,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
                     os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
                 ),
                 "readiness": readiness_from_last_poll(),
+                "budget": budget,
             }
         except Exception as exc:
             status = {"ok": False, "version": __version__, "error": str(exc)}
@@ -352,6 +359,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.case_id,
                 args.body,
                 actor=args.actor,
+            )
+            return _print(result)
+        if args.cases_command == "regenerate":
+            result = case_svc.regenerate_draft(
+                args.case_id,
+                actor=args.actor,
+                use_mock=args.mock or None,
             )
             return _print(result)
         parser.error(f"Unknown cases command: {args.cases_command}")

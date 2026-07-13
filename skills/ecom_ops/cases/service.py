@@ -537,6 +537,180 @@ class CaseService:
                 ticket_id=ticket.id,
             )
 
+    def regenerate_draft(
+        self,
+        case_id: str,
+        *,
+        actor: Actor | str | None = None,
+        use_mock: bool | None = None,
+    ) -> CaseActionResult:
+        """Re-run support draft + order context; never sends mail.
+
+        Draft generation uses operator ``agent`` (SUPPORT_REPLY) while the
+        human caller needs CASE_REPLY (Jonatan may regenerate / approve).
+        """
+        try:
+            actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
+        except AccessDenied as exc:
+            ticket = self.escalation.escalate_critical(
+                f"Case draft regenerate denied: {exc}",
+                details={"error": str(exc), "case_id": case_id},
+            )
+            return CaseActionResult(
+                ok=False,
+                message=str(exc),
+                escalated=True,
+                ticket_id=ticket.id,
+            )
+        try:
+            require_permission(actor_obj, Permission.CASE_REPLY)
+            case = self.store.get(case_id)
+            if not case:
+                return CaseActionResult(ok=False, message="Case not found")
+            if case.status not in _ACTIVE:
+                return CaseActionResult(
+                    ok=False,
+                    message=f"Case status is {case.status}, expected open/escalated",
+                    case=case.to_dict(),
+                )
+
+            inbound_body, inbound_subject = self._inbound_text_for_regen(case)
+            text = f"{inbound_subject}\n\n{inbound_body}".strip()
+            order_id = case.order_id or extract_order_id(text)
+            order_ctx = resolve_order_context(order_id, use_mock=use_mock)
+
+            # Ingest path uses agent for SUPPORT_REPLY; keep same here.
+            support = self.support.handle(
+                text,
+                customer_email=case.from_addr if "@" in (case.from_addr or "") else None,
+                language=case.language or "sv",
+                site=case.site or "azom",
+                actor="agent",
+                use_mock=use_mock,
+                order_context=order_ctx,
+            )
+            draft = _enrich_draft_with_order(
+                support.reply,
+                support.order_id or order_id,
+                use_mock=use_mock,
+                order_context=order_ctx,
+            )
+            previous = case.draft_reply or ""
+            conf = getattr(support, "confidence", None)
+            method = getattr(support, "classify_method", None)
+            suggest = bool(getattr(support, "suggest_approve", False))
+            category = (
+                support.category.value
+                if hasattr(support.category, "value")
+                else str(support.category)
+            )
+            # Preserve abuse/escalated presentation — do not demote to routine
+            if case.status == "escalated" and case.category == "abuse":
+                category = "abuse"
+            if (
+                case.status == "escalated"
+                or getattr(support, "escalated", False)
+                or category == "abuse"
+            ):
+                suggest = False
+
+            patched = self._patch_case_after_regen(
+                case.id,
+                draft=draft or previous,
+                category=category,
+                order_id=support.order_id or order_id or case.order_id,
+                classify_confidence=conf if isinstance(conf, (int, float)) else None,
+                classify_method=method,
+                suggest_approve=suggest,
+            )
+            if getattr(support, "escalated", False) and patched and not patched.escalation_id:
+                patched = self._maybe_escalate(patched, support)
+
+            self.telemetry.record(
+                action="case_draft_regenerated",
+                site=case.site,
+                meta={
+                    "case_id": case_id,
+                    "actor": actor_obj.name,
+                    "category": category,
+                    "classify_method": method,
+                    "confidence": conf,
+                    "suggest_approve": suggest,
+                    "draft_edit_distance": round(
+                        _edit_distance_ratio(previous, draft or previous), 4
+                    ),
+                },
+            )
+            final = patched or self.store.get(case_id) or case
+            return CaseActionResult(
+                ok=True,
+                message=f"Draft regenerated for {case_id[:8]}",
+                case=final.to_dict(),
+            )
+        except AccessDenied as exc:
+            ticket = self.escalation.escalate_critical(
+                f"Case draft regenerate denied for {actor_obj.name}",
+                details={"error": str(exc), "case_id": case_id},
+            )
+            return CaseActionResult(
+                ok=False,
+                message=str(exc),
+                escalated=True,
+                ticket_id=ticket.id,
+            )
+        except Exception as exc:
+            return CaseActionResult(ok=False, message=f"Regenerate failed: {exc}")
+
+    def _inbound_text_for_regen(self, case: Case) -> tuple[str, str]:
+        msgs = self.store.messages(case.id)
+        inbound = [m for m in msgs if (m.direction or "") == "inbound"]
+        if inbound:
+            last = inbound[-1]
+            body = (last.body or "").strip()
+            subject = (last.subject or case.subject or "").strip()
+            if body:
+                return body, subject
+        # Fallback: subject + empty (still classifiable)
+        return (case.subject or "").strip(), case.subject or ""
+
+    def _patch_case_after_regen(
+        self,
+        case_id: str,
+        *,
+        draft: str,
+        category: str,
+        order_id: str | None,
+        classify_confidence: float | None,
+        classify_method: str | None,
+        suggest_approve: bool,
+    ) -> Case | None:
+        """Update draft + AI fields without inserting phantom messages."""
+        with self.store._conn() as conn:
+            conn.execute(
+                """
+                UPDATE cases SET
+                    draft_reply = ?,
+                    category = ?,
+                    order_id = COALESCE(?, order_id),
+                    classify_confidence = ?,
+                    classify_method = ?,
+                    suggest_approve = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    draft,
+                    category,
+                    order_id,
+                    classify_confidence,
+                    classify_method,
+                    1 if suggest_approve else 0,
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    case_id,
+                ),
+            )
+        return self.store.get(case_id)
+
     def close(
         self,
         case_id: str,

@@ -1,5 +1,7 @@
 # Deploy: Ubuntu 24.04 LTS på Hetzner VPS
 
+System map after install: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) · install detail: [`AUTO_INSTALL.md`](AUTO_INSTALL.md).
+
 ## Rekommenderad VPS-storlek
 
 | Scenario | Hetzner typ | Spec | ~pris/mån | När |

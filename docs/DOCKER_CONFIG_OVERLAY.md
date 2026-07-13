@@ -6,7 +6,7 @@ Azom separates **read-only config** (YAML in the image/host mount) from **writab
 
 | Path | Compose | Purpose |
 |------|---------|---------|
-| `/app/config` | `:ro` in prod & dev | `sites.yaml`, `rbac.yaml`, `mailboxes.yaml`, … |
+| `/app/config` | `:ro` in prod & dev | `sites.yaml`, `rbac.yaml`, `mailboxes.yaml`, `cases_ai.yaml`, … |
 | `/app/.azom-data` | **read-write** | `secrets.env`, `runtime.env`, `cases.db`, OAuth tokens, telemetry, poll marker |
 | `/app/logs` | rw (prod) | Optional log mount |
 
