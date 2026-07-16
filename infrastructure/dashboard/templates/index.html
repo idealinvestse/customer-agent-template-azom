@@ -42,6 +42,26 @@
   </section>
   {% endif %}
 
+  {% if readiness %}
+  <section class="az-card {% if not readiness.ok %}ring-1 ring-warn/50{% endif %}">
+    <h2 class="az-section-title">Cases poll readiness</h2>
+    <p class="text-sm">
+      {% if readiness.ok %}<span class="az-present">OK</span>
+      {% elif readiness.partial %}<span class="az-badge bg-warn/15 text-warn">PARTIAL</span>
+      {% elif readiness.stale %}<span class="az-badge bg-warn/15 text-warn">STALE</span>
+      {% else %}<span class="az-missing">NOT READY</span>{% endif %}
+    </p>
+    <p class="az-muted mt-2 text-xs">
+      {% if readiness.last_poll_age_sec is not none %}Ålder: {{ readiness.last_poll_age_sec }}s · {% endif %}
+      errors: {{ readiness.errors or 0 }}
+      {% if readiness.created is not none %} · created: {{ readiness.created }}{% endif %}
+    </p>
+    {% if readiness.detail %}
+    <p class="mt-2 text-sm text-warn">{{ readiness.detail }}</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="az-card">
     <h2 class="az-section-title">Integrationer</h2>
     <p class="az-muted text-xs">Presence (inga live-probes på översikt)</p>

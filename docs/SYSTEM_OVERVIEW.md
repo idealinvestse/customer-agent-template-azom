@@ -155,7 +155,7 @@ Global flags: `--mock`, `--actor`, `--site`.
 | `AZOM_CONFIG_DIR` / `AZOM_DATA_DIR` | Paths |
 | `WOO_*`, `MAIL_*`, `GRAPH_*`, `SSH_*` | Integrations |
 | `OPENROUTER_API_KEY` | LLM |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `TELEGRAM_ACTOR_MAP` | Bot |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `TELEGRAM_ACTOR_MAP` | Bot (map set ⇒ fail-closed unmapped; optional `TELEGRAM_FAIL_CLOSED=1`) |
 | `DASHBOARD_*` | Auth + bind |
 | `AZOM_AUTO_SEND_KILL` | Force auto-send off |
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
@@ -186,7 +186,8 @@ Install: [`docs/AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`docs/DEPLOY_UBU
 | `secrets.env` | Oscar-written secrets overlay |
 | `runtime.env` | Runtime toggles overlay |
 | `escalations.jsonl` | Escalation tickets |
-| telemetry / KPI files | Cost + case KPIs |
+| telemetry / KPI files | Cost + case KPIs (`python -m ecom_ops kpis`) |
+| `last_case_poll.json` | Poll readiness (`partial` / errors / age → `/health`) |
 | `probe_last.json` | Last Oscar probe results |
 | cases poll marker | Readiness input for `/health` |
 

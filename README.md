@@ -41,7 +41,12 @@ python -m ecom_ops --mock order-status --order-id 1001 --status completed
 python -m ecom_ops --mock mail fetch
 python -m ecom_ops --mock cases poll
 python -m ecom_ops support --message "Var är order 1001?"
+python -m ecom_ops kpis --days 7
+python -m ecom_ops classify-eval
+bash bin/mock-soak-azom.sh   # soft ops path (mock)
 ```
+
+**Finish / ops:** [`docs/DEVELOPMENT_PLAN_FINISH.md`](docs/DEVELOPMENT_PLAN_FINISH.md) · live soak [`docs/solutions/2026-07-16-live-soak-checklist.md`](docs/solutions/2026-07-16-live-soak-checklist.md)
 
 ## Production: one-shot install
 

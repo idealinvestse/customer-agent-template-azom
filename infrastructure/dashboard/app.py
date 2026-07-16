@@ -501,6 +501,13 @@ def index():
         )
     except Exception:
         kpis = None
+    readiness = None
+    try:
+        from ecom_ops.ops_status import readiness_from_last_poll
+
+        readiness = readiness_from_last_poll()
+    except Exception:
+        readiness = None
     return render_template(
         "index.html",
         **_dashboard_context(
@@ -514,6 +521,7 @@ def index():
             last_probe=last_probe,
             budget=budget,
             support_kpis=kpis,
+            readiness=readiness,
         ),
     )
 

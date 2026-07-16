@@ -497,6 +497,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
                 return f"Hittade inte case {rest!r}"
+            ctx.save_session(last_case_id8=case.id[:8])
             return _case_show_reply(case)
 
         if sub in {"approve", "reply", "send"}:
@@ -511,13 +512,19 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
             return f"Misslyckades: {result.message}"
 
         if sub in {"regenerate", "regen", "redraft"}:
-            if not rest:
-                return "Ange id: /cases regenerate <id8>"
-            case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
+            target = rest
+            if not target:
+                sticky = str(ctx.session.get("last_case_id8") or "").strip()
+                if sticky:
+                    target = sticky
+                else:
+                    return "Ange id: /cases regenerate <id8> (eller öppna ett case först)"
+            case = svc.store.resolve_id_prefix(target) or svc.get(target)
             if not case:
-                return f"Hittade inte case {rest!r}"
+                return f"Hittade inte case {target!r}"
             result = svc.regenerate_draft(case.id, actor=actor)
             if result.ok:
+                ctx.save_session(last_case_id8=case.id[:8])
                 refreshed = svc.get(case.id) or case
                 return _case_show_reply(refreshed)
             return f"Misslyckades: {result.message}"

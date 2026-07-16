@@ -23,7 +23,7 @@
 | baseline_median_time_to_approve_sec | Run `python -m ecom_ops kpis --days 7` after first live approve week |
 | baseline_cases_per_week | _TBD from kpis n_case_approved × scale_ |
 | source | telemetry.jsonl via `ecom_ops.kpis.support_kpis_last_days` / CLI `kpis` |
-| notes | Sprint A SA5 shipped KPI surface; do not invent hours without human input |
+| notes | Tooling ready (`python -m ecom_ops kpis --days 7`, dashboard KPI card). Fill numbers after live soak; do not invent hours. |
 
 ## Follow-ups (append)
 

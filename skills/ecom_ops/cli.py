@@ -88,6 +88,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=7,
         help="Lookback window in days (default 7)",
     )
+    p_eval = sub.add_parser(
+        "classify-eval",
+        help="Score keyword classify + suggest rails against fixture pack",
+    )
+    p_eval.add_argument(
+        "--fixtures",
+        default="",
+        help="Fixture directory (default: tests/fixtures/support_classify)",
+    )
     p_smoke = sub.add_parser(
         "smoke",
         help="Opt-in integration smoke (requires AZOM_LIVE_SMOKE=1 or --live)",
@@ -280,6 +289,14 @@ def main(argv: list[str] | None = None) -> int:
         result = support_kpis_last_days(days=int(getattr(args, "days", 7) or 7))
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+
+    if args.command == "classify-eval":
+        from ecom_ops.classify_eval import evaluate_fixtures
+
+        fix = (getattr(args, "fixtures", None) or "").strip() or None
+        result = evaluate_fixtures(directory=fix)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") else 1
 
     if args.command == "mail":
         provider = getattr(args, "provider", None)

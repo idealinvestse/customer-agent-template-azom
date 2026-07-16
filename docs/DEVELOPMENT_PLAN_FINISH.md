@@ -304,16 +304,25 @@ Därefter: Jonatan-vecka med suggest-filter + regenerate; justera trösklar (FU7
 
 ## 13. Definition of Done — “systemet färdigt i nuvarande mål”
 
-- [ ] Path B U1–U6 merged; U7 baseline doc exists (siffra när möjlig)  
-- [ ] Human approve required; auto-send default off  
-- [ ] Daily brief shows cases + budget headroom  
-- [ ] Live soak checklist completed once  
-- [ ] Suggest-approve calibrated on real mailbox sample  
-- [ ] Weekly cadence running; no open P0 prod bugs in poll/approve  
-- [ ] Docs point here: README/AGENTS/SYSTEM_OVERVIEW “finish plan” link  
+### Kod / repo (2026-07-16)
+
+- [x] Path B U1–U6 merged; U7 baseline doc exists (siffra när möjlig — proxy tooling: `ecom_ops kpis`)  
+- [x] Human approve required; auto-send default off (FU9 preconditions only)  
+- [x] Daily brief / `/brief` shows cases + budget headroom  
+- [x] Soak **checklist** + mock soft-soak (`bin/mock-soak-azom.sh`); classify fixtures + `classify-eval`  
+- [x] Suggest-approve rails + never-list regression fixtures (live threshold tune still data-gated)  
+- [x] Poll partial-fail visibility + Telegram actor fail-closed when map set  
+- [x] Docs: README / AGENTS / SYSTEM_OVERVIEW / this finish plan + sprint track  
+
+### Människa / prod (kan inte stängas av agent ensam)
+
+- [ ] Live soak checklist **executed once** on prod host (Oscar + Jonatan) — [`docs/solutions/2026-07-16-live-soak-checklist.md`](solutions/2026-07-16-live-soak-checklist.md)  
+- [ ] Baseline hours or KPI proxy filled after first live week  
+- [ ] Weekly cadence 3× without process chaos  
+
 - [ ] **Not required:** V3, GA4, default auto-send, FAQ/KB  
 
-När checklistan är avbockad är AzomOps **färdig som single-tenant support-ops agent** under nuvarande målbild. Nästa produktbeslut (engagement / V3 / auto-send trial) tas med data, inte magkänsla.
+**Kod-DoD för “systemet i nuvarande form” = grön.** Live-DoD = soak + baseline when humans run. Nästa produktbeslut (engagement / V3 / auto-send trial) tas med data, inte magkänsla.
 
 ---
 

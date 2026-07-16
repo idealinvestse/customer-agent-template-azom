@@ -79,9 +79,11 @@ TELEGRAM_ACTOR_MAP=chat:jonatan,...    # unmapped → jonatan
 - Logs: `/var/log/azom`
 - Env: `/opt/azom-agent/.env` (`AZOM_USE_MOCK=0`)
 
-## Nästa utveckling (färdigställ mot mål)
+## Status (kod mot nuvarande mål)
+- **Shipped:** Path B + Sprint A/B/C + SB5 (approve-flow, ★-measure, order extract/email lookup, richer context, classify fixtures, poll partial rails, Telegram actor fail-closed, soft draft utan order_id)
 - Finish overview: `docs/DEVELOPMENT_PLAN_FINISH.md`
-- **Active sprint track:** `docs/superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md`
-  - Sprint A: approve-flow (order panel, nästa, ★-count, `/brief`, 7d KPI)
-  - Sprint B **auto-start** when A exit gates green: order extract, email→Woo, richer context, classify fixtures
-- Inte i scope nu: V3 multi-tenant, GA4/engagement-program, default-on auto-send
+- Sprint plan: `docs/superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md`
+- Live soak (människa): `docs/solutions/2026-07-16-live-soak-checklist.md`
+- Mock soft-soak: `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
+- **FU9 auto-send:** rails only — `docs/solutions/2026-07-16-fu9-auto-send-preconditions.md` (inte wire)
+- Inte i scope: V3 multi-tenant, GA4/engagement-program, default-on auto-send

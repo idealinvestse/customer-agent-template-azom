@@ -298,8 +298,9 @@ test(support): classify fixtures + threshold note (SB4)
 | 2026-07-16 | Sprint A tests green; SB1 order extract + SB2 email→Woo unique match shipped |
 | 2026-07-16 | P1 review fixes committed (`660f437`); SB3 richer context + SB4 fixtures |
 | 2026-07-16 | Live soak checklist + FU9 preconditions docs; Sprint C partial poll + actor fail-closed; SB5 soft ask |
+| 2026-07-16 | Close-out: dashboard poll readiness card, sticky Telegram regenerate, classify-eval CLI, mock-soak.sh, DoD docs |
 
-**Current:** Code complete for A/B/C+SB5. **H2 live soak** still requires prod host run. FU9 not wired.
+**Current:** **Implementation complete** for planned A/B/C+SB5+ops polish. Remaining: human live soak (H2) + baseline hours; FU9 never wired until preconditions.
 
 ---
 
