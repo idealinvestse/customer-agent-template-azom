@@ -10,7 +10,7 @@ from typing import Any
 from ecom_ops.cases.suggest import is_suggest_approve_eligible
 from ecom_ops.escalation import EscalationReason, EscalationService, Severity, default_escalation
 from ecom_ops.llm import classify_support_with_llm, draft_support_with_llm
-from ecom_ops.order_context import resolve_order_context
+from ecom_ops.order_context import resolve_order_context, resolve_order_id_from_email
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, sanitize_text, validate_email, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
@@ -46,7 +46,29 @@ CRITICAL_KEYWORDS = (
     "ransomware",
 )
 
-ORDER_RE = re.compile(r"\b(?:order|orderid|ordernr|ordernummer|#)\s*[:#]?\s*(\d{4,12})\b", re.I)
+# Explicit labels (SV/NO/DK/EN) + hash/orderid prefixes.
+ORDER_RE = re.compile(
+    r"\b(?:"
+    r"order(?:id|nr|nummer)?|"
+    r"ordrenr|ordrenummer|ordre|"
+    r"beställning(?:en|s)?|bestilling(?:en|s)?|"
+    r"ordernr|order\s*nr|"
+    r"#"
+    r")\s*[:#]?\s*(\d{4,12})\b",
+    re.I,
+)
+# "status på 1001", "var är 1001", bare-ish numeric near status words
+ORDER_NEAR_STATUS_RE = re.compile(
+    r"(?:"
+    r"\b(?:status|kolla|hämta|visa|spår|spåra|track(?:ing)?|"
+    r"var\s+är|hvor\s+er|hvor\s+er\s+min)\b.{0,40}\b(\d{4,12})\b"
+    r"|"
+    r"\b(\d{4,12})\b.{0,20}\b(?:order|ordre|beställning|bestilling|status)\b"
+    r")",
+    re.I,
+)
+# Subject-only bare order number (common shop templates)
+BARE_SUBJECT_ORDER_RE = re.compile(r"^\s*#?\s*(\d{4,12})\s*$")
 
 
 @dataclass(frozen=True)
@@ -150,8 +172,24 @@ def classify_message(text: str) -> SupportCategory:
 
 
 def extract_order_id(text: str) -> str | None:
+    """Extract a Woo-style order id from free text (mail subject+body).
+
+    Prefers labeled forms, then status-near numbers, then subject-only bare id.
+    """
+    if not text:
+        return None
     m = ORDER_RE.search(text)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    m2 = ORDER_NEAR_STATUS_RE.search(text)
+    if m2:
+        return m2.group(1) or m2.group(2)
+    # First non-empty line as subject candidate
+    first = (text.strip().splitlines() or [""])[0].strip()
+    m3 = BARE_SUBJECT_ORDER_RE.match(first)
+    if m3:
+        return m3.group(1)
+    return None
 
 
 def draft_reply(
@@ -263,6 +301,11 @@ class SupportService:
                 site=site,
             )
             order_id = extract_order_id(text)
+            # SB2: only when text lacks id and email maps to exactly one Woo order
+            if not order_id and customer_email:
+                order_id = resolve_order_id_from_email(
+                    customer_email, use_mock=use_mock
+                )
             resolved_context = order_context
             if resolved_context is None and order_id:
                 resolved_context = resolve_order_context(order_id, use_mock=use_mock)

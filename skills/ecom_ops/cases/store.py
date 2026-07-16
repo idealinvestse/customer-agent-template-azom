@@ -421,6 +421,27 @@ class CaseStore:
             ).fetchone()
         return int(row["n"]) if row else 0
 
+    def count_suggest_approve(
+        self,
+        *,
+        status: str | None = "open,escalated",
+    ) -> int:
+        """Count active suggest-approve cases (queue triage)."""
+        sql = "SELECT COUNT(*) AS n FROM cases WHERE suggest_approve = 1"
+        params: list[Any] = []
+        if status and status != "all":
+            if "," in status:
+                parts = [s.strip() for s in status.split(",") if s.strip()]
+                placeholders = ",".join("?" * len(parts))
+                sql += f" AND status IN ({placeholders})"
+                params.extend(parts)
+            else:
+                sql += " AND status = ?"
+                params.append(status)
+        with self._conn() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return int(row["n"]) if row else 0
+
     def create_case(
         self,
         *,

@@ -17,13 +17,13 @@
 
 | Field | Value |
 |-------|--------|
-| start_date | _TBD_ |
-| method | hours_per_week / telemetry_proxy / both |
-| baseline_hours_per_week | _TBD_ |
-| baseline_median_time_to_approve_sec | _TBD_ |
-| baseline_cases_per_week | _TBD_ |
-| source | _TBD_ |
-| notes | e.g. peak season, single mailbox only |
+| start_date | 2026-07-16 (tooling ready; live number pending) |
+| method | telemetry_proxy (prefer) / hours_per_week when Jonatan reachable |
+| baseline_hours_per_week | _blocked_on: Jonatan contact_ |
+| baseline_median_time_to_approve_sec | Run `python -m ecom_ops kpis --days 7` after first live approve week |
+| baseline_cases_per_week | _TBD from kpis n_case_approved × scale_ |
+| source | telemetry.jsonl via `ecom_ops.kpis.support_kpis_last_days` / CLI `kpis` |
+| notes | Sprint A SA5 shipped KPI surface; do not invent hours without human input |
 
 ## Follow-ups (append)
 

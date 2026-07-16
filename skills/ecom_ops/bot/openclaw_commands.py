@@ -358,18 +358,66 @@ def cmd_health(ctx: CommandContext) -> str:
 
 
 def cmd_brief(ctx: CommandContext) -> str:
+    """Daily brief: customer + cases queue + readiness + budget (SA4)."""
     try:
+        from ecom_ops.budget import budget_status
+        from ecom_ops.cases.service import CaseService
         from ecom_ops.config import load_app_config
-        from ecom_ops.telemetry import Telemetry
+        from ecom_ops.kpis import support_kpis_last_days
+        from ecom_ops.ops_status import readiness_from_last_poll
 
         cfg = load_app_config()
-        cost = Telemetry().sum_cost_usd()
-        return (
-            f"Daily brief\n"
-            f"Customer: {cfg.customer.customer}\n"
-            f"Domains: {', '.join(cfg.customer.domains)}\n"
-            f"LLM cost USD: {cost:.4f} / cap {cfg.limits.openrouter_cap}"
-        )
+        budget = budget_status()
+        ready = readiness_from_last_poll()
+        open_n = escalated_n = suggest_n = 0
+        stuck_line = ""
+        try:
+            cases = CaseService().list_open(limit=50)
+            open_n = sum(1 for c in cases if c.status == "open")
+            escalated_n = sum(1 for c in cases if c.status == "escalated")
+            suggest_n = sum(1 for c in cases if getattr(c, "suggest_approve", False))
+            ranked = sorted(
+                cases,
+                key=lambda c: (
+                    0 if c.status == "escalated" else 1,
+                    c.created_at or "",
+                ),
+            )
+            if ranked:
+                top = ranked[0]
+                stuck_line = (
+                    f"Stuck top: {top.id[:8]} · {top.status} · "
+                    f"{top.category or '?'}"
+                )
+        except Exception:
+            pass
+        kpis = support_kpis_last_days(days=7)
+        age = ready.get("last_poll_age_sec")
+        age_s = f"{int(age)}s" if isinstance(age, (int, float)) else "—"
+        ready_flag = "stale" if ready.get("stale") else ("ok" if ready.get("ok") else "warn")
+        lines = [
+            "Daily brief",
+            f"Customer: {cfg.customer.customer}",
+            f"Domains: {', '.join(cfg.customer.domains)}",
+            (
+                f"Cases: open {open_n} · escalated {escalated_n} · "
+                f"★ {suggest_n} · queue {open_n + escalated_n}"
+            ),
+            f"Poll readiness: {ready_flag} · age {age_s}",
+            (
+                f"Budget: ${budget.get('used_usd', 0):.4f} / "
+                f"${budget.get('cap_usd', cfg.limits.openrouter_cap)}"
+                + (" · NEAR CAP" if budget.get("near_cap") else "")
+            ),
+            f"KPI 7d: {kpis.get('message')}",
+        ]
+        if stuck_line:
+            lines.append(stuck_line)
+        if budget.get("near_cap"):
+            lines.append(f"⚠ {budget.get('message')}")
+        if ready.get("stale") and not ready.get("ok"):
+            lines.append("⚠ Cases poll stale — check azom-cases-poll.timer")
+        return "\n".join(lines)
     except Exception as exc:
         return f"Brief error: {exc}"
 

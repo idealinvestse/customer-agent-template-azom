@@ -9,6 +9,7 @@ Canonical entry points for humans and coding agents.
 | [`../SOUL.md`](../SOUL.md) | OpenClaw / LLM | Personality, hard constraints, voice |
 | [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) | Everyone | Full architecture map |
 | [`DEVELOPMENT_PLAN_FINISH.md`](DEVELOPMENT_PLAN_FINISH.md) | Product / engineers | Plan to finish current goals (post Path B) |
+| [`superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md`](superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md) | Engineers / agents | **Active** Sprint A→B (approve friction + measure → suggest coverage; B auto-starts) |
 | [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) | Ops / bot | Slash catalog + hybrid chat |
 | [`CASES.md`](CASES.md) | Support ops | Cases 2.0 + Path B rails |
 | [`V2_RELEASE.md`](V2_RELEASE.md) | Release | v2.0 notes |

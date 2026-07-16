@@ -260,6 +260,20 @@ Ordning rekommenderad; en unit i taget, TDD.
 
 S ≈ 0.5–1.5 d, M ≈ 2–4 d (enkel dev; live access kan elongera FU6/FU7).
 
+### Active execution track (2026-07-16+)
+
+**FU1–FU5 effectively shipped on main.** Residual measure/friction + suggest coverage is sequenced in:
+
+**[`docs/superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md`](superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md)**
+
+| Sprint | Units | Maps to |
+|--------|-------|---------|
+| **A** friction + measure | SA1–SA5 (order panel, approve&next, ★ count, `/brief` parity, 7d KPI) | FU8 + residual FU3/FU4 |
+| **B** (auto-start after A gates) | SB1–SB4 (order extract, email→Woo, richer context, classify fixtures) | FU7 + capacity |
+| **C / D later** | ops harden / auto-send | FU6, FU9 |
+
+**Rule:** when Sprint A exit gates G1–G6 are green, agents **start SB1 immediately** without a new replan.
+
 ---
 
 ## 11. Risker

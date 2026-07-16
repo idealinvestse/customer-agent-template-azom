@@ -23,13 +23,8 @@ from ecom_ops.order_context import format_order_context_block
 from ecom_ops.security import validate_order_id
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
-ORDER_RE = re.compile(
-    r"\b(?:order|ordernr|order\s*nr|#)\s*(\d{4,12})\b"
-    r"|(?:\b(?:status|kolla|hämta|visa)\b.{0,40}\b(\d{4,12})\b)"
-    r"|(?:\b(\d{4,12})\b.{0,20}\b(?:order|status)\b)",
-    re.I,
-)
-BARE_ORDER_RE = re.compile(r"^\s*(\d{4,12})\s*$")
+# Prefer shared extractor (SB1) for SV/NO/DK labels + near-status forms.
+BARE_ORDER_RE = re.compile(r"^\s*#?\s*(\d{4,12})\s*$")
 CASE_ID_RE = re.compile(r"\b([0-9a-f]{8})\b", re.I)
 CASES_INTENT_RE = re.compile(
     r"\b("
@@ -183,11 +178,11 @@ def _max_tokens(session: dict[str, Any]) -> int:
 
 
 def _extract_order_id(text: str) -> str | None:
-    m = ORDER_RE.search(text or "")
-    if m:
-        for g in m.groups():
-            if g:
-                return g
+    from ecom_ops.actions.support import extract_order_id
+
+    found = extract_order_id(text or "")
+    if found:
+        return found
     m2 = BARE_ORDER_RE.match(text or "")
     return m2.group(1) if m2 else None
 

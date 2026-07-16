@@ -5,6 +5,7 @@
 {% set q_mailbox = ('&mailbox=' ~ mailbox_filter) if mailbox_filter else '' %}
 {% set q_suggest = '&suggest=1' if suggest_filter else '' %}
 {% set q_category = ('&category=' ~ category_filter) if category_filter else '' %}
+{% set detail_qs = 'status=' ~ (status_filter or 'open,escalated') ~ q_mailbox ~ q_category ~ q_suggest %}
 <div class="space-y-5" x-data="{ filterOpen: {{ 'true' if suggest_filter or category_filter else 'false' }}, polling: false }">
   <div class="flex flex-wrap items-end justify-between gap-3">
     <div>
@@ -119,7 +120,7 @@
               {% else %}{{ c.status }}{% endif %}
             </td>
             <td class="az-muted">{{ c.assignee or '—' }}</td>
-            <td><a class="text-steel-400 hover:text-steel-300" href="/cases/{{ c.id }}">Öppna</a></td>
+            <td><a class="text-steel-400 hover:text-steel-300" href="/cases/{{ c.id }}?{{ detail_qs }}">Öppna</a></td>
           </tr>
           {% endfor %}
         </tbody>

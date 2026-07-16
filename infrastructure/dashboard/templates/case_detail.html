@@ -2,6 +2,10 @@
 {% block title %}Ärende – Azom{% endblock %}
 {% block page_subtitle %}Ärendedetalj{% endblock %}
 {% block content %}
+{% set q_status = queue_status or 'open,escalated' %}
+{% set q_mailbox = queue_mailbox or '' %}
+{% set q_category = queue_category or '' %}
+{% set q_suggest = queue_suggest %}
 <div class="space-y-5">
   <section class="az-card {% if case.suggest_approve %}ring-1 ring-steel-500/40{% endif %}">
     <h2 class="az-page-title">{{ case.subject }}</h2>
@@ -29,6 +33,32 @@
     </p>
   </section>
 
+  {% if case.order_id %}
+  <section class="az-card border border-steel-700/40" data-order-panel>
+    <h2 class="az-section-title">Order {{ case.order_id }}</h2>
+    {% if order_panel and order_panel.ok %}
+    <dl class="mt-2 grid gap-2 text-sm sm:grid-cols-2">
+      <div><span class="az-muted">Status</span> <strong class="text-mist-100">{{ order_panel.status }}</strong></div>
+      <div><span class="az-muted">Total</span> <strong class="text-mist-100">{{ order_panel.total }} {{ order_panel.currency }}</strong></div>
+      {% if order_panel.tracking %}
+      <div class="sm:col-span-2"><span class="az-muted">Tracking</span> <code class="az-code">{{ order_panel.tracking }}</code></div>
+      {% endif %}
+    </dl>
+    {% if order_panel.line_items %}
+    <ul class="az-muted mt-3 list-disc space-y-1 pl-5 text-sm">
+      {% for item in order_panel.line_items %}
+      <li>{{ item.quantity }}× {{ item.name }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% elif order_panel %}
+    <p class="az-muted mt-2 text-sm">Kunde inte hämta order: {{ order_panel.error or 'okänt fel' }}</p>
+    {% else %}
+    <p class="az-muted mt-2 text-sm">Kunde inte hämta order.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="az-card">
     <h2 class="az-section-title">Tråd</h2>
     {% for m in messages %}
@@ -54,7 +84,7 @@
       action="/cases/{{ case.id }}"
       class="space-y-4"
       @submit="
-        if ($event.submitter && $event.submitter.value === 'reply') {
+        if ($event.submitter && ($event.submitter.value === 'reply' || $event.submitter.value === 'reply_next')) {
           if (!confirm({% if case.suggest_approve %}'Skicka nu?'{% else %}'Skicka svar till kunden nu?'{% endif %})) {
             $event.preventDefault();
             submitting = false;
@@ -65,13 +95,20 @@
       "
     >
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="q_status" value="{{ q_status }}" />
+      <input type="hidden" name="q_mailbox" value="{{ q_mailbox }}" />
+      <input type="hidden" name="q_category" value="{{ q_category }}" />
+      {% if q_suggest %}<input type="hidden" name="q_suggest" value="1" />{% endif %}
       <textarea class="az-textarea" name="body" required data-approve-guard>{{ case.draft_reply or '' }}</textarea>
       <div class="flex flex-wrap gap-2">
         <button class="az-btn-primary" type="submit" name="action" value="reply" :disabled="submitting">Godkänn och skicka</button>
+        <button class="az-btn-primary" type="submit" name="action" value="reply_next" :disabled="submitting" title="Skicka och öppna nästa i kön">Godkänn &amp; nästa</button>
         <button class="az-btn-secondary" type="submit" name="action" value="save_draft" :disabled="submitting">Spara draft</button>
         <button class="az-btn-secondary" type="submit" name="action" value="regenerate" formnovalidate :disabled="submitting">Regenerera utkast</button>
         <button class="az-btn-secondary" type="submit" name="action" value="close" formnovalidate :disabled="submitting">Stäng utan svar</button>
-        <a class="az-btn-secondary" href="/cases">Tillbaka</a>
+        <button class="az-btn-secondary" type="submit" name="action" value="close_next" formnovalidate :disabled="submitting">Stäng &amp; nästa</button>
+        <button class="az-btn-secondary" type="submit" name="action" value="next_only" formnovalidate :disabled="submitting">Nästa i kö</button>
+        <a class="az-btn-secondary" href="/cases?status={{ q_status }}{% if q_mailbox %}&amp;mailbox={{ q_mailbox }}{% endif %}{% if q_category %}&amp;category={{ q_category }}{% endif %}{% if q_suggest %}&amp;suggest=1{% endif %}">Tillbaka</a>
       </div>
     </form>
   </section>

@@ -9,6 +9,7 @@ import secrets
 import sys
 from functools import wraps
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import (
     Flask,
@@ -256,12 +257,14 @@ def _ops_counts() -> dict[str, int]:
     """Cheap counts for nav badges / overview (no live probes)."""
     open_cases = 0
     escalated_cases = 0
+    suggest_cases = 0
     try:
         from ecom_ops.cases.service import CaseService
 
         cs = CaseService()
         open_cases = cs.store.count_by_status("open")
         escalated_cases = cs.store.count_by_status("escalated")
+        suggest_cases = cs.store.count_suggest_approve(status="open,escalated")
     except Exception:
         pass
     open_escalations = 0
@@ -274,9 +277,72 @@ def _ops_counts() -> dict[str, int]:
     return {
         "open_cases": open_cases,
         "escalated_cases": escalated_cases,
+        "suggest_cases": suggest_cases,
         "open_escalations": open_escalations,
         "queue_cases": open_cases + escalated_cases,
     }
+
+
+def _queue_filter_from_request() -> dict[str, str | bool]:
+    """Shared queue filters for list → detail → next navigation."""
+    status = (request.args.get("status") or request.form.get("q_status") or "open,escalated").strip()
+    mailbox = (request.args.get("mailbox") or request.form.get("q_mailbox") or "").strip()
+    category = (request.args.get("category") or request.form.get("q_category") or "").strip()
+    suggest_raw = (
+        request.args.get("suggest") or request.form.get("q_suggest") or ""
+    ).strip().lower()
+    suggest_only = suggest_raw in {"1", "true", "yes", "on"}
+    return {
+        "status": status or "open,escalated",
+        "mailbox": mailbox,
+        "category": category,
+        "suggest_only": suggest_only,
+    }
+
+
+def _case_queue_query(filt: dict[str, str | bool]) -> str:
+    parts: list[str] = [f"status={filt.get('status') or 'open,escalated'}"]
+    if filt.get("mailbox"):
+        parts.append(f"mailbox={quote(str(filt['mailbox']), safe='')}")
+    if filt.get("category"):
+        parts.append(f"category={quote(str(filt['category']), safe='')}")
+    if filt.get("suggest_only"):
+        parts.append("suggest=1")
+    return "&".join(parts)
+
+
+def _flash_q(msg: str | None = None, *, err: str | None = None) -> str:
+    """URL query fragment for flash messages (always quoted)."""
+    if err is not None:
+        return f"err={quote(str(err), safe='')}"
+    return f"msg={quote(str(msg or ''), safe='')}"
+
+
+def _redirect_next_or_list(
+    svc: object,
+    case_id: str,
+    *,
+    filt: dict[str, str | bool],
+    msg: str,
+) -> Response:
+    from ecom_ops.cases.service import CaseService
+
+    assert isinstance(svc, CaseService)
+    nxt = svc.next_in_queue(
+        case_id,
+        status=str(filt.get("status") or "open,escalated"),
+        mailbox_id=str(filt.get("mailbox") or "") or None,
+        category=str(filt.get("category") or "") or None,
+        suggest_only=bool(filt.get("suggest_only")),
+    )
+    if nxt:
+        q = _case_queue_query(filt)
+        return redirect(
+            url_for("case_detail", case_id=nxt.id) + f"?{q}&{_flash_q(msg)}"
+        )
+    return redirect(
+        url_for("cases_list") + f"?{_case_queue_query(filt)}&{_flash_q(msg)}"
+    )
 
 
 def _probe_last_path() -> Path:
@@ -381,6 +447,7 @@ def _dashboard_context(**extra) -> dict:
         "flash": _flash_from_query(),
         "open_cases": counts["open_cases"],
         "escalated_cases": counts["escalated_cases"],
+        "suggest_cases": counts.get("suggest_cases", 0),
         "open_escalations": counts["open_escalations"],
         "queue_cases": counts["queue_cases"],
         "gmail_connected": bool(runtime.get("gmail_tokens_stored")),
@@ -423,6 +490,17 @@ def index():
             cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
     except Exception:
         budget = None
+    kpis = None
+    try:
+        from ecom_ops.kpis import support_kpis_last_days
+        from ecom_ops.telemetry import Telemetry as _Tel
+
+        kpis = support_kpis_last_days(
+            telemetry=_Tel(path=_data_dir() / "telemetry.jsonl"),
+            days=7,
+        )
+    except Exception:
+        kpis = None
     return render_template(
         "index.html",
         **_dashboard_context(
@@ -435,6 +513,7 @@ def index():
             integrations=presence,
             last_probe=last_probe,
             budget=budget,
+            support_kpis=kpis,
         ),
     )
 
@@ -648,37 +727,90 @@ def cases_poll():
 @_auth_required
 def case_detail(case_id: str):
     from ecom_ops.cases.service import CaseService
+    from ecom_ops.order_context import resolve_order_panel
 
     svc = CaseService()
+    filt = _queue_filter_from_request()
     if request.method == "POST":
         action = request.form.get("action", "reply")
         body = request.form.get("body") or ""
-        if action == "reply":
+        go_next = action in {"reply_next", "close_next", "next_only"}
+        if action == "next_only":
+            return _redirect_next_or_list(svc, case_id, filt=filt, msg="Nästa")
+        if action in {"reply", "reply_next"}:
+            # Resolve next before send — current case leaves the open queue on success.
+            nxt_before = None
+            if go_next or action == "reply_next":
+                nxt_before = svc.next_in_queue(
+                    case_id,
+                    status=str(filt.get("status") or "open,escalated"),
+                    mailbox_id=str(filt.get("mailbox") or "") or None,
+                    category=str(filt.get("category") or "") or None,
+                    suggest_only=bool(filt.get("suggest_only")),
+                )
             result = svc.approve_and_send(
                 case_id, actor=g.actor["name"], body_override=body or None
             )
             if result.ok:
+                if go_next or action == "reply_next":
+                    q = _case_queue_query(filt)
+                    if nxt_before:
+                        return redirect(
+                            url_for("case_detail", case_id=nxt_before.id)
+                            + f"?{q}&{_flash_q('Skickat')}"
+                        )
+                    return redirect(
+                        url_for("cases_list") + f"?{q}&{_flash_q('Skickat')}"
+                    )
+                q = _case_queue_query(filt)
                 return redirect(
-                    url_for("case_detail", case_id=case_id) + "?msg=Skickat"
+                    url_for("case_detail", case_id=case_id)
+                    + f"?{q}&{_flash_q('Skickat')}"
                 )
             return redirect(
-                url_for("case_detail", case_id=case_id) + f"?err={result.message}"
+                url_for("case_detail", case_id=case_id)
+                + f"?{_case_queue_query(filt)}&{_flash_q(err=result.message)}"
             )
         if action == "save_draft":
             result = svc.save_draft(case_id, body, actor=g.actor["name"])
             if result.ok:
                 return redirect(
-                    url_for("case_detail", case_id=case_id) + "?msg=Draft+sparad"
+                    url_for("case_detail", case_id=case_id)
+                    + f"?{_case_queue_query(filt)}&{_flash_q('Draft sparad')}"
                 )
             return redirect(
-                url_for("case_detail", case_id=case_id) + f"?err={result.message}"
+                url_for("case_detail", case_id=case_id)
+                + f"?{_case_queue_query(filt)}&{_flash_q(err=result.message)}"
             )
-        if action == "close":
+        if action in {"close", "close_next"}:
+            nxt_before = None
+            if go_next or action == "close_next":
+                nxt_before = svc.next_in_queue(
+                    case_id,
+                    status=str(filt.get("status") or "open,escalated"),
+                    mailbox_id=str(filt.get("mailbox") or "") or None,
+                    category=str(filt.get("category") or "") or None,
+                    suggest_only=bool(filt.get("suggest_only")),
+                )
             result = svc.close(case_id, actor=g.actor["name"], reason="dashboard")
             if result.ok:
-                return redirect(url_for("cases_list") + "?msg=Stängt")
+                if go_next or action == "close_next":
+                    q = _case_queue_query(filt)
+                    if nxt_before:
+                        return redirect(
+                            url_for("case_detail", case_id=nxt_before.id)
+                            + f"?{q}&{_flash_q('Stängt')}"
+                        )
+                    return redirect(
+                        url_for("cases_list") + f"?{q}&{_flash_q('Stängt')}"
+                    )
+                return redirect(
+                    url_for("cases_list")
+                    + f"?{_case_queue_query(filt)}&{_flash_q('Stängt')}"
+                )
             return redirect(
-                url_for("case_detail", case_id=case_id) + f"?err={result.message}"
+                url_for("case_detail", case_id=case_id)
+                + f"?{_case_queue_query(filt)}&{_flash_q(err=result.message)}"
             )
         if action == "regenerate":
             result = svc.regenerate_draft(
@@ -686,19 +818,32 @@ def case_detail(case_id: str):
             )
             if result.ok:
                 return redirect(
-                    url_for("case_detail", case_id=case_id) + "?msg=Utkast+regenererat"
+                    url_for("case_detail", case_id=case_id)
+                    + f"?{_case_queue_query(filt)}&{_flash_q('Utkast regenererat')}"
                 )
             return redirect(
-                url_for("case_detail", case_id=case_id) + f"?err={result.message}"
+                url_for("case_detail", case_id=case_id)
+                + f"?{_case_queue_query(filt)}&{_flash_q(err=result.message)}"
             )
 
     case = svc.get(case_id)
     if not case:
         return Response("Case not found", 404)
     msgs = svc.store.messages(case_id)
+    order_panel = None
+    if case.order_id:
+        order_panel = resolve_order_panel(case.order_id, use_mock=_is_mock() or None)
     return render_template(
         "case_detail.html",
-        **_dashboard_context(case=case, messages=msgs),
+        **_dashboard_context(
+            case=case,
+            messages=msgs,
+            order_panel=order_panel,
+            queue_status=filt["status"],
+            queue_mailbox=filt.get("mailbox") or "",
+            queue_category=filt.get("category") or "",
+            queue_suggest=bool(filt.get("suggest_only")),
+        ),
     )
 
 

@@ -233,10 +233,18 @@
           <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Support</p>
           <a href="/cases?status=open,escalated" class="az-nav-link flex items-center justify-between gap-2 {{ 'az-nav-link-active' if path.startswith('/cases') else '' }}">
             <span>Ärenden</span>
-            {% if queue_cases %}
-            <span class="az-badge bg-steel-500/20 text-steel-300">{{ queue_cases }}</span>
-            {% endif %}
+            <span class="flex items-center gap-1">
+              {% if suggest_cases %}
+              <span class="az-badge bg-steel-600/40 text-steel-100" title="Föreslå godkänn">★{{ suggest_cases }}</span>
+              {% endif %}
+              {% if queue_cases %}
+              <span class="az-badge bg-steel-500/20 text-steel-300">{{ queue_cases }}</span>
+              {% endif %}
+            </span>
           </a>
+          {% if suggest_cases %}
+          <a href="/cases?status=open,escalated&amp;suggest=1" class="az-nav-link text-steel-300">★ Föreslå godkänn ({{ suggest_cases }})</a>
+          {% endif %}
           <a href="/interact" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/interact') else '' }}">Interagera</a>
           <a href="/data/escalations" class="az-nav-link flex items-center justify-between gap-2 {{ 'az-nav-link-active' if path.startswith('/data/escalations') else '' }}">
             <span>Eskaleringar</span>

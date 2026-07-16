@@ -78,6 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("version", help="Print package version")
     sub.add_parser("status", help="Print runtime status (config + mock flags)")
+    p_kpis = sub.add_parser(
+        "kpis",
+        help="Support-loop KPIs last N days (time-to-approve, edit distance)",
+    )
+    p_kpis.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        help="Lookback window in days (default 7)",
+    )
     p_smoke = sub.add_parser(
         "smoke",
         help="Opt-in integration smoke (requires AZOM_LIVE_SMOKE=1 or --live)",
@@ -263,6 +273,13 @@ def main(argv: list[str] | None = None) -> int:
         result = run_live_smoke(force=bool(getattr(args, "live", False)))
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("ok", False) else 1
+
+    if args.command == "kpis":
+        from ecom_ops.kpis import support_kpis_last_days
+
+        result = support_kpis_last_days(days=int(getattr(args, "days", 7) or 7))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if args.command == "mail":
         provider = getattr(args, "provider", None)

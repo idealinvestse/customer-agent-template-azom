@@ -118,7 +118,17 @@ class InMemoryWooTransport:
             oid = path_tail.lstrip("/").split("?")[0].strip("/")
             if not oid:
                 if method.upper() == "GET":
-                    return list(self.orders.values())[: int((params or {}).get("per_page") or 10)]
+                    rows = list(self.orders.values())
+                    search = str((params or {}).get("search") or "").strip().lower()
+                    if search:
+                        rows = [
+                            r
+                            for r in rows
+                            if search
+                            in str((r.get("billing") or {}).get("email") or "").lower()
+                            or search in str(r.get("id", ""))
+                        ]
+                    return rows[: int((params or {}).get("per_page") or 10)]
                 raise SecurityError(f"Unhandled mock URL: {method} {url}")
             if method.upper() == "GET":
                 if oid not in self.orders:
@@ -190,6 +200,50 @@ class WooCommerceClient:
         if not isinstance(data, list):
             return []
         return [self._to_order(row) for row in data if isinstance(row, dict)]
+
+    def find_orders_by_email(
+        self,
+        email: str,
+        *,
+        per_page: int = 5,
+    ) -> list[WooOrder]:
+        """Search recent orders by billing email (read-only).
+
+        Woo REST: GET /orders?search=<email>&per_page=N (and filter in-memory
+        by billing.email for mock / noisy search results).
+        """
+        email_l = (email or "").strip().lower()
+        if not email_l or "@" not in email_l:
+            return []
+        limit = max(1, min(int(per_page), 20))
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wc/v3/orders"),
+            auth=self._auth(),
+            params={"search": email_l, "per_page": limit, "orderby": "date", "order": "desc"},
+        )
+        if not isinstance(data, list):
+            # Mock transport may return list of all orders for GET /orders
+            data = []
+        orders = [self._to_order(row) for row in data if isinstance(row, dict)]
+        matched = [
+            o
+            for o in orders
+            if (o.billing_email or "").strip().lower() == email_l
+        ]
+        if matched:
+            return matched[:limit]
+        # Fallback: if search ignored by mock, filter full list
+        if isinstance(self.transport, InMemoryWooTransport):
+            all_orders = [
+                self._to_order(row) for row in self.transport.orders.values()
+            ]
+            return [
+                o
+                for o in all_orders
+                if (o.billing_email or "").strip().lower() == email_l
+            ][:limit]
+        return orders[:limit]
 
     def update_order_status(self, order_id: str | int, status: str) -> WooOrder:
         oid = validate_order_id(order_id)

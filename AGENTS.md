@@ -80,5 +80,8 @@ TELEGRAM_ACTOR_MAP=chat:jonatan,...    # unmapped → jonatan
 - Env: `/opt/azom-agent/.env` (`AZOM_USE_MOCK=0`)
 
 ## Nästa utveckling (färdigställ mot mål)
-- Plan: `docs/DEVELOPMENT_PLAN_FINISH.md` — stäng Path B (regenerate + baseline), mät/op-era, kalibrera suggest, ev. auto-send-experiment senare
+- Finish overview: `docs/DEVELOPMENT_PLAN_FINISH.md`
+- **Active sprint track:** `docs/superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md`
+  - Sprint A: approve-flow (order panel, nästa, ★-count, `/brief`, 7d KPI)
+  - Sprint B **auto-start** when A exit gates green: order extract, email→Woo, richer context, classify fixtures
 - Inte i scope nu: V3 multi-tenant, GA4/engagement-program, default-on auto-send

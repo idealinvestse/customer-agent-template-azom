@@ -488,6 +488,40 @@ class CaseService:
     def get(self, case_id: str) -> Case | None:
         return self.store.get(case_id)
 
+    def next_in_queue(
+        self,
+        after_id: str,
+        *,
+        status: str = "open,escalated",
+        mailbox_id: str | None = None,
+        category: str | None = None,
+        suggest_only: bool = False,
+        limit: int = 100,
+    ) -> Case | None:
+        """Return the next case after ``after_id`` using list-view sort order.
+
+        Sort: escalated → high priority → suggest_approve → newest first.
+        Used by dashboard "Godkänn & nästa" / "Nästa".
+        """
+        rows = self.store.list_cases(
+            status=status if status != "all" else None,
+            mailbox_id=mailbox_id or None,
+            category=category or None,
+            suggest_approve=True if suggest_only else None,
+            limit=limit,
+        )
+        rows.sort(key=lambda c: c.created_at or "", reverse=True)
+        rows.sort(key=lambda c: 0 if getattr(c, "suggest_approve", False) else 1)
+        rows.sort(key=lambda c: 0 if (c.priority or "") == "high" else 1)
+        rows.sort(key=lambda c: 0 if c.status == "escalated" else 1)
+        found = False
+        for c in rows:
+            if found:
+                return c
+            if c.id == after_id:
+                found = True
+        return None
+
     def save_draft(
         self,
         case_id: str,
@@ -819,6 +853,7 @@ class CaseService:
                     "case_id": case_id,
                     "approved_by": actor_obj.name,
                     "category": case.category,
+                    "suggest_approve": bool(getattr(case, "suggest_approve", False)),
                     "time_to_approve_sec": _seconds_since(case.created_at),
                     "draft_edit_distance": round(
                         _edit_distance_ratio(case.draft_reply or "", body), 4

@@ -15,9 +15,32 @@
   <section class="az-card">
     <h2 class="az-section-title">Ärenden</h2>
     <div class="az-stat">{{ open_cases }}</div>
-    <p class="az-muted mt-1">Öppna · Eskalerade: <strong class="text-mist-100">{{ escalated_cases }}</strong></p>
-    <p class="mt-4"><a class="az-btn-primary" href="/cases?status=open,escalated">Öppna kön →</a></p>
+    <p class="az-muted mt-1">Öppna · Eskalerade: <strong class="text-mist-100">{{ escalated_cases }}</strong>
+      {% if suggest_cases %} · ★ <strong class="text-steel-200">{{ suggest_cases }}</strong> föreslå{% endif %}
+    </p>
+    <div class="mt-4 flex flex-wrap gap-2">
+      <a class="az-btn-primary" href="/cases?status=open,escalated">Öppna kön →</a>
+      {% if suggest_cases %}
+      <a class="az-btn-secondary" href="/cases?status=open,escalated&amp;suggest=1">★ Föreslå ({{ suggest_cases }})</a>
+      {% endif %}
+    </div>
   </section>
+
+  {% if support_kpis %}
+  <section class="az-card">
+    <h2 class="az-section-title">Support KPI 7d</h2>
+    <p class="text-sm text-mist-100">{{ support_kpis.message }}</p>
+    <p class="az-muted mt-2 text-xs">
+      Approves: {{ support_kpis.n_case_approved }}
+      {% if support_kpis.median_time_to_approve_sec is not none %}
+      · median TTA: {{ support_kpis.median_time_to_approve_sec }}s
+      {% endif %}
+      {% if support_kpis.mean_draft_edit_distance is not none %}
+      · mean edit: {{ support_kpis.mean_draft_edit_distance }}
+      {% endif %}
+    </p>
+  </section>
+  {% endif %}
 
   <section class="az-card">
     <h2 class="az-section-title">Integrationer</h2>
