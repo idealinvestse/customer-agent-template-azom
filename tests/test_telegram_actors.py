@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ecom_ops.actions.mail import MailService
 from ecom_ops.bot.actors import resolve_telegram_actor
 from ecom_ops.bot.openclaw_commands import dispatch_openclaw_command
@@ -25,7 +27,16 @@ def test_resolve_telegram_actor_from_map(monkeypatch):
 
 def test_resolve_telegram_actor_default_jonatan(monkeypatch):
     monkeypatch.delenv("TELEGRAM_ACTOR_MAP", raising=False)
+    monkeypatch.delenv("TELEGRAM_FAIL_CLOSED", raising=False)
     assert resolve_telegram_actor(999) == "jonatan"
+
+
+def test_resolve_telegram_actor_fail_closed_unmapped(monkeypatch):
+    from ecom_ops.bot.actors import TelegramActorDenied
+
+    monkeypatch.setenv("TELEGRAM_ACTOR_MAP", "1:jonatan")
+    with pytest.raises(TelegramActorDenied):
+        resolve_telegram_actor(999)
 
 
 def test_whoami_shows_mapped_actor(monkeypatch, tmp_path):

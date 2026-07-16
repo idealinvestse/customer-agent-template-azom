@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any
 
-from ecom_ops.bot.actors import resolve_telegram_actor
+from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
 from ecom_ops.bot.chat_agent import (
     SOFT_ESCALATE_NUDGE,
     run_chat,
@@ -93,6 +93,16 @@ class BotHandler:
                 text=(
                     "Du är inte behörig att använda denna bot. "
                     "Be Oscar lägga till din chat-id i TELEGRAM_ALLOWED_CHAT_IDS."
+                )
+            )
+        try:
+            resolve_telegram_actor(chat_id)
+        except TelegramActorDenied:
+            return BotReply(
+                text=(
+                    "Din chat saknar actor-mapping. "
+                    "Be Oscar lägga till dig i TELEGRAM_ACTOR_MAP "
+                    "(t.ex. <chat_id>:jonatan)."
                 )
             )
         raw = (text or "").strip()
@@ -308,7 +318,13 @@ class BotHandler:
         slots = dict(state.get("slots") or {})
         session = dict(state.get("session") or {})
         if yes:
-            actor = resolve_telegram_actor(chat_id)
+            try:
+                actor = resolve_telegram_actor(chat_id)
+            except TelegramActorDenied:
+                return (
+                    "Din chat saknar actor-mapping. "
+                    "Be Oscar uppdatera TELEGRAM_ACTOR_MAP."
+                )
             ticket = self.escalation.escalate_critical(
                 f"Telegram escalation by {actor}",
                 details={
@@ -374,7 +390,16 @@ class BotHandler:
         return self._exec_pending(chat_id, pending)
 
     def _exec_pending(self, chat_id: str | int, pending: PendingAction) -> BotReply:
-        actor = resolve_telegram_actor(chat_id)
+        try:
+            actor = resolve_telegram_actor(chat_id)
+        except TelegramActorDenied:
+            self._clear_pending(chat_id)
+            return BotReply(
+                text=(
+                    "Din chat saknar actor-mapping. "
+                    "Be Oscar uppdatera TELEGRAM_ACTOR_MAP."
+                )
+            )
         ok = False
         msg = "Okänd action"
         if pending.kind == "order_status":

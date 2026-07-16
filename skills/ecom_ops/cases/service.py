@@ -266,6 +266,9 @@ class CaseService:
                     created += 1
                     created_cases.append(result.to_dict())
 
+        # All mailboxes failed → not ok; partial still ok=True but flagged
+        all_failed = errors > 0 and errors == len(mailboxes)
+        partial = errors > 0 and not all_failed
         self.telemetry.record(
             action="case_poll",
             site="azom",
@@ -274,18 +277,26 @@ class CaseService:
                 "skipped": skipped,
                 "errors": errors,
                 "mailboxes": len(mailboxes),
+                "partial": partial,
+                "all_failed": all_failed,
+                "failed_mailboxes": [e.get("mailbox_id") for e in error_details],
             },
         )
-        # All mailboxes failed → not ok; partial success still ok=True
-        all_failed = errors > 0 and errors == len(mailboxes)
         escalated = False
         ticket_id: str | None = None
         if errors > 0:
+            summary = (
+                f"Case poll: ALL {errors} mailbox(es) failed"
+                if all_failed
+                else f"Case poll: PARTIAL — {errors}/{len(mailboxes)} mailbox(es) failed"
+            )
             ticket = self.escalation.escalate_critical(
-                f"Case poll: {errors} mailbox(es) failed",
+                summary,
                 details={
                     "errors": errors,
                     "mailboxes": len(mailboxes),
+                    "partial": partial,
+                    "all_failed": all_failed,
                     "failures": error_details,
                 },
             )
@@ -298,16 +309,30 @@ class CaseService:
                 ok=not all_failed,
                 errors=errors,
                 created=created,
-                extra={"mailboxes": len(mailboxes), "skipped": skipped},
+                extra={
+                    "mailboxes": len(mailboxes),
+                    "skipped": skipped,
+                    "partial": partial,
+                    "failures": error_details[:10],
+                },
             )
         except Exception:
             pass
+        if all_failed:
+            msg = f"Polled {len(mailboxes)} mailbox(es) — all failed"
+        elif partial:
+            failed_ids = ",".join(
+                str(e.get("mailbox_id") or "?") for e in error_details[:5]
+            )
+            msg = (
+                f"Polled {len(mailboxes)} mailbox(es) — PARTIAL "
+                f"({errors} failed: {failed_ids})"
+            )
+        else:
+            msg = f"Polled {len(mailboxes)} mailbox(es)"
         return IngestResult(
             ok=not all_failed,
-            message=(
-                f"Polled {len(mailboxes)} mailbox(es)"
-                + (f" ({errors} failed)" if errors else "")
-            ),
+            message=msg,
             created=created,
             skipped=skipped,
             errors=errors,

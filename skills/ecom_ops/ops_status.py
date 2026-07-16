@@ -89,15 +89,27 @@ def readiness_from_last_poll() -> dict[str, Any]:
         age = None
 
     last_ok = bool(marker.get("ok", False))
+    errors = int(marker.get("errors") or 0)
+    partial = bool(marker.get("partial")) or (last_ok and errors > 0)
     stale = age is None or age > threshold
-    ready = last_ok and not stale
+    ready = last_ok and not stale and not partial
+    detail = None
+    if partial and not stale:
+        detail = f"partial poll failure ({errors} mailbox error(s))"
+    elif (not last_ok) and errors > 0:
+        detail = f"last poll failed ({errors} error(s))"
+    elif stale:
+        detail = "poll stale or missing"
     return {
         "ok": ready,
         "stale": stale,
+        "partial": partial,
         "last_poll_at": polled_at or None,
         "last_poll_age_sec": None if age is None else round(age, 1),
         "last_poll_ok": last_ok,
         "threshold_sec": threshold,
         "errors": marker.get("errors"),
         "created": marker.get("created"),
+        "detail": detail,
+        "failures": marker.get("failures"),
     }

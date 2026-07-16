@@ -42,6 +42,26 @@ def test_support_draft_reply(telemetry, escalation):
     assert not result.escalated
 
 
+def test_soft_draft_asks_order_number_when_missing(telemetry, escalation, monkeypatch):
+    """SB5: status/shipping without order_id asks for number; never suggest."""
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    svc = SupportService(telemetry=telemetry, escalation=escalation)
+    result = svc.handle(
+        "Hej, var är min beställning?",
+        customer_name="Anna",
+        language="sv",
+        actor="agent",
+        use_mock=True,
+    )
+    assert result.ok
+    assert result.category == SupportCategory.ORDER_STATUS
+    assert result.order_id is None
+    assert result.suggest_approve is False
+    assert result.reply
+    assert "ordernummer" in result.reply.lower() or "1001" in result.reply
+
+
 def test_critical_escalates_to_oscar(telemetry, escalation):
     svc = SupportService(telemetry=telemetry, escalation=escalation)
     result = svc.handle(

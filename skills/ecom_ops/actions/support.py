@@ -216,17 +216,60 @@ def draft_reply(
         greeting = f"Hej {name},"
         sign = "Vänliga hälsningar\nAzom Support"
 
+    ask_oid = not order_id
+    if lang in {"en"}:
+        ask_line = (
+            " Could you reply with your order number (e.g. 1001) so we can check status?"
+            if ask_oid
+            else ""
+        )
+    elif lang in {"no", "nb"}:
+        ask_line = (
+            " Kan du sende ordrenummeret (f.eks. 1001) så vi kan sjekke status?"
+            if ask_oid
+            else ""
+        )
+    elif lang in {"da", "dk"}:
+        ask_line = (
+            " Kan du sende ordrenummeret (f.eks. 1001), så vi kan tjekke status?"
+            if ask_oid
+            else ""
+        )
+    else:
+        ask_line = (
+            " Kan du svara med ordernumret (t.ex. 1001) så vi kan kolla status?"
+            if ask_oid
+            else ""
+        )
+
     bodies = {
         SupportCategory.ORDER_STATUS: (
-            f"Tack för ditt meddelande. Vi tittar på order {oid} och återkommer "
-            f"så snart status är bekräftad."
+            (
+                f"Tack för ditt meddelande. Vi tittar på order {oid} och återkommer "
+                f"så snart status är bekräftad."
+                if not ask_oid
+                else (
+                    "Tack för ditt meddelande om din order. "
+                    "Vi hjälper dig gärna —" + ask_line.lstrip()
+                )
+            )
             if lang not in {"en"}
-            else f"Thanks for reaching out. We are checking order {oid} and will update you shortly."
+            else (
+                f"Thanks for reaching out. We are checking order {oid} and will update you shortly."
+                if not ask_oid
+                else "Thanks for reaching out about your order." + ask_line
+            )
         ),
         SupportCategory.SHIPPING: (
-            "Tack! Vi kontrollerar leveransstatus och spårningsinformation åt dig."
+            (
+                "Tack! Vi kontrollerar leveransstatus och spårningsinformation åt dig."
+                + (ask_line if ask_oid else "")
+            )
             if lang not in {"en"}
-            else "Thanks! We are checking shipping and tracking details for you."
+            else (
+                "Thanks! We are checking shipping and tracking details for you."
+                + (ask_line if ask_oid else "")
+            )
         ),
         SupportCategory.RETURN: (
             "Vi hjälper dig med retur/reklamation. Bifoga gärna ordernummer och foton om det gäller skada."
@@ -370,6 +413,38 @@ class SupportService:
                 )
                 if resolved_context and resolved_context.strip() not in (reply or ""):
                     reply = f"{resolved_context.strip()}\n\n{(reply or '').strip()}"
+            # SB5: LLM drafts for status/shipping without order_id still need a soft ask
+            if (
+                not order_id
+                and category
+                in (SupportCategory.ORDER_STATUS, SupportCategory.SHIPPING)
+                and reply
+                and "ordernummer" not in reply.lower()
+                and "order number" not in reply.lower()
+                and "ordrenummer" not in reply.lower()
+            ):
+                lang_l = language.lower()
+                if lang_l in {"en"}:
+                    ask = (
+                        "\n\nCould you reply with your order number "
+                        "(e.g. 1001) so we can check status?"
+                    )
+                elif lang_l in {"no", "nb"}:
+                    ask = (
+                        "\n\nKan du sende ordrenummeret (f.eks. 1001) "
+                        "så vi kan sjekke status?"
+                    )
+                elif lang_l in {"da", "dk"}:
+                    ask = (
+                        "\n\nKan du sende ordrenummeret (f.eks. 1001), "
+                        "så vi kan tjekke status?"
+                    )
+                else:
+                    ask = (
+                        "\n\nKan du svara med ordernumret (t.ex. 1001) "
+                        "så vi kan kolla status?"
+                    )
+                reply = (reply or "").rstrip() + ask
             suggest = is_suggest_approve_eligible(
                 category=category.value,
                 confidence=confidence,

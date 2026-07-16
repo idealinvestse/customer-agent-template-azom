@@ -120,9 +120,17 @@ def cmd_status(ctx: CommandContext) -> str:
 
 
 def cmd_whoami(ctx: CommandContext) -> str:
-    from ecom_ops.bot.actors import resolve_telegram_actor
+    from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
 
-    actor = resolve_telegram_actor(ctx.chat_id)
+    try:
+        actor = resolve_telegram_actor(ctx.chat_id)
+    except TelegramActorDenied:
+        return (
+            f"Sender / session\n"
+            f"chat_id: {ctx.chat_id}\n"
+            f"actor: (ej mappad — TELEGRAM_ACTOR_MAP)\n"
+            f"Alias: /id"
+        )
     return (
         f"Sender / session\n"
         f"chat_id: {ctx.chat_id}\n"
@@ -343,9 +351,15 @@ def cmd_context(ctx: CommandContext) -> str:
 def cmd_health(ctx: CommandContext) -> str:
     try:
         from ecom_ops.actions.ssh_ops import SSHOpsService
-        from ecom_ops.bot.actors import resolve_telegram_actor
+        from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
 
-        actor = resolve_telegram_actor(ctx.chat_id)
+        try:
+            actor = resolve_telegram_actor(ctx.chat_id)
+        except TelegramActorDenied:
+            return (
+                "Din chat saknar actor-mapping. "
+                "Be Oscar uppdatera TELEGRAM_ACTOR_MAP."
+            )
         results = SSHOpsService().health(actor=actor)
         lines = ["SSH health:"]
         for r in results:
@@ -425,10 +439,16 @@ def cmd_brief(ctx: CommandContext) -> str:
 def cmd_cases(ctx: CommandContext) -> str | BotReply:
     """ /cases | /cases show <id> | /cases approve <id> | /cases close <id> """
     try:
-        from ecom_ops.bot.actors import resolve_telegram_actor
+        from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
         from ecom_ops.cases.service import CaseService
 
-        actor = resolve_telegram_actor(ctx.chat_id)
+        try:
+            actor = resolve_telegram_actor(ctx.chat_id)
+        except TelegramActorDenied:
+            return (
+                "Din chat saknar actor-mapping. "
+                "Be Oscar lägga till dig i TELEGRAM_ACTOR_MAP."
+            )
         svc = CaseService()
         parts = ctx.args.split(maxsplit=1)
         sub = (parts[0].lower() if parts else "list")

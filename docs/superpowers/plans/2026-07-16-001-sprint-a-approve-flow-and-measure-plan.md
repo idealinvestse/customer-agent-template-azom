@@ -297,8 +297,9 @@ test(support): classify fixtures + threshold note (SB4)
 | 2026-07-16 | Sprint A SA1–SA5 implemented (order panel, next, ★ count, /brief, kpis CLI) |
 | 2026-07-16 | Sprint A tests green; SB1 order extract + SB2 email→Woo unique match shipped |
 | 2026-07-16 | P1 review fixes committed (`660f437`); SB3 richer context + SB4 fixtures |
+| 2026-07-16 | Live soak checklist + FU9 preconditions docs; Sprint C partial poll + actor fail-closed; SB5 soft ask |
 
-**Current:** Sprint A + SB1–SB4 implemented. Exit gates H1/H3/H5 green in CI; H2 needs live mailbox soak; threshold unchanged.
+**Current:** Code complete for A/B/C+SB5. **H2 live soak** still requires prod host run. FU9 not wired.
 
 ---
 

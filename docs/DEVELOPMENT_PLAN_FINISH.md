@@ -160,21 +160,23 @@ Config optional: `config/limits.yaml` `openrouter_warn_ratio: 0.8`.
 
 ### F1.3 · Production soak checklist (P1 ops)
 
-Kör en gång live (Oscar):
+**Canonical checklist:** [`docs/solutions/2026-07-16-live-soak-checklist.md`](solutions/2026-07-16-live-soak-checklist.md)  
+**FU9 (do not wire yet):** [`docs/solutions/2026-07-16-fu9-auto-send-preconditions.md`](solutions/2026-07-16-fu9-auto-send-preconditions.md)
 
 ```text
-[ ] TELEGRAM_ALLOWED_CHAT_IDS + TELEGRAM_ACTOR_MAP set
+[ ] TELEGRAM_ALLOWED_CHAT_IDS + TELEGRAM_ACTOR_MAP set (unmapped denied when map set)
 [ ] AZOM_USE_MOCK=0; services enabled (dashboard, bot, cases-poll.timer)
 [ ] MAIL_PROVIDER + credentials; Gmail OAuth if used
-[ ] cases poll creates/updates cases; mark_read OK
+[ ] cases poll creates/updates cases; mark_read OK; partial failures escalated + readiness.partial
 [ ] suggest-approve appears only on safe types in live sample (n≥10)
-[ ] approve path: dashboard + Telegram once each
-[ ] AZOM_LIVE_SMOKE / manual smoke; /health readiness not stale
+[ ] approve path: dashboard Godkänn&nästa + Telegram once each
+[ ] python -m ecom_ops kpis --days 7; /brief shows queue + budget
+[ ] AZOM_LIVE_SMOKE / manual smoke; /health readiness not stale / not partial
 [ ] AZOM_AUTO_SEND_KILL=1 optional belt; cases_ai auto_send_enabled false
 [ ] Backup note: cases.db + secrets.env path known
 ```
 
-Result → kort logg i `docs/solutions/` eller ideation note (datum + outcome).
+Result → fyll outcome-tabell i soak-checklisten.
 
 ---
 
