@@ -1,0 +1,8 @@
+{
+  "id": "billing_invoice",
+  "text": "Behöver faktura för order 1001, betalningen syns inte.",
+  "expected_category": "billing",
+  "order_id_in_text": "1001",
+  "suggest_with_llm_confidence": 0.93,
+  "expect_suggest_approve": false
+}

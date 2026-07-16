@@ -78,9 +78,22 @@ class InMemoryWooTransport:
                 "status": "processing",
                 "currency": "SEK",
                 "total": "499.00",
-                "billing": {"email": "customer@example.com"},
+                "date_created": "2026-07-10T12:00:00",
+                "payment_method_title": "Klarna",
+                "customer_note": "Ring på dörren",
+                "billing": {
+                    "email": "customer@example.com",
+                    "city": "Stockholm",
+                    "country": "SE",
+                },
+                "shipping_lines": [
+                    {"method_title": "PostNord", "method_id": "flat_rate"},
+                ],
                 "line_items": [
                     {"name": "Azom Pro Headset", "quantity": 1},
+                ],
+                "meta_data": [
+                    {"key": "tracking_number", "value": "JJFI123456789SE"},
                 ],
             },
             "1002": {
@@ -88,7 +101,16 @@ class InMemoryWooTransport:
                 "status": "pending",
                 "currency": "NOK",
                 "total": "299.00",
-                "billing": {"email": "no@example.com"},
+                "date_created": "2026-07-11T09:30:00",
+                "payment_method_title": "Vipps",
+                "billing": {
+                    "email": "no@example.com",
+                    "city": "Oslo",
+                    "country": "NO",
+                },
+                "shipping_lines": [
+                    {"method_title": "Bring", "method_id": "bring"},
+                ],
             },
         }
         self.products: dict[str, dict[str, Any]] = {

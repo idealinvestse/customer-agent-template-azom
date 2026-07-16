@@ -1,0 +1,8 @@
+{
+  "id": "order_status_labeled",
+  "text": "Hej, var är order 1001?",
+  "expected_category": "order_status",
+  "order_id_in_text": "1001",
+  "suggest_with_llm_confidence": 0.91,
+  "expect_suggest_approve": true
+}

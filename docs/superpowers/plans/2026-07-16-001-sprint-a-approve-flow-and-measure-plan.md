@@ -296,8 +296,9 @@ test(support): classify fixtures + threshold note (SB4)
 | 2026-07-16 | Plan authored; Sprint A not started |
 | 2026-07-16 | Sprint A SA1–SA5 implemented (order panel, next, ★ count, /brief, kpis CLI) |
 | 2026-07-16 | Sprint A tests green; SB1 order extract + SB2 email→Woo unique match shipped |
+| 2026-07-16 | P1 review fixes committed (`660f437`); SB3 richer context + SB4 fixtures |
 
-**Current:** SA + SB1–SB2 on branch work — continue **SB3** (richer order_context) or pause for review.
+**Current:** Sprint A + SB1–SB4 implemented. Exit gates H1/H3/H5 green in CI; H2 needs live mailbox soak; threshold unchanged.
 
 ---
 

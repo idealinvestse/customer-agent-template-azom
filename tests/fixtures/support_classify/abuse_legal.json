@@ -1,0 +1,8 @@
+{
+  "id": "abuse_legal",
+  "text": "We will call the lawyer about GDPR complaint regarding this purchase.",
+  "expected_category": "abuse",
+  "order_id_in_text": null,
+  "suggest_with_llm_confidence": 1.0,
+  "expect_suggest_approve": false
+}

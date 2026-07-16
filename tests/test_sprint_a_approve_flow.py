@@ -147,6 +147,8 @@ def test_resolve_order_panel_mock(monkeypatch):
     assert panel["order_id"] == "1001"
     assert panel["status"] == "processing"
     assert panel["line_items"]
+    assert panel.get("payment_method") == "Klarna"
+    assert panel.get("shipping_method") == "PostNord"
 
 
 def test_count_suggest_approve(tmp_path, monkeypatch):

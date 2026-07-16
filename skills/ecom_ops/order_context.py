@@ -5,6 +5,40 @@ from __future__ import annotations
 from typing import Any
 
 
+def _truncate(value: str | None, *, max_len: int = 200) -> str | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def _shipping_method(raw: dict[str, Any]) -> str | None:
+    ships = raw.get("shipping_lines") or []
+    if not isinstance(ships, list):
+        return None
+    names: list[str] = []
+    for ship in ships[:3]:
+        if not isinstance(ship, dict):
+            continue
+        method = str(ship.get("method_title") or ship.get("method_id") or "").strip()
+        if method:
+            names.append(method[:80])
+    return ", ".join(names) if names else None
+
+
+def _billing_place(raw: dict[str, Any]) -> str | None:
+    """City + country only — avoid full street/PII dump in panel/drafts."""
+    billing = raw.get("billing") or {}
+    if not isinstance(billing, dict):
+        return None
+    city = str(billing.get("city") or "").strip()
+    country = str(billing.get("country") or "").strip()
+    parts = [p for p in (city, country) if p]
+    return ", ".join(parts) if parts else None
+
+
 def order_panel_fields(order: Any) -> dict[str, Any]:
     """Structured safe fields for dashboard order panel (never invent tracking)."""
     raw = getattr(order, "raw", None) or {}
@@ -23,6 +57,15 @@ def order_panel_fields(order: Any) -> dict[str, Any]:
                 }
             )
     tracking = _extract_tracking(raw)
+    date_created = _truncate(str(raw.get("date_created") or "") or None, max_len=32)
+    payment = _truncate(
+        str(raw.get("payment_method_title") or raw.get("payment_method") or "")
+        or None,
+        max_len=80,
+    )
+    shipping = _shipping_method(raw)
+    note = _truncate(str(raw.get("customer_note") or "") or None, max_len=200)
+    place = _billing_place(raw)
     return {
         "order_id": str(getattr(order, "id", "") or ""),
         "status": str(getattr(order, "status", "") or ""),
@@ -30,6 +73,11 @@ def order_panel_fields(order: Any) -> dict[str, Any]:
         "currency": str(getattr(order, "currency", "") or ""),
         "line_items": lines,
         "tracking": tracking,
+        "date_created": date_created,
+        "payment_method": payment,
+        "shipping_method": shipping,
+        "customer_note": note,
+        "billing_place": place,
         "ok": True,
         "error": None,
     }
@@ -43,6 +91,16 @@ def format_order_context_block(order: Any) -> str:
         f"Status: {panel['status']}",
         f"Total: {panel['total']} {panel['currency']}",
     ]
+    if panel.get("date_created"):
+        lines.append(f"Skapad: {panel['date_created']}")
+    if panel.get("payment_method"):
+        lines.append(f"Betalning: {panel['payment_method']}")
+    if panel.get("shipping_method"):
+        lines.append(f"Frakt: {panel['shipping_method']}")
+    if panel.get("billing_place"):
+        lines.append(f"Leveransort: {panel['billing_place']}")
+    if panel.get("customer_note"):
+        lines.append(f"Kundnotering: {panel['customer_note']}")
     if panel["line_items"]:
         lines.append("Rader:")
         for item in panel["line_items"]:
@@ -117,6 +175,11 @@ def resolve_order_panel(
             "currency": "",
             "line_items": [],
             "tracking": None,
+            "date_created": None,
+            "payment_method": None,
+            "shipping_method": None,
+            "customer_note": None,
+            "billing_place": None,
             "ok": False,
             "error": str(exc)[:160],
         }

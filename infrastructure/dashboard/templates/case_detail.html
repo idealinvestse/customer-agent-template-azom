@@ -40,8 +40,23 @@
     <dl class="mt-2 grid gap-2 text-sm sm:grid-cols-2">
       <div><span class="az-muted">Status</span> <strong class="text-mist-100">{{ order_panel.status }}</strong></div>
       <div><span class="az-muted">Total</span> <strong class="text-mist-100">{{ order_panel.total }} {{ order_panel.currency }}</strong></div>
+      {% if order_panel.date_created %}
+      <div><span class="az-muted">Skapad</span> <span class="text-mist-100">{{ order_panel.date_created }}</span></div>
+      {% endif %}
+      {% if order_panel.payment_method %}
+      <div><span class="az-muted">Betalning</span> <span class="text-mist-100">{{ order_panel.payment_method }}</span></div>
+      {% endif %}
+      {% if order_panel.shipping_method %}
+      <div><span class="az-muted">Frakt</span> <span class="text-mist-100">{{ order_panel.shipping_method }}</span></div>
+      {% endif %}
+      {% if order_panel.billing_place %}
+      <div><span class="az-muted">Ort</span> <span class="text-mist-100">{{ order_panel.billing_place }}</span></div>
+      {% endif %}
       {% if order_panel.tracking %}
       <div class="sm:col-span-2"><span class="az-muted">Tracking</span> <code class="az-code">{{ order_panel.tracking }}</code></div>
+      {% endif %}
+      {% if order_panel.customer_note %}
+      <div class="sm:col-span-2"><span class="az-muted">Kundnotering</span> <span class="text-mist-100">{{ order_panel.customer_note }}</span></div>
       {% endif %}
     </dl>
     {% if order_panel.line_items %}

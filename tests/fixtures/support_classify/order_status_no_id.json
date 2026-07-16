@@ -1,0 +1,8 @@
+{
+  "id": "order_status_no_id",
+  "text": "Hej, var är min beställning?",
+  "expected_category": "order_status",
+  "order_id_in_text": null,
+  "suggest_with_llm_confidence": 0.92,
+  "expect_suggest_approve": false
+}
