@@ -19,3 +19,7 @@ logs/
 .mypy_cache/
 .ruff_cache/
 *.egg-info/
+
+# MCP / tool artifacts
+.playwright-mcp/
+ga-ads-api-feasibility.json

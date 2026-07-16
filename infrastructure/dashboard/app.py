@@ -1049,13 +1049,30 @@ def woo_webhook():
     if not secret:
         return jsonify({"ok": False, "error": "WOO_WEBHOOK_SECRET not configured"}), 503
 
-    from ecom_ops.integrations.webhooks import WebhookReceiver
-
-    receiver = WebhookReceiver(secret=secret)
+    # Cache receiver instance — avoid recreating on every request
+    receiver = _get_woo_webhook_receiver(secret)
     ok = receiver.handle_request(request)
     if not ok:
         return jsonify({"ok": False, "error": "Invalid signature"}), 401
     return jsonify({"ok": True}), 200
+
+
+_woo_webhook_receiver: object | None = None
+_woo_webhook_secret_hash: str | None = None
+
+
+def _get_woo_webhook_receiver(secret: str):
+    """Return cached WebhookReceiver, recreating only if secret changed."""
+    global _woo_webhook_receiver, _woo_webhook_secret_hash
+    import hashlib
+
+    secret_hash = hashlib.sha256(secret.encode()).hexdigest()
+    if _woo_webhook_receiver is None or _woo_webhook_secret_hash != secret_hash:
+        from ecom_ops.integrations.webhooks import WebhookReceiver
+
+        _woo_webhook_receiver = WebhookReceiver(secret=secret)
+        _woo_webhook_secret_hash = secret_hash
+    return _woo_webhook_receiver
 
 
 @app.route("/logs")

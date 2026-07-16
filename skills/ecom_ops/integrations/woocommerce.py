@@ -136,7 +136,8 @@ class RequestsTransport:
             if resp.status_code in {429, 500, 502, 503, 504}:
                 if attempt >= self.max_retries:
                     break  # fall through to error raise below
-                wait = self._retry_after(resp) or self._sleep_backoff(attempt, return_wait=True)
+                retry_after = self._retry_after(resp)
+                wait = retry_after if retry_after is not None else self._sleep_backoff(attempt, return_wait=True)
                 time.sleep(wait)
                 continue
 
@@ -162,15 +163,32 @@ class RequestsTransport:
         )
 
     def _retry_after(self, resp: requests.Response) -> float | None:
-        """Return seconds to wait from Retry-After / RateLimit-Retry-After."""
+        """Return seconds to wait from Retry-After / RateLimit-Retry-After.
+
+        Supports both delta-seconds (RFC 7231 §7.1.3) and HTTP-date format.
+        """
+        from email.utils import parsedate_to_datetime
+
         for header in ("Retry-After", "RateLimit-Retry-After"):
             val = resp.headers.get(header)
             if not val:
                 continue
+            # Try delta-seconds first
             try:
                 return max(0.0, float(val))
             except ValueError:
-                continue
+                pass
+            # Try HTTP-date format
+            try:
+                dt = parsedate_to_datetime(val)
+                if dt is not None:
+                    from datetime import datetime, timezone
+
+                    now = datetime.now(timezone.utc)
+                    wait = (dt - now).total_seconds()
+                    return max(0.0, wait)
+            except (TypeError, ValueError):
+                pass
         return None
 
     def _sleep_backoff(self, attempt: int, *, return_wait: bool = False) -> float | None:
@@ -285,6 +303,10 @@ class InMemoryWooTransport:
             ],
         }
         self.calls: list[tuple[str, str, dict | None]] = []
+        self._tracking_counter = 0
+        self._note_counter = 9000
+        self._refund_counter = 7000
+        self._webhook_counter = 5000
 
     def request(
         self,
@@ -374,8 +396,9 @@ class InMemoryWooTransport:
             if method.upper() == "GET":
                 return list(self.trackings.get(oid, []))
             if method.upper() == "POST":
+                self._tracking_counter += 1
                 row = dict(json or {})
-                row.setdefault("id", f"trk_{len(self.trackings.get(oid, [])) + 1}")
+                row["id"] = f"trk_{self._tracking_counter}"
                 self.trackings.setdefault(oid, []).append(row)
                 return row
         if len(parts) == 3:  # /orders/{id}/shipment-trackings/{trk_id}
@@ -403,8 +426,9 @@ class InMemoryWooTransport:
             if method.upper() == "GET":
                 return list(self.order_notes.get(oid, []))
             if method.upper() == "POST":
+                self._note_counter += 1
                 row = dict(json or {})
-                row.setdefault("id", 9000 + len(self.order_notes.get(oid, [])) + 1)
+                row["id"] = self._note_counter
                 row.setdefault("customer_note", False)
                 self.order_notes.setdefault(oid, []).append(row)
                 return row
@@ -427,8 +451,9 @@ class InMemoryWooTransport:
         if len(parts) == 2 and method.upper() == "GET":
             return list(self.refunds.get(oid, []))
         if len(parts) == 2 and method.upper() == "POST":
+            self._refund_counter += 1
             row = dict(json or {})
-            row.setdefault("id", 7000 + len(self.refunds.get(oid, [])) + 1)
+            row["id"] = self._refund_counter
             self.refunds.setdefault(oid, []).append(row)
             return row
         raise SecurityError(f"Unhandled mock refunds URL: {method}")
@@ -513,8 +538,9 @@ class InMemoryWooTransport:
             if method.upper() == "GET":
                 return self._apply_list_params(list(self.webhooks.values()), params)
             if method.upper() == "POST":
+                self._webhook_counter += 1
                 row = dict(json or {})
-                row.setdefault("id", 5000 + len(self.webhooks) + 1)
+                row["id"] = self._webhook_counter
                 row.setdefault("status", "active")
                 row.setdefault("delivery_url", "")
                 self.webhooks[str(row["id"])] = row

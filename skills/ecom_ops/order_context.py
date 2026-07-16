@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _truncate(value: str | None, *, max_len: int = 200) -> str | None:
@@ -190,8 +193,13 @@ def resolve_order_panel(
                 if trackings:
                     panel["tracking"] = trackings[0].tracking_number
                     panel["tracking_source"] = "endpoint"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "shipment-trackings endpoint failed for order %s: %s "
+                    "(falling back to meta_data if available)",
+                    order_id,
+                    exc,
+                )
         return panel
     except Exception as exc:
         return {

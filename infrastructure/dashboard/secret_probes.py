@@ -190,7 +190,7 @@ def probe_wordpress() -> ProbeResult:
         from ecom_ops.integrations.wordpress import wp_client_from_env
 
         use_mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
-        client = wp_client_from_env(use_mock=use_mock if use_mock else None)
+        client = wp_client_from_env(use_mock=use_mock or None)
         # Try listing one post — validates credentials + endpoint reachability
         posts = client.list_posts(per_page=1)
         if posts:
