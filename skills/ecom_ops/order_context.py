@@ -111,6 +111,12 @@ def format_order_context_block(order: Any) -> str:
 
 
 def _extract_tracking(raw: dict[str, Any]) -> str | None:
+    """Fallback tracking extraction from order meta_data (legacy installs).
+
+    V2.1: prefer ``WooCommerceClient.list_shipment_trackings`` for installs
+    that expose the dedicated endpoint. This heuristic remains as a fallback
+    for stores without the shipment-trackings plugin/endpoint.
+    """
     meta = raw.get("meta_data") or []
     if isinstance(meta, list):
         for row in meta:
@@ -139,14 +145,18 @@ def resolve_order_context(
     order_id: str | None,
     *,
     use_mock: bool | None = None,
+    domain: str | None = None,
 ) -> str | None:
-    """Fetch Woo order and return a compact context block, or None on miss/error."""
+    """Fetch Woo order and return a compact context block, or None on miss/error.
+
+    V2.1: ``domain`` enables multi-site per-call resolution (.no/.se/.dk).
+    """
     if not order_id:
         return None
     try:
         from ecom_ops.integrations.woocommerce import client_from_env
 
-        woo = client_from_env(use_mock=use_mock)
+        woo = client_from_env(use_mock=use_mock, domain=domain)
         order = woo.get_order(str(order_id))
     except Exception:
         return None
@@ -157,16 +167,32 @@ def resolve_order_panel(
     order_id: str | None,
     *,
     use_mock: bool | None = None,
+    domain: str | None = None,
 ) -> dict[str, Any] | None:
-    """Fetch Woo order as structured panel dict, or error stub on miss."""
+    """Fetch Woo order as structured panel dict, or error stub on miss.
+
+    V2.1: ``domain`` enables multi-site per-call resolution (.no/.se/.dk).
+    Tracking is resolved via the dedicated ``/shipment-trackings`` endpoint
+    first, with meta_data heuristics as fallback for older installs.
+    """
     if not order_id:
         return None
     try:
         from ecom_ops.integrations.woocommerce import client_from_env
 
-        woo = client_from_env(use_mock=use_mock)
+        woo = client_from_env(use_mock=use_mock, domain=domain)
         order = woo.get_order(str(order_id))
-        return order_panel_fields(order)
+        panel = order_panel_fields(order)
+        # P0.1: prefer dedicated shipment-trackings endpoint
+        if not panel.get("tracking"):
+            try:
+                trackings = woo.list_shipment_trackings(str(order_id))
+                if trackings:
+                    panel["tracking"] = trackings[0].tracking_number
+                    panel["tracking_source"] = "endpoint"
+            except Exception:
+                pass
+        return panel
     except Exception as exc:
         return {
             "order_id": str(order_id),
@@ -189,17 +215,19 @@ def resolve_order_id_from_email(
     email: str | None,
     *,
     use_mock: bool | None = None,
+    domain: str | None = None,
 ) -> str | None:
     """Return order id only when email maps to exactly one recent Woo order.
 
     Multiple matches → None (never guess for suggest-approve).
+    V2.1: ``domain`` enables multi-site per-call resolution.
     """
     if not email or "@" not in str(email):
         return None
     try:
         from ecom_ops.integrations.woocommerce import client_from_env
 
-        woo = client_from_env(use_mock=use_mock)
+        woo = client_from_env(use_mock=use_mock, domain=domain)
         found = woo.find_orders_by_email(str(email).strip(), per_page=5)
     except Exception:
         return None

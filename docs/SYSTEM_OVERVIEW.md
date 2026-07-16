@@ -1,8 +1,8 @@
-# System overview — AzomOps-Agent v2.0
+# System overview — AzomOps-Agent v2.1
 
-Single-tenant WooCommerce customer-ops agent: CLI + Cases mail loop + Flask dashboard + OpenClaw-style Telegram bot. Primary runtime: Ubuntu 24/26 on Hetzner CX22/CPX21.
+Single-tenant WooCommerce + WordPress customer-ops agent: CLI + Cases mail loop + Flask dashboard + OpenClaw-style Telegram bot. Primary runtime: Ubuntu 24/26 on Hetzner CX22/CPX21.
 
-Related identity: [`SOUL.md`](../SOUL.md) · agent notes: [`AGENTS.md`](../AGENTS.md) · skill card: [`skills/ecom-ops/SKILL.md`](../skills/ecom-ops/SKILL.md)
+Related identity: [`SOUL.md`](../SOUL.md) · agent notes: [`AGENTS.md`](../AGENTS.md) · skill card: [`skills/ecom-ops/SKILL.md`](../skills/ecom-ops/SKILL.md) · V2.1 review: [`docs/solutions/2026-07-17-woo-wordpress-capacity-review.md`](solutions/2026-07-17-woo-wordpress-capacity-review.md)
 
 ---
 
@@ -15,6 +15,8 @@ Related identity: [`SOUL.md`](../SOUL.md) · agent notes: [`AGENTS.md`](../AGENT
                     └─────────────────────┘         │
                                                     ▼
   WooCommerce API ◄── order_context / order-status / product-desc
+  WordPress API  ◄── wordpress client (posts/pages/media/users/settings)
+  Woo Webhooks   ◄── /webhooks/woo (HMAC-SHA256) ── Dashboard route
                                                     │
   OpenRouter ────────── llm.py (drafts, chat, product-desc optional)
                                                     │

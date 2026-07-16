@@ -81,9 +81,23 @@ TELEGRAM_ACTOR_MAP=chat:jonatan,...    # unmapped → jonatan
 
 ## Status (kod mot nuvarande mål)
 - **Shipped:** Path B + Sprint A/B/C + SB5 (approve-flow, ★-measure, order extract/email lookup, richer context, classify fixtures, poll partial rails, Telegram actor fail-closed, soft draft utan order_id)
+- **V2.1 (klart):** Woo/WP capacity review + implementation — se nedan
 - Finish overview: `docs/DEVELOPMENT_PLAN_FINISH.md`
 - Sprint plan: `docs/superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md`
 - Live soak (människa): `docs/solutions/2026-07-16-live-soak-checklist.md`
 - Mock soft-soak: `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
 - **FU9 auto-send:** rails only — `docs/solutions/2026-07-16-fu9-auto-send-preconditions.md` (inte wire)
 - Inte i scope: V3 multi-tenant, GA4/engagement-program, default-on auto-send
+
+## V2.1 — Woo/WordPress capacity implementation
+- **Rapport:** `docs/solutions/2026-07-17-woo-wordpress-capacity-review.md`
+- **P0.1:** `WooCommerceClient.list_shipment_trackings/add/delete_shipment_tracking` — dedikerat `/wc/v3/orders/{id}/shipment-trackings`-endpoint ersätter fragil meta-heuristik i `order_context._extract_tracking` (kvar som fallback)
+- **P0.2:** Multi-site per-anrop — `client_from_env(domain="no|se|dk")` löser base URL via `woo_base_url_for_domain`; `resolve_order_context/panel/id_from_email` accepterar `domain=`
+- **P1.3:** `WordPressClient` (`skills/ecom_ops/integrations/wordpress.py`) — `/wp-json/wp/v2/` posts/pages/media/users/comments/settings + discovery; auth via Application Passwords (`WP_USERNAME`+`WP_APP_PASSWORD`); `wp_client_from_env(domain=)`
+- **P1.4–5:** `RequestsTransport` — `requests.Session`-återanvändning + retry/backoff (429/5xx) + `Retry-After`/`RateLimit-Retry-After`-headers + konfigurerbar timeout
+- **P2.6:** `WebhookReceiver` (`skills/ecom_ops/integrations/webhooks.py`) — HMAC-SHA256-verifiering + topic/resource-dispatch; dashboard-route `POST /webhooks/woo`; `WOO_WEBHOOK_SECRET`-env
+- **P2.7:** `list_all_orders`/`list_all_products` — paginerings-iteratorer (bounded `max_pages`)
+- **P2.8:** Fler Woo-endpoints — order notes, refunds, customers, coupons, reports, product variations, webhooks CRUD
+- **P3.9:** `get_system_status()` — Woo/WordPress version + active plugins; `WooSystemStatus`-dataclass
+- **P3.10:** `probe_wordpress` i `secret_probes.py`; `WP_USERNAME`/`WP_APP_PASSWORD`/`WOO_WEBHOOK_SECRET` i secret-redaction (`security.py` + `settings_store.py`)
+- **Tester:** `tests/test_woo_v21_extensions.py` (30), `tests/test_wordpress_client.py` (22), `tests/test_woo_webhooks.py` (19), `tests/test_order_context_v21.py` (11) — 350 totalt, alla gröna; täckning 78–91% på nya moduler

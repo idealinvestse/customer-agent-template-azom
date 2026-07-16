@@ -128,7 +128,7 @@ def test_cli_version_without_woo_credentials(monkeypatch, capsys):
     code = main(["version"])
     assert code == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["version"] == "2.0.0"
+    assert out["version"] == "2.1.0"
 
 
 def test_telegram_rejects_unknown_chat_when_allowlist_set(monkeypatch, tmp_path):

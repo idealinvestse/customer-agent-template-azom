@@ -175,8 +175,40 @@ def probe_gmail_oauth() -> ProbeResult:
         return _result("gmail_oauth", label, "error", str(exc)[:200])
 
 
+def probe_wordpress() -> ProbeResult:
+    """WordPress REST connection probe (V2.1).
+
+    Checks WP_USERNAME + WP_APP_PASSWORD and attempts a lightweight
+    /wp-json/wp/v2/ discovery call.
+    """
+    label = "WordPress"
+    needed = ("WP_USERNAME", "WP_APP_PASSWORD")
+    if not _env(*needed):
+        missing = [k for k in needed if not os.environ.get(k, "").strip()]
+        return _result("wordpress", label, "missing", f"Saknas: {', '.join(missing)}")
+    try:
+        from ecom_ops.integrations.wordpress import wp_client_from_env
+
+        use_mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+        client = wp_client_from_env(use_mock=use_mock if use_mock else None)
+        # Try listing one post — validates credentials + endpoint reachability
+        posts = client.list_posts(per_page=1)
+        if posts:
+            post = posts[0]
+            return _result(
+                "wordpress",
+                label,
+                "ok",
+                f"API ok · sample post {post.id} (status={post.status})",
+            )
+        return _result("wordpress", label, "ok", "API ok · posts endpoint reachable")
+    except Exception as exc:
+        return _result("wordpress", label, "error", str(exc)[:200])
+
+
 PROBES: dict[str, Callable[[], ProbeResult]] = {
     "woocommerce": probe_woocommerce,
+    "wordpress": probe_wordpress,
     "mail": probe_mail,
     "telegram": probe_telegram,
     "openrouter": probe_openrouter,

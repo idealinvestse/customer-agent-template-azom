@@ -31,6 +31,10 @@ if str(_ROOT / "skills") not in sys.path:
 if str(_DASH_DIR) not in sys.path:
     sys.path.insert(0, str(_DASH_DIR))
 
+from secret_probes import (  # noqa: E402
+    run_all_probes,
+    run_probe,
+)
 from settings_store import (  # noqa: E402
     EDITABLE_SECRET_KEYS,
     apply_env_overlays,
@@ -39,10 +43,6 @@ from settings_store import (  # noqa: E402
     save_secrets,
     save_settings,
     secrets_status,
-)
-from secret_probes import (  # noqa: E402
-    run_all_probes,
-    run_probe,
 )
 from status import health_probe, runtime_status  # noqa: E402
 
@@ -1032,6 +1032,30 @@ def health():
             "readiness": readiness,
         }
     )
+
+
+@app.route("/webhooks/woo", methods=["POST"])
+def woo_webhook():
+    """WooCommerce webhook receiver (V2.1).
+
+    Verifies HMAC-SHA256 signature against WOO_WEBHOOK_SECRET.
+    Returns 200 quickly on valid signature (handlers run inline);
+    returns 401 on invalid/missing signature. No auth required —
+    signature verification is the auth mechanism.
+    """
+    import os
+
+    secret = os.environ.get("WOO_WEBHOOK_SECRET", "")
+    if not secret:
+        return jsonify({"ok": False, "error": "WOO_WEBHOOK_SECRET not configured"}), 503
+
+    from ecom_ops.integrations.webhooks import WebhookReceiver
+
+    receiver = WebhookReceiver(secret=secret)
+    ok = receiver.handle_request(request)
+    if not ok:
+        return jsonify({"ok": False, "error": "Invalid signature"}), 401
+    return jsonify({"ok": True}), 200
 
 
 @app.route("/logs")
