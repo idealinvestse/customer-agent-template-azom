@@ -1,0 +1,8 @@
+{
+  "id": "return_sv",
+  "text": "Jag vill returnera min order 3010. Den \u00e4r fel storlek.",
+  "order_id": "3010",
+  "language": "sv",
+  "expected_category": "return",
+  "must_not_promise_refund": true
+}

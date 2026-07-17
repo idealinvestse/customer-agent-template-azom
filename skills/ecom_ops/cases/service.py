@@ -68,6 +68,7 @@ class IngestResult:
     cases: list[dict[str, Any]] | None = None
     escalated: bool = False
     ticket_id: str | None = None
+    per_mailbox: list[dict[str, Any]] | None = None  # P3.6: per-mailbox status
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +80,7 @@ class IngestResult:
             "cases": self.cases or [],
             "escalated": self.escalated,
             "ticket_id": self.ticket_id,
+            "per_mailbox": self.per_mailbox or [],
         }
 
 
@@ -168,6 +170,15 @@ class CaseService:
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
         self._injected_mail_client = mail_client
+        self._shutdown_requested = False  # P6.6: graceful shutdown flag
+
+    def request_shutdown(self) -> None:
+        """Signal the service to stop polling gracefully (P6.6)."""
+        self._shutdown_requested = True
+
+    @property
+    def shutdown_requested(self) -> bool:
+        return self._shutdown_requested
 
     def evaluate_auto_send_eligibility(
         self,
@@ -236,11 +247,16 @@ class CaseService:
         errors = 0
         created_cases: list[dict[str, Any]] = []
         error_details: list[dict[str, str]] = []
+        per_mailbox: list[dict[str, Any]] = []
 
         for mb in mailboxes:
+            if self._shutdown_requested:  # P6.6: graceful shutdown
+                break
             client = self._injected_mail_client or client_from_env(
                 provider=mb.provider, use_mock=use_mock
             )
+            mb_created = 0
+            mb_skipped = 0
             try:
                 messages = client.fetch(
                     folder="INBOX", unread_only=True, limit=limit_per_mailbox
@@ -249,6 +265,13 @@ class CaseService:
                 errors += 1
                 err_text = str(exc)[:200]
                 error_details.append({"mailbox_id": mb.id, "error": err_text})
+                per_mailbox.append({
+                    "mailbox_id": mb.id,
+                    "status": "error",
+                    "error": err_text,
+                    "created": 0,
+                    "skipped": 0,
+                })
                 self.telemetry.record(
                     action="case_poll_error",
                     site=mb.site,
@@ -262,9 +285,17 @@ class CaseService:
                 )
                 if result is None:
                     skipped += 1
+                    mb_skipped += 1
                 else:
                     created += 1
+                    mb_created += 1
                     created_cases.append(result.to_dict())
+            per_mailbox.append({
+                "mailbox_id": mb.id,
+                "status": "ok",
+                "created": mb_created,
+                "skipped": mb_skipped,
+            })
 
         # All mailboxes failed → not ok; partial still ok=True but flagged
         all_failed = errors > 0 and errors == len(mailboxes)
@@ -339,6 +370,7 @@ class CaseService:
             cases=created_cases,
             escalated=escalated,
             ticket_id=ticket_id,
+            per_mailbox=per_mailbox,
         )
 
     def _ingest_message(
@@ -468,6 +500,7 @@ class CaseService:
         self.telemetry.record(
             action="case_created",
             site=mb.site,
+            case_id=case.id,
             meta={
                 "case_id": case.id,
                 "mailbox_id": mb.id,
@@ -791,11 +824,21 @@ class CaseService:
             self.telemetry.record(
                 action="case_closed",
                 site=case.site,
+                case_id=case_id,
                 meta={
                     "case_id": case_id,
                     "actor": actor_obj.name,
                     "reason": (reason or "")[:200],
                 },
+            )
+            from ecom_ops.audit import log_action
+
+            log_action(
+                actor=actor_obj.name,
+                action="case_close",
+                target="case",
+                target_id=case_id,
+                details={"reason": (reason or "")[:200]},
             )
             return CaseActionResult(
                 ok=True,
@@ -813,6 +856,45 @@ class CaseService:
                 escalated=True,
                 ticket_id=ticket.id,
             )
+
+    def bulk_close(
+        self,
+        case_ids: list[str],
+        *,
+        actor: Actor | str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Close multiple cases in one call (bulk triage).
+
+        Returns a summary dict: {ok, closed, skipped, errors, results}.
+        Each result in ``results`` is a CaseActionResult.to_dict().
+        """
+        actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
+        closed = 0
+        skipped = 0
+        errors = 0
+        results: list[dict[str, Any]] = []
+        for cid in case_ids:
+            cid = (cid or "").strip()
+            if not cid:
+                continue
+            r = self.close(cid, actor=actor_obj, reason=reason)
+            results.append(r.to_dict())
+            if r.ok:
+                if r.message == "Already closed":
+                    skipped += 1
+                else:
+                    closed += 1
+            else:
+                errors += 1
+        return {
+            "ok": errors == 0,
+            "closed": closed,
+            "skipped": skipped,
+            "errors": errors,
+            "results": results,
+            "message": f"Bulk close: {closed} closed, {skipped} already closed, {errors} errors",
+        }
 
     def approve_and_send(
         self,
@@ -874,6 +956,7 @@ class CaseService:
             self.telemetry.record(
                 action="case_replied",
                 site=case.site,
+                case_id=case_id,
                 meta={
                     "case_id": case_id,
                     "approved_by": actor_obj.name,
@@ -883,6 +966,19 @@ class CaseService:
                     "draft_edit_distance": round(
                         _edit_distance_ratio(case.draft_reply or "", body), 4
                     ),
+                },
+            )
+            from ecom_ops.audit import log_action
+
+            log_action(
+                actor=actor_obj.name,
+                action="case_reply_send",
+                target="case",
+                target_id=case_id,
+                details={
+                    "to": case.from_addr,
+                    "category": case.category,
+                    "suggest_approve": bool(getattr(case, "suggest_approve", False)),
                 },
             )
             return CaseActionResult(

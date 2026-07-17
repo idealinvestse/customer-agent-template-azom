@@ -1,0 +1,15 @@
+[Unit]
+Description=Azom Ops Agent — GDPR retention purge (delete/redact closed cases)
+After=azom-backup.service
+
+[Service]
+Type=oneshot
+User=azom
+Group=azom
+Environment=AZOM_DATA_DIR=/var/lib/azom
+Environment=AZOM_CONFIG_DIR=/opt/azom-agent/config
+ExecStart=/opt/azom-agent/.venv/bin/python -m ecom_ops cases retention-purge --days 90
+WorkingDirectory=/opt/azom-agent
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true

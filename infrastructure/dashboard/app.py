@@ -9,6 +9,7 @@ import secrets
 import sys
 from functools import wraps
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
 
 from flask import (
@@ -127,7 +128,12 @@ def _password_ok(expected_plain: str, expected_hash: str, password: str) -> bool
 
 
 def _authenticate(username: str, password: str) -> dict | None:
-    """Return actor dict or None. Mock default passwords only when AZOM_USE_MOCK."""
+    """Return actor dict or None. Mock default passwords only when AZOM_USE_MOCK.
+
+    Uses ``ecom_ops.rbac`` as the single source of truth for roles/permissions
+    (P5.1). The returned dict carries the RBAC role name so downstream code
+    can call ``require_permission`` consistently.
+    """
     apply_env_overlays()
     user = (username or "").strip().lower()
     if user == "jonatan":
@@ -148,6 +154,17 @@ def _authenticate(username: str, password: str) -> dict | None:
             return {"name": "oscar", "role": "full_admin", "is_oscar": True}
         return None
     return None
+
+
+def _dashboard_actor(actor_dict: dict) -> Any:
+    """Build an ``ecom_ops.rbac.Actor`` from the dashboard auth dict (P5.1).
+
+    Ensures the dashboard uses the same RBAC engine as the rest of the system
+    when calling ``require_permission``.
+    """
+    from ecom_ops.rbac import Actor as _Actor
+
+    return _Actor(name=actor_dict["name"], role=actor_dict["role"])
 
 
 def _ensure_csrf_token() -> str:
@@ -186,7 +203,16 @@ def _auth_required(view):
         auth = request.authorization
         actor = None
         if auth is not None:
+            ip = request.remote_addr or "unknown"
+            if _login_rate_limited(ip):
+                return Response(
+                    "Too many failed login attempts. Try again later.",
+                    429,
+                    {"Retry-After": str(_LOGIN_WINDOW_SEC)},
+                )
             actor = _authenticate(auth.username or "", auth.password or "")
+            if actor is None:
+                _record_login_failure(ip)
         if actor is None:
             return Response(
                 "Authentication required (jonatan or oscar)",
@@ -195,6 +221,27 @@ def _auth_required(view):
             )
         g.actor = actor
         _ensure_csrf_token()
+        # Session timeout (P2.7): expire after 8h of inactivity
+        from datetime import datetime, timedelta, timezone
+
+        session_timeout_h = int(os.environ.get("DASHBOARD_SESSION_TIMEOUT_H", "8"))
+        last_seen = session.get("_last_seen")
+        now = datetime.now(timezone.utc)
+        if last_seen:
+            try:
+                ls = datetime.fromisoformat(last_seen)
+                if ls.tzinfo is None:
+                    ls = ls.replace(tzinfo=timezone.utc)
+                if now - ls > timedelta(hours=session_timeout_h):
+                    session.clear()
+                    return Response(
+                        "Session expired — please re-authenticate",
+                        401,
+                        {"WWW-Authenticate": 'Basic realm="Azom Dashboard"'},
+                    )
+            except Exception:
+                pass
+        session["_last_seen"] = now.isoformat()
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             failed = _validate_csrf()
             if failed is not None:
@@ -459,6 +506,105 @@ def _dashboard_context(**extra) -> dict:
 @app.before_request
 def _load_overlays():
     apply_env_overlays()
+
+
+# --------------------------------------------------------------------------- #
+# Security headers (P2.3) + session timeout (P2.7)
+# --------------------------------------------------------------------------- #
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    # HSTS only over HTTPS (avoid breaking local HTTP dev)
+    if request.is_secure or request.headers.get("X-Forwarded-Proto") == "https":
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    # CSP: allow inline (Alpine + templates) + self + CDN scripts/styles
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
+        "img-src 'self' data: https:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'",
+    )
+    return resp
+
+
+# --------------------------------------------------------------------------- #
+# App-level login rate limiting (P2.2)
+# --------------------------------------------------------------------------- #
+from collections import defaultdict  # noqa: E402
+from time import time as _time  # noqa: E402
+
+_LOGIN_WINDOW_SEC = 300  # 5 min
+_LOGIN_MAX_FAILURES = 10  # per IP per window
+_login_failures: dict[str, list[float]] = defaultdict(list)
+
+
+def _login_rate_limited(ip: str) -> bool:
+    now = _time()
+    cutoff = now - _LOGIN_WINDOW_SEC
+    recent = [t for t in _login_failures[ip] if t > cutoff]
+    _login_failures[ip] = recent
+    return len(recent) >= _LOGIN_MAX_FAILURES
+
+
+def _record_login_failure(ip: str) -> None:
+    _login_failures[ip].append(_time())
+
+
+@app.route("/metrics")
+def prometheus_metrics():
+    """Prometheus-format metrics endpoint (P7.3). No auth — scrape from localhost only."""
+    from ecom_ops.budget import budget_status
+    from ecom_ops.kpis import support_kpis_last_days
+
+    lines: list[str] = []
+    # Budget
+    bs = budget_status()
+    lines.append("# TYPE azom_budget_used_usd gauge")
+    lines.append(f"azom_budget_used_usd {bs.get('used_usd', 0)}")
+    lines.append(f"azom_budget_cap_usd {bs.get('cap_usd', 0)}")
+    lines.append(f"azom_budget_used_ratio {bs.get('used_ratio', 0)}")
+    # KPIs
+    kpis = support_kpis_last_days(days=7)
+    lines.append("# TYPE azom_case_approved_total gauge")
+    lines.append(f"azom_case_approved_total {kpis.get('n_case_approved', 0)}")
+    if kpis.get("median_time_to_approve_sec") is not None:
+        lines.append(f"azom_median_time_to_approve_sec {kpis['median_time_to_approve_sec']}")
+    if kpis.get("mean_draft_edit_distance") is not None:
+        lines.append(f"azom_mean_draft_edit_distance {kpis['mean_draft_edit_distance']}")
+    # Case counts
+    import sqlite3
+
+    db_path = _data_dir() / "cases.db"
+    if db_path.is_file():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            for status in ("open", "escalated", "replied", "closed"):
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM cases WHERE status = ?", (status,)
+                ).fetchone()[0]
+                lines.append(f'azom_cases{{status="{status}"}} {count}')
+            conn.close()
+        except Exception:
+            pass
+    # Poll age
+    probe_path = _data_dir() / "probe_last.json"
+    if probe_path.is_file():
+        try:
+            import json as _json
+
+            data = _json.loads(probe_path.read_text(encoding="utf-8"))
+            lines.append(f"azom_probe_last_ts {data.get('checked_at', '')!r}")
+        except Exception:
+            pass
+    return Response("\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4")
 
 
 @app.route("/")
@@ -731,6 +877,29 @@ def cases_poll():
     return redirect(url_for("cases_list") + f"?err={result.message}")
 
 
+@app.route("/cases/bulk-close", methods=["POST"])
+@_auth_required
+def cases_bulk_close():
+    from ecom_ops.cases.service import CaseService
+
+    ids_raw = request.form.get("case_ids", "")
+    case_ids = [c.strip() for c in ids_raw.split(",") if c.strip()]
+    if not case_ids:
+        return redirect(url_for("cases_list") + "?err=Inga+ärenden+valda")
+    result = CaseService().bulk_close(
+        case_ids, actor=g.actor["name"], reason="bulk-close-dashboard"
+    )
+    if result["ok"]:
+        return redirect(
+            url_for("cases_list")
+            + f"?msg=Stängde+{result['closed']}+ärenden"
+        )
+    return redirect(
+        url_for("cases_list")
+        + f"?err={result['message']}"
+    )
+
+
 @app.route("/cases/<case_id>", methods=["GET", "POST"])
 @_auth_required
 def case_detail(case_id: str):
@@ -963,6 +1132,93 @@ def oscar_escalations():
     )
 
 
+@app.route("/oscar/gdpr/delete", methods=["POST"])
+@_oscar_required
+def oscar_gdpr_delete():
+    """GDPR Art 17: delete all cases + messages for a given email (P8.2)."""
+    email = (request.form.get("email") or "").strip()
+    if not email:
+        return jsonify({"ok": False, "message": "email required"}), 400
+    from ecom_ops.security import validate_email
+
+    try:
+        validate_email(email)
+    except Exception as exc:
+        return jsonify({"ok": False, "message": str(exc)}), 400
+    import sqlite3
+
+    from ecom_ops.audit import log_action
+
+    db_path = _data_dir() / "cases.db"
+    if not db_path.is_file():
+        return jsonify({"ok": False, "message": "cases.db not found"}), 404
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Find cases by from_addr
+        rows = conn.execute(
+            "SELECT id FROM cases WHERE from_addr = ?", (email,)
+        ).fetchall()
+        case_ids = [r[0] for r in rows]
+        if not case_ids:
+            return jsonify({"ok": True, "deleted": 0, "message": "No cases found for this email"})
+        placeholders = ",".join("?" * len(case_ids))
+        conn.execute(f"DELETE FROM case_messages WHERE case_id IN ({placeholders})", case_ids)
+        conn.execute(f"DELETE FROM cases WHERE id IN ({placeholders})", case_ids)
+        conn.commit()
+        log_action(
+            actor=g.actor["name"],
+            action="gdpr_delete",
+            target="cases",
+            target_id=email,
+            details={"deleted_count": len(case_ids)},
+        )
+        return jsonify({"ok": True, "deleted": len(case_ids), "message": f"Deleted {len(case_ids)} cases for {email}"})
+    except Exception as exc:
+        conn.rollback()
+        return jsonify({"ok": False, "message": str(exc)[:200]}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/oscar/gdpr/export", methods=["GET"])
+@_oscar_required
+def oscar_gdpr_export():
+    """GDPR Art 20: export all data for a given email as JSON (P8.2)."""
+    email = (request.args.get("email") or "").strip()
+    if not email:
+        return jsonify({"ok": False, "message": "email required"}), 400
+    import sqlite3
+
+    db_path = _data_dir() / "cases.db"
+    if not db_path.is_file():
+        return jsonify({"ok": False, "message": "cases.db not found"}), 404
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cases = [dict(r) for r in conn.execute(
+            "SELECT * FROM cases WHERE from_addr = ?", (email,)
+        ).fetchall()]
+        if not cases:
+            return jsonify({"ok": True, "email": email, "cases": [], "messages": [], "message": "No data found"})
+        case_ids = [c["id"] for c in cases]
+        placeholders = ",".join("?" * len(case_ids))
+        messages = [dict(r) for r in conn.execute(
+            f"SELECT * FROM case_messages WHERE case_id IN ({placeholders})", case_ids
+        ).fetchall()]
+        from ecom_ops.audit import log_action
+
+        log_action(
+            actor=g.actor["name"],
+            action="gdpr_export",
+            target="cases",
+            target_id=email,
+            details={"case_count": len(cases)},
+        )
+        return jsonify({"ok": True, "email": email, "cases": cases, "messages": messages})
+    finally:
+        conn.close()
+
+
 @app.route("/oauth/gmail/start")
 @_auth_required
 def oauth_gmail_start():
@@ -1032,6 +1288,22 @@ def health():
             "readiness": readiness,
         }
     )
+
+
+@app.route("/live")
+def liveness():
+    """Kubernetes liveness probe (P6.5). Always 200 if the process is up."""
+    return jsonify({"ok": True, "liveness": True}), 200
+
+
+@app.route("/ready")
+def readiness():
+    """Kubernetes readiness probe (P6.5). 503 if last poll is stale."""
+    from ecom_ops.ops_status import readiness_from_last_poll
+
+    rd = readiness_from_last_poll()
+    ok = bool(rd.get("ready", True))
+    return jsonify({"ok": ok, "readiness": rd}), (200 if ok else 503)
 
 
 @app.route("/webhooks/woo", methods=["POST"])

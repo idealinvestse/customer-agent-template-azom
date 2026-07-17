@@ -86,15 +86,33 @@ class MailService:
             require_permission(
                 actor_obj, required_permission or Permission.MAIL_SEND
             )
-            status = self.client.send(
-                to=to,
-                subject=subject,
-                body=body,
-                cc=cc,
-                html_body=html_body,
-                in_reply_to=in_reply_to,
-                references_header=references_header,
-            )
+            # Retry transient mail errors (P3.5): 1 retry with 2s backoff
+            status = None
+            last_exc = None
+            for attempt in range(2):
+                try:
+                    status = self.client.send(
+                        to=to,
+                        subject=subject,
+                        body=body,
+                        cc=cc,
+                        html_body=html_body,
+                        in_reply_to=in_reply_to,
+                        references_header=references_header,
+                    )
+                    break
+                except SecurityError:
+                    raise  # validation errors are not transient
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt == 0:
+                        import time
+
+                        time.sleep(2)
+                    else:
+                        raise
+            if status is None and last_exc:
+                raise last_exc
             to_list = status.get("to") or (
                 [to] if isinstance(to, str) else list(to)
             )

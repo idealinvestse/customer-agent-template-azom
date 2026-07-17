@@ -225,6 +225,30 @@ elif [[ -n "$REPO_URL" ]]; then
     fi
     log "Cloning ${REPO_URL} @ ${REPO_BRANCH}"
     sudo -u "$APP_USER" git clone --branch "$REPO_BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
+
+    # --- Supply-chain: verify commit signature or pin (P6.4) ---
+    # If AZOM_REPO_COMMIT_SHA is set, verify the cloned HEAD matches.
+    # If AZOM_REPO_VERIFY_GPG=1, attempt GPG signature verification.
+    PINNED_SHA="${AZOM_REPO_COMMIT_SHA:-}"
+    if [[ -n "$PINNED_SHA" ]]; then
+      log "Verifying commit pin: ${PINNED_SHA}"
+      ACTUAL_SHA="$(cd "$APP_DIR" && git rev-parse HEAD)"
+      if [[ "${ACTUAL_SHA}" != "${PINNED_SHA}"* ]]; then
+        die "Commit SHA mismatch: expected ${PINNED_SHA}, got ${ACTUAL_SHA}"
+      fi
+      ok "Commit pin verified"
+    fi
+    if [[ "${AZOM_REPO_VERIFY_GPG:-0}" == "1" ]]; then
+      log "Verifying GPG signature on HEAD"
+      if ! (cd "$APP_DIR" && git log -1 --pretty='%GP' | grep -q .); then
+        warn "HEAD commit has no GPG signature — continuing (set AZOM_REPO_VERIFY_GPG_STRICT=1 to fail)"
+      fi
+      if [[ "${AZOM_REPO_VERIFY_GPG_STRICT:-0}" == "1" ]]; then
+        (cd "$APP_DIR" && git verify-commit HEAD) || die "GPG signature verification failed"
+        ok "GPG signature verified"
+      fi
+    fi
+
     if [[ -f /tmp/azom-env.backup ]]; then
       mv /tmp/azom-env.backup "${APP_DIR}/.env"
       chown "${APP_USER}:${APP_USER}" "${APP_DIR}/.env"
@@ -366,7 +390,9 @@ fi
 
 for unit in azom-dashboard.service azom-bot.service \
             azom-daily-brief.service azom-daily-brief.timer \
-            azom-cases-poll.service azom-cases-poll.timer; do
+            azom-cases-poll.service azom-cases-poll.timer \
+            azom-backup.service azom-backup.timer \
+            azom-retention-purge.service azom-retention-purge.timer; do
   [[ -f "${UNIT_SRC}/${unit}" ]] || die "Missing unit ${unit}"
   cp "${UNIT_SRC}/${unit}" /etc/systemd/system/
 done
@@ -451,9 +477,13 @@ if [[ "$START_SERVICES" == "1" ]]; then
   systemctl enable azom-dashboard.service
   systemctl enable azom-daily-brief.timer
   systemctl enable azom-cases-poll.timer
+  systemctl enable azom-backup.timer
+  systemctl enable azom-retention-purge.timer
   systemctl restart azom-dashboard.service
   systemctl restart azom-daily-brief.timer
   systemctl restart azom-cases-poll.timer
+  systemctl restart azom-backup.timer
+  systemctl restart azom-retention-purge.timer
 
   # Bot only if token present
   BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"

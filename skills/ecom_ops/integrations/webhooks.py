@@ -101,10 +101,41 @@ class WebhookReceiver:
     precedence over resource-level handlers.
     """
 
-    def __init__(self, *, secret: str) -> None:
+    def __init__(self, *, secret: str, async_dispatch: bool = False) -> None:
         self.secret = secret
         self._topic_handlers: dict[str, list[HandlerFn]] = {}
         self._resource_handlers: dict[str, list[HandlerFn]] = {}
+        self._async = async_dispatch
+        if async_dispatch:
+            import atexit
+            import queue
+            import threading
+
+            self._queue: queue.Queue = queue.Queue()
+            self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+            self._worker.start()
+            atexit.register(self._drain)
+
+    def _worker_loop(self) -> None:
+        """Background worker that processes queued webhook events (P2.5)."""
+        import queue as _q
+
+        while True:
+            try:
+                event = self._queue.get(timeout=30)
+            except _q.Empty:
+                continue
+            if event is None:  # shutdown sentinel
+                break
+            self._run_handlers(event)
+            self._queue.task_done()
+
+    def _drain(self) -> None:
+        """Drain remaining events on shutdown."""
+        if not self._async:
+            return
+        self._queue.put(None)
+        self._worker.join(timeout=5)
 
     def on(self, topic: str, handler: HandlerFn) -> None:
         """Register a handler for a topic (``order.updated``) or resource (``order``)."""
@@ -164,6 +195,13 @@ class WebhookReceiver:
         )
 
     def _dispatch(self, event: WebhookEvent) -> None:
+        """Dispatch event — async (queued) or sync based on config (P2.5)."""
+        if self._async:
+            self._queue.put(event)
+            return
+        self._run_handlers(event)
+
+    def _run_handlers(self, event: WebhookEvent) -> None:
         handlers: list[HandlerFn] = []
         if event.topic:
             handlers.extend(self._topic_handlers.get(event.topic, []))

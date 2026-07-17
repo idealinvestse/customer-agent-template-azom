@@ -72,8 +72,9 @@ def probe_mail() -> ProbeResult:
         from ecom_ops.integrations.mail import client_from_env
 
         use_mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+        # In prod: build a real (non-mock) client and attempt a live fetch.
+        # In mock: keep the mock-safe path so probes work without network.
         client = client_from_env(use_mock=True if use_mock else None)
-        # Prefer mock-safe fetch; live may fail without network — still validates client build
         msgs = client.fetch(folder="INBOX", unread_only=True, limit=1)
         return _result(
             "mail",
@@ -93,9 +94,12 @@ def probe_telegram() -> ProbeResult:
     if os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}:
         return _result("telegram", label, "ok", "Token present (mock — skip getMe)")
     try:
+        import ssl
+
         url = f"https://api.telegram.org/bot{token}/getMe"
         req = Request(url, method="GET")
-        with urlopen(req, timeout=8) as resp:
+        ctx = ssl.create_default_context()
+        with urlopen(req, timeout=8, context=ctx) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
         if '"ok":true' in raw.replace(" ", "") or '"ok": true' in raw:
             return _result("telegram", label, "ok", "getMe OK")
@@ -225,7 +229,53 @@ def run_probe(probe_id: str) -> ProbeResult:
 
 
 def run_all_probes() -> list[ProbeResult]:
-    return [fn() for fn in PROBES.values()]
+    results = [fn() for fn in PROBES.values()]
+    # P7.5: persist probe history alongside probe_last.json
+    _persist_probe_history(results)
+    return results
+
+
+def _persist_probe_history(results: list[ProbeResult]) -> None:
+    """Append probe results to probe_history.jsonl (P7.5)."""
+    import json
+    from pathlib import Path
+
+    base = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    base.mkdir(parents=True, exist_ok=True)
+    hist_path = base / "probe_history.jsonl"
+    ts = _now()
+    with hist_path.open("a", encoding="utf-8") as fh:
+        for r in results:
+            entry = {"checked_at": ts, **r.to_dict()}
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    # Cap history at 1000 lines (rotate)
+    if hist_path.is_file() and hist_path.stat().st_size > 200_000:
+        lines = hist_path.read_text(encoding="utf-8").strip().split("\n")
+        with hist_path.open("w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines[-1000:]) + "\n")
+
+
+def read_probe_history(*, limit: int = 100) -> list[dict[str, Any]]:
+    """Read recent probe history entries (P7.5). Newest first."""
+    import json
+    from pathlib import Path
+
+    base = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    hist_path = base / "probe_history.jsonl"
+    if not hist_path.is_file():
+        return []
+    out: list[dict[str, Any]] = []
+    with hist_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            s = line.strip()
+            if not s:
+                continue
+            try:
+                out.append(json.loads(s))
+            except json.JSONDecodeError:
+                continue
+    out.reverse()
+    return out[:limit]
 
 
 def probe_summary(results: list[ProbeResult] | None = None) -> dict[str, Any]:

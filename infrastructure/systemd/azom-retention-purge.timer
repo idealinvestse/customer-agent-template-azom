@@ -1,0 +1,11 @@
+[Unit]
+Description=Azom Ops Agent — daily GDPR retention purge timer
+Requires=azom-retention-purge.service
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

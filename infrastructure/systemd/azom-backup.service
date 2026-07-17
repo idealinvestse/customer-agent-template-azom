@@ -1,0 +1,17 @@
+[Unit]
+Description=Azom Ops Agent — data backup (cases.db + telemetry + oauth)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=azom
+Group=azom
+Environment=AZOM_DATA_DIR=/var/lib/azom
+Environment=AZOM_BACKUP_DIR=/var/lib/azom/backups
+# Set AZOM_BACKUP_DEST in /opt/azom-agent/.env or override file to enable off-box rsync
+ExecStart=/opt/azom-agent/.venv/bin/bash /opt/azom-agent/bin/backup-azom-data.sh
+WorkingDirectory=/opt/azom-agent
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true

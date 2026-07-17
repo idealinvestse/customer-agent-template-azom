@@ -25,6 +25,7 @@ class CasesAiConfig:
     auto_send_min_confidence: float
     max_auto_sends_per_day: int
     kill_switch_env: str
+    auto_send_experiment_name: str = ""
 
     def kill_switch_active(self) -> bool:
         raw = (os.environ.get(self.kill_switch_env) or "").strip().lower()
@@ -78,6 +79,7 @@ def load_cases_ai_config() -> CasesAiConfig:
         auto_send_min_confidence=float(raw.get("auto_send_min_confidence", 0.92)),
         max_auto_sends_per_day=int(raw.get("max_auto_sends_per_day", 10)),
         kill_switch_env=str(raw.get("kill_switch_env") or "AZOM_AUTO_SEND_KILL"),
+        auto_send_experiment_name=str(raw.get("auto_send_experiment_name") or ""),
     )
 
 

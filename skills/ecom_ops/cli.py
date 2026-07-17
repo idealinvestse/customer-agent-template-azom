@@ -92,6 +92,25 @@ def build_parser() -> argparse.ArgumentParser:
         "classify-eval",
         help="Score keyword classify + suggest rails against fixture pack",
     )
+    p_draft_eval = sub.add_parser(
+        "draft-eval",
+        help="Score draft quality (sign-off, order_id, no fabricated tracking) against fixtures",
+    )
+    p_draft_eval.add_argument(
+        "--dir",
+        default=None,
+        help="Fixture directory (default: tests/fixtures/draft_quality)",
+    )
+    p_drift = sub.add_parser(
+        "drift-check",
+        help="Detect LLM classify model drift (confidence + error rate) from telemetry",
+    )
+    p_drift.add_argument("--days", type=int, default=7, help="Lookback window (default 7)")
+    p_trends = sub.add_parser(
+        "trends",
+        help="LLM quality trends (daily confidence + edit distance) from telemetry",
+    )
+    p_trends.add_argument("--days", type=int, default=30, help="Lookback window (default 30)")
     p_eval.add_argument(
         "--fixtures",
         default="",
@@ -172,6 +191,20 @@ def build_parser() -> argparse.ArgumentParser:
     cases_sub.add_parser(
         "regenerate", help="Regenerate draft from inbound (never sends)"
     ).add_argument("--id", required=True, dest="case_id")
+
+    p_retention = cases_sub.add_parser(
+        "retention-purge",
+        help="GDPR: delete/redact closed cases older than N days (default 90)",
+    )
+    p_retention.add_argument(
+        "--days", type=int, default=None, help="Retention window (default 90)"
+    )
+    p_retention.add_argument(
+        "--redact", action="store_true", help="Redact PII instead of hard delete"
+    )
+    p_retention.add_argument(
+        "--dry-run", action="store_true", help="Report counts without modifying"
+    )
 
     return parser
 
@@ -298,6 +331,28 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("ok") else 1
 
+    if args.command == "draft-eval":
+        from ecom_ops.draft_eval import evaluate_drafts
+
+        fix = (getattr(args, "dir", None) or "").strip() or None
+        result = evaluate_drafts(directory=fix)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") else 1
+
+    if args.command == "drift-check":
+        from ecom_ops.drift_check import drift_check
+
+        result = drift_check(days=args.days)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") else 1
+
+    if args.command == "trends":
+        from ecom_ops.trends import quality_trends
+
+        result = quality_trends(days=args.days)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
     if args.command == "mail":
         provider = getattr(args, "provider", None)
         mail_client = mail_client_from_env(
@@ -400,6 +455,38 @@ def main(argv: list[str] | None = None) -> int:
                 args.case_id,
                 actor=args.actor,
                 use_mock=args.mock or None,
+            )
+            return _print(result)
+        if args.cases_command == "retention-purge":
+            from ecom_ops.cases.retention import purge_closed_cases
+
+            if args.dry_run:
+                from datetime import datetime, timedelta, timezone
+
+                from ecom_ops.cases.store import CaseStore
+
+                store = CaseStore()
+                days = int(args.days or 90)
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+                cases = store.list_cases(status="closed", limit=10000)
+                eligible = [c for c in cases if (c.updated_at or "") < cutoff]
+                print(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "dry_run": True,
+                            "eligible": len(eligible),
+                            "retention_days": days,
+                            "message": f"Dry run: {len(eligible)} cases eligible",
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
+            result = purge_closed_cases(
+                retention_days=args.days,
+                redact=args.redact,
             )
             return _print(result)
         parser.error(f"Unknown cases command: {args.cases_command}")

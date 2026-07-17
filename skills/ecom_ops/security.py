@@ -69,6 +69,9 @@ SECRET_ENV_KEYS = (
     "TELEGRAM_BOT_TOKEN",
     "DASHBOARD_PASSWORD",
     "DASHBOARD_PASSWORD_HASH",
+    "DASHBOARD_OSCAR_PASSWORD",
+    "DASHBOARD_OSCAR_PASSWORD_HASH",
+    "DASHBOARD_SECRET_KEY",
 )
 
 _ORDER_ID_RE = re.compile(r"^\d{1,12}$")
@@ -136,12 +139,19 @@ def sanitize_text(text: str, *, max_len: int = 8000) -> str:
 
 
 def redact_secrets(payload: Any) -> Any:
-    """Recursively redact known secret keys from logs/telemetry."""
+    """Recursively redact known secret keys from logs/telemetry.
+
+    Matches both substring patterns (SECRET/PASSWORD/TOKEN/API_KEY/PRIVATE_KEY)
+    and the explicit ``SECRET_ENV_KEYS`` allowlist (covers keys like
+    ``WOO_CONSUMER_KEY`` that lack the substring markers).
+    """
     if isinstance(payload, dict):
         out = {}
         for k, v in payload.items():
             key_upper = str(k).upper()
             if any(s in key_upper for s in ("SECRET", "PASSWORD", "TOKEN", "API_KEY", "PRIVATE_KEY")):
+                out[k] = "***REDACTED***"
+            elif str(k) in SECRET_ENV_KEYS:
                 out[k] = "***REDACTED***"
             else:
                 out[k] = redact_secrets(v)

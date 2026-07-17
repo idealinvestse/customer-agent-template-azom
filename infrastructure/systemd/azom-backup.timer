@@ -1,0 +1,11 @@
+[Unit]
+Description=Azom Ops Agent — daily data backup timer
+Requires=azom-backup.service
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

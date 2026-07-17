@@ -167,6 +167,21 @@ class ProductDescService:
                     "actor": actor_obj.name,
                 },
             )
+            # P1.5: record audit + feedback signal for published descriptions
+            if published:
+                from ecom_ops.audit import log_action
+
+                log_action(
+                    actor=actor_obj.name,
+                    action="product_desc_publish",
+                    target="product",
+                    target_id=str(pid),
+                    details={
+                        "language": lang,
+                        "short_len": len(short),
+                        "desc_len": len(long_desc),
+                    },
+                )
             return ProductDescResult(
                 ok=True,
                 product_id=pid,

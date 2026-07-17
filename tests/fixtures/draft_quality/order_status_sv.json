@@ -1,0 +1,8 @@
+{
+  "id": "order_status_sv",
+  "text": "Hej, var är min order 1001? Den skulle ha kommit f\u00f6rra veckan.",
+  "order_id": "1001",
+  "language": "sv",
+  "expected_category": "order_status",
+  "must_not_promise_refund": true
+}

@@ -88,44 +88,54 @@
   <section class="az-card">
     <h2 class="az-section-title">Kö ({{ status_filter }}{% if suggest_filter %} · föreslå{% endif %})</h2>
     {% if cases %}
-    <div class="overflow-x-auto">
-      <table class="az-table">
-        <thead>
-          <tr>
-            <th>När</th><th>Ålder</th><th>Från</th><th>Ämne</th>
-            <th>Kategori</th><th>Prio</th><th>Status</th><th>Assignee</th><th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for c in cases %}
-          <tr class="transition hover:bg-ink-800/40 {% if c.suggest_approve %}bg-steel-900/25{% endif %}">
-            <td>{{ c.created_at[:19] }}</td>
-            <td class="az-muted">{{ case_age(c.created_at) }}</td>
-            <td>{{ c.from_addr }}</td>
-            <td>
-              {{ c.subject }}
-              {% if c.priority == 'high' %}<span class="az-badge bg-warn/15 text-warn ml-1">high</span>{% endif %}
-              {% if c.suggest_approve %}<span class="az-badge bg-steel-600/50 text-steel-100 ml-1" title="Låg-friktion godkänn — du bekräftar fortfarande">Föreslå godkänn</span>{% endif %}
-            </td>
-            <td><code class="az-code">{{ c.category }}</code></td>
-            <td>
-              {% if c.suggest_approve and (c.priority or 'normal') == 'normal' %}
-              <span class="text-steel-300">föreslå</span>
-              {% else %}
-              {{ c.priority or 'normal' }}
-              {% endif %}
-            </td>
-            <td>
-              {% if c.status == 'escalated' %}<span class="az-badge bg-warn/15 text-warn">escalated</span>
-              {% else %}{{ c.status }}{% endif %}
-            </td>
-            <td class="az-muted">{{ c.assignee or '—' }}</td>
-            <td><a class="text-steel-400 hover:text-steel-300" href="/cases/{{ c.id }}?{{ detail_qs }}">Öppna</a></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+    <form method="post" action="/cases/bulk-close" id="bulkForm">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="case_ids" id="bulkCaseIds" value="" />
+      <div class="flex items-center gap-3 mb-3" id="bulkBar" style="display:none">
+        <span class="az-muted" id="bulkCount">0 valda</span>
+        <button class="az-btn-secondary" type="submit" id="bulkSubmit">Stäng valda</button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="az-table">
+          <thead>
+            <tr>
+              <th class="w-8"><input type="checkbox" class="rounded border-ink-600" id="bulkSelectAll" onchange="document.querySelectorAll('.bulk-ck').forEach(cb => { cb.checked = this.checked; }); window.dispatchEvent(new Event('bulk-change'));" /></th>
+              <th>När</th><th>Ålder</th><th>Från</th><th>Ämne</th>
+              <th>Kategori</th><th>Prio</th><th>Status</th><th>Assignee</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in cases %}
+            <tr class="transition hover:bg-ink-800/40 {% if c.suggest_approve %}bg-steel-900/25{% endif %}">
+              <td><input type="checkbox" class="rounded border-ink-600 bulk-ck" name="case_id_list" value="{{ c.id }}" onchange="window.dispatchEvent(new Event('bulk-change'));" /></td>
+              <td>{{ c.created_at[:19] }}</td>
+              <td class="az-muted">{{ case_age(c.created_at) }}</td>
+              <td>{{ c.from_addr }}</td>
+              <td>
+                {{ c.subject }}
+                {% if c.priority == 'high' %}<span class="az-badge bg-warn/15 text-warn ml-1">high</span>{% endif %}
+                {% if c.suggest_approve %}<span class="az-badge bg-steel-600/50 text-steel-100 ml-1" title="Låg-friktion godkänn — du bekräftar fortfarande">Föreslå godkänn</span>{% endif %}
+              </td>
+              <td><code class="az-code">{{ c.category }}</code></td>
+              <td>
+                {% if c.suggest_approve and (c.priority or 'normal') == 'normal' %}
+                <span class="text-steel-300">föreslå</span>
+                {% else %}
+                {{ c.priority or 'normal' }}
+                {% endif %}
+              </td>
+              <td>
+                {% if c.status == 'escalated' %}<span class="az-badge bg-warn/15 text-warn">escalated</span>
+                {% else %}{{ c.status }}{% endif %}
+              </td>
+              <td class="az-muted">{{ c.assignee or '—' }}</td>
+              <td><a class="text-steel-400 hover:text-steel-300" href="/cases/{{ c.id }}?{{ detail_qs }}">Öppna</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </form>
     {% else %}
     <div class="space-y-3">
       <p class="az-muted">Inga i kön för detta filter.</p>
@@ -140,4 +150,20 @@
     {% endif %}
   </section>
 </div>
+<script>
+  function syncBulk() {
+    var cks = document.querySelectorAll('.bulk-ck');
+    var checked = Array.from(cks).filter(function(cb) { return cb.checked; });
+    var ids = checked.map(function(cb) { return cb.value; });
+    document.getElementById('bulkCaseIds').value = ids.join(',');
+    document.getElementById('bulkCount').textContent = ids.length + ' valda';
+    document.getElementById('bulkBar').style.display = ids.length > 0 ? 'flex' : 'none';
+  }
+  document.getElementById('bulkSubmit').addEventListener('click', function(e) {
+    var n = document.querySelectorAll('.bulk-ck:checked').length;
+    if (n === 0 || !confirm('Stäng ' + n + ' ärenden?')) { e.preventDefault(); }
+  });
+  window.addEventListener('bulk-change', syncBulk);
+  document.addEventListener('DOMContentLoaded', syncBulk);
+</script>
 {% endblock %}

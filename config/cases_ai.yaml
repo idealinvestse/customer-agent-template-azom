@@ -13,7 +13,9 @@ never_suggest_categories:
 
 # Oscar-only: set true only for an explicit flagged experiment (never default-on).
 # Env kill-switch AZOM_AUTO_SEND_KILL=1 forces off even when enabled.
+# P1.2: auto_send_experiment_name tags telemetry when an experiment is live.
 auto_send_enabled: false
+auto_send_experiment_name: ""  # e.g. "exp-001-order-status-auto" when live
 auto_send_categories:
   - order_status
 auto_send_min_confidence: 0.92

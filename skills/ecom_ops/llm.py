@@ -104,18 +104,9 @@ def classify_support_with_llm(
         )
         return None
 
-    allowed = (
-        "order_status,shipping,product,return,billing,technical,abuse,other"
-    )
-    system = (
-        "You classify Nordic e-commerce support emails for Azom. "
-        "Reply with ONLY a single JSON object, no markdown: "
-        '{"category":"<one of: '
-        + allowed
-        + '>", "confidence": <float 0..1>}. '
-        "Use abuse for legal threats, chargebacks, self-harm, or violence. "
-        "Prefer order_status when the customer asks where an order is."
-    )
+    from ecom_ops.prompts import get_prompt
+
+    system, prompt_version = get_prompt("classify")
     user = (
         f"Language hint: {(language or 'sv').lower()}\n"
         f"Customer message:\n{customer_message[:4000]}"
@@ -155,7 +146,7 @@ def classify_support_with_llm(
         unit_type="tokens",
         units=1.0,
         cost_usd=cost,
-        meta={"category": category, "confidence": confidence, "model": DEFAULT_MODEL},
+        meta={"category": category, "confidence": confidence, "model": DEFAULT_MODEL, "prompt_version": prompt_version},
     )
     return category, confidence
 
@@ -231,13 +222,9 @@ def draft_support_with_llm(
     lang = (language or "sv").lower()
     name = customer_name or ("customer" if lang == "en" else "kunden")
     oid = order_id or "(okänt)"
-    system = (
-        "You write short, professional customer-support email drafts for Azom "
-        "(Nordic e-commerce). Output only the email body — no subject line, "
-        "no markdown fences. Sign as Azom Support. Do not invent tracking "
-        "numbers, refunds, or legal promises. Use only order facts from the "
-        "provided order context when present. Keep under 180 words."
-    )
+    from ecom_ops.prompts import get_prompt
+
+    system, draft_prompt_version = get_prompt("draft")
     ctx = (order_context or "").strip()
     context_block = f"Order context:\n{ctx}\n" if ctx else "Order context: (none)\n"
     user = (
@@ -270,9 +257,51 @@ def draft_support_with_llm(
         unit_type="tokens",
         units=1.0,
         cost_usd=cost,
-        meta={"category": category, "order_id": order_id, "model": DEFAULT_MODEL},
+        meta={"category": category, "order_id": order_id, "model": DEFAULT_MODEL, "prompt_version": draft_prompt_version},
     )
+    # P4.6: output guardrail — block PII/abuse patterns in draft
+    flagged = _guardrail_check(content)
+    if flagged:
+        tel.record(
+            action="llm_draft_guardrail_block",
+            site=site,
+            cost_usd=0.0,
+            meta={"category": category, "flags": flagged, "order_id": order_id},
+        )
+        # Return a safe fallback instead of the flagged draft
+        return None
     return content
+
+
+# P4.6: output guardrail patterns
+_GUARDRAIL_PATTERNS = [
+    # Refund/compensation promises the LLM shouldn't make unsolicited
+    ("refund_promise", ["jag kommer att återbetala", "vi återbetalar hela", "full refund guaranteed", "i will refund you"]),
+    # Legal threats or admissions
+    ("legal_admission", ["vi medger fel", "we admit liability", "det är vårt fel i alla fall"]),
+    # PII leakage (SSN-like patterns)
+    ("ssn_pattern", ["19\\d{10}", "\\d{12}"]),
+    # Abuse/profanity (basic)
+    ("profanity", ["fuck you", "du är en idiot", "screw you"]),
+]
+
+
+def _guardrail_check(text: str) -> list[str]:
+    """Check draft for guardrail violations (P4.6). Returns list of flag names."""
+    import re
+
+    flags: list[str] = []
+    lower = (text or "").lower()
+    for flag, patterns in _GUARDRAIL_PATTERNS:
+        for pat in patterns:
+            if pat.startswith("\\d") or pat.startswith("19\\d"):
+                if re.search(pat, text or ""):
+                    flags.append(flag)
+                    break
+            elif pat.lower() in lower:
+                flags.append(flag)
+                break
+    return flags
 
 
 def _parse_short_long(content: str) -> tuple[str, str] | None:

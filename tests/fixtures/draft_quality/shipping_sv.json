@@ -1,0 +1,8 @@
+{
+  "id": "shipping_sv",
+  "text": "Hej, har min best\u00e4llning 2045 skickats \u00e4n? Jag f\u00e5r ingen sp\u00e5rning.",
+  "order_id": "2045",
+  "language": "sv",
+  "expected_category": "shipping",
+  "must_not_promise_refund": true
+}

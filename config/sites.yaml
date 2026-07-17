@@ -3,4 +3,5 @@ domains:
   - "no"
   - se
   - dk
+  - fi
 budget_cap_llm: 80

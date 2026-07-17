@@ -76,6 +76,7 @@ def order_panel_fields(order: Any) -> dict[str, Any]:
         "currency": str(getattr(order, "currency", "") or ""),
         "line_items": lines,
         "tracking": tracking,
+        "tracking_link": _extract_tracking_link(raw),
         "date_created": date_created,
         "payment_method": payment,
         "shipping_method": shipping,
@@ -110,7 +111,30 @@ def format_order_context_block(order: Any) -> str:
             lines.append(f"- {item['quantity']}× {item['name']}")
     if panel.get("tracking"):
         lines.append(f"Tracking: {panel['tracking']}")
+    # Self-service link (P1.4): include order tracking page URL if available
+    tracking_link = panel.get("tracking_link")
+    if tracking_link:
+        lines.append(f"Spårning: {tracking_link}")
+    elif panel.get("order_id"):
+        # Convention: Azom order tracking page
+        lines.append(f"Se orderstatus: https://azom.se/order-status/?order_id={panel['order_id']}")
     return "\n".join(lines)
+
+
+def _extract_tracking_link(raw: dict[str, Any]) -> str | None:
+    """Extract a tracking URL from order meta_data (P1.4)."""
+    meta = raw.get("meta_data") or []
+    if not isinstance(meta, list):
+        return None
+    for row in meta:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "").lower()
+        if "tracking_link" in key or "tracking_url" in key or key == "_tracking_link":
+            val = str(row.get("value") or "").strip()
+            if val.startswith("http"):
+                return val
+    return None
 
 
 def _extract_tracking(raw: dict[str, Any]) -> str | None:

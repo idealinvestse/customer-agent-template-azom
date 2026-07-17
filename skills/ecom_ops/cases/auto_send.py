@@ -34,6 +34,10 @@ def should_auto_send(
     low confidence, missing order_id, escalated cases, or daily cap.
     Does not send mail — callers must not treat True as permission to send
     unless an explicit Oscar experiment also enables the live sender path.
+
+    P1.2: when an experiment is live (``auto_send_experiment_name`` set in
+    config), callers should tag telemetry with that name so auto-send
+    outcomes are attributable to a specific experiment.
     """
     cfg = config or load_cases_ai_config()
     if not cfg.auto_send_enabled:
@@ -54,6 +58,14 @@ def should_auto_send(
     if auto_sends_today >= cfg.max_auto_sends_per_day:
         return False
     return True
+
+
+def active_experiment_name(config: CasesAiConfig | None = None) -> str:
+    """Return the current auto-send experiment name, or empty string (P1.2)."""
+    cfg = config or load_cases_ai_config()
+    if not cfg.auto_send_enabled or cfg.kill_switch_active():
+        return ""
+    return cfg.auto_send_experiment_name
 
 
 class AutoSendDayCounter:

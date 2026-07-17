@@ -86,6 +86,40 @@ def _log_notify(ticket: EscalationTicket) -> None:
     )
 
 
+def telegram_notify_factory(chat_id: str | int, *, token_env: str = "TELEGRAM_BOT_TOKEN") -> NotifyFn:
+    """Build a Telegram notifier for escalation tickets (P3.4).
+
+    Sends a short message to the configured Oscar chat. Failures are logged
+    but never raised (escalation must not fail because the notifier is down).
+    """
+    import urllib.request
+
+    def notify(ticket: EscalationTicket) -> None:
+        token = (os.environ.get(token_env) or "").strip()
+        if not token:
+            logger.info("Telegram escalation notify skipped (no token)")
+            return
+        text = (
+            f"⚠️ Eskalering → {ticket.assignee}\n"
+            f"Severity: {ticket.severity.value}\n"
+            f"Reason: {ticket.reason.value}\n"
+            f"Summary: {ticket.summary[:300]}"
+        )
+        url = (
+            f"https://api.telegram.org/bot{token}/sendMessage"
+            f"?chat_id={chat_id}&text=" + __import__("urllib.parse", fromlist=["quote"]).quote(text)
+        )
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status >= 400:
+                    logger.warning("Telegram notify HTTP %s", resp.status)
+        except Exception as exc:
+            logger.warning("Telegram escalation notify failed: %s", exc)
+
+    return notify
+
+
 class EscalationService:
     """Create escalation tickets assigned to Oscar (or config override)."""
 
@@ -167,5 +201,10 @@ class EscalationService:
         )
 
 
-# Module-level default for scripts
-default_escalation = EscalationService()
+# Module-level default for scripts.
+# Wire Telegram notifier when AZOM_ESCALATION_TELEGRAM_CHAT_ID is set (P3.4).
+_default_notifiers: list[NotifyFn] = [_log_notify]
+_escalation_chat = (os.environ.get("AZOM_ESCALATION_TELEGRAM_CHAT_ID") or "").strip()
+if _escalation_chat:
+    _default_notifiers.append(telegram_notify_factory(_escalation_chat))
+default_escalation = EscalationService(notifiers=_default_notifiers)

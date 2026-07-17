@@ -33,6 +33,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.CASE_REPLY,
         }
     ),
+    # ``read_only`` is an alias for ``viewer`` (kept for config compatibility).
     "read_only": frozenset(
         {
             Permission.READ,
