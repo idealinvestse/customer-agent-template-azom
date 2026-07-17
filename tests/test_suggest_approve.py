@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from ecom_ops.cases.suggest import is_suggest_approve_eligible, load_cases_ai_config
-from ecom_ops.cases.store import CaseStore
 from ecom_ops.actions.support import SupportCategory, SupportService
+from ecom_ops.cases.store import CaseStore
+from ecom_ops.cases.suggest import is_suggest_approve_eligible, load_cases_ai_config
 
 
 def test_cases_ai_defaults_disable_auto_send(tmp_path, monkeypatch):

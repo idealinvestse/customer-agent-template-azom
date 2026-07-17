@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from ecom_ops.order_context import format_order_context_block, order_panel_fields
-from ecom_ops.order_context import resolve_order_panel
+from ecom_ops.order_context import (
+    format_order_context_block,
+    order_panel_fields,
+    resolve_order_panel,
+)
 
 
 def test_panel_includes_payment_shipping_note_place():

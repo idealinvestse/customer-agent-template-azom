@@ -106,7 +106,7 @@ def health_probe() -> dict[str, Any]:
     try:
         from ecom_ops.integrations.mail import client_from_env
 
-        client = client_from_env(use_mock=True)
+        client_from_env(use_mock=True)
         checks.append({"name": "mail_mock", "ok": True, "detail": "mock client ok"})
     except Exception as exc:
         checks.append({"name": "mail_mock", "ok": False, "detail": str(exc)[:120]})
