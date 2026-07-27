@@ -27,6 +27,7 @@ class CommandContext:
     args: str
     store: ConversationStore
     slots: dict[str, Any] = field(default_factory=dict)
+    channel: str = "telegram"
 
     @property
     def session(self) -> dict[str, Any]:
@@ -128,15 +129,36 @@ def cmd_status(ctx: CommandContext) -> str:
 
 
 def cmd_whoami(ctx: CommandContext) -> str:
-    from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
+    from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
 
     try:
-        actor = resolve_telegram_actor(ctx.chat_id)
-    except TelegramActorDenied:
+        actor = resolve_channel_actor(ctx.channel, ctx.chat_id)
+    except ChannelActorDenied:
+        map_name = (
+            "MESSENGER_ACTOR_MAP"
+            if ctx.channel == "messenger"
+            else "TELEGRAM_ACTOR_MAP"
+        )
+        if ctx.channel == "messenger":
+            return (
+                f"Sender / session\n"
+                f"channel: messenger\n"
+                f"peer_id: {ctx.chat_id}\n"
+                f"actor: (ej mappad — {map_name})\n"
+                f"Alias: /id"
+            )
         return (
             f"Sender / session\n"
             f"chat_id: {ctx.chat_id}\n"
-            f"actor: (ej mappad — TELEGRAM_ACTOR_MAP)\n"
+            f"actor: (ej mappad — {map_name})\n"
+            f"Alias: /id"
+        )
+    if ctx.channel == "messenger":
+        return (
+            f"Sender / session\n"
+            f"channel: messenger\n"
+            f"peer_id: {ctx.chat_id}\n"
+            f"actor: {actor}\n"
             f"Alias: /id"
         )
     return (
@@ -363,14 +385,19 @@ def cmd_context(ctx: CommandContext) -> str:
 def cmd_health(ctx: CommandContext) -> str:
     try:
         from ecom_ops.actions.ssh_ops import SSHOpsService
-        from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
+        from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
 
         try:
-            actor = resolve_telegram_actor(ctx.chat_id)
-        except TelegramActorDenied:
+            actor = resolve_channel_actor(ctx.channel, ctx.chat_id)
+        except ChannelActorDenied:
+            map_name = (
+                "MESSENGER_ACTOR_MAP"
+                if ctx.channel == "messenger"
+                else "TELEGRAM_ACTOR_MAP"
+            )
             return (
                 "Din chat saknar actor-mapping. "
-                "Be Oscar uppdatera TELEGRAM_ACTOR_MAP."
+                f"Be Oscar uppdatera {map_name}."
             )
         results = SSHOpsService().health(actor=actor)
         lines = ["SSH health:"]
@@ -451,15 +478,20 @@ def cmd_brief(ctx: CommandContext) -> str:
 def cmd_cases(ctx: CommandContext) -> str | BotReply:
     """ /cases | /cases show <id> | /cases approve <id> | /cases close <id> """
     try:
-        from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
+        from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
         from ecom_ops.cases.service import CaseService
 
         try:
-            actor = resolve_telegram_actor(ctx.chat_id)
-        except TelegramActorDenied:
+            actor = resolve_channel_actor(ctx.channel, ctx.chat_id)
+        except ChannelActorDenied:
+            map_name = (
+                "MESSENGER_ACTOR_MAP"
+                if ctx.channel == "messenger"
+                else "TELEGRAM_ACTOR_MAP"
+            )
             return (
                 "Din chat saknar actor-mapping. "
-                "Be Oscar lägga till dig i TELEGRAM_ACTOR_MAP."
+                f"Be Oscar lägga till dig i {map_name}."
             )
         svc = CaseService()
         parts = ctx.args.split(maxsplit=1)
@@ -599,10 +631,14 @@ def _format_case_show(case: Any) -> str:
 
 def _case_show_reply(case: Any) -> BotReply:
     """Case show with explicit approve button (same path as /cases approve)."""
+    from ecom_ops.bot.reply import approve_case_actions, actions_to_telegram_markup
+
     text = _format_case_show(case)
+    actions = approve_case_actions(case.id[:8])
     return BotReply(
         text=text,
-        reply_markup=approve_case_keyboard(case.id[:8]),
+        actions=actions,
+        reply_markup=actions_to_telegram_markup(actions) or approve_case_keyboard(case.id[:8]),
     )
 
 
@@ -672,6 +708,8 @@ def dispatch_openclaw_command(
     chat_id: str | int,
     text: str,
     store: ConversationStore,
+    *,
+    channel: str = "telegram",
 ) -> str | BotReply | None:
     """Return reply if text is an OpenClaw/Azom slash command, else None."""
     name, args = _parse_command(text)
@@ -683,5 +721,11 @@ def dispatch_openclaw_command(
     spec = _BY_NAME.get(name)
     if not spec:
         return f"Okänt kommando /{name}. /commands · /help"
-    ctx = CommandContext(chat_id=chat_id, text=text, args=args, store=store)
+    ctx = CommandContext(
+        chat_id=chat_id,
+        text=text,
+        args=args,
+        store=store,
+        channel=(channel or "telegram").strip().lower(),
+    )
     return spec.handler(ctx)

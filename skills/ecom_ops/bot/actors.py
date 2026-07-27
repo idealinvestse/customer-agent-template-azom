@@ -1,22 +1,31 @@
-"""Telegram chat_id → RBAC actor mapping."""
+"""Channel peer_id → RBAC actor mapping (Telegram + Messenger)."""
 
 from __future__ import annotations
 
 import os
 
 
-class TelegramActorDenied(Exception):
-    """Raised when a chat has no mapping under a configured TELEGRAM_ACTOR_MAP."""
+class ChannelActorDenied(Exception):
+    """Raised when a peer has no mapping under a configured actor map."""
 
-    def __init__(self, chat_id: str | int) -> None:
-        self.chat_id = str(chat_id)
+    def __init__(self, channel: str, peer_id: str | int) -> None:
+        self.channel = channel
+        self.peer_id = str(peer_id)
+        self.chat_id = self.peer_id  # back-compat for Telegram callers
         super().__init__(
-            f"Telegram chat {self.chat_id} is not mapped in TELEGRAM_ACTOR_MAP"
+            f"{channel} peer {self.peer_id} is not mapped in actor map"
         )
 
 
-def _parse_actor_map() -> dict[str, str]:
-    raw = os.environ.get("TELEGRAM_ACTOR_MAP", "").strip()
+class TelegramActorDenied(ChannelActorDenied):
+    """Telegram-specific denial (one-arg constructor for back-compat)."""
+
+    def __init__(self, chat_id: str | int) -> None:
+        super().__init__("telegram", chat_id)
+
+
+def _parse_actor_map(env_key: str) -> dict[str, str]:
+    raw = os.environ.get(env_key, "").strip()
     mapping: dict[str, str] = {}
     if not raw:
         return mapping
@@ -31,30 +40,57 @@ def _parse_actor_map() -> dict[str, str]:
     return mapping
 
 
-def resolve_telegram_actor(chat_id: str | int) -> str:
-    """
-    Map Telegram chat_id to ecom_ops actor name.
-
-    Env TELEGRAM_ACTOR_MAP: comma-separated ``chat_id:actor`` pairs,
-    e.g. ``111:jonatan,222:oscar``.
-
-    Fail-closed (Sprint C):
-    - If the map is **non-empty** and chat is unmapped → raise ``TelegramActorDenied``.
-    - If the map is **empty** → default ``jonatan`` (dev/mock compatibility).
-
-    Also force fail-closed with ``TELEGRAM_FAIL_CLOSED=1`` even when map is empty
-    (unmapped/empty map denies everything until mapped).
-    """
-    mapping = _parse_actor_map()
-    key = str(chat_id)
-    force = os.environ.get("TELEGRAM_FAIL_CLOSED", "").strip().lower() in {
+def _fail_closed_flag(env_key: str) -> bool:
+    return os.environ.get(env_key, "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+
+
+def resolve_channel_actor(channel: str, peer_id: str | int) -> str:
+    """
+    Map channel peer_id to ecom_ops actor name.
+
+    Telegram: TELEGRAM_ACTOR_MAP / TELEGRAM_FAIL_CLOSED
+    Messenger: MESSENGER_ACTOR_MAP / MESSENGER_FAIL_CLOSED
+
+    Fail-closed when map is non-empty (or fail-closed flag set).
+    Empty map → default ``jonatan`` (dev/mock).
+    """
+    ch = (channel or "telegram").strip().lower()
+    if ch == "messenger":
+        map_key, force_key = "MESSENGER_ACTOR_MAP", "MESSENGER_FAIL_CLOSED"
+    else:
+        map_key, force_key = "TELEGRAM_ACTOR_MAP", "TELEGRAM_FAIL_CLOSED"
+
+    mapping = _parse_actor_map(map_key)
+    key = str(peer_id)
+    force = _fail_closed_flag(force_key)
     if key in mapping:
         return mapping[key]
     if mapping or force:
-        raise TelegramActorDenied(chat_id)
+        if ch == "messenger":
+            raise ChannelActorDenied(ch, peer_id)
+        raise TelegramActorDenied(peer_id)
     return "jonatan"
+
+
+def resolve_telegram_actor(chat_id: str | int) -> str:
+    """Backward-compatible Telegram resolver."""
+    return resolve_channel_actor("telegram", chat_id)
+
+
+def channel_peer_allowed(channel: str, peer_id: str | int) -> bool:
+    """Allowlist check. Empty allowlist = allow all (dev)."""
+    ch = (channel or "telegram").strip().lower()
+    if ch == "messenger":
+        env_key = "MESSENGER_ALLOWED_PSIDS"
+    else:
+        env_key = "TELEGRAM_ALLOWED_CHAT_IDS"
+    raw = os.environ.get(env_key, "").strip()
+    if not raw:
+        return True
+    allowed = {p.strip() for p in raw.split(",") if p.strip()}
+    return str(peer_id) in allowed

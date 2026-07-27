@@ -7,6 +7,11 @@
 {% set q_category = ('&category=' ~ category_filter) if category_filter else '' %}
 {% set detail_qs = 'status=' ~ (status_filter or 'open,escalated') ~ q_mailbox ~ q_category ~ q_suggest %}
 <div class="space-y-5" x-data="{ filterOpen: {{ 'true' if suggest_filter or category_filter else 'false' }}, polling: false }">
+  {% if request.args.get('from') == 'messenger' %}
+  <div class="rounded border border-steel-600/50 bg-steel-900/40 px-4 py-3 text-sm text-mist-100">
+    Öppnad från Messenger — full triage, poll och bulk stäng finns här. Öppna ett ärende för att redigera draft.
+  </div>
+  {% endif %}
   <div class="flex flex-wrap items-end justify-between gap-3">
     <div>
       <h2 class="az-page-title">Ärenden</h2>

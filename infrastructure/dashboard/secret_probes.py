@@ -108,6 +108,58 @@ def probe_telegram() -> ProbeResult:
         return _result("telegram", label, "error", str(exc)[:200])
 
 
+def probe_messenger() -> ProbeResult:
+    label = "Messenger"
+    token = os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN", "").strip()
+    secret = os.environ.get("MESSENGER_APP_SECRET", "").strip()
+    verify = os.environ.get("MESSENGER_VERIFY_TOKEN", "").strip()
+    if not token and not secret:
+        return _result(
+            "messenger",
+            label,
+            "missing",
+            "MESSENGER_PAGE_ACCESS_TOKEN / APP_SECRET saknas",
+        )
+    if not verify:
+        return _result(
+            "messenger",
+            label,
+            "missing",
+            "MESSENGER_VERIFY_TOKEN saknas (webhook verify)",
+        )
+    if os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}:
+        return _result(
+            "messenger",
+            label,
+            "ok",
+            "Tokens present (mock — skip Graph)",
+        )
+    if not token:
+        return _result(
+            "messenger",
+            label,
+            "ok",
+            "Verify+secret present (page token empty — dry-run send)",
+        )
+    try:
+        import ssl
+        from urllib.parse import quote
+
+        url = (
+            "https://graph.facebook.com/v21.0/me"
+            f"?access_token={quote(token)}"
+        )
+        req = Request(url, method="GET")
+        ctx = ssl.create_default_context()
+        with urlopen(req, timeout=8, context=ctx) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        if '"id"' in raw:
+            return _result("messenger", label, "ok", "Graph /me OK")
+        return _result("messenger", label, "error", "Graph /me unexpected")
+    except Exception as exc:
+        return _result("messenger", label, "error", str(exc)[:200])
+
+
 def probe_openrouter() -> ProbeResult:
     label = "OpenRouter"
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
@@ -215,6 +267,7 @@ PROBES: dict[str, Callable[[], ProbeResult]] = {
     "wordpress": probe_wordpress,
     "mail": probe_mail,
     "telegram": probe_telegram,
+    "messenger": probe_messenger,
     "openrouter": probe_openrouter,
     "ssh": probe_ssh,
     "gmail_oauth": probe_gmail_oauth,

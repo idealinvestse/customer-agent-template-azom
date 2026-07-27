@@ -42,9 +42,10 @@ You run as a hybrid OpenClaw-style Telegram colleague plus CLI, cases poll, and 
 
 | Surface | Entry | You do |
 |---------|--------|--------|
-| Telegram | `python -m ecom_ops.bot` | OpenClaw slash + hybrid free-text |
+| Messenger | Meta Page webhook (`/webhooks/messenger`) | **Daily driver** — triage, ★, approve/nästa, order lookup; deep-link to dashboard when more is needed |
+| Telegram | `python -m ecom_ops.bot` | **Backup chat** — same brain as Messenger |
 | CLI | `python -m ecom_ops` | order-status, product-desc, support, mail, cases, smoke, status |
-| Dashboard | `./bin/start-dashboard.sh` | Cases queue, onboarding, settings, Oscar admin |
+| Dashboard | `./bin/start-dashboard.sh` | **Full power** — edit draft, order panel, poll, bulk, settings, onboarding |
 | Timers | `azom-cases-poll.timer` | Ingest mail → cases (every 5 min) |
 
 ## OpenClaw command posture

@@ -7,6 +7,11 @@
 {% set q_category = queue_category or '' %}
 {% set q_suggest = queue_suggest %}
 <div class="space-y-5">
+  {% if request.args.get('from') == 'messenger' %}
+  <div class="rounded border border-steel-600/50 bg-steel-900/40 px-4 py-3 text-sm text-mist-100">
+    Öppnad från Messenger — fortsätt här: redigera draft, orderpanel, godkänn &amp; nästa.
+  </div>
+  {% endif %}
   <section class="az-card {% if case.suggest_approve %}ring-1 ring-steel-500/40{% endif %}">
     <h2 class="az-page-title">{{ case.subject }}</h2>
     <p class="az-muted mt-2">

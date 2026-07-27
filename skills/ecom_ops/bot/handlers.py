@@ -6,7 +6,12 @@ import os
 import re
 from typing import Any
 
-from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
+from ecom_ops.bot.actors import (
+    ChannelActorDenied,
+    TelegramActorDenied,
+    channel_peer_allowed,
+    resolve_channel_actor,
+)
 from ecom_ops.bot.chat_agent import (
     SOFT_ESCALATE_NUDGE,
     run_chat,
@@ -44,11 +49,7 @@ ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
 
 
 def telegram_chat_allowed(chat_id: str | int) -> bool:
-    raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "").strip()
-    if not raw:
-        return True
-    allowed = {p.strip() for p in raw.split(",") if p.strip()}
-    return str(chat_id) in allowed
+    return channel_peer_allowed("telegram", chat_id)
 
 
 class BotHandler:
@@ -58,9 +59,24 @@ class BotHandler:
         self,
         store: ConversationStore | None = None,
         escalation: EscalationService | None = None,
+        *,
+        channel: str = "telegram",
     ) -> None:
         self.store = store or ConversationStore()
         self.escalation = escalation or default_escalation
+        self.channel = (channel or "telegram").strip().lower()
+
+    def _peer_allowed(self, peer_id: str | int) -> bool:
+        return channel_peer_allowed(self.channel, peer_id)
+
+    def _resolve_actor(self, peer_id: str | int) -> str:
+        return resolve_channel_actor(self.channel, peer_id)
+
+    def _deny_allowlist(self) -> BotReply:
+        return deny_allowlist_reply(channel=self.channel)
+
+    def _deny_actor(self) -> BotReply:
+        return deny_actor_reply(channel=self.channel)
 
     def _merge_state(self, chat_id: str | int, **updates: Any) -> None:
         prev = self.store.get(chat_id) or {}
@@ -94,18 +110,20 @@ class BotHandler:
         self.store.set(chat_id, state)
 
     def handle(self, chat_id: str | int, text: str) -> BotReply:
-        if not telegram_chat_allowed(chat_id):
-            return deny_allowlist_reply()
+        if not self._peer_allowed(chat_id):
+            return self._deny_allowlist()
         try:
-            resolve_telegram_actor(chat_id)
-        except TelegramActorDenied:
-            return deny_actor_reply()
+            self._resolve_actor(chat_id)
+        except (TelegramActorDenied, ChannelActorDenied):
+            return self._deny_actor()
         raw = (text or "").strip()
         if not raw:
             return BotReply(text="Skriv /help eller /commands — eller bara fråga.")
 
         # OpenClaw slash commands first
-        oc = dispatch_openclaw_command(chat_id, raw, self.store)
+        oc = dispatch_openclaw_command(
+            chat_id, raw, self.store, channel=self.channel
+        )
         if oc is not None:
             if oc == "__ORDER_PROMPT__":
                 self._merge_state(
@@ -135,12 +153,12 @@ class BotHandler:
         return self._run_llm_chat(chat_id, raw)
 
     def handle_callback(self, chat_id: str | int, data: str) -> BotReply:
-        if not telegram_chat_allowed(chat_id):
-            return deny_allowlist_reply()
+        if not self._peer_allowed(chat_id):
+            return self._deny_allowlist()
         try:
-            resolve_telegram_actor(chat_id)
-        except TelegramActorDenied:
-            return deny_actor_reply()
+            self._resolve_actor(chat_id)
+        except (TelegramActorDenied, ChannelActorDenied):
+            return self._deny_actor()
         raw = (data or "").strip()
         if raw == "escalate:yes":
             return as_reply(self._confirm_escalate(chat_id, yes=True))
@@ -148,21 +166,28 @@ class BotHandler:
             return as_reply(self._confirm_escalate(chat_id, yes=False))
         if raw == "cases:list":
             return as_reply(
-                dispatch_openclaw_command(chat_id, "/cases list", self.store)
+                dispatch_openclaw_command(
+                    chat_id, "/cases list", self.store, channel=self.channel
+                )
                 or with_recovery("Kunde inte lista ärenden.")
             )
         if raw.startswith("cases:show:"):
             id8 = raw.split(":", 2)[2].strip()
             self._touch_session_case(chat_id, id8)
             return as_reply(
-                dispatch_openclaw_command(chat_id, f"/cases show {id8}", self.store)
+                dispatch_openclaw_command(
+                    chat_id, f"/cases show {id8}", self.store, channel=self.channel
+                )
                 or with_recovery(f"Hittade inte {id8}.")
             )
         if raw.startswith("cases:approve:"):
             id8 = raw.split(":", 2)[2].strip()
             return as_reply(
                 dispatch_openclaw_command(
-                    chat_id, f"/cases approve {id8}", self.store
+                    chat_id,
+                    f"/cases approve {id8}",
+                    self.store,
+                    channel=self.channel,
                 )
                 or with_recovery("Kunde inte godkänna.")
             )
@@ -325,15 +350,16 @@ class BotHandler:
         session = dict(state.get("session") or {})
         if yes:
             try:
-                actor = resolve_telegram_actor(chat_id)
-            except TelegramActorDenied:
+                actor = self._resolve_actor(chat_id)
+            except (TelegramActorDenied, ChannelActorDenied):
                 return (
                     "Din chat saknar actor-mapping. "
-                    "Be Oscar uppdatera TELEGRAM_ACTOR_MAP."
+                    "Be Oscar uppdatera actor-map för kanalen."
                 )
             ticket = self.escalation.escalate_critical(
-                f"Telegram escalation by {actor}",
+                f"{self.channel} escalation by {actor}",
                 details={
+                    "channel": self.channel,
                     "chat_id": str(chat_id),
                     "actor": actor,
                     "message": slots.get("message", "")[:500],
@@ -397,15 +423,10 @@ class BotHandler:
 
     def _exec_pending(self, chat_id: str | int, pending: PendingAction) -> BotReply:
         try:
-            actor = resolve_telegram_actor(chat_id)
-        except TelegramActorDenied:
+            actor = self._resolve_actor(chat_id)
+        except (TelegramActorDenied, ChannelActorDenied):
             self._clear_pending(chat_id)
-            return BotReply(
-                text=(
-                    "Din chat saknar actor-mapping. "
-                    "Be Oscar uppdatera TELEGRAM_ACTOR_MAP."
-                )
-            )
+            return self._deny_actor()
         ok = False
         msg = "Okänd action"
         if pending.kind == "order_status":

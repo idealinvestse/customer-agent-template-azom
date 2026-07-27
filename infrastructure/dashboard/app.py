@@ -871,10 +871,15 @@ def cases_poll():
 
     result = CaseService().poll(actor=g.actor["name"], use_mock=_is_mock() or None)
     if result.ok:
-        return redirect(
-            url_for("cases_list") + f"?msg=Skapade+{result.created}+ärenden"
-        )
-    return redirect(url_for("cases_list") + f"?err={result.message}")
+        msg = f"Skapade {result.created} ärenden"
+        detail = str(getattr(result, "message", "") or "")
+        if "PARTIAL" in detail.upper():
+            return redirect(
+                url_for("cases_list")
+                + f"?{_flash_q(err=f'{msg} — PARTIAL: {detail[:200]}')}"
+            )
+        return redirect(url_for("cases_list") + f"?{_flash_q(msg)}")
+    return redirect(url_for("cases_list") + f"?{_flash_q(err=result.message)}")
 
 
 @app.route("/cases/bulk-close", methods=["POST"])
@@ -1327,6 +1332,56 @@ def woo_webhook():
     if not ok:
         return jsonify({"ok": False, "error": "Invalid signature"}), 401
     return jsonify({"ok": True}), 200
+
+
+@app.route("/webhooks/messenger", methods=["GET", "POST"])
+def messenger_webhook():
+    """Meta Messenger webhook — verify challenge (GET) + events (POST).
+
+    Auth: verify token + X-Hub-Signature-256 (no Basic auth / CSRF).
+    """
+    from pathlib import Path
+
+    from ecom_ops.bot.handlers import BotHandler
+    from ecom_ops.bot.messenger_adapter import (
+        parse_webhook_payload,
+        process_inbound,
+        send_bot_reply,
+        verify_signature,
+        verify_webhook_challenge,
+    )
+    from ecom_ops.bot.store import ConversationStore
+
+    if request.method == "GET":
+        challenge = verify_webhook_challenge(
+            mode=request.args.get("hub.mode"),
+            token=request.args.get("hub.verify_token"),
+            challenge=request.args.get("hub.challenge"),
+        )
+        if challenge is None:
+            return "Forbidden", 403
+        return Response(challenge, mimetype="text/plain")
+
+    raw = request.get_data() or b""
+    if not verify_signature(raw, request.headers.get("X-Hub-Signature-256")):
+        return jsonify({"ok": False, "error": "Invalid signature"}), 401
+
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+    events = parse_webhook_payload(payload if isinstance(payload, dict) else {})
+    data_dir = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    store = ConversationStore(path=data_dir / "messenger_state.json")
+    handler = BotHandler(store=store, channel="messenger")
+    dry = not (os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip()
+    for ev in events:
+        try:
+            reply = process_inbound(ev, handler)
+            send_bot_reply(ev.peer_id, reply, dry_run=dry)
+        except Exception as exc:
+            app.logger.warning("Messenger event error: %s", exc)
+    return jsonify({"ok": True, "handled": len(events)}), 200
 
 
 _woo_webhook_receiver: object | None = None
