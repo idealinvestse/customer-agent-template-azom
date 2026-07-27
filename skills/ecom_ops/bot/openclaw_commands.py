@@ -7,6 +7,14 @@ from typing import Any, Callable
 
 from ecom_ops import __version__
 from ecom_ops.bot.reply import BotReply, approve_case_keyboard
+from ecom_ops.bot.recovery import (
+    FOOTER_CASE_NOT_FOUND,
+    approve_fail_reply,
+    approve_success_reply,
+    case_not_found_text,
+    empty_queue_text,
+    with_recovery,
+)
 from ecom_ops.bot.store import ConversationStore, clamp_messages
 
 HandlerFn = Callable[["CommandContext"], str | BotReply]
@@ -335,11 +343,15 @@ def cmd_context(ctx: CommandContext) -> str:
     model = ctx.session.get("model", "default")
     digest = str((state or {}).get("tool_digest") or "").strip()
     digest_line = digest.replace("\n", " · ")[:200] if digest else "(none)"
+    sticky_order = ctx.session.get("last_order_id") or "(none)"
+    sticky_case = ctx.session.get("last_case_id8") or "(none)"
     return (
         f"Context\n"
         f"flow: {flow or 'idle'}\n"
         f"turns: {n_msg}\n"
         f"model: {model}\n"
+        f"last_order_id: {sticky_order}\n"
+        f"last_case_id8: {sticky_case}\n"
         f"tool_digest: {digest_line}\n"
         f"session keys: {', '.join(sorted(ctx.session.keys())) or '(none)'}\n"
         f"/new rensar historik · /reset soft behåller settings"
@@ -469,7 +481,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
         if sub in {"list", "ls"}:
             cases = svc.list_open(limit=10)
             if not cases:
-                return "Inga öppna/eskalerade ärenden."
+                return empty_queue_text()
             # Escalated → high → suggest-approve → newest
             cases = list(cases)
             cases.sort(key=lambda c: c.created_at or "", reverse=True)
@@ -496,7 +508,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
                 return "Ange id: /cases show <id8>"
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
-                return f"Hittade inte case {rest!r}"
+                return case_not_found_text(rest)
             ctx.save_session(last_case_id8=case.id[:8])
             return _case_show_reply(case)
 
@@ -505,11 +517,15 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
                 return "Ange id: /cases approve <id8>"
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
-                return f"Hittade inte case {rest!r}"
+                return case_not_found_text(rest)
+            # Resolve next before send — current case leaves the open queue on success.
+            nxt_before = svc.next_in_queue(case.id)
             result = svc.approve_and_send(case.id, actor=actor)
             if result.ok:
-                return f"Skickat. Case {case.id[:8]} → replied."
-            return f"Misslyckades: {result.message}"
+                ctx.save_session(last_case_id8=case.id[:8])
+                next_id8 = nxt_before.id[:8] if nxt_before else None
+                return approve_success_reply(case.id[:8], next_id8=next_id8)
+            return approve_fail_reply(case.id[:8], result.message)
 
         if sub in {"regenerate", "regen", "redraft"}:
             target = rest
@@ -521,24 +537,27 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
                     return "Ange id: /cases regenerate <id8> (eller öppna ett case först)"
             case = svc.store.resolve_id_prefix(target) or svc.get(target)
             if not case:
-                return f"Hittade inte case {target!r}"
+                return case_not_found_text(target)
             result = svc.regenerate_draft(case.id, actor=actor)
             if result.ok:
                 ctx.save_session(last_case_id8=case.id[:8])
                 refreshed = svc.get(case.id) or case
                 return _case_show_reply(refreshed)
-            return f"Misslyckades: {result.message}"
+            return with_recovery(
+                f"Misslyckades: {result.message}",
+                footer=FOOTER_CASE_NOT_FOUND,
+            )
 
         if sub == "close":
             if not rest:
                 return "Ange id: /cases close <id8>"
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
-                return f"Hittade inte case {rest!r}"
+                return case_not_found_text(rest)
             result = svc.close(case.id, actor=actor, reason="telegram")
             if result.ok:
                 return f"Stängt. Case {case.id[:8]}."
-            return f"Misslyckades: {result.message}"
+            return with_recovery(f"Misslyckades: {result.message}")
 
         # Bare id prefix: /cases <id8>
         case = svc.store.resolve_id_prefix(sub) or svc.get(sub)

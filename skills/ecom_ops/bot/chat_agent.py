@@ -201,7 +201,9 @@ def tool_lookup_order(order_id: str) -> str:
             f"«sätt order {oid} till completed»)"
         )
     except Exception as exc:
-        return f"Order lookup failed: {exc}"
+        from ecom_ops.bot.recovery import FOOTER_ORDER_FAIL, with_recovery
+
+        return with_recovery(f"Order lookup failed: {exc}", footer=FOOTER_ORDER_FAIL)
 
 
 def tool_list_cases(*, limit: int = 8, suggest_only: bool = False) -> tuple[str, list[str]]:
@@ -213,9 +215,9 @@ def tool_list_cases(*, limit: int = 8, suggest_only: bool = False) -> tuple[str,
             cases = [c for c in cases if getattr(c, "suggest_approve", False)]
         cases = cases[:limit]
         if not cases:
-            if suggest_only:
-                return "Inga ★-föreslagna ärenden just nu.", []
-            return "Inga öppna/eskalerade ärenden.", []
+            from ecom_ops.bot.recovery import empty_queue_text
+
+            return empty_queue_text(suggest_only=suggest_only), []
         suggest_ids: list[str] = []
         title = "★ Föreslagna (suggest-approve):" if suggest_only else "Öppna/eskalerade:"
         lines = [f"{title} {len(cases)}"]
@@ -245,10 +247,14 @@ def tool_show_case(id_prefix: str) -> tuple[str, str | None]:
         svc = CaseService()
         case = svc.store.resolve_id_prefix(id_prefix) or svc.get(id_prefix)
         if not case:
-            return f"Hittade inte case {id_prefix!r}", None
+            from ecom_ops.bot.recovery import case_not_found_text
+
+            return case_not_found_text(id_prefix), None
         return _format_case_show(case), case.id[:8]
     except Exception as exc:
-        return f"Case show failed: {exc}", None
+        from ecom_ops.bot.recovery import FOOTER_CASE_NOT_FOUND, with_recovery
+
+        return with_recovery(f"Case show failed: {exc}", footer=FOOTER_CASE_NOT_FOUND), None
 
 
 def _count_open_escalations() -> int:
@@ -409,10 +415,8 @@ def gather_tool_results(
 
     # Explicit order id in message
     oid = _extract_order_id(text)
-    # Pronoun / short follow-up → re-fetch sticky order
-    if not oid and sticky_order_id and (
-        wants_order_followup(text) or len(text.strip()) < 48
-    ):
+    # Pronoun / order follow-up → re-fetch sticky order (not bare chit-chat)
+    if not oid and sticky_order_id and wants_order_followup(text):
         # Only if not clearly cases-only
         if not (CASES_INTENT_RE.search(text) and not wants_order_followup(text)):
             oid = sticky_order_id
@@ -579,15 +583,35 @@ def run_chat(
         }
 
     api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-    if not api_key:
+    sticky_for_cont = pref.sticky_order_id or sticky_order_id
+    sticky_case_for_cont = pref.sticky_case_id8 or sticky_case_id8 or case_id8
+
+    def _no_llm_text(reason: str, *, tools_suffix: str = "") -> str:
+        from ecom_ops.bot.recovery import continuity_fallback
+
         if tool_bits or pref.pending_action:
             text = _format_tools_human(
                 tool_bits,
                 approve_confirm=pref.approve_confirm_only,
                 pending=pref.pending_action,
             )
-        else:
-            text = FALLBACK_NO_KEY
+            return text + tools_suffix if tools_suffix else text
+        cont = continuity_fallback(
+            prior_digest=prior_digest,
+            sticky_order_id=str(sticky_for_cont) if sticky_for_cont else None,
+            sticky_case_id8=str(sticky_case_for_cont) if sticky_case_for_cont else None,
+            reason=reason,
+        )
+        if cont:
+            return cont
+        if reason == "budget":
+            return FALLBACK_BUDGET
+        if reason == "error":
+            return FALLBACK_ERROR
+        return FALLBACK_NO_KEY
+
+    if not api_key:
+        text = _no_llm_text("no_key")
         return ChatResult(text=text, messages=_with_turn(text), **_base())
 
     cap = openrouter_cap_usd()
@@ -602,15 +626,10 @@ def run_chat(
                 "kind": "telegram_chat",
             },
         )
-        if tool_bits or pref.pending_action:
-            text = _format_tools_human(
-                tool_bits,
-                approve_confirm=pref.approve_confirm_only,
-                pending=pref.pending_action,
-            )
-            text = text + "\n\n(LLM-budget slut — rå data ovan.)"
-        else:
-            text = FALLBACK_BUDGET
+        text = _no_llm_text(
+            "budget",
+            tools_suffix="\n\n(LLM-budget slut — rå data ovan.)",
+        )
         return ChatResult(text=text, messages=_with_turn(text), **_base())
 
     tool_block = ""
@@ -652,15 +671,10 @@ def run_chat(
             cost_usd=0.0,
             meta={"error": str(exc)[:200]},
         )
-        if tool_bits or pref.pending_action:
-            text = _format_tools_human(
-                tool_bits,
-                approve_confirm=pref.approve_confirm_only,
-                pending=pref.pending_action,
-            )
-            text = text + "\n\n(LLM nere — visar verktygsdata.)"
-        else:
-            text = FALLBACK_ERROR
+        text = _no_llm_text(
+            "error",
+            tools_suffix="\n\n(LLM nere — visar verktygsdata.)",
+        )
         return ChatResult(text=text, messages=_with_turn(text), **_base())
 
     soft_extra = False

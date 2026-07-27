@@ -30,6 +30,12 @@ from ecom_ops.bot.reply import (
     triage_cases_keyboard,
     yes_no_keyboard,
 )
+from ecom_ops.bot.recovery import (
+    FOOTER_UNKNOWN_CALLBACK,
+    deny_actor_reply,
+    deny_allowlist_reply,
+    with_recovery,
+)
 from ecom_ops.bot.store import ConversationStore, clamp_messages
 from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.security import validate_order_id
@@ -89,22 +95,11 @@ class BotHandler:
 
     def handle(self, chat_id: str | int, text: str) -> BotReply:
         if not telegram_chat_allowed(chat_id):
-            return BotReply(
-                text=(
-                    "Du är inte behörig att använda denna bot. "
-                    "Be Oscar lägga till din chat-id i TELEGRAM_ALLOWED_CHAT_IDS."
-                )
-            )
+            return deny_allowlist_reply()
         try:
             resolve_telegram_actor(chat_id)
         except TelegramActorDenied:
-            return BotReply(
-                text=(
-                    "Din chat saknar actor-mapping. "
-                    "Be Oscar lägga till dig i TELEGRAM_ACTOR_MAP "
-                    "(t.ex. <chat_id>:jonatan)."
-                )
-            )
+            return deny_actor_reply()
         raw = (text or "").strip()
         if not raw:
             return BotReply(text="Skriv /help eller /commands — eller bara fråga.")
@@ -141,18 +136,27 @@ class BotHandler:
 
     def handle_callback(self, chat_id: str | int, data: str) -> BotReply:
         if not telegram_chat_allowed(chat_id):
-            return BotReply(text="Inte behörig.")
+            return deny_allowlist_reply()
+        try:
+            resolve_telegram_actor(chat_id)
+        except TelegramActorDenied:
+            return deny_actor_reply()
         raw = (data or "").strip()
         if raw == "escalate:yes":
             return as_reply(self._confirm_escalate(chat_id, yes=True))
         if raw == "escalate:no":
             return as_reply(self._confirm_escalate(chat_id, yes=False))
+        if raw == "cases:list":
+            return as_reply(
+                dispatch_openclaw_command(chat_id, "/cases list", self.store)
+                or with_recovery("Kunde inte lista ärenden.")
+            )
         if raw.startswith("cases:show:"):
             id8 = raw.split(":", 2)[2].strip()
             self._touch_session_case(chat_id, id8)
             return as_reply(
                 dispatch_openclaw_command(chat_id, f"/cases show {id8}", self.store)
-                or f"Hittade inte {id8}."
+                or with_recovery(f"Hittade inte {id8}.")
             )
         if raw.startswith("cases:approve:"):
             id8 = raw.split(":", 2)[2].strip()
@@ -160,7 +164,7 @@ class BotHandler:
                 dispatch_openclaw_command(
                     chat_id, f"/cases approve {id8}", self.store
                 )
-                or "Kunde inte godkänna."
+                or with_recovery("Kunde inte godkänna.")
             )
         if raw.startswith("cases:regen:"):
             id8 = raw.split(":", 2)[2].strip()
@@ -206,7 +210,9 @@ class BotHandler:
             return self._confirm_pending_text(chat_id, yes=True)
         if raw == "action:no":
             return self._confirm_pending_text(chat_id, yes=False)
-        return BotReply(text="Okänd knapp. /help")
+        return BotReply(
+            text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK)
+        )
 
     def _touch_session_order(self, chat_id: str | int, order_id: str) -> None:
         prev = self.store.get(chat_id) or {}
