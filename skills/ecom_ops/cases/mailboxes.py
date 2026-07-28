@@ -21,6 +21,7 @@ class MailboxConfig:
     language: str = "sv"
     enabled: bool = True
     provider: str | None = None
+    env_prefix: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -32,6 +33,7 @@ class MailboxConfig:
             "language": self.language,
             "enabled": self.enabled,
             "provider": self.provider,
+            "env_prefix": self.env_prefix,
         }
 
 
@@ -59,6 +61,7 @@ def load_mailboxes(path: Path | None = None) -> list[MailboxConfig]:
                 language=str(item.get("language") or "sv"),
                 enabled=bool(item.get("enabled", True)),
                 provider=str(item["provider"]) if item.get("provider") else None,
+                env_prefix=str(item["env_prefix"]) if item.get("env_prefix") else None,
             )
         )
     return out

@@ -11,7 +11,7 @@
 #     language: sv
 #     enabled: true
 #     provider: gmail   # optional; default MAIL_PROVIDER
-#     # env_prefix: MAIL_SE_  # optional future: MAIL_SE_USERNAME etc.
+#     env_prefix: MAIL_SE_  # resolves MAIL_SE_USERNAME, MAIL_SE_PASSWORD, MAIL_SE_FROM, etc.
 
 mailboxes:
   - id: support_default

@@ -253,7 +253,9 @@ class CaseService:
             if self._shutdown_requested:  # P6.6: graceful shutdown
                 break
             client = self._injected_mail_client or client_from_env(
-                provider=mb.provider, use_mock=use_mock
+                provider=mb.provider,
+                env_prefix=mb.env_prefix,
+                use_mock=use_mock,
             )
             mb_created = 0
             mb_skipped = 0
