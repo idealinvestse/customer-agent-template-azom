@@ -352,3 +352,14 @@ Därefter: Jonatan-vecka med suggest-filter + regenerate; justera trösklar (FU7
 ---
 
 *Plan authored 2026-07-13. FU1–FU5 shipped in finish execution; next = FU6 live soak when VPS available.*
+
+---
+
+## 16. Mail & support vidareutveckling (2026-07-28)
+
+Sequenced roadmap after this finish plan’s code DoD:
+
+- Spec: [`docs/superpowers/specs/2026-07-28-mail-support-roadmap-design.md`](superpowers/specs/2026-07-28-mail-support-roadmap-design.md)
+- Plan: [`docs/superpowers/plans/2026-07-28-001-mail-support-vidareutveckling-plan.md`](superpowers/plans/2026-07-28-001-mail-support-vidareutveckling-plan.md)
+
+**Order:** live soak/baseline/classify (Fas 0) → mail OAuth persist + per-mailbox creds (Fas 1) → triage friction (Fas 2) → FU9 wire only if gated (Fas 3) → re-evaluate (Fas 4).

@@ -4,7 +4,8 @@ Mail → support case → classify/draft → human approve → send.
 
 **Specs:**  
 - [`superpowers/specs/2026-07-11-cases-v2-design.md`](superpowers/specs/2026-07-11-cases-v2-design.md)  
-- Path B plan: [`superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md`](superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md)
+- Path B plan: [`superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md`](superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md)  
+- Vidareutveckling (2026-07-28): [`superpowers/specs/2026-07-28-mail-support-roadmap-design.md`](superpowers/specs/2026-07-28-mail-support-roadmap-design.md) · [`superpowers/plans/2026-07-28-001-mail-support-vidareutveckling-plan.md`](superpowers/plans/2026-07-28-001-mail-support-vidareutveckling-plan.md)
 
 **Code:** `skills/ecom_ops/cases/` · **Config:** `config/mailboxes.yaml`, `config/cases_ai.yaml` · **DB:** `$AZOM_DATA_DIR/cases.db`
 
