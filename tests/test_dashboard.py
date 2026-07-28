@@ -95,6 +95,17 @@ def test_gmail_oauth_mock_connect(dash_client, tmp_path, monkeypatch):
     assert status.get_json()["connected"] is True
 
 
+def test_index_partial_readiness_shows_runbook(dash_client):
+    from ecom_ops.ops_status import write_last_case_poll
+
+    write_last_case_poll(ok=True, errors=1, created=0, extra={"partial": True})
+    resp = dash_client.get("/", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "PARTIAL" in body
+    assert "mail-poll-stuck" in body
+
+
 def test_index_presence_not_live_probe_storm(dash_client):
     """Home uses presence/runtime chrome; does not require live probe labels."""
     resp = dash_client.get("/", headers=_auth_headers())

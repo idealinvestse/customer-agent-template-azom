@@ -59,6 +59,9 @@
     {% if readiness.detail %}
     <p class="mt-2 text-sm text-warn">{{ readiness.detail }}</p>
     {% endif %}
+    {% if readiness.partial %}
+    <p class="mt-2 text-xs text-warn">Se runbook: docs/runbooks/mail-poll-stuck.md</p>
+    {% endif %}
   </section>
   {% endif %}
 

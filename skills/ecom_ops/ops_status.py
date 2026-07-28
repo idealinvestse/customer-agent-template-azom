@@ -52,6 +52,24 @@ def read_last_case_poll() -> dict[str, Any] | None:
         return None
 
 
+MAIL_POLL_STUCK_RUNBOOK = "docs/runbooks/mail-poll-stuck.md"
+
+
+def readiness_brief_actions(readiness: dict[str, Any]) -> list[str]:
+    """Build prioritized daily-brief proposed_actions from readiness slice."""
+    actions: list[str] = []
+    if readiness.get("partial"):
+        actions.append(
+            "Poll delvis misslyckad — vissa mailboxes failade. "
+            f"Se runbook: {MAIL_POLL_STUCK_RUNBOOK}"
+        )
+    elif readiness.get("stale") and not readiness.get("ok"):
+        actions.append(
+            "Cases poll stale or missing — check azom-cases-poll.timer"
+        )
+    return actions
+
+
 def poll_stale_threshold_sec() -> int:
     raw = os.environ.get("AZOM_POLL_STALE_SEC", "").strip()
     if raw.isdigit():

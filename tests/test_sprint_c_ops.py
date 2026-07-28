@@ -7,7 +7,12 @@ import pytest
 from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
 from ecom_ops.bot.handlers import BotHandler
 from ecom_ops.bot.store import ConversationStore
-from ecom_ops.ops_status import readiness_from_last_poll, write_last_case_poll
+from ecom_ops.ops_status import (
+    MAIL_POLL_STUCK_RUNBOOK,
+    readiness_brief_actions,
+    readiness_from_last_poll,
+    write_last_case_poll,
+)
 
 
 def test_actor_default_jonatan_when_map_empty(monkeypatch):
@@ -54,3 +59,34 @@ def test_readiness_partial_not_ready(tmp_path, monkeypatch):
     assert ready["partial"] is True
     assert ready["ok"] is False
     assert ready.get("detail") and "partial" in str(ready["detail"]).lower()
+
+
+def test_readiness_brief_actions_partial_from_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    write_last_case_poll(
+        ok=True,
+        errors=1,
+        created=2,
+        extra={"partial": True, "mailboxes": 2},
+    )
+    ready = readiness_from_last_poll()
+    actions = readiness_brief_actions(ready)
+    assert ready["partial"] is True
+    assert actions
+    assert MAIL_POLL_STUCK_RUNBOOK in actions[0]
+    assert "delvis" in actions[0].lower()
+
+
+def test_readiness_brief_actions_partial_over_stale():
+    ready = {"partial": True, "stale": True, "ok": False}
+    actions = readiness_brief_actions(ready)
+    assert len(actions) == 1
+    assert MAIL_POLL_STUCK_RUNBOOK in actions[0]
+
+
+def test_readiness_brief_actions_stale_when_not_partial():
+    ready = {"partial": False, "stale": True, "ok": False}
+    actions = readiness_brief_actions(ready)
+    assert actions
+    assert "stale" in actions[0].lower() or "timer" in actions[0].lower()
