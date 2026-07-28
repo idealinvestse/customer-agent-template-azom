@@ -7,6 +7,7 @@ from typing import Any
 
 from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.integrations.mail import MailClient, MailMessage, client_from_env
+from ecom_ops.integrations.mail_threading import assemble_outbound_thread_headers
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
@@ -235,6 +236,8 @@ class MailService:
         body: str,
         original_uid: str | None = None,
         html_body: str | None = None,
+        in_reply_to: str | None = None,
+        references_header: str | None = None,
         site: str = "azom",
         actor: Actor | str | None = None,
     ) -> MailSendResult:
@@ -251,12 +254,27 @@ class MailService:
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
         try:
             require_permission(actor_obj, Permission.MAIL_SEND)
-            # Use client.reply when subject does not already include Re:
+            thread_in_reply_to = in_reply_to
+            thread_references = references_header
             if original_uid:
-                # Fetch isn't free; send with Re: subject for pilot CLI path
                 subj = subject if subject.lower().startswith("re:") else f"Re: {subject}"
+                if thread_in_reply_to is None and thread_references is None:
+                    original_msg = self._find_message_by_uid(original_uid)
+                    if original_msg is not None:
+                        thread_in_reply_to, thread_references = (
+                            assemble_outbound_thread_headers(
+                                parent=(original_msg.message_id or "").strip() or None,
+                                references_header=original_msg.references_header,
+                                in_reply_to=original_msg.in_reply_to,
+                            )
+                        )
                 status = self.client.send(
-                    to=to, subject=subj, body=body, html_body=html_body
+                    to=to,
+                    subject=subj,
+                    body=body,
+                    html_body=html_body,
+                    in_reply_to=thread_in_reply_to,
+                    references_header=thread_references,
                 )
             else:
                 status = self.client.reply(original, body=body, html_body=html_body)
@@ -302,6 +320,21 @@ class MailService:
                 escalated=True,
                 ticket_id=ticket.id,
             )
+
+    def _find_message_by_uid(self, uid: str) -> MailMessage | None:
+        """Best-effort lookup of a message by IMAP/POP uid."""
+        uid = uid.strip()
+        if not uid:
+            return None
+        for unread_only in (True, False):
+            if unread_only:
+                msgs = self.client.fetch_unread(limit=100)
+            else:
+                msgs = self.client.fetch(unread_only=False, limit=100)
+            for msg in msgs:
+                if msg.uid == uid:
+                    return msg
+        return None
 
 
 def send_mail(

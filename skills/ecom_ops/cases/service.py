@@ -11,6 +11,7 @@ from ecom_ops.actions.support import SupportService, extract_order_id
 from ecom_ops.cases.mailboxes import MailboxConfig, enabled_mailboxes
 from ecom_ops.cases.store import Case, CaseStore
 from ecom_ops.escalation import EscalationService, default_escalation
+from ecom_ops.integrations.mail_threading import assemble_outbound_thread_headers
 from ecom_ops.integrations.mail import MailClient, MailMessage, client_from_env
 from ecom_ops.order_context import (
     draft_has_order_block,
@@ -131,26 +132,20 @@ def _outbound_thread_headers(
     msgs = store.messages(case.id)
     inbound = [m for m in msgs if m.direction == "inbound"]
     parent: str | None = None
-    refs: list[str] = []
+    refs_hdr: str | None = None
+    in_reply: str | None = None
     if inbound:
         last = inbound[-1]
         parent = (last.message_id or case.message_id or "").strip() or None
-        if last.references_header:
-            refs.extend(last.references_header.split())
-        if last.in_reply_to:
-            refs.append(last.in_reply_to)
+        refs_hdr = last.references_header
+        in_reply = last.in_reply_to
     else:
         parent = (case.message_id or "").strip() or None
-    if parent:
-        refs.append(parent)
-    seen: set[str] = set()
-    unique: list[str] = []
-    for part in refs:
-        p = part.strip()
-        if p and p not in seen:
-            seen.add(p)
-            unique.append(p)
-    return parent, (" ".join(unique) if unique else None)
+    return assemble_outbound_thread_headers(
+        parent=parent,
+        references_header=refs_hdr,
+        in_reply_to=in_reply,
+    )
 
 
 class CaseService:
