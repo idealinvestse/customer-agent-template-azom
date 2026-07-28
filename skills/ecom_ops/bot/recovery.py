@@ -116,90 +116,75 @@ def approve_fail_keyboard(case_id8: str) -> dict[str, Any]:
     return inline_keyboard(rows)
 
 
-def approve_fail_reply(case_id8: str, message: str) -> BotReply:
-    from ecom_ops.bot.dashboard_links import case_detail_url
+def approve_fail_reply(case_id: str, message: str) -> BotReply:
+    """Approve failure with recovery actions (max 3 for Messenger: regen, show, dashboard)."""
+    from ecom_ops.bot.dashboard_links import case_detail_url, link_footer
     from ecom_ops.bot.reply import ActionButton, ActionMarkup, actions_to_telegram_markup
 
-    id8 = str(case_id8 or "")[:8]
+    full = str(case_id or "").strip()
+    id8 = full[:8]
     rows: list[list[ActionButton]] = [
         [
-            ActionButton(label=f"Regenerera {id8}", payload=f"cases:regen:{id8}"),
+            ActionButton(label="Regenerera", payload=f"cases:regen:{id8}"),
             ActionButton(label=f"Visa {id8}", payload=f"cases:show:{id8}"),
         ],
-        [ActionButton(label="Lista ärenden", payload="cases:list")],
     ]
-    dash = case_detail_url(id8) if id8 else None
+    dash = case_detail_url(full) if full else None
     if dash:
         rows.append([ActionButton(label="Redigera i dashboard", url=dash)])
+    else:
+        rows.append([ActionButton(label="Lista ärenden", payload="cases:list")])
     actions = ActionMarkup(rows=rows) if id8 else None
+    text = with_recovery(
+        f"Misslyckades: {message}",
+        footer=FOOTER_APPROVE_FAIL,
+    )
+    if dash:
+        # Ensure text footer if URL button is truncated by Messenger
+        foot = link_footer(dash, label="Redigera i dashboard")
+        if foot and foot not in text:
+            text = f"{text}\n\n{foot}"
     return BotReply(
-        text=with_recovery(
-            f"Misslyckades: {message}",
-            footer=FOOTER_APPROVE_FAIL,
-        ),
+        text=text,
         actions=actions,
         reply_markup=actions_to_telegram_markup(actions) if actions else None,
     )
 
 
-def approve_success_keyboard(
-    *,
-    next_id8: str | None = None,
-) -> dict[str, Any] | None:
-    """After successful send: optional Visa nästa / Godkänn & nästa."""
-    from ecom_ops.bot.dashboard_links import case_detail_url
-    from ecom_ops.bot.reply import ActionButton, ActionMarkup, actions_to_telegram_markup
-
-    nid = str(next_id8 or "")[:8]
-    if not nid:
-        return None
-    rows: list[list[ActionButton]] = [
-        [
-            ActionButton(label=f"Visa nästa {nid}", payload=f"cases:show:{nid}"),
-            ActionButton(label=f"Godkänn & nästa {nid}", payload=f"cases:approve:{nid}"),
-        ],
-        [ActionButton(label="Lista ärenden", payload="cases:list")],
-    ]
-    dash = case_detail_url(nid)
-    if dash:
-        rows.append([ActionButton(label="Öppna nästa i dashboard", url=dash)])
-    return actions_to_telegram_markup(ActionMarkup(rows=rows))
-
-
 def approve_success_reply(
-    case_id8: str,
+    case_id: str,
     *,
-    next_id8: str | None = None,
+    next_case_id: str | None = None,
 ) -> BotReply:
+    """After send: next approve/show + dashboard URL (prioritized for Messenger 3-cap)."""
     from ecom_ops.bot.dashboard_links import case_detail_url, link_footer
     from ecom_ops.bot.reply import ActionButton, ActionMarkup, actions_to_telegram_markup
 
-    id8 = str(case_id8 or "")[:8]
+    full = str(case_id or "").strip()
+    id8 = full[:8]
+    nxt_full = str(next_case_id or "").strip()
+    nid = nxt_full[:8] if nxt_full else ""
     next_line = ""
-    if next_id8:
-        next_line = f"\nNästa i kö: {next_id8[:8]} — Visa eller Godkänn & nästa."
+    if nid:
+        next_line = f"\nNästa i kö: {nid} — Visa eller Godkänn & nästa."
     text = f"Skickat. Case {id8} → replied.{next_line}"
-    nid = str(next_id8 or "")[:8]
     if nid:
         rows: list[list[ActionButton]] = [
             [
-                ActionButton(label=f"Visa nästa {nid}", payload=f"cases:show:{nid}"),
-                ActionButton(
-                    label=f"Godkänn & nästa {nid}", payload=f"cases:approve:{nid}"
-                ),
+                ActionButton(label=f"Visa {nid}", payload=f"cases:show:{nid}"),
+                ActionButton(label="Godkänn & nästa", payload=f"cases:approve:{nid}"),
             ],
-            [ActionButton(label="Lista ärenden", payload="cases:list")],
         ]
-        dash = case_detail_url(nid)
+        dash = case_detail_url(nxt_full)
         if dash:
-            rows.append([ActionButton(label="Öppna nästa i dashboard", url=dash)])
+            rows.append([ActionButton(label="Öppna i dashboard", url=dash)])
         actions = ActionMarkup(rows=rows)
         return BotReply(
             text=text,
             actions=actions,
             reply_markup=actions_to_telegram_markup(actions),
         )
-    dash = case_detail_url(id8)
+    dash = case_detail_url(full)
     foot = link_footer(dash)
     if foot:
         text = f"{text}\n\n{foot}"

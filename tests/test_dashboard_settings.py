@@ -321,6 +321,36 @@ def test_case_detail_approve_guard(dash_client):
     assert b"confirm(" in resp.data or b"Skicka svar" in resp.data
 
 
+def test_case_detail_resolves_id8_prefix(dash_client):
+    """Messenger deep links often use id8 — redirect to canonical UUID."""
+    import os
+
+    from ecom_ops.cases.store import CaseStore
+
+    store = CaseStore(Path(os.environ["AZOM_DATA_DIR"]) / "cases.db")
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Prefix resolve",
+        from_addr="a@b.co",
+        body="hej",
+        category="other",
+        draft_reply="draft",
+        order_id=None,
+        message_id="<prefix-resolve@x>",
+        status="open",
+    )
+    id8 = case.id[:8]
+    resp = dash_client.get(
+        f"/cases/{id8}?from=messenger",
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert resp.status_code in (301, 302)
+    loc = resp.headers.get("Location") or ""
+    assert case.id in loc
+    assert "from=messenger" in loc
+
+
 def test_interact_escalate_cta(dash_client):
     resp = dash_client.get("/interact", headers=_auth())
     assert resp.status_code == 200

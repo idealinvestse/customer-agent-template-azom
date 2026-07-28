@@ -84,16 +84,56 @@ def test_parse_message_and_postback():
 
 def test_messenger_buttons_from_actions(monkeypatch):
     monkeypatch.setenv("AZOM_DASHBOARD_PUBLIC_URL", "https://ops.example.com")
-    actions = approve_case_actions("aabbccdd")
+    actions = approve_case_actions("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
     buttons = actions_to_messenger_buttons(actions)
     assert any(b.get("type") == "postback" for b in buttons)
     assert any(b.get("type") == "web_url" for b in buttons)
+    url_btn = next(b for b in buttons if b.get("type") == "web_url")
+    assert "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in url_btn["url"]
     msgs = reply_to_messenger_messages(
         __import__("ecom_ops.bot.reply", fromlist=["BotReply"]).BotReply(
             text="Case aabbccdd", actions=actions
         )
     )
     assert msgs and "attachment" in msgs[0]
+
+
+def test_messenger_url_survives_three_button_cap(monkeypatch):
+    monkeypatch.setenv("AZOM_DASHBOARD_PUBLIC_URL", "https://ops.example.com")
+    from ecom_ops.bot.recovery import approve_success_reply
+
+    reply = approve_success_reply(
+        "aaaaaaaa-1111-1111-1111-111111111111",
+        next_case_id="bbbbbbbb-2222-2222-2222-222222222222",
+    )
+    buttons = actions_to_messenger_buttons(reply.actions)
+    assert len(buttons) <= 3
+    assert any(b.get("type") == "web_url" for b in buttons)
+    assert any(
+        b.get("type") == "postback" and "approve" in str(b.get("payload"))
+        for b in buttons
+    )
+
+
+def test_reply_markup_only_still_renders_messenger_buttons():
+    from ecom_ops.bot.reply import BotReply, yes_no_keyboard
+
+    reply = BotReply(
+        text="Bekräfta?",
+        reply_markup=yes_no_keyboard(yes_data="action:yes", no_data="action:no"),
+    )
+    msgs = reply_to_messenger_messages(reply)
+    assert any("attachment" in m for m in msgs)
+    buttons = msgs[-1]["attachment"]["payload"]["buttons"]
+    assert any(b.get("payload") == "action:yes" for b in buttons)
+
+
+def test_case_detail_url_uses_full_id(monkeypatch):
+    monkeypatch.setenv("AZOM_DASHBOARD_PUBLIC_URL", "https://ops.example.com")
+    full = "abcdef01-2345-6789-abcd-ef0123456789"
+    url = case_detail_url(full)
+    assert url and full in url
+    assert "from=messenger" in url
 
 
 def test_channel_actor_messenger(monkeypatch):

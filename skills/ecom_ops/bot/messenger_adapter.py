@@ -98,41 +98,76 @@ def parse_webhook_payload(payload: dict[str, Any]) -> list[InboundEvent]:
 
 
 def actions_to_messenger_buttons(actions: ActionMarkup | None) -> list[dict[str, Any]]:
-    """Flatten ActionMarkup to Messenger button template buttons (max 3)."""
+    """Flatten ActionMarkup to Messenger buttons (max 3).
+
+    Priority: web_url handoff first, then approve postbacks, then show, then rest.
+    Ensures dashboard deep links survive the 3-button cap.
+    """
     if not actions:
         return []
-    buttons: list[dict[str, Any]] = []
+    flat: list[ActionButton] = []
     for row in actions.rows:
-        for btn in row:
-            if len(buttons) >= 3:
-                return buttons
-            if btn.url:
-                buttons.append(
-                    {"type": "web_url", "url": btn.url, "title": btn.label[:20]}
-                )
-            elif btn.payload:
-                buttons.append(
-                    {
-                        "type": "postback",
-                        "title": btn.label[:20],
-                        "payload": btn.payload[:1000],
-                    }
-                )
+        flat.extend(row)
+
+    def _rank(btn: ActionButton) -> tuple[int, int]:
+        if btn.url:
+            return (0, 0)
+        p = (btn.payload or "").lower()
+        if "approve" in p:
+            return (1, 0)
+        if "show" in p or p.startswith("cases:regen"):
+            return (2, 0)
+        if p in {"action:yes", "escalate:yes"} or p.startswith("order:set") or p.startswith(
+            "product:desc"
+        ):
+            return (1, 1)
+        if "list" in p or p.endswith(":cancel") or p in {"action:no", "escalate:no"}:
+            return (4, 0)
+        return (3, 0)
+
+    flat_sorted = sorted(enumerate(flat), key=lambda it: (_rank(it[1]), it[0]))
+    buttons: list[dict[str, Any]] = []
+    for _, btn in flat_sorted:
+        if len(buttons) >= 3:
+            break
+        if btn.url:
+            buttons.append(
+                {"type": "web_url", "url": btn.url, "title": btn.label[:20]}
+            )
+        elif btn.payload:
+            buttons.append(
+                {
+                    "type": "postback",
+                    "title": btn.label[:20],
+                    "payload": btn.payload[:1000],
+                }
+            )
     return buttons
 
 
 def reply_to_messenger_messages(reply: BotReply | str) -> list[dict[str, Any]]:
     """Build Send API message objects from BotReply."""
+    from ecom_ops.bot.dashboard_links import link_footer
+    from ecom_ops.bot.reply import telegram_markup_to_actions
+
     br = as_reply(reply)
     text = (br.text or "")[:2000]
     actions = br.actions
     if not actions and br.reply_markup:
-        # Best-effort: no reverse parse; send text only
-        actions = None
+        actions = telegram_markup_to_actions(br.reply_markup)
     buttons = actions_to_messenger_buttons(actions)
+    # If we had a URL action that didn't fit, append text footer
+    if actions:
+        urls = [b.url for row in actions.rows for b in row if b.url]
+        shown_urls = {b["url"] for b in buttons if b.get("type") == "web_url"}
+        for u in urls:
+            if u and u not in shown_urls:
+                foot = link_footer(u)
+                if foot and foot not in text:
+                    text = f"{text.rstrip()}\n\n{foot}"
+                break
     messages: list[dict[str, Any]] = []
     if buttons:
-        # Button template needs non-empty text
         messages.append(
             {
                 "attachment": {
@@ -145,7 +180,6 @@ def reply_to_messenger_messages(reply: BotReply | str) -> list[dict[str, Any]]:
                 }
             }
         )
-        # If text was long, also send remainder as plain
         if len(text) > 640:
             messages.insert(0, {"text": text})
     else:

@@ -90,19 +90,56 @@ def markup_from_postback_rows(rows: list[list[tuple[str, str]]]) -> tuple[Action
     return actions, inline_keyboard(rows)
 
 
+def telegram_markup_to_actions(markup: dict[str, Any] | None) -> ActionMarkup | None:
+    """Reverse-parse Telegram InlineKeyboardMarkup into ActionMarkup."""
+    if not markup or not isinstance(markup, dict):
+        return None
+    rows_out: list[list[ActionButton]] = []
+    for row in markup.get("inline_keyboard") or []:
+        if not isinstance(row, list):
+            continue
+        btns: list[ActionButton] = []
+        for cell in row:
+            if not isinstance(cell, dict):
+                continue
+            label = str(cell.get("text") or "…")[:64]
+            if cell.get("url"):
+                btns.append(ActionButton(label=label, url=str(cell["url"])))
+            elif cell.get("callback_data"):
+                btns.append(ActionButton(label=label, payload=str(cell["callback_data"])))
+        if btns:
+            rows_out.append(btns)
+    return ActionMarkup(rows=rows_out) if rows_out else None
+
+
+def yes_no_actions(*, yes_data: str, no_data: str) -> ActionMarkup:
+    return ActionMarkup(
+        rows=[
+            [
+                ActionButton(label="Ja", payload=yes_data),
+                ActionButton(label="Nej", payload=no_data),
+            ]
+        ]
+    )
+
+
 def yes_no_keyboard(*, yes_data: str, no_data: str) -> dict[str, Any]:
-    return inline_keyboard([[("Ja", yes_data), ("Nej", no_data)]])
+    return actions_to_telegram_markup(
+        yes_no_actions(yes_data=yes_data, no_data=no_data)
+    ) or inline_keyboard([[("Ja", yes_data), ("Nej", no_data)]])
 
 
-def approve_case_actions(case_id8: str) -> ActionMarkup:
-    id8 = str(case_id8)[:8]
+def approve_case_actions(case_id: str) -> ActionMarkup:
+    """Postbacks use id8; dashboard URL prefers full case id when provided."""
+    full = str(case_id or "").strip()
+    id8 = full[:8]
     rows: list[list[ActionButton]] = [
         [
             ActionButton(label=f"Visa {id8}", payload=f"cases:show:{id8}"),
-            ActionButton(label=f"Godkänn & skicka {id8}", payload=f"cases:approve:{id8}"),
+            ActionButton(label="Godkänn & skicka", payload=f"cases:approve:{id8}"),
         ]
     ]
-    dash = case_detail_url(id8)
+    dash = case_detail_url(full)
     if dash:
         rows.append([ActionButton(label="Öppna i dashboard", url=dash)])
     return ActionMarkup(rows=rows)
@@ -119,60 +156,120 @@ def approve_case_keyboard(case_id8: str) -> dict[str, Any]:
     )
 
 
-def triage_cases_keyboard(case_id8s: list[str]) -> dict[str, Any] | None:
-    """Quick show/approve rows for up to 3 suggest-approve cases."""
+def triage_cases_actions(case_id8s: list[str]) -> ActionMarkup | None:
+    """Up to 3 suggest cases — one show+approve pair max for Messenger (3-btn cap)."""
     ids = [c for c in case_id8s if c][:3]
     if not ids:
         return None
-    rows: list[list[tuple[str, str]]] = []
-    for id8 in ids:
+    rows: list[list[ActionButton]] = []
+    # First case gets show+approve; rest show-only to leave room for dashboard URL
+    first = ids[0]
+    rows.append(
+        [
+            ActionButton(label=f"Visa {first[:8]}", payload=f"cases:show:{first[:8]}"),
+            ActionButton(label="Godkänn", payload=f"cases:approve:{first[:8]}"),
+        ]
+    )
+    for id8 in ids[1:2]:
         rows.append(
-            [
-                (f"Visa {id8}", f"cases:show:{id8}"),
-                (f"Godkänn {id8}", f"cases:approve:{id8}"),
-            ]
+            [ActionButton(label=f"Visa {id8[:8]}", payload=f"cases:show:{id8[:8]}")]
         )
-    markup = inline_keyboard(rows)
     dash = cases_list_url(suggest=True)
     if dash:
-        markup["inline_keyboard"].append([{"text": "Öppna ★ i dashboard", "url": dash}])
-    return markup
+        rows.append([ActionButton(label="★ i dashboard", url=dash)])
+    return ActionMarkup(rows=rows)
+
+
+def triage_cases_keyboard(case_id8s: list[str]) -> dict[str, Any] | None:
+    actions = triage_cases_actions(case_id8s)
+    return actions_to_telegram_markup(actions) if actions else None
+
+
+def order_status_confirm_actions(order_id: str, status: str) -> ActionMarkup:
+    oid = str(order_id)[:12]
+    st = str(status)[:20]
+    return ActionMarkup(
+        rows=[
+            [
+                ActionButton(label=f"Bekräfta {oid}→{st}"[:20], payload=f"order:set:{oid}:{st}"),
+                ActionButton(label="Avbryt", payload="order:cancel"),
+            ]
+        ]
+    )
 
 
 def order_status_confirm_keyboard(order_id: str, status: str) -> dict[str, Any]:
-    """Confirm Woo order status change (never silent)."""
-    oid = str(order_id)[:12]
-    st = str(status)[:20]
-    return inline_keyboard(
-        [
+    return (
+        actions_to_telegram_markup(order_status_confirm_actions(order_id, status))
+        or inline_keyboard(
             [
-                (f"Bekräfta {oid}→{st}", f"order:set:{oid}:{st}"),
-                ("Avbryt", "order:cancel"),
+                [
+                    (f"Bekräfta {order_id[:12]}→{status[:20]}", f"order:set:{order_id[:12]}:{status[:20]}"),
+                    ("Avbryt", "order:cancel"),
+                ]
+            ]
+        )
+    )
+
+
+def product_desc_confirm_actions(product_id: str, *, publish: bool = False) -> ActionMarkup:
+    pid = str(product_id or "0")[:12]
+    flag = "1" if publish else "0"
+    return ActionMarkup(
+        rows=[
+            [
+                ActionButton(label=f"Generera {pid}", payload=f"product:desc:{pid}:{flag}"),
+                ActionButton(label="Avbryt", payload="product:cancel"),
             ]
         ]
     )
 
 
 def product_desc_confirm_keyboard(product_id: str, *, publish: bool = False) -> dict[str, Any]:
-    pid = str(product_id or "0")[:12]
-    flag = "1" if publish else "0"
-    return inline_keyboard(
-        [
+    return (
+        actions_to_telegram_markup(product_desc_confirm_actions(product_id, publish=publish))
+        or inline_keyboard(
             [
-                (f"Generera produkt {pid}", f"product:desc:{pid}:{flag}"),
-                ("Avbryt", "product:cancel"),
+                [
+                    (
+                        f"Generera produkt {str(product_id or '0')[:12]}",
+                        f"product:desc:{str(product_id or '0')[:12]}:{1 if publish else 0}",
+                    ),
+                    ("Avbryt", "product:cancel"),
+                ]
             ]
-        ]
+        )
     )
 
 
 def as_reply(value: str | BotReply) -> BotReply:
     if isinstance(value, BotReply):
-        # Ensure telegram markup from actions when missing
         if value.actions and not value.reply_markup:
             value.reply_markup = actions_to_telegram_markup(value.actions)
+        elif value.reply_markup and not value.actions:
+            value.actions = telegram_markup_to_actions(value.reply_markup)
         return value
     return BotReply(text=str(value or ""))
+
+
+def bot_reply(
+    text: str,
+    *,
+    actions: ActionMarkup | None = None,
+    reply_markup: dict[str, Any] | None = None,
+    needs_typing: bool = False,
+) -> BotReply:
+    """Build BotReply with actions and telegram markup kept in sync."""
+    if actions and not reply_markup:
+        reply_markup = actions_to_telegram_markup(actions)
+    elif reply_markup and not actions:
+        actions = telegram_markup_to_actions(reply_markup)
+    return BotReply(
+        text=text,
+        actions=actions,
+        reply_markup=reply_markup,
+        needs_typing=needs_typing,
+    )
 
 
 def with_dashboard_footer(text: str, url: str | None) -> str:

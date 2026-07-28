@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ecom_ops import __version__
-from ecom_ops.bot.reply import BotReply, approve_case_keyboard
+from ecom_ops.bot.reply import BotReply
 from ecom_ops.bot.recovery import (
     FOOTER_CASE_NOT_FOUND,
     approve_fail_reply,
@@ -555,9 +555,9 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
             result = svc.approve_and_send(case.id, actor=actor)
             if result.ok:
                 ctx.save_session(last_case_id8=case.id[:8])
-                next_id8 = nxt_before.id[:8] if nxt_before else None
-                return approve_success_reply(case.id[:8], next_id8=next_id8)
-            return approve_fail_reply(case.id[:8], result.message)
+                next_id = nxt_before.id if nxt_before else None
+                return approve_success_reply(case.id, next_case_id=next_id)
+            return approve_fail_reply(case.id, result.message)
 
         if sub in {"regenerate", "regen", "redraft"}:
             target = rest
@@ -634,11 +634,11 @@ def _case_show_reply(case: Any) -> BotReply:
     from ecom_ops.bot.reply import approve_case_actions, actions_to_telegram_markup
 
     text = _format_case_show(case)
-    actions = approve_case_actions(case.id[:8])
+    actions = approve_case_actions(case.id)
     return BotReply(
         text=text,
         actions=actions,
-        reply_markup=actions_to_telegram_markup(actions) or approve_case_keyboard(case.id[:8]),
+        reply_markup=actions_to_telegram_markup(actions),
     )
 
 

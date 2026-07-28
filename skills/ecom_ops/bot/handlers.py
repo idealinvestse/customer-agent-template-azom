@@ -28,12 +28,13 @@ from ecom_ops.bot.dialog_actions import (
 from ecom_ops.bot.openclaw_commands import dispatch_openclaw_command
 from ecom_ops.bot.reply import (
     BotReply,
-    approve_case_keyboard,
+    approve_case_actions,
     as_reply,
-    order_status_confirm_keyboard,
-    product_desc_confirm_keyboard,
-    triage_cases_keyboard,
-    yes_no_keyboard,
+    bot_reply,
+    order_status_confirm_actions,
+    product_desc_confirm_actions,
+    triage_cases_actions,
+    yes_no_actions,
 )
 from ecom_ops.bot.recovery import (
     FOOTER_UNKNOWN_CALLBACK,
@@ -294,9 +295,9 @@ class BotHandler:
                     chat_id, flow=None, step=None, slots={}, session=session
                 )
                 return self._run_llm_chat(chat_id, text)
-            return BotReply(
-                text="Svara ja eller nej (eller tryck knappen), eller /stop.",
-                reply_markup=yes_no_keyboard(
+            return bot_reply(
+                "Svara ja eller nej (eller tryck knappen), eller /stop.",
+                actions=yes_no_actions(
                     yes_data="escalate:yes", no_data="escalate:no"
                 ),
             )
@@ -314,10 +315,9 @@ class BotHandler:
                 )
                 return self._run_llm_chat(chat_id, text)
             pending = PendingAction.from_dict(slots.get("pending"))
-            markup = self._markup_for_pending(pending)
-            return BotReply(
-                text="Svara ja/nej eller tryck knappen för att bekräfta ändringen.",
-                reply_markup=markup,
+            return bot_reply(
+                "Svara ja/nej eller tryck knappen för att bekräfta ändringen.",
+                actions=self._actions_for_pending(pending),
             )
 
         self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
@@ -333,15 +333,13 @@ class BotHandler:
             slots={"message": message[:500]},
             session=session,
         )
-        return BotReply(
-            text=(
+        return bot_reply(
+            (
                 "Eskalera till Oscar?\n\n"
                 f"Meddelande: {message[:300]}\n\n"
                 "Bekräfta med Ja/Nej."
             ),
-            reply_markup=yes_no_keyboard(
-                yes_data="escalate:yes", no_data="escalate:no"
-            ),
+            actions=yes_no_actions(yes_data="escalate:yes", no_data="escalate:no"),
         )
 
     def _confirm_escalate(self, chat_id: str | int, *, yes: bool) -> str:
@@ -371,28 +369,23 @@ class BotHandler:
         self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
         return "Inte eskalerad. Fortsätt chatta — eller /cases · /help"
 
-    def _markup_for_pending(
-        self, pending: PendingAction | None
-    ) -> dict[str, Any] | None:
+    def _actions_for_pending(self, pending: PendingAction | None):
         if not pending:
-            return yes_no_keyboard(yes_data="action:yes", no_data="action:no")
+            return yes_no_actions(yes_data="action:yes", no_data="action:no")
         if pending.kind == "order_status":
-            return order_status_confirm_keyboard(
-                pending.payload.get("order_id", ""),
-                pending.payload.get("status", ""),
+            return order_status_confirm_actions(
+                str(pending.payload.get("order_id") or ""),
+                str(pending.payload.get("status") or ""),
             )
         if pending.kind == "product_desc":
-            return product_desc_confirm_keyboard(
-                pending.payload.get("product_id") or "0",
+            return product_desc_confirm_actions(
+                str(pending.payload.get("product_id") or "0"),
                 publish=bool(pending.payload.get("publish")),
             )
         if pending.kind == "case_regenerate":
             id8 = str(pending.payload.get("case_id") or "")[:8]
-            return yes_no_keyboard(
-                yes_data=f"cases:regen:{id8}",
-                no_data="action:no",
-            )
-        return yes_no_keyboard(yes_data="action:yes", no_data="action:no")
+            return yes_no_actions(yes_data=f"cases:regen:{id8}", no_data="action:no")
+        return yes_no_actions(yes_data="action:yes", no_data="action:no")
 
     def _start_pending(self, chat_id: str | int, pending: PendingAction, text: str) -> BotReply:
         prev = self.store.get(chat_id) or {}
@@ -410,7 +403,11 @@ class BotHandler:
             messages=prev.get("messages"),
             tool_digest=prev.get("tool_digest"),
         )
-        return BotReply(text=text, reply_markup=self._markup_for_pending(pending), needs_typing=True)
+        return bot_reply(
+            text,
+            actions=self._actions_for_pending(pending),
+            needs_typing=True,
+        )
 
     def _confirm_pending_text(self, chat_id: str | int, *, yes: bool) -> BotReply:
         state = self.store.get(chat_id) or {}
@@ -499,7 +496,7 @@ class BotHandler:
         )
 
         text = result.text
-        markup = None
+        actions = None
 
         if result.offer_escalate:
             self._merge_state(
@@ -511,12 +508,15 @@ class BotHandler:
                 messages=result.messages,
                 tool_digest=result.tool_digest or prior_digest,
             )
-            markup = yes_no_keyboard(
-                yes_data="escalate:yes", no_data="escalate:no"
-            )
             if "eskalera" not in text.lower():
                 text = f"{text}\n\nVill du eskalera till Oscar?"
-            return BotReply(text=text, reply_markup=markup, needs_typing=True)
+            return bot_reply(
+                text,
+                actions=yes_no_actions(
+                    yes_data="escalate:yes", no_data="escalate:no"
+                ),
+                needs_typing=True,
+            )
 
         if result.pending_action is not None:
             return self._start_pending(chat_id, result.pending_action, text)
@@ -525,8 +525,15 @@ class BotHandler:
             text = f"{text}\n\n{SOFT_ESCALATE_NUDGE}"
 
         if result.case_id8:
-            markup = approve_case_keyboard(result.case_id8)
+            # Prefer sticky full id from session when prefix matches
+            sticky = str(session.get("last_case_id8") or "")
+            case_key = (
+                sticky
+                if sticky.startswith(str(result.case_id8)[:8])
+                else str(result.case_id8)
+            )
+            actions = approve_case_actions(case_key)
         elif result.suggest_case_ids:
-            markup = triage_cases_keyboard(result.suggest_case_ids)
+            actions = triage_cases_actions(result.suggest_case_ids)
 
-        return BotReply(text=text, reply_markup=markup, needs_typing=True)
+        return bot_reply(text, actions=actions, needs_typing=True)

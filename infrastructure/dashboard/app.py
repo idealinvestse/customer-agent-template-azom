@@ -1010,6 +1010,14 @@ def case_detail(case_id: str):
 
     case = svc.get(case_id)
     if not case:
+        # Messenger/Telegram deep links often pass id8 — resolve then canonicalize.
+        resolved = svc.store.resolve_id_prefix(case_id)
+        if resolved:
+            q = request.query_string.decode("utf-8", errors="replace")
+            target = url_for("case_detail", case_id=resolved.id)
+            if q:
+                target = f"{target}?{q}"
+            return redirect(target)
         return Response("Case not found", 404)
     msgs = svc.store.messages(case_id)
     order_panel = None
