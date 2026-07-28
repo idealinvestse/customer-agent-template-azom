@@ -430,6 +430,15 @@ class CaseService:
         )
 
         if threaded:
+            suggest = bool(getattr(support, "suggest_approve", False))
+            cat = getattr(support, "category", None)
+            cat_val = getattr(cat, "value", cat) if cat is not None else None
+            if (
+                threaded.status == "escalated"
+                or threaded.category == "abuse"
+                or cat_val == "abuse"
+            ):
+                suggest = False
             case = self.store.append_inbound(
                 threaded.id,
                 from_addr=from_addr,
@@ -444,11 +453,14 @@ class CaseService:
                 order_id=support.order_id or threaded.order_id,
                 classify_confidence=getattr(support, "confidence", None),
                 classify_method=getattr(support, "classify_method", None),
-                suggest_approve=bool(getattr(support, "suggest_approve", False)),
+                suggest_approve=suggest,
             )
             if case is None:
                 return None
             case = self._maybe_escalate(case, support)
+            if case.status == "escalated" or case.category == "abuse":
+                if getattr(case, "suggest_approve", False):
+                    case = self.store.set_suggest_approve(case.id, False) or case
             self.telemetry.record(
                 action="case_threaded",
                 site=mb.site,
@@ -931,6 +943,19 @@ class CaseService:
             if not body:
                 return CaseActionResult(ok=False, message="No draft to send", case=case.to_dict())
 
+            prior_status = case.status
+            claimed = self.store.claim_for_send(case_id)
+            if not claimed:
+                fresh = self.store.get(case_id)
+                return CaseActionResult(
+                    ok=False,
+                    message=(
+                        f"Case status is {fresh.status if fresh else 'unknown'}, "
+                        "expected open/escalated (already claimed or replied)"
+                    ),
+                    case=fresh.to_dict() if fresh else case.to_dict(),
+                )
+
             subject = case.subject
             if not subject.lower().startswith("re:"):
                 subject = f"Re: {subject}"
@@ -950,10 +975,12 @@ class CaseService:
                 references_header=references_header,
             )
             if not send.ok:
+                self.store.release_send_claim(case_id, status=prior_status)
+                restored = self.store.get(case_id) or case
                 return CaseActionResult(
                     ok=False,
                     message=send.message,
-                    case=case.to_dict(),
+                    case=restored.to_dict(),
                     escalated=send.escalated,
                     ticket_id=send.ticket_id,
                 )
@@ -965,6 +992,13 @@ class CaseService:
                 from_addr="",
                 subject=subject,
             )
+            if not updated:
+                # Mail already sent — leave claim visible as sending for operator triage
+                return CaseActionResult(
+                    ok=False,
+                    message="Mail sent but case could not be marked replied",
+                    case=(self.store.get(case_id) or claimed).to_dict(),
+                )
             self.telemetry.record(
                 action="case_replied",
                 site=case.site,

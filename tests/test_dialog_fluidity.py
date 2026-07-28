@@ -46,13 +46,15 @@ def test_sticky_order_followup_prefetch(monkeypatch):
 def test_order_status_proposes_not_executes(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("TELEGRAM_ACTOR_MAP", "1:agent")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    clear_rbac_cache()
     store = ConversationStore(path=tmp_path / "tg.json")
     bot = BotHandler(store=store)
     reply = bot.handle(1, "sätt order 1001 till completed")
-    assert reply.reply_markup is not None
-    assert "order:set:1001:completed" in str(reply.reply_markup)
-    assert "FÖRESLÅ" in reply.text or "bekräft" in reply.lower() or "sätt" in reply.lower()
+    assert reply.reply_markup is not None or reply.actions is not None
+    assert "order:set:1001:completed" in str(reply.reply_markup or reply.actions)
+    assert "FÖRESLÅ" in reply.text or "bekräft" in reply.text.lower() or "sätt" in reply.text.lower()
     # Still in confirm flow — not executed
     state = store.get(1)
     assert state and state.get("flow") == "pending_action"
@@ -80,9 +82,18 @@ def test_order_status_denied_for_jonatan(tmp_path, monkeypatch):
     clear_rbac_cache()
     store = ConversationStore(path=tmp_path / "tg.json")
     bot = BotHandler(store=store)
-    bot.handle(1, "sätt order 1001 till completed")
+    propose = bot.handle(1, "sätt order 1001 till completed")
+    # Upfront RBAC: jonatan never gets a confirm button
+    assert propose.actions is None and propose.reply_markup is None
+    assert "operator" in propose.text.lower() or "oscar" in propose.text.lower()
+    # Direct postback also denied in _exec_pending
     reply = bot.handle_callback(1, "order:set:1001:completed")
-    assert "Misslyckades" in reply.text or "permission" in reply.lower() or "lacks" in reply.lower()
+    assert (
+        "Misslyckades" in reply.text
+        or "permission" in reply.text.lower()
+        or "operator" in reply.text.lower()
+        or "oscar" in reply.text.lower()
+    )
 
 
 def test_multi_turn_sticky_order_in_session(tmp_path, monkeypatch):

@@ -38,11 +38,48 @@ def test_probe_messenger_warns_without_page_token(monkeypatch):
 
     monkeypatch.setenv("MESSENGER_APP_SECRET", "secret")
     monkeypatch.setenv("MESSENGER_VERIFY_TOKEN", "verify")
+    monkeypatch.setenv("MESSENGER_ALLOWED_PSIDS", "psid1")
+    monkeypatch.setenv("MESSENGER_ACTOR_MAP", "psid1:jonatan")
     monkeypatch.delenv("MESSENGER_PAGE_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv("AZOM_USE_MOCK", "0")
     result = probe_messenger()
     assert result.status == "warn"
     assert "PAGE_ACCESS_TOKEN" in result.message
+
+
+def test_probe_messenger_errors_on_prod_fail_open(monkeypatch):
+    dash_dir = str(DASH_DIR)
+    if dash_dir not in sys.path:
+        sys.path.insert(0, dash_dir)
+    from secret_probes import probe_messenger
+
+    monkeypatch.setenv("MESSENGER_APP_SECRET", "secret")
+    monkeypatch.setenv("MESSENGER_VERIFY_TOKEN", "verify")
+    monkeypatch.setenv("MESSENGER_PAGE_ACCESS_TOKEN", "token")
+    monkeypatch.delenv("MESSENGER_ALLOWED_PSIDS", raising=False)
+    monkeypatch.delenv("MESSENGER_ACTOR_MAP", raising=False)
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    result = probe_messenger()
+    assert result.status == "error"
+    assert "fail-open" in result.message.lower() or "ALLOWED" in result.message
+
+
+def test_channel_actor_prod_fail_closed(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.delenv("MESSENGER_ACTOR_MAP", raising=False)
+    monkeypatch.delenv("MESSENGER_ALLOWED_PSIDS", raising=False)
+    monkeypatch.delenv("MESSENGER_FAIL_CLOSED", raising=False)
+    with pytest.raises(ChannelActorDenied):
+        resolve_channel_actor("messenger", "anyone")
+    assert not channel_peer_allowed("messenger", "anyone")
+
+
+def test_channel_actor_mock_still_defaults(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.delenv("MESSENGER_ACTOR_MAP", raising=False)
+    monkeypatch.delenv("MESSENGER_ALLOWED_PSIDS", raising=False)
+    assert resolve_channel_actor("messenger", "99") == "jonatan"
+    assert channel_peer_allowed("messenger", "99")
 
 
 def test_dashboard_links(monkeypatch):
@@ -203,4 +240,38 @@ def test_messenger_deny_allowlist(tmp_path, monkeypatch):
     store = ConversationStore(path=tmp_path / "m.json")
     bot = BotHandler(store=store, channel="messenger")
     reply = bot.handle("other", "/help")
-    assert "behörig" in reply.lower() or "MESSENGER_ALLOWED" in reply.text
+    assert "behörig" in reply.text.lower() or "MESSENGER_ALLOWED" in reply.text
+
+
+def test_messenger_mutations_blocked_without_page_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("MESSENGER_ALLOWED_PSIDS", "psid1")
+    monkeypatch.setenv("MESSENGER_ACTOR_MAP", "psid1:jonatan")
+    monkeypatch.delenv("MESSENGER_PAGE_ACCESS_TOKEN", raising=False)
+    clear_rbac_cache()
+    cstore = CaseStore(path=tmp_path / "cases.db")
+    case = cstore.create_case(
+        mailbox_id="support_default",
+        subject="Fråga",
+        from_addr="a@b.co",
+        body="Hej",
+        category="order_status",
+        draft_reply="Tack",
+        order_id="1001",
+        message_id="<block@x>",
+        status="open",
+    )
+    store = ConversationStore(path=tmp_path / "messenger_state.json")
+    bot = BotHandler(store=store, channel="messenger")
+    reply = bot.handle_callback("psid1", f"cases:approve:{case.id[:8]}")
+    assert "blockerade" in reply.text.lower() or "PAGE_ACCESS_TOKEN" in reply.text
+    assert cstore.get(case.id).status == "open"
+
+
+def test_mid_dedup(tmp_path):
+    from ecom_ops.bot.messenger_adapter import mid_already_seen
+
+    assert mid_already_seen(tmp_path, None) is False
+    assert mid_already_seen(tmp_path, "m-1") is False
+    assert mid_already_seen(tmp_path, "m-1") is True

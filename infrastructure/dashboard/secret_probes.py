@@ -127,7 +127,23 @@ def probe_messenger() -> ProbeResult:
             "missing",
             "MESSENGER_VERIFY_TOKEN saknas (webhook verify)",
         )
-    if os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}:
+    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    if not mock:
+        allow = (os.environ.get("MESSENGER_ALLOWED_PSIDS") or "").strip()
+        actor_map = (os.environ.get("MESSENGER_ACTOR_MAP") or "").strip()
+        if not allow or not actor_map:
+            missing = []
+            if not allow:
+                missing.append("MESSENGER_ALLOWED_PSIDS")
+            if not actor_map:
+                missing.append("MESSENGER_ACTOR_MAP")
+            return _result(
+                "messenger",
+                label,
+                "error",
+                "Prod fail-open: sätt " + " + ".join(missing),
+            )
+    if mock:
         return _result(
             "messenger",
             label,
@@ -139,7 +155,8 @@ def probe_messenger() -> ProbeResult:
             "messenger",
             label,
             "warn",
-            "Verify+secret present men PAGE_ACCESS_TOKEN saknas — inga utgående svar",
+            "Verify+secret present men PAGE_ACCESS_TOKEN saknas — "
+            "inga utgående svar; muterande actions blockerade",
         )
     try:
         import ssl

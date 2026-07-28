@@ -38,7 +38,12 @@ def verify_webhook_challenge(
     expected = (expected_token or os.environ.get("MESSENGER_VERIFY_TOKEN") or "").strip()
     if not expected:
         return None
-    if mode == "subscribe" and token == expected and challenge is not None:
+    if (
+        mode == "subscribe"
+        and token is not None
+        and hmac.compare_digest(str(token), expected)
+        and challenge is not None
+    ):
         return str(challenge)
     return None
 
@@ -268,3 +273,40 @@ def process_inbound(
     if event.postback:
         return handler.handle_callback(event.peer_id, event.postback)
     return handler.handle(event.peer_id, event.text or "")
+
+
+def mid_already_seen(data_dir: str | os.PathLike[str], mid: str | None, *, ttl_sec: int = 86400) -> bool:
+    """Return True if ``mid`` was already processed (and record it if new).
+
+    Persists a small JSON map of mid -> unix ts under ``AZOM_DATA_DIR``.
+    """
+    if not mid:
+        return False
+    from pathlib import Path
+    import time
+
+    path = Path(data_dir) / "messenger_mids.json"
+    now = time.time()
+    seen: dict[str, float] = {}
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                seen = {str(k): float(v) for k, v in raw.items() if isinstance(v, (int, float))}
+        except Exception:
+            seen = {}
+    # prune
+    seen = {k: ts for k, ts in seen.items() if now - ts < ttl_sec}
+    if mid in seen:
+        try:
+            path.write_text(json.dumps(seen), encoding="utf-8")
+        except Exception:
+            pass
+        return True
+    seen[mid] = now
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seen), encoding="utf-8")
+    except Exception:
+        pass
+    return False

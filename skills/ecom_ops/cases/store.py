@@ -626,6 +626,17 @@ class CaseStore:
             )
         return self.get(case_id)
 
+    def set_suggest_approve(self, case_id: str, value: bool) -> Case | None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE cases SET suggest_approve = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (1 if value else 0, _now(), case_id),
+            )
+        return self.get(case_id)
+
     def set_status(self, case_id: str, status: str) -> Case | None:
         with self._conn() as conn:
             conn.execute(
@@ -653,6 +664,40 @@ class CaseStore:
             )
         return self.get(case_id)
 
+    def claim_for_send(self, case_id: str) -> Case | None:
+        """Atomically claim open/escalated case for outbound send.
+
+        Sets status to ``sending``. Returns None if another claim won or
+        the case is not active.
+        """
+        now = _now()
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE cases SET status = 'sending', updated_at = ?
+                WHERE id = ? AND status IN ('open', 'escalated')
+                """,
+                (now, case_id),
+            )
+            if cur.rowcount != 1:
+                return None
+        return self.get(case_id)
+
+    def release_send_claim(
+        self, case_id: str, *, status: str = "open"
+    ) -> Case | None:
+        """Revert a ``sending`` claim after a failed outbound send."""
+        now = _now()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE cases SET status = ?, updated_at = ?
+                WHERE id = ? AND status = 'sending'
+                """,
+                (status, now, case_id),
+            )
+        return self.get(case_id)
+
     def mark_replied(
         self,
         case_id: str,
@@ -664,10 +709,15 @@ class CaseStore:
     ) -> Case | None:
         now = _now()
         with self._conn() as conn:
-            conn.execute(
-                "UPDATE cases SET status = 'replied', updated_at = ? WHERE id = ?",
+            cur = conn.execute(
+                """
+                UPDATE cases SET status = 'replied', updated_at = ?
+                WHERE id = ? AND status IN ('sending', 'open', 'escalated')
+                """,
                 (now, case_id),
             )
+            if cur.rowcount != 1:
+                return None
             conn.execute(
                 """
                 INSERT INTO case_messages (

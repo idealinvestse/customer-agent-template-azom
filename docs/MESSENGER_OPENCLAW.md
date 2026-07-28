@@ -20,8 +20,11 @@ Handoff: when Messenger is not enough, replies include **Öppna i dashboard** (`
 MESSENGER_PAGE_ACCESS_TOKEN=...
 MESSENGER_APP_SECRET=...
 MESSENGER_VERIFY_TOKEN=...
-MESSENGER_ALLOWED_PSIDS=...          # fail-closed when set
+# Required when AZOM_USE_MOCK=0 (empty = fail-closed)
+MESSENGER_ALLOWED_PSIDS=psid1,psid2
 MESSENGER_ACTOR_MAP=<psid>:jonatan
+# Optional explicit flag (also implied when AZOM_USE_MOCK=0):
+# MESSENGER_FAIL_CLOSED=1
 AZOM_DASHBOARD_PUBLIC_URL=https://ops.example.com
 ```
 
@@ -29,10 +32,17 @@ Webhook (no Basic auth — HMAC + verify token):
 
 - `GET|POST https://<host>/webhooks/messenger`
 - Subscribe: `messages`, `messaging_postbacks`
+- Events are deduped by Messenger `mid`; the webhook always returns HTTP 200 after per-event handling so Meta does not retry entire batches.
 
 ## Local / mock
 
-Without `MESSENGER_PAGE_ACCESS_TOKEN`, the webhook still processes events and **dry-runs** Send API (logs payload). Unit tests cover signature + parse + approve postback.
+With `AZOM_USE_MOCK=1`, empty allowlist/actor-map still works (dev default → jonatan).
+
+Without `MESSENGER_PAGE_ACCESS_TOKEN`:
+
+- **Outbound Graph Send API** is dry-run (logs payload; operator sees a warning footer).
+- **In prod (`AZOM_USE_MOCK=0`)**, mutating actions are **blocked** (approve / close / order write / product write). Read-only commands (`/cases list|show`, `/order`) still run.
+- In mock mode, approve postbacks still execute (mail via mock) so unit tests can cover HITL.
 
 ## HITL
 

@@ -20,6 +20,19 @@ from ecom_ops.bot.store import ConversationStore, clamp_messages
 HandlerFn = Callable[["CommandContext"], str | BotReply]
 
 
+def _persist_case_session(ctx: "CommandContext", case: Any) -> None:
+    """Sticky case id + market (+ order) for multi-market Woo lookups."""
+    from ecom_ops.order_context import woo_domain_from_market
+
+    updates: dict[str, Any] = {"last_case_id8": case.id[:8]}
+    market = woo_domain_from_market(getattr(case, "market", None))
+    if market:
+        updates["last_market"] = market
+    if getattr(case, "order_id", None):
+        updates["last_order_id"] = str(case.order_id)
+    ctx.save_session(**updates)
+
+
 @dataclass
 class CommandContext:
     chat_id: str | int
@@ -541,12 +554,20 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
                 return case_not_found_text(rest)
-            ctx.save_session(last_case_id8=case.id[:8])
+            _persist_case_session(ctx, case)
             return _case_show_reply(case)
 
         if sub in {"approve", "reply", "send"}:
             if not rest:
                 return "Ange id: /cases approve <id8>"
+            if ctx.channel == "messenger":
+                from ecom_ops.bot.actors import messenger_mutations_allowed
+
+                if not messenger_mutations_allowed():
+                    return (
+                        "Muterande Messenger-åtgärder är blockerade: "
+                        "MESSENGER_PAGE_ACCESS_TOKEN saknas (prod)."
+                    )
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
                 return case_not_found_text(rest)
@@ -554,7 +575,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
             nxt_before = svc.next_in_queue(case.id)
             result = svc.approve_and_send(case.id, actor=actor)
             if result.ok:
-                ctx.save_session(last_case_id8=case.id[:8])
+                _persist_case_session(ctx, case)
                 next_id = nxt_before.id if nxt_before else None
                 return approve_success_reply(case.id, next_case_id=next_id)
             return approve_fail_reply(case.id, result.message)
@@ -572,7 +593,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
                 return case_not_found_text(target)
             result = svc.regenerate_draft(case.id, actor=actor)
             if result.ok:
-                ctx.save_session(last_case_id8=case.id[:8])
+                _persist_case_session(ctx, case)
                 refreshed = svc.get(case.id) or case
                 return _case_show_reply(refreshed)
             return with_recovery(
@@ -583,10 +604,18 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
         if sub == "close":
             if not rest:
                 return "Ange id: /cases close <id8>"
+            if ctx.channel == "messenger":
+                from ecom_ops.bot.actors import messenger_mutations_allowed
+
+                if not messenger_mutations_allowed():
+                    return (
+                        "Muterande Messenger-åtgärder är blockerade: "
+                        "MESSENGER_PAGE_ACCESS_TOKEN saknas (prod)."
+                    )
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
                 return case_not_found_text(rest)
-            result = svc.close(case.id, actor=actor, reason="telegram")
+            result = svc.close(case.id, actor=actor, reason=ctx.channel or "telegram")
             if result.ok:
                 return f"Stängt. Case {case.id[:8]}."
             return with_recovery(f"Misslyckades: {result.message}")
@@ -594,6 +623,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
         # Bare id prefix: /cases <id8>
         case = svc.store.resolve_id_prefix(sub) or svc.get(sub)
         if case:
+            _persist_case_session(ctx, case)
             return _case_show_reply(case)
 
         return (

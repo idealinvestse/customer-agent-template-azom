@@ -560,7 +560,22 @@ def _record_login_failure(ip: str) -> None:
 
 @app.route("/metrics")
 def prometheus_metrics():
-    """Prometheus-format metrics endpoint (P7.3). No auth — scrape from localhost only."""
+    """Prometheus-format metrics endpoint (P7.3).
+
+    Access: localhost OR ``Authorization: Bearer <METRICS_SCRAPE_TOKEN>``.
+    """
+    import os
+
+    from flask import abort, request
+
+    token = (os.environ.get("METRICS_SCRAPE_TOKEN") or "").strip()
+    remote = (request.remote_addr or "").strip()
+    localhost = remote in {"127.0.0.1", "::1", "localhost"}
+    auth = (request.headers.get("Authorization") or "").strip()
+    bearer_ok = bool(token) and auth == f"Bearer {token}"
+    if not localhost and not bearer_ok:
+        abort(403)
+
     from ecom_ops.budget import budget_status
     from ecom_ops.kpis import support_kpis_last_days
 
@@ -1307,6 +1322,9 @@ def health():
 
     readiness = readiness_from_last_poll()
     page_token = bool((os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip())
+    from ecom_ops.bot.actors import channel_posture
+
+    posture = channel_posture("messenger")
     messenger = {
         "configured": bool(
             (os.environ.get("MESSENGER_APP_SECRET") or "").strip()
@@ -1314,6 +1332,11 @@ def health():
         ),
         "page_token_present": page_token,
         "send_enabled": page_token,
+        "allowlist_set": bool(posture.get("allowlist_set")),
+        "actor_map_set": bool(posture.get("actor_map_set")),
+        "fail_closed": bool(posture.get("fail_closed")),
+        "mutations_enabled": page_token
+        or (os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}),
     }
     return jsonify(
         {
@@ -1375,6 +1398,7 @@ def messenger_webhook():
 
     from ecom_ops.bot.handlers import BotHandler
     from ecom_ops.bot.messenger_adapter import (
+        mid_already_seen,
         parse_webhook_payload,
         process_inbound,
         send_bot_reply,
@@ -1413,16 +1437,28 @@ def messenger_webhook():
         )
     handled = 0
     errors = 0
+    skipped = 0
     for ev in events:
         try:
+            if mid_already_seen(data_dir, ev.mid):
+                skipped += 1
+                continue
             reply = process_inbound(ev, handler)
             send_bot_reply(ev.peer_id, reply, dry_run=dry, page_token=page_token or None)
             handled += 1
         except Exception as exc:
             errors += 1
             app.logger.warning("Messenger event error: %s", exc)
-    status = 200 if errors == 0 else 500
-    return jsonify({"ok": errors == 0, "handled": handled, "errors": errors}), status
+    # Always 200 after per-event handling so Meta does not retry whole batches
+    # (duplicates are suppressed via mid dedup).
+    return jsonify(
+        {
+            "ok": errors == 0,
+            "handled": handled,
+            "errors": errors,
+            "skipped": skipped,
+        }
+    ), 200
 
 
 _woo_webhook_receiver: object | None = None

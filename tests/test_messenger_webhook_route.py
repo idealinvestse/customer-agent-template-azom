@@ -120,3 +120,52 @@ def test_health_includes_messenger(monkeypatch, messenger_client):
     assert data["messenger"]["configured"] is True
     assert data["messenger"]["page_token_present"] is False
     assert data["messenger"]["send_enabled"] is False
+    assert "fail_closed" in data["messenger"]
+    assert "allowlist_set" in data["messenger"]
+
+
+def test_messenger_webhook_skips_duplicate_mid(messenger_client, tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    payload = {
+        "object": "page",
+        "entry": [
+            {
+                "messaging": [
+                    {
+                        "sender": {"id": "PSID1"},
+                        "message": {"mid": "dup-mid", "text": "/help"},
+                    }
+                ]
+            }
+        ],
+    }
+    body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": _sign(body),
+    }
+    first = messenger_client.post("/webhooks/messenger", data=body, headers=headers)
+    second = messenger_client.post("/webhooks/messenger", data=body, headers=headers)
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.get_json()["handled"] == 1
+    assert second.get_json()["skipped"] == 1
+
+
+def test_metrics_requires_localhost_or_token(messenger_client, monkeypatch):
+    monkeypatch.delenv("METRICS_SCRAPE_TOKEN", raising=False)
+    # Flask test client uses 127.0.0.1 by default — allowed
+    ok = messenger_client.get("/metrics")
+    assert ok.status_code == 200
+    monkeypatch.setenv("METRICS_SCRAPE_TOKEN", "secret-metrics")
+    denied = messenger_client.get(
+        "/metrics",
+        environ_base={"REMOTE_ADDR": "8.8.8.8"},
+    )
+    assert denied.status_code == 403
+    allowed = messenger_client.get(
+        "/metrics",
+        headers={"Authorization": "Bearer secret-metrics"},
+        environ_base={"REMOTE_ADDR": "8.8.8.8"},
+    )
+    assert allowed.status_code == 200

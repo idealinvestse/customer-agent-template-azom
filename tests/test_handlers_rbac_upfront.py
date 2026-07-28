@@ -26,6 +26,21 @@ def test_pending_allowed_for_viewer():
     assert handler._pending_allowed(operator, pending_product)
 
 
+def test_exec_pending_enforces_pending_allowed_messenger(tmp_path, monkeypatch):
+    clear_rbac_cache()
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.delenv("MESSENGER_ACTOR_MAP", raising=False)
+    monkeypatch.delenv("MESSENGER_ALLOWED_PSIDS", raising=False)
+    store = ConversationStore(path=tmp_path / "m.json")
+    handler = BotHandler(store=store, channel="messenger")
+    pending = PendingAction(
+        kind="order_status", payload={"order_id": "1001", "status": "completed"}
+    )
+    reply = handler._exec_pending("psid-jonatan", pending)
+    assert "operator" in reply.text.lower() or "oscar" in reply.text.lower()
+
+
 def test_start_pending_denies_order_write_for_jonatan(tmp_path, monkeypatch):
     clear_rbac_cache()
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
