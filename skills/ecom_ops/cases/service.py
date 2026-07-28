@@ -11,8 +11,8 @@ from ecom_ops.actions.support import SupportService, extract_order_id
 from ecom_ops.cases.mailboxes import MailboxConfig, enabled_mailboxes
 from ecom_ops.cases.store import Case, CaseStore
 from ecom_ops.escalation import EscalationService, default_escalation
-from ecom_ops.integrations.mail_threading import assemble_outbound_thread_headers
 from ecom_ops.integrations.mail import MailClient, MailMessage, client_from_env
+from ecom_ops.integrations.mail_threading import assemble_outbound_thread_headers
 from ecom_ops.order_context import (
     draft_has_order_block,
     resolve_order_context,

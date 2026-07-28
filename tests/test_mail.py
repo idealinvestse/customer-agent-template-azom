@@ -113,6 +113,33 @@ def test_reply_sets_thread_headers_from_original_uid(
     assert "<parent@example.com>" in sent.references_header
 
 
+def test_reply_succeeds_when_uid_lookup_fails(
+    mail_client, telemetry, escalation, monkeypatch
+):
+    """Reply must still send when original_uid header lookup fails."""
+    transport = mail_client.transport
+    assert isinstance(transport, InMemoryMailTransport)
+    svc = MailService(client=mail_client, telemetry=telemetry, escalation=escalation)
+
+    def boom(_uid: str) -> MailMessage | None:
+        raise RuntimeError("IMAP lookup failed")
+
+    monkeypatch.setattr(svc, "_find_message_by_uid", boom)
+
+    result = svc.reply(
+        to="customer@example.com",
+        subject="Order question",
+        body="Our reply",
+        original_uid="missing-uid",
+        actor="agent",
+    )
+    assert result.ok
+    assert transport.outbox
+    sent = transport.outbox[-1]
+    assert sent.in_reply_to is None
+    assert sent.references_header is None
+
+
 def test_reply_accepts_explicit_thread_headers(mail_client, telemetry, escalation):
     """Caller may pass in_reply_to / references_header directly."""
     transport = mail_client.transport

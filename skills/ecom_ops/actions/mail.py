@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +12,8 @@ from ecom_ops.integrations.mail_threading import assemble_outbound_thread_header
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -259,14 +262,22 @@ class MailService:
             if original_uid:
                 subj = subject if subject.lower().startswith("re:") else f"Re: {subject}"
                 if thread_in_reply_to is None and thread_references is None:
-                    original_msg = self._find_message_by_uid(original_uid)
-                    if original_msg is not None:
-                        thread_in_reply_to, thread_references = (
-                            assemble_outbound_thread_headers(
-                                parent=(original_msg.message_id or "").strip() or None,
-                                references_header=original_msg.references_header,
-                                in_reply_to=original_msg.in_reply_to,
+                    try:
+                        original_msg = self._find_message_by_uid(original_uid)
+                        if original_msg is not None:
+                            thread_in_reply_to, thread_references = (
+                                assemble_outbound_thread_headers(
+                                    parent=(original_msg.message_id or "").strip() or None,
+                                    references_header=original_msg.references_header,
+                                    in_reply_to=original_msg.in_reply_to,
+                                )
                             )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to resolve thread headers for uid=%s: %s",
+                            original_uid,
+                            exc,
+                            exc_info=True,
                         )
                 status = self.client.send(
                     to=to,
