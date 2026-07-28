@@ -353,7 +353,9 @@ OSCAR_PW="$(ensure_secret DASHBOARD_OSCAR_PASSWORD)"
 # Optional secrets from installer environment (overwrite when provided)
 for KEY in TELEGRAM_BOT_TOKEN WOO_CONSUMER_KEY WOO_CONSUMER_SECRET \
            OPENROUTER_API_KEY MAIL_PASSWORD SMTP_PASSWORD \
-           MAIL_USERNAME MAIL_FROM WOO_BASE_URL; do
+           MAIL_USERNAME MAIL_FROM WOO_BASE_URL \
+           MESSENGER_PAGE_ACCESS_TOKEN MESSENGER_APP_SECRET MESSENGER_VERIFY_TOKEN \
+           AZOM_DASHBOARD_PUBLIC_URL; do
   if [[ -n "${!KEY:-}" ]]; then
     set_env "$KEY" "${!KEY}" 1
   fi
@@ -531,9 +533,11 @@ echo ""
 echo "  Next:"
 echo "    1. Review secrets:  nano ${ENV_FILE}"
 echo "    2. Put nginx/Caddy in front for public HTTPS (do not open :8080 in UFW)"
-echo "    3. Status:          systemctl status azom-dashboard"
-echo "    4. Logs:            journalctl -u azom-dashboard -f"
-echo "    5. CLI:             sudo -u ${APP_USER} ${APP_DIR}/.venv/bin/python -m ecom_ops --help"
+echo "       Meta Messenger webhook: POST https://<host>/webhooks/messenger"
+echo "    3. Set MESSENGER_* + AZOM_DASHBOARD_PUBLIC_URL in ${ENV_FILE}"
+echo "    4. Status:          systemctl status azom-dashboard"
+echo "    5. Logs:            journalctl -u azom-dashboard -f"
+echo "    6. CLI:             sudo -u ${APP_USER} ${APP_DIR}/.venv/bin/python -m ecom_ops --help"
 echo ""
 echo "  Re-run this script anytime — it is idempotent."
 echo "============================================================================="

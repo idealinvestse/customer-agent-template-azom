@@ -44,6 +44,7 @@ from ecom_ops.bot.recovery import (
 )
 from ecom_ops.bot.store import ConversationStore, clamp_messages
 from ecom_ops.escalation import EscalationService, default_escalation
+from ecom_ops.rbac import Actor, Permission, resolve_actor
 from ecom_ops.security import validate_order_id
 
 ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
@@ -78,6 +79,37 @@ class BotHandler:
 
     def _deny_actor(self) -> BotReply:
         return deny_actor_reply(channel=self.channel)
+
+    def _session_market(self, chat_id: str | int) -> str | None:
+        state = self.store.get(chat_id) or {}
+        session = dict(state.get("session") or {})
+        raw = session.get("last_market")
+        return str(raw).strip() if raw else None
+
+    def _actor_obj(self, chat_id: str | int) -> Actor:
+        return resolve_actor(self._resolve_actor(chat_id))
+
+    def _pending_allowed(self, actor: Actor, pending: PendingAction) -> bool:
+        if pending.kind == "order_status":
+            return actor.has(Permission.ORDER_STATUS_UPDATE)
+        if pending.kind == "product_desc":
+            return actor.has(Permission.PRODUCT_DESC_WRITE)
+        if pending.kind == "case_regenerate":
+            return actor.has(Permission.CASE_REPLY)
+        return True
+
+    def _deny_pending_reply(self, pending: PendingAction) -> str:
+        if pending.kind == "order_status":
+            return (
+                "Orderstatus-ändring kräver operator eller Oscar "
+                "(Jonatan har CASE_REPLY men inte order write)."
+            )
+        if pending.kind == "product_desc":
+            return (
+                "Produktbeskrivning kräver operator eller Oscar "
+                "(Jonatan har inte PRODUCT_DESC_WRITE)."
+            )
+        return "Du saknar behörighet för den här åtgärden."
 
     def _merge_state(self, chat_id: str | int, **updates: Any) -> None:
         prev = self.store.get(chat_id) or {}
@@ -134,7 +166,9 @@ class BotHandler:
             if isinstance(oc, str) and oc.startswith("__ORDER__:"):
                 oid = oc.split(":", 1)[1]
                 self._touch_session_order(chat_id, oid)
-                return BotReply(text=tool_lookup_order(oid))
+                return BotReply(
+                    text=tool_lookup_order(oid, domain=self._session_market(chat_id))
+                )
             return as_reply(oc)
 
         # Continue multi-turn flows (confirm writes, escalate, order id prompt)
@@ -146,7 +180,11 @@ class BotHandler:
         fast = ORDER_FAST_RE.match(raw)
         if fast:
             self._touch_session_order(chat_id, fast.group(1))
-            return BotReply(text=tool_lookup_order(fast.group(1)))
+            return BotReply(
+                text=tool_lookup_order(
+                    fast.group(1), domain=self._session_market(chat_id)
+                )
+            )
 
         if wants_hard_escalate_confirm(raw):
             return self._start_escalate_confirm(chat_id, raw)
@@ -282,7 +320,7 @@ class BotHandler:
                 )
             self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
             self._touch_session_order(chat_id, oid)
-            return tool_lookup_order(oid)
+            return tool_lookup_order(oid, domain=self._session_market(chat_id))
 
         if flow == "escalate_confirm" and step == "confirm":
             answer = text.strip().lower()
@@ -315,9 +353,13 @@ class BotHandler:
                 )
                 return self._run_llm_chat(chat_id, text)
             pending = PendingAction.from_dict(slots.get("pending"))
+            try:
+                actor_obj = self._actor_obj(chat_id)
+            except (TelegramActorDenied, ChannelActorDenied):
+                return self._deny_actor()
             return bot_reply(
                 "Svara ja/nej eller tryck knappen för att bekräfta ändringen.",
-                actions=self._actions_for_pending(pending),
+                actions=self._actions_for_pending(pending, actor=actor_obj),
             )
 
         self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
@@ -369,9 +411,11 @@ class BotHandler:
         self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
         return "Inte eskalerad. Fortsätt chatta — eller /cases · /help"
 
-    def _actions_for_pending(self, pending: PendingAction | None):
+    def _actions_for_pending(self, pending: PendingAction | None, *, actor: Actor | None = None):
         if not pending:
             return yes_no_actions(yes_data="action:yes", no_data="action:no")
+        if actor is not None and not self._pending_allowed(actor, pending):
+            return None
         if pending.kind == "order_status":
             return order_status_confirm_actions(
                 str(pending.payload.get("order_id") or ""),
@@ -387,7 +431,11 @@ class BotHandler:
             return yes_no_actions(yes_data=f"cases:regen:{id8}", no_data="action:no")
         return yes_no_actions(yes_data="action:yes", no_data="action:no")
 
-    def _start_pending(self, chat_id: str | int, pending: PendingAction, text: str) -> BotReply:
+    def _start_pending(
+        self, chat_id: str | int, pending: PendingAction, text: str, *, actor: Actor
+    ) -> BotReply:
+        if not self._pending_allowed(actor, pending):
+            return BotReply(text=f"{text}\n\n{self._deny_pending_reply(pending)}")
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
         if pending.kind == "order_status" and pending.payload.get("order_id"):
@@ -405,7 +453,7 @@ class BotHandler:
         )
         return bot_reply(
             text,
-            actions=self._actions_for_pending(pending),
+            actions=self._actions_for_pending(pending, actor=actor),
             needs_typing=True,
         )
 
@@ -484,6 +532,8 @@ class BotHandler:
             session["last_order_id"] = str(result.sticky_order_id)
         if result.sticky_case_id8:
             session["last_case_id8"] = str(result.sticky_case_id8)
+        if result.sticky_market:
+            session["last_market"] = str(result.sticky_market)
 
         self._merge_state(
             chat_id,
@@ -519,7 +569,13 @@ class BotHandler:
             )
 
         if result.pending_action is not None:
-            return self._start_pending(chat_id, result.pending_action, text)
+            try:
+                actor_obj = self._actor_obj(chat_id)
+            except (TelegramActorDenied, ChannelActorDenied):
+                return self._deny_actor()
+            return self._start_pending(
+                chat_id, result.pending_action, text, actor=actor_obj
+            )
 
         if result.soft_escalate_nudge and SOFT_ESCALATE_NUDGE not in text:
             text = f"{text}\n\n{SOFT_ESCALATE_NUDGE}"

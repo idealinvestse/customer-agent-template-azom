@@ -13,6 +13,21 @@
 3. Note source (conversation, spreadsheet, telemetry export).
 4. Re-measure after 2–4 weeks of suggest-approve + regenerate in live use.
 
+## Weekly cadence (Jonatan + Oscar)
+
+Every week after live soak:
+
+```bash
+python -m ecom_ops kpis --days 7
+```
+
+Record in **Cadence log** below:
+
+- `median_time_to_approve_sec` (from kpis)
+- `n_case_approved` (from kpis)
+- Jonatan friction note (1 line)
+- Oscar ops note (poll/Messenger health)
+
 ## Capture table
 
 | Field | Value |
@@ -33,6 +48,6 @@
 
 ## Cadence log (weekly sync samples)
 
-| week of | Jonatan friction note | Oscar ops note | decide suggest/auto? |
-|---------|----------------------|----------------|----------------------|
-| | | | |
+| week of | median_TTA_sec | n_approved | Jonatan friction note | Oscar ops note | decide suggest/auto? |
+|---------|----------------|------------|----------------------|----------------|----------------------|
+| | | | | | |

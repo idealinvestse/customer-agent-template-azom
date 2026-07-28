@@ -202,13 +202,21 @@ def send_messenger_message(
         "message": message,
     }
     if dry_run or not token:
-        return {"ok": True, "dry_run": True, "body": body}
-    url = f"{GRAPH_API}/me/messages?access_token={token}"
+        return {
+            "ok": False,
+            "dry_run": True,
+            "error": "MESSENGER_PAGE_ACCESS_TOKEN missing — outbound suppressed",
+            "body": body,
+        }
+    url = f"{GRAPH_API}/me/messages"
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
         method="POST",
     )
     try:
@@ -232,8 +240,18 @@ def send_bot_reply(
     dry_run: bool = False,
 ) -> list[dict[str, Any]]:
     """Send all message parts for a BotReply."""
+    from ecom_ops.bot.reply import BotReply as BR, as_reply
+
+    br = as_reply(reply)
+    if dry_run:
+        note = (
+            "\n\n⚠️ Messenger-svar skickades inte (MESSENGER_PAGE_ACCESS_TOKEN saknas). "
+            "Be Oscar konfigurera page token."
+        )
+        if note.strip() not in (br.text or ""):
+            br = BR(text=f"{(br.text or '').rstrip()}{note}", actions=br.actions)
     results = []
-    for msg in reply_to_messenger_messages(reply):
+    for msg in reply_to_messenger_messages(br):
         results.append(
             send_messenger_message(
                 peer_id, msg, page_token=page_token, dry_run=dry_run

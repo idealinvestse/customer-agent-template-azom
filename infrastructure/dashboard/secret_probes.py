@@ -138,18 +138,14 @@ def probe_messenger() -> ProbeResult:
         return _result(
             "messenger",
             label,
-            "ok",
-            "Verify+secret present (page token empty — dry-run send)",
+            "warn",
+            "Verify+secret present men PAGE_ACCESS_TOKEN saknas — inga utgående svar",
         )
     try:
         import ssl
-        from urllib.parse import quote
 
-        url = (
-            "https://graph.facebook.com/v21.0/me"
-            f"?access_token={quote(token)}"
-        )
-        req = Request(url, method="GET")
+        url = "https://graph.facebook.com/v21.0/me"
+        req = Request(url, method="GET", headers={"Authorization": f"Bearer {token}"})
         ctx = ssl.create_default_context()
         with urlopen(req, timeout=8, context=ctx) as resp:
             raw = resp.read().decode("utf-8", errors="replace")

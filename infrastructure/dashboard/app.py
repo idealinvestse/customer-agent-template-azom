@@ -711,9 +711,14 @@ def settings():
             "wordpress_api",
             "smart_handling",
             "full_agent_tools",
-            "mock_mode",
         ):
             form[flag] = "1" if flag in request.form else "0"
+        # mock_mode is Oscar-only — Jonatan cannot toggle AZOM_USE_MOCK in prod.
+        if g.actor.get("is_oscar"):
+            form["mock_mode"] = "1" if "mock_mode" in request.form else "0"
+        else:
+            current = load_settings_view()
+            form["mock_mode"] = "1" if current.get("mock_mode") else "0"
         try:
             save_settings(form)
             return redirect(url_for("settings") + "?msg=Sparat")
@@ -1022,7 +1027,13 @@ def case_detail(case_id: str):
     msgs = svc.store.messages(case_id)
     order_panel = None
     if case.order_id:
-        order_panel = resolve_order_panel(case.order_id, use_mock=_is_mock() or None)
+        from ecom_ops.order_context import resolve_order_panel, woo_domain_from_market
+
+        order_panel = resolve_order_panel(
+            case.order_id,
+            use_mock=_is_mock() or None,
+            domain=woo_domain_from_market(case.market),
+        )
     return render_template(
         "case_detail.html",
         **_dashboard_context(
@@ -1290,15 +1301,27 @@ def oauth_gmail_status():
 @app.route("/health")
 def health():
     """Liveness always 200; readiness reflects last case-poll freshness."""
+    import os
+
     from ecom_ops.ops_status import readiness_from_last_poll
 
     readiness = readiness_from_last_poll()
+    page_token = bool((os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip())
+    messenger = {
+        "configured": bool(
+            (os.environ.get("MESSENGER_APP_SECRET") or "").strip()
+            and (os.environ.get("MESSENGER_VERIFY_TOKEN") or "").strip()
+        ),
+        "page_token_present": page_token,
+        "send_enabled": page_token,
+    }
     return jsonify(
         {
             "ok": True,
             "service": "azom-dashboard",
             "liveness": True,
             "readiness": readiness,
+            "messenger": messenger,
         }
     )
 
@@ -1382,14 +1405,24 @@ def messenger_webhook():
     data_dir = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
     store = ConversationStore(path=data_dir / "messenger_state.json")
     handler = BotHandler(store=store, channel="messenger")
-    dry = not (os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip()
+    page_token = (os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip()
+    dry = not page_token
+    if dry:
+        app.logger.error(
+            "MESSENGER_PAGE_ACCESS_TOKEN missing — outbound Messenger replies suppressed"
+        )
+    handled = 0
+    errors = 0
     for ev in events:
         try:
             reply = process_inbound(ev, handler)
-            send_bot_reply(ev.peer_id, reply, dry_run=dry)
+            send_bot_reply(ev.peer_id, reply, dry_run=dry, page_token=page_token or None)
+            handled += 1
         except Exception as exc:
+            errors += 1
             app.logger.warning("Messenger event error: %s", exc)
-    return jsonify({"ok": True, "handled": len(events)}), 200
+    status = 200 if errors == 0 else 500
+    return jsonify({"ok": errors == 0, "handled": handled, "errors": errors}), status
 
 
 _woo_webhook_receiver: object | None = None

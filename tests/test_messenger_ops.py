@@ -5,8 +5,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import sys
+from pathlib import Path
 
 import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+DASH_DIR = ROOT / "infrastructure" / "dashboard"
 
 from ecom_ops.bot.actors import ChannelActorDenied, channel_peer_allowed, resolve_channel_actor
 from ecom_ops.bot.dashboard_links import case_detail_url, cases_list_url, dashboard_url
@@ -23,6 +28,21 @@ from ecom_ops.bot.reply import ActionButton, ActionMarkup, approve_case_actions
 from ecom_ops.bot.store import ConversationStore
 from ecom_ops.cases.store import CaseStore
 from ecom_ops.rbac import clear_rbac_cache
+
+
+def test_probe_messenger_warns_without_page_token(monkeypatch):
+    dash_dir = str(DASH_DIR)
+    if dash_dir not in sys.path:
+        sys.path.insert(0, dash_dir)
+    from secret_probes import probe_messenger
+
+    monkeypatch.setenv("MESSENGER_APP_SECRET", "secret")
+    monkeypatch.setenv("MESSENGER_VERIFY_TOKEN", "verify")
+    monkeypatch.delenv("MESSENGER_PAGE_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    result = probe_messenger()
+    assert result.status == "warn"
+    assert "PAGE_ACCESS_TOKEN" in result.message
 
 
 def test_dashboard_links(monkeypatch):

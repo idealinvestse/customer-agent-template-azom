@@ -15,6 +15,7 @@ from ecom_ops.integrations.mail import MailClient, MailMessage, client_from_env
 from ecom_ops.order_context import (
     draft_has_order_block,
     resolve_order_context,
+    woo_domain_from_market,
 )
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, validate_site
@@ -108,6 +109,7 @@ def _enrich_draft_with_order(
     *,
     use_mock: bool | None = None,
     order_context: str | None = None,
+    domain: str | None = None,
 ) -> str:
     base = (draft or "").strip()
     if not order_id:
@@ -116,7 +118,9 @@ def _enrich_draft_with_order(
         return base
     block = (order_context or "").strip()
     if not block:
-        block = resolve_order_context(order_id, use_mock=use_mock) or ""
+        block = (
+            resolve_order_context(order_id, use_mock=use_mock, domain=domain) or ""
+        )
     if not block:
         return base
     if block in base:
@@ -395,7 +399,10 @@ class CaseService:
 
         # Resolve Woo order once for LLM prompt + template prepend (avoid double-fetch).
         preview_order_id = extract_order_id(f"{subject}\n\n{body}")
-        order_ctx = resolve_order_context(preview_order_id, use_mock=use_mock)
+        woo_domain = woo_domain_from_market(mb.market)
+        order_ctx = resolve_order_context(
+            preview_order_id, use_mock=use_mock, domain=woo_domain
+        )
 
         support = self.support.handle(
             f"{subject}\n\n{body}",
@@ -411,6 +418,7 @@ class CaseService:
             support.order_id,
             use_mock=use_mock,
             order_context=order_ctx,
+            domain=woo_domain,
         )
 
         threaded = self.store.find_by_thread_headers(
@@ -669,7 +677,10 @@ class CaseService:
             inbound_body, inbound_subject = self._inbound_text_for_regen(case)
             text = f"{inbound_subject}\n\n{inbound_body}".strip()
             order_id = case.order_id or extract_order_id(text)
-            order_ctx = resolve_order_context(order_id, use_mock=use_mock)
+            woo_domain = woo_domain_from_market(case.market)
+            order_ctx = resolve_order_context(
+                order_id, use_mock=use_mock, domain=woo_domain
+            )
 
             # Ingest path uses agent for SUPPORT_REPLY; keep same here.
             support = self.support.handle(
@@ -686,6 +697,7 @@ class CaseService:
                 support.order_id or order_id,
                 use_mock=use_mock,
                 order_context=order_ctx,
+                domain=woo_domain,
             )
             previous = case.draft_reply or ""
             conf = getattr(support, "confidence", None)

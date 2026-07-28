@@ -79,8 +79,16 @@ server {
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
   }
+  # Meta Messenger webhook (same dashboard process)
+  location /webhooks/messenger {
+    proxy_pass http://127.0.0.1:8080/webhooks/messenger;
+    proxy_set_header Host $host;
+    proxy_set_header X-Hub-Signature-256 $http_x_hub_signature_256;
+  }
 }
 ```
+
+**Meta Developer Console:** Webhook URL `https://agent.azom.se/webhooks/messenger`, verify token = `MESSENGER_VERIFY_TOKEN`, subscribe to `messages` + `messaging_postbacks`. Set `MESSENGER_PAGE_ACCESS_TOKEN`, `MESSENGER_APP_SECRET`, `MESSENGER_ALLOWED_PSIDS`, `MESSENGER_ACTOR_MAP`, and `AZOM_DASHBOARD_PUBLIC_URL` in `.env`. Check `/health` → `messenger.send_enabled` before Jonatan uses Messenger as daily driver.
 
 ---
 
@@ -116,6 +124,8 @@ docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 - [ ] `.env` mode `600`, ägd av `azom`
 - [ ] `DASHBOARD_PASSWORD` eller `DASHBOARD_PASSWORD_HASH` satt (mock-fallback av i prod)
 - [ ] `AZOM_USE_MOCK=0` i produktion
+- [ ] `MESSENGER_ALLOWED_PSIDS` + `MESSENGER_ACTOR_MAP` satta (prod fail-closed)
+- [ ] `MESSENGER_PAGE_ACCESS_TOKEN` satt (`/health` → `messenger.send_enabled: true`)
 - [ ] SSH key-only till VPS, fail2ban aktiv
 - [ ] Secrets aldrig i git
 

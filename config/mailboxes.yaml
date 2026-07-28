@@ -21,3 +21,20 @@ mailboxes:
     market: se
     language: sv
     enabled: true
+
+  # Enable when NO/DK mail credentials are in secrets.env
+  - id: support_no
+    label: Support NO
+    address: support@azom.no
+    site: azom
+    market: no
+    language: nb
+    enabled: false
+
+  - id: support_dk
+    label: Support DK
+    address: support@azom.dk
+    site: azom
+    market: dk
+    language: da
+    enabled: false

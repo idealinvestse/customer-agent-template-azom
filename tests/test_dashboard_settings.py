@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -97,6 +98,29 @@ def dash_client(tmp_path, monkeypatch, config_dir):
     app = _load_dashboard_app()
     app.config["TESTING"] = True
     return app.test_client()
+
+
+def test_jonatan_cannot_toggle_mock_mode(dash_client, monkeypatch):
+    """Jonatan POST must not flip AZOM_USE_MOCK via settings."""
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "jonatan")
+    monkeypatch.setenv("DASHBOARD_OSCAR_PASSWORD", "oscar")
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    resp = dash_client.post(
+        "/settings",
+        headers=_auth(client=dash_client),
+        data={
+            "customer": "azom",
+            "domains": "se",
+            "budget_cap_llm": "80",
+            "openrouter_cap": "100",
+            "mail_provider": "gmail",
+            "mock_mode": "1",
+            "email_enabled": "1",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert os.environ.get("AZOM_USE_MOCK", "0") == "0"
 
 
 def test_settings_page_and_save(dash_client, config_dir):
