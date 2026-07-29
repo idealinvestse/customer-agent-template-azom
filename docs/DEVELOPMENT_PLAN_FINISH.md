@@ -349,7 +349,7 @@ Därefter: Jonatan-vecka med suggest-filter + regenerate; justera trösklar (FU7
 | FU6 live soak | ⬜ | Needs prod access (Oscar) |
 | FU7 fixtures/prompts (Approach A) | ✅ partial 2026-07-29 | `azom-no-support-vnext`: prompts 1.1, nb/da templates, NO classify+draft fixtures, draft-eval fix; NO mailboxes remain `enabled: false` |
 | FU7 live threshold tune | ⬜ | Needs live soak samples (after FU6); do not widen suggest allowlist early |
-| FU8 friction polish | ⬜ | After Jonatan feedback |
+| FU8 friction polish | ✅ partial 2026-07-29 | Mail Task 6: draft diff + 60s regenerate throttle (dashboard) |
 | FU9 auto-send wire | ⬜ | Gated — all FU9 preconditions + Oscar written enable |
 
 ---
@@ -367,3 +367,15 @@ Sequenced roadmap after this finish plan’s code DoD:
 - Azom.no support quality (2026-07-29): [`docs/superpowers/specs/2026-07-29-azom-no-support-vnext-design.md`](superpowers/specs/2026-07-29-azom-no-support-vnext-design.md) — FU7 fixture/prompt expansion; does **not** enable live NO poll or FU9
 
 **Order:** live soak/baseline/classify (Fas 0) → mail OAuth persist + per-mailbox creds (Fas 1) → triage friction (Fas 2) → FU9 wire only if gated (Fas 3) → re-evaluate (Fas 4).
+
+### Execution log (mail-support roadmap)
+
+| Task | Status | Notes |
+|------|--------|-------|
+| Task 2 Gmail OAuth persist | ✅ | `32c0012` — `persist_refreshed_gmail_token` |
+| Task 3 `env_prefix` | ✅ | `48a7db6` — `MailboxConfig.env_prefix` + poll |
+| Task 4 Poll PARTIAL + runbook | ✅ | `81f0e43` — brief/dashboard PARTIAL hints |
+| Task 5 Reply thread headers | ✅ | `94f4e5b` / `29db73a` — `mail_threading` |
+| Task 6 Draft diff + regen throttle | ✅ 2026-07-29 | schema v4 `draft_before_regen` / `draft_regenerated_at`; 60s cooldown; case_detail side-by-side |
+| Task 1 / FU6 live soak H1 | ⬜ | Human-owned; still required before Fas 3 / Task 7 |
+| Task 7 FU9 auto-send wire | ⬜ | Gated — do not start |

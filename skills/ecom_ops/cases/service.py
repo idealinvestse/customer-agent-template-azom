@@ -23,6 +23,7 @@ from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 _ACTIVE = ("open", "escalated")
+REGENERATE_COOLDOWN_SEC = 60
 
 
 def _edit_distance_ratio(a: str, b: str) -> float:
@@ -683,6 +684,24 @@ class CaseService:
                     case=case.to_dict(),
                 )
 
+            if case.draft_regenerated_at:
+                try:
+                    raw = str(case.draft_regenerated_at).replace("Z", "+00:00")
+                    ts = datetime.fromisoformat(raw)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    age = (datetime.now(timezone.utc) - ts).total_seconds()
+                    if age < REGENERATE_COOLDOWN_SEC:
+                        return CaseActionResult(
+                            ok=False,
+                            message=(
+                                "Vänta minst 60 sekunder innan du regenererar igen."
+                            ),
+                            case=case.to_dict(),
+                        )
+                except ValueError:
+                    pass
+
             inbound_body, inbound_subject = self._inbound_text_for_regen(case)
             text = f"{inbound_subject}\n\n{inbound_body}".strip()
             order_id = case.order_id or extract_order_id(text)
@@ -730,6 +749,7 @@ class CaseService:
             patched = self._patch_case_after_regen(
                 case.id,
                 draft=draft or previous,
+                draft_before_regen=previous,
                 category=category,
                 order_id=support.order_id or order_id or case.order_id,
                 classify_confidence=conf if isinstance(conf, (int, float)) else None,
@@ -791,6 +811,7 @@ class CaseService:
         case_id: str,
         *,
         draft: str,
+        draft_before_regen: str,
         category: str,
         order_id: str | None,
         classify_confidence: float | None,
@@ -798,11 +819,14 @@ class CaseService:
         suggest_approve: bool,
     ) -> Case | None:
         """Update draft + AI fields without inserting phantom messages."""
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         with self.store._conn() as conn:
             conn.execute(
                 """
                 UPDATE cases SET
                     draft_reply = ?,
+                    draft_before_regen = ?,
+                    draft_regenerated_at = ?,
                     category = ?,
                     order_id = COALESCE(?, order_id),
                     classify_confidence = ?,
@@ -813,12 +837,14 @@ class CaseService:
                 """,
                 (
                     draft,
+                    draft_before_regen,
+                    now,
                     category,
                     order_id,
                     classify_confidence,
                     classify_method,
                     1 if suggest_approve else 0,
-                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    now,
                     case_id,
                 ),
             )

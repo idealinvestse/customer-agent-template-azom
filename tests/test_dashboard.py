@@ -130,3 +130,41 @@ def test_onboarding_refresh_markup(dash_client):
     assert b"Uppdatera status" in resp.data
     assert b"x-for=\"s in secrets\"" in resp.data or b"x-for='s in secrets'" in resp.data
     assert b"x-for=\"c in checks\"" in resp.data or b"x-for='c in checks'" in resp.data
+
+
+def test_case_detail_shows_draft_diff(dash_client, tmp_path):
+    """After regenerate, case_detail shows Föregående/Nytt when draft_before_regen set."""
+    import os
+    from pathlib import Path
+
+    from ecom_ops.cases.store import CaseStore
+
+    data_dir = Path(os.environ["AZOM_DATA_DIR"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    store = CaseStore(path=data_dir / "cases.db")
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Order 1001",
+        from_addr="a@b.co",
+        body="order 1001?",
+        category="order_status",
+        draft_reply="NYTT UTKAST TEXT",
+        order_id="1001",
+        message_id="<dash-draft-diff@azom>",
+        site="azom",
+    )
+    with store._conn() as conn:
+        conn.execute(
+            """
+            UPDATE cases SET draft_before_regen = ?, draft_regenerated_at = ?
+            WHERE id = ?
+            """,
+            ("GAMMALT UTKAST TEXT", "2026-07-29T12:00:00Z", case.id),
+        )
+    resp = dash_client.get(f"/cases/{case.id}", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Föregående utkast" in body
+    assert "Nytt utkast" in body
+    assert "GAMMALT UTKAST TEXT" in body
+    assert "NYTT UTKAST TEXT" in body

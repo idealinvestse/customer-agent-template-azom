@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 # Bump when adding breaking schema changes; _migrate() applies steps in order.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _default_db_path() -> Path:
@@ -58,6 +58,8 @@ class Case:
     classify_confidence: float | None = None
     classify_method: str | None = None
     suggest_approve: bool = False
+    draft_before_regen: str | None = None
+    draft_regenerated_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +83,8 @@ class Case:
             "classify_confidence": self.classify_confidence,
             "classify_method": self.classify_method,
             "suggest_approve": self.suggest_approve,
+            "draft_before_regen": self.draft_before_regen,
+            "draft_regenerated_at": self.draft_regenerated_at,
         }
 
 
@@ -230,6 +234,10 @@ class CaseStore:
         if current < 3:
             self._migrate_v3_suggest(conn)
             self._record_version(conn, 3)
+            current = 3
+        if current < 4:
+            self._migrate_v4_draft_diff(conn)
+            self._record_version(conn, 4)
 
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
         case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
@@ -267,6 +275,16 @@ class CaseStore:
             alters.append(
                 "ALTER TABLE cases ADD COLUMN suggest_approve INTEGER NOT NULL DEFAULT 0"
             )
+        for sql in alters:
+            conn.execute(sql)
+
+    def _migrate_v4_draft_diff(self, conn: sqlite3.Connection) -> None:
+        case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
+        alters: list[str] = []
+        if "draft_before_regen" not in case_cols:
+            alters.append("ALTER TABLE cases ADD COLUMN draft_before_regen TEXT")
+        if "draft_regenerated_at" not in case_cols:
+            alters.append("ALTER TABLE cases ADD COLUMN draft_regenerated_at TEXT")
         for sql in alters:
             conn.execute(sql)
 
@@ -778,6 +796,16 @@ class CaseStore:
             classify_confidence=conf,
             classify_method=method,
             suggest_approve=suggest,
+            draft_before_regen=(
+                str(row["draft_before_regen"])
+                if "draft_before_regen" in keys and row["draft_before_regen"]
+                else None
+            ),
+            draft_regenerated_at=(
+                str(row["draft_regenerated_at"])
+                if "draft_regenerated_at" in keys and row["draft_regenerated_at"]
+                else None
+            ),
         )
 
     @staticmethod

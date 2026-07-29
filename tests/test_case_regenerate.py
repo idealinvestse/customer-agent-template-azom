@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from ecom_ops.cases.service import CaseService
 from ecom_ops.cases.store import CaseStore
 from ecom_ops.integrations.mail import (
@@ -139,3 +141,84 @@ def test_regenerate_keeps_abuse_escalated(tmp_path, telemetry, escalation, monke
     assert result.case.get("escalation_id") == "ticket-abc"
     # Draft may change template but still no silent send
     assert result.case.get("status") != "replied"
+
+
+def test_regenerate_stores_draft_before_regen(
+    tmp_path, monkeypatch, telemetry, escalation
+):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    svc = _svc(tmp_path, telemetry=telemetry, escalation=escalation)
+    case = svc.store.create_case(
+        mailbox_id="support_default",
+        subject="Var är order 1001?",
+        from_addr="anna@example.com",
+        body="Hej, var är min order 1001?",
+        category="order_status",
+        draft_reply="GAMMAL DRAFT",
+        order_id="1001",
+        message_id="<regen-test-before@azom>",
+        site="azom",
+        language="sv",
+        to_addr="support@azom.se",
+    )
+    result = svc.regenerate_draft(case.id, actor="jonatan", use_mock=True)
+    assert result.ok, result.message
+    refreshed = svc.store.get(case.id)
+    assert refreshed is not None
+    assert refreshed.draft_before_regen == "GAMMAL DRAFT"
+    assert refreshed.draft_reply != "GAMMAL DRAFT"
+    assert refreshed.draft_regenerated_at
+
+
+def test_regenerate_denied_within_cooldown(
+    tmp_path, monkeypatch, telemetry, escalation
+):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    svc = _svc(tmp_path, telemetry=telemetry, escalation=escalation)
+    case = svc.store.create_case(
+        mailbox_id="support_default",
+        subject="Order 1001",
+        from_addr="a@b.co",
+        body="order 1001 status?",
+        category="order_status",
+        draft_reply="old",
+        order_id="1001",
+        message_id="<regen-test-cooldown@azom>",
+        site="azom",
+    )
+    first = svc.regenerate_draft(case.id, actor="jonatan", use_mock=True)
+    assert first.ok, first.message
+    second = svc.regenerate_draft(case.id, actor="jonatan", use_mock=True)
+    assert not second.ok
+    assert "60" in second.message
+    assert second.case is None or second.case.get("status") in {"open", "escalated"}
+
+
+def test_regenerate_allowed_after_cooldown(
+    tmp_path, monkeypatch, telemetry, escalation
+):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    svc = _svc(tmp_path, telemetry=telemetry, escalation=escalation)
+    case = svc.store.create_case(
+        mailbox_id="support_default",
+        subject="Order 1001",
+        from_addr="a@b.co",
+        body="order 1001 status?",
+        category="order_status",
+        draft_reply="old",
+        order_id="1001",
+        message_id="<regen-test-cooldown-ok@azom>",
+        site="azom",
+    )
+    first = svc.regenerate_draft(case.id, actor="jonatan", use_mock=True)
+    assert first.ok, first.message
+    past = (
+        datetime.now(timezone.utc) - timedelta(seconds=61)
+    ).isoformat().replace("+00:00", "Z")
+    with svc.store._conn() as conn:
+        conn.execute(
+            "UPDATE cases SET draft_regenerated_at = ? WHERE id = ?",
+            (past, case.id),
+        )
+    second = svc.regenerate_draft(case.id, actor="jonatan", use_mock=True)
+    assert second.ok, second.message

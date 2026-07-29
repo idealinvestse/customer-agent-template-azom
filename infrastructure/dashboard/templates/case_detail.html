@@ -120,6 +120,21 @@
       <input type="hidden" name="q_category" value="{{ q_category }}" />
       {% if q_suggest %}<input type="hidden" name="q_suggest" value="1" />{% endif %}
       <textarea class="az-textarea" name="body" required data-approve-guard>{{ case.draft_reply or '' }}</textarea>
+      {% if case.draft_before_regen %}
+      <section class="mt-4">
+        <h3 class="az-muted text-sm">Utkast-diff efter regenerering</h3>
+        <div class="mt-2 grid gap-3 md:grid-cols-2">
+          <div>
+            <p class="text-xs az-muted mb-1">Föregående utkast</p>
+            <pre class="az-muted text-xs whitespace-pre-wrap">{{ case.draft_before_regen }}</pre>
+          </div>
+          <div>
+            <p class="text-xs az-muted mb-1">Nytt utkast</p>
+            <pre class="text-xs whitespace-pre-wrap">{{ case.draft_reply or '' }}</pre>
+          </div>
+        </div>
+      </section>
+      {% endif %}
       <div class="flex flex-wrap gap-2">
         <button class="az-btn-primary" type="submit" name="action" value="reply" :disabled="submitting">Godkänn och skicka</button>
         <button class="az-btn-primary" type="submit" name="action" value="reply_next" :disabled="submitting" title="Skicka och öppna nästa i kön">Godkänn &amp; nästa</button>
