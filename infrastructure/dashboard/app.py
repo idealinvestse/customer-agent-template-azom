@@ -560,7 +560,22 @@ def _record_login_failure(ip: str) -> None:
 
 @app.route("/metrics")
 def prometheus_metrics():
-    """Prometheus-format metrics endpoint (P7.3). No auth — scrape from localhost only."""
+    """Prometheus-format metrics endpoint (P7.3).
+
+    Access: localhost OR ``Authorization: Bearer <METRICS_SCRAPE_TOKEN>``.
+    """
+    import os
+
+    from flask import abort, request
+
+    token = (os.environ.get("METRICS_SCRAPE_TOKEN") or "").strip()
+    remote = (request.remote_addr or "").strip()
+    localhost = remote in {"127.0.0.1", "::1", "localhost"}
+    auth = (request.headers.get("Authorization") or "").strip()
+    bearer_ok = bool(token) and auth == f"Bearer {token}"
+    if not localhost and not bearer_ok:
+        abort(403)
+
     from ecom_ops.budget import budget_status
     from ecom_ops.kpis import support_kpis_last_days
 
@@ -711,9 +726,14 @@ def settings():
             "wordpress_api",
             "smart_handling",
             "full_agent_tools",
-            "mock_mode",
         ):
             form[flag] = "1" if flag in request.form else "0"
+        # mock_mode is Oscar-only — Jonatan cannot toggle AZOM_USE_MOCK in prod.
+        if g.actor.get("is_oscar"):
+            form["mock_mode"] = "1" if "mock_mode" in request.form else "0"
+        else:
+            current = load_settings_view()
+            form["mock_mode"] = "1" if current.get("mock_mode") else "0"
         try:
             save_settings(form)
             return redirect(url_for("settings") + "?msg=Sparat")
@@ -871,10 +891,15 @@ def cases_poll():
 
     result = CaseService().poll(actor=g.actor["name"], use_mock=_is_mock() or None)
     if result.ok:
-        return redirect(
-            url_for("cases_list") + f"?msg=Skapade+{result.created}+ärenden"
-        )
-    return redirect(url_for("cases_list") + f"?err={result.message}")
+        msg = f"Skapade {result.created} ärenden"
+        detail = str(getattr(result, "message", "") or "")
+        if "PARTIAL" in detail.upper():
+            return redirect(
+                url_for("cases_list")
+                + f"?{_flash_q(err=f'{msg} — PARTIAL: {detail[:200]}')}"
+            )
+        return redirect(url_for("cases_list") + f"?{_flash_q(msg)}")
+    return redirect(url_for("cases_list") + f"?{_flash_q(err=result.message)}")
 
 
 @app.route("/cases/bulk-close", methods=["POST"])
@@ -1005,11 +1030,25 @@ def case_detail(case_id: str):
 
     case = svc.get(case_id)
     if not case:
+        # Messenger/Telegram deep links often pass id8 — resolve then canonicalize.
+        resolved = svc.store.resolve_id_prefix(case_id)
+        if resolved:
+            q = request.query_string.decode("utf-8", errors="replace")
+            target = url_for("case_detail", case_id=resolved.id)
+            if q:
+                target = f"{target}?{q}"
+            return redirect(target)
         return Response("Case not found", 404)
     msgs = svc.store.messages(case_id)
     order_panel = None
     if case.order_id:
-        order_panel = resolve_order_panel(case.order_id, use_mock=_is_mock() or None)
+        from ecom_ops.order_context import resolve_order_panel, woo_domain_from_market
+
+        order_panel = resolve_order_panel(
+            case.order_id,
+            use_mock=_is_mock() or None,
+            domain=woo_domain_from_market(case.market),
+        )
     return render_template(
         "case_detail.html",
         **_dashboard_context(
@@ -1277,15 +1316,35 @@ def oauth_gmail_status():
 @app.route("/health")
 def health():
     """Liveness always 200; readiness reflects last case-poll freshness."""
+    import os
+
     from ecom_ops.ops_status import readiness_from_last_poll
 
     readiness = readiness_from_last_poll()
+    page_token = bool((os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip())
+    from ecom_ops.bot.actors import channel_posture
+
+    posture = channel_posture("messenger")
+    messenger = {
+        "configured": bool(
+            (os.environ.get("MESSENGER_APP_SECRET") or "").strip()
+            and (os.environ.get("MESSENGER_VERIFY_TOKEN") or "").strip()
+        ),
+        "page_token_present": page_token,
+        "send_enabled": page_token,
+        "allowlist_set": bool(posture.get("allowlist_set")),
+        "actor_map_set": bool(posture.get("actor_map_set")),
+        "fail_closed": bool(posture.get("fail_closed")),
+        "mutations_enabled": page_token
+        or (os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}),
+    }
     return jsonify(
         {
             "ok": True,
             "service": "azom-dashboard",
             "liveness": True,
             "readiness": readiness,
+            "messenger": messenger,
         }
     )
 
@@ -1327,6 +1386,79 @@ def woo_webhook():
     if not ok:
         return jsonify({"ok": False, "error": "Invalid signature"}), 401
     return jsonify({"ok": True}), 200
+
+
+@app.route("/webhooks/messenger", methods=["GET", "POST"])
+def messenger_webhook():
+    """Meta Messenger webhook — verify challenge (GET) + events (POST).
+
+    Auth: verify token + X-Hub-Signature-256 (no Basic auth / CSRF).
+    """
+    from pathlib import Path
+
+    from ecom_ops.bot.handlers import BotHandler
+    from ecom_ops.bot.messenger_adapter import (
+        mid_already_seen,
+        parse_webhook_payload,
+        process_inbound,
+        send_bot_reply,
+        verify_signature,
+        verify_webhook_challenge,
+    )
+    from ecom_ops.bot.store import ConversationStore
+
+    if request.method == "GET":
+        challenge = verify_webhook_challenge(
+            mode=request.args.get("hub.mode"),
+            token=request.args.get("hub.verify_token"),
+            challenge=request.args.get("hub.challenge"),
+        )
+        if challenge is None:
+            return "Forbidden", 403
+        return Response(challenge, mimetype="text/plain")
+
+    raw = request.get_data() or b""
+    if not verify_signature(raw, request.headers.get("X-Hub-Signature-256")):
+        return jsonify({"ok": False, "error": "Invalid signature"}), 401
+
+    try:
+        payload = request.get_json(force=True, silent=True) or {}
+    except Exception:
+        payload = {}
+    events = parse_webhook_payload(payload if isinstance(payload, dict) else {})
+    data_dir = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    store = ConversationStore(path=data_dir / "messenger_state.json")
+    handler = BotHandler(store=store, channel="messenger")
+    page_token = (os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip()
+    dry = not page_token
+    if dry:
+        app.logger.error(
+            "MESSENGER_PAGE_ACCESS_TOKEN missing — outbound Messenger replies suppressed"
+        )
+    handled = 0
+    errors = 0
+    skipped = 0
+    for ev in events:
+        try:
+            if mid_already_seen(data_dir, ev.mid):
+                skipped += 1
+                continue
+            reply = process_inbound(ev, handler)
+            send_bot_reply(ev.peer_id, reply, dry_run=dry, page_token=page_token or None)
+            handled += 1
+        except Exception as exc:
+            errors += 1
+            app.logger.warning("Messenger event error: %s", exc)
+    # Always 200 after per-event handling so Meta does not retry whole batches
+    # (duplicates are suppressed via mid dedup).
+    return jsonify(
+        {
+            "ok": errors == 0,
+            "handled": handled,
+            "errors": errors,
+            "skipped": skipped,
+        }
+    ), 200
 
 
 _woo_webhook_receiver: object | None = None

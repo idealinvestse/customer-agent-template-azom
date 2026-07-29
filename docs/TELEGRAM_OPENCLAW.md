@@ -34,7 +34,7 @@ Incoming update
 TELEGRAM_BOT_TOKEN=...
 # Strongly recommended in production:
 TELEGRAM_ALLOWED_CHAT_IDS=111111111,222222222
-# chat_id → actor (jonatan|oscar|agent); unmapped → jonatan
+# chat_id → actor (jonatan|oscar|agent); non-empty map → unmapped denied
 TELEGRAM_ACTOR_MAP=111111111:jonatan,222222222:oscar
 ```
 
@@ -119,7 +119,9 @@ Jonatan default actor can approve cases but **not** Woo order updates unless map
 ## Actors & RBAC
 
 `resolve_telegram_actor(chat_id)` drives approve/close/health.  
-Jonatan: approve case replies. Oscar: full admin. Unmapped chat: jonatan (still must pass allowlist if set).
+Jonatan: approve case replies. Oscar: full admin.  
+When `TELEGRAM_ACTOR_MAP` is **empty** (dev/mock): unmapped chat → `jonatan`.  
+When the map is **non-empty** (prod): unmapped chat is **denied** (fail-closed). Allowlist still applies if set.
 
 ---
 
@@ -133,9 +135,11 @@ Jonatan: approve case replies. Oscar: full admin. Unmapped chat: jonatan (still 
 
 | Condition | Behavior |
 |-----------|----------|
-| No `OPENROUTER_API_KEY` | Tools still run; LLM text falls back to fixed Swedish help |
-| Budget at cap | Same — tools without LLM phrasing |
-| Not in allowlist | Short denial |
+| No `OPENROUTER_API_KEY` | Tools still run; if no tools, reuse prior_digest/sticky or fixed Swedish help |
+| Budget at cap | Same — tools / continuity without LLM phrasing |
+| Not in allowlist | Denial + recovery hint (Oscar + TELEGRAM_ALLOWED_CHAT_IDS) |
+| Approve fail | Swedish error + Regenerera / Visa / Lista keyboard |
+| Empty case queue | Hint: next poll (~5 min) or dashboard `/cases` |
 | Unknown slash | “Okänt kommando … /commands · /help” |
 
 ---

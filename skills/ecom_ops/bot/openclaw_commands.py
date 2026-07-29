@@ -6,10 +6,31 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ecom_ops import __version__
-from ecom_ops.bot.reply import BotReply, approve_case_keyboard
+from ecom_ops.bot.reply import BotReply
+from ecom_ops.bot.recovery import (
+    FOOTER_CASE_NOT_FOUND,
+    approve_fail_reply,
+    approve_success_reply,
+    case_not_found_text,
+    empty_queue_text,
+    with_recovery,
+)
 from ecom_ops.bot.store import ConversationStore, clamp_messages
 
 HandlerFn = Callable[["CommandContext"], str | BotReply]
+
+
+def _persist_case_session(ctx: "CommandContext", case: Any) -> None:
+    """Sticky case id + market (+ order) for multi-market Woo lookups."""
+    from ecom_ops.order_context import woo_domain_from_market
+
+    updates: dict[str, Any] = {"last_case_id8": case.id[:8]}
+    market = woo_domain_from_market(getattr(case, "market", None))
+    if market:
+        updates["last_market"] = market
+    if getattr(case, "order_id", None):
+        updates["last_order_id"] = str(case.order_id)
+    ctx.save_session(**updates)
 
 
 @dataclass
@@ -19,6 +40,7 @@ class CommandContext:
     args: str
     store: ConversationStore
     slots: dict[str, Any] = field(default_factory=dict)
+    channel: str = "telegram"
 
     @property
     def session(self) -> dict[str, Any]:
@@ -120,15 +142,36 @@ def cmd_status(ctx: CommandContext) -> str:
 
 
 def cmd_whoami(ctx: CommandContext) -> str:
-    from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
+    from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
 
     try:
-        actor = resolve_telegram_actor(ctx.chat_id)
-    except TelegramActorDenied:
+        actor = resolve_channel_actor(ctx.channel, ctx.chat_id)
+    except ChannelActorDenied:
+        map_name = (
+            "MESSENGER_ACTOR_MAP"
+            if ctx.channel == "messenger"
+            else "TELEGRAM_ACTOR_MAP"
+        )
+        if ctx.channel == "messenger":
+            return (
+                f"Sender / session\n"
+                f"channel: messenger\n"
+                f"peer_id: {ctx.chat_id}\n"
+                f"actor: (ej mappad — {map_name})\n"
+                f"Alias: /id"
+            )
         return (
             f"Sender / session\n"
             f"chat_id: {ctx.chat_id}\n"
-            f"actor: (ej mappad — TELEGRAM_ACTOR_MAP)\n"
+            f"actor: (ej mappad — {map_name})\n"
+            f"Alias: /id"
+        )
+    if ctx.channel == "messenger":
+        return (
+            f"Sender / session\n"
+            f"channel: messenger\n"
+            f"peer_id: {ctx.chat_id}\n"
+            f"actor: {actor}\n"
             f"Alias: /id"
         )
     return (
@@ -335,11 +378,15 @@ def cmd_context(ctx: CommandContext) -> str:
     model = ctx.session.get("model", "default")
     digest = str((state or {}).get("tool_digest") or "").strip()
     digest_line = digest.replace("\n", " · ")[:200] if digest else "(none)"
+    sticky_order = ctx.session.get("last_order_id") or "(none)"
+    sticky_case = ctx.session.get("last_case_id8") or "(none)"
     return (
         f"Context\n"
         f"flow: {flow or 'idle'}\n"
         f"turns: {n_msg}\n"
         f"model: {model}\n"
+        f"last_order_id: {sticky_order}\n"
+        f"last_case_id8: {sticky_case}\n"
         f"tool_digest: {digest_line}\n"
         f"session keys: {', '.join(sorted(ctx.session.keys())) or '(none)'}\n"
         f"/new rensar historik · /reset soft behåller settings"
@@ -351,14 +398,19 @@ def cmd_context(ctx: CommandContext) -> str:
 def cmd_health(ctx: CommandContext) -> str:
     try:
         from ecom_ops.actions.ssh_ops import SSHOpsService
-        from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
+        from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
 
         try:
-            actor = resolve_telegram_actor(ctx.chat_id)
-        except TelegramActorDenied:
+            actor = resolve_channel_actor(ctx.channel, ctx.chat_id)
+        except ChannelActorDenied:
+            map_name = (
+                "MESSENGER_ACTOR_MAP"
+                if ctx.channel == "messenger"
+                else "TELEGRAM_ACTOR_MAP"
+            )
             return (
                 "Din chat saknar actor-mapping. "
-                "Be Oscar uppdatera TELEGRAM_ACTOR_MAP."
+                f"Be Oscar uppdatera {map_name}."
             )
         results = SSHOpsService().health(actor=actor)
         lines = ["SSH health:"]
@@ -439,15 +491,20 @@ def cmd_brief(ctx: CommandContext) -> str:
 def cmd_cases(ctx: CommandContext) -> str | BotReply:
     """ /cases | /cases show <id> | /cases approve <id> | /cases close <id> """
     try:
-        from ecom_ops.bot.actors import TelegramActorDenied, resolve_telegram_actor
+        from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
         from ecom_ops.cases.service import CaseService
 
         try:
-            actor = resolve_telegram_actor(ctx.chat_id)
-        except TelegramActorDenied:
+            actor = resolve_channel_actor(ctx.channel, ctx.chat_id)
+        except ChannelActorDenied:
+            map_name = (
+                "MESSENGER_ACTOR_MAP"
+                if ctx.channel == "messenger"
+                else "TELEGRAM_ACTOR_MAP"
+            )
             return (
                 "Din chat saknar actor-mapping. "
-                "Be Oscar lägga till dig i TELEGRAM_ACTOR_MAP."
+                f"Be Oscar lägga till dig i {map_name}."
             )
         svc = CaseService()
         parts = ctx.args.split(maxsplit=1)
@@ -469,7 +526,7 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
         if sub in {"list", "ls"}:
             cases = svc.list_open(limit=10)
             if not cases:
-                return "Inga öppna/eskalerade ärenden."
+                return empty_queue_text()
             # Escalated → high → suggest-approve → newest
             cases = list(cases)
             cases.sort(key=lambda c: c.created_at or "", reverse=True)
@@ -496,20 +553,32 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
                 return "Ange id: /cases show <id8>"
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
-                return f"Hittade inte case {rest!r}"
-            ctx.save_session(last_case_id8=case.id[:8])
+                return case_not_found_text(rest)
+            _persist_case_session(ctx, case)
             return _case_show_reply(case)
 
         if sub in {"approve", "reply", "send"}:
             if not rest:
                 return "Ange id: /cases approve <id8>"
+            if ctx.channel == "messenger":
+                from ecom_ops.bot.actors import messenger_mutations_allowed
+
+                if not messenger_mutations_allowed():
+                    return (
+                        "Muterande Messenger-åtgärder är blockerade: "
+                        "MESSENGER_PAGE_ACCESS_TOKEN saknas (prod)."
+                    )
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
-                return f"Hittade inte case {rest!r}"
+                return case_not_found_text(rest)
+            # Resolve next before send — current case leaves the open queue on success.
+            nxt_before = svc.next_in_queue(case.id)
             result = svc.approve_and_send(case.id, actor=actor)
             if result.ok:
-                return f"Skickat. Case {case.id[:8]} → replied."
-            return f"Misslyckades: {result.message}"
+                _persist_case_session(ctx, case)
+                next_id = nxt_before.id if nxt_before else None
+                return approve_success_reply(case.id, next_case_id=next_id)
+            return approve_fail_reply(case.id, result.message)
 
         if sub in {"regenerate", "regen", "redraft"}:
             target = rest
@@ -521,28 +590,40 @@ def cmd_cases(ctx: CommandContext) -> str | BotReply:
                     return "Ange id: /cases regenerate <id8> (eller öppna ett case först)"
             case = svc.store.resolve_id_prefix(target) or svc.get(target)
             if not case:
-                return f"Hittade inte case {target!r}"
+                return case_not_found_text(target)
             result = svc.regenerate_draft(case.id, actor=actor)
             if result.ok:
-                ctx.save_session(last_case_id8=case.id[:8])
+                _persist_case_session(ctx, case)
                 refreshed = svc.get(case.id) or case
                 return _case_show_reply(refreshed)
-            return f"Misslyckades: {result.message}"
+            return with_recovery(
+                f"Misslyckades: {result.message}",
+                footer=FOOTER_CASE_NOT_FOUND,
+            )
 
         if sub == "close":
             if not rest:
                 return "Ange id: /cases close <id8>"
+            if ctx.channel == "messenger":
+                from ecom_ops.bot.actors import messenger_mutations_allowed
+
+                if not messenger_mutations_allowed():
+                    return (
+                        "Muterande Messenger-åtgärder är blockerade: "
+                        "MESSENGER_PAGE_ACCESS_TOKEN saknas (prod)."
+                    )
             case = svc.store.resolve_id_prefix(rest) or svc.get(rest)
             if not case:
-                return f"Hittade inte case {rest!r}"
-            result = svc.close(case.id, actor=actor, reason="telegram")
+                return case_not_found_text(rest)
+            result = svc.close(case.id, actor=actor, reason=ctx.channel or "telegram")
             if result.ok:
                 return f"Stängt. Case {case.id[:8]}."
-            return f"Misslyckades: {result.message}"
+            return with_recovery(f"Misslyckades: {result.message}")
 
         # Bare id prefix: /cases <id8>
         case = svc.store.resolve_id_prefix(sub) or svc.get(sub)
         if case:
+            _persist_case_session(ctx, case)
             return _case_show_reply(case)
 
         return (
@@ -580,10 +661,14 @@ def _format_case_show(case: Any) -> str:
 
 def _case_show_reply(case: Any) -> BotReply:
     """Case show with explicit approve button (same path as /cases approve)."""
+    from ecom_ops.bot.reply import approve_case_actions, actions_to_telegram_markup
+
     text = _format_case_show(case)
+    actions = approve_case_actions(case.id)
     return BotReply(
         text=text,
-        reply_markup=approve_case_keyboard(case.id[:8]),
+        actions=actions,
+        reply_markup=actions_to_telegram_markup(actions),
     )
 
 
@@ -653,6 +738,8 @@ def dispatch_openclaw_command(
     chat_id: str | int,
     text: str,
     store: ConversationStore,
+    *,
+    channel: str = "telegram",
 ) -> str | BotReply | None:
     """Return reply if text is an OpenClaw/Azom slash command, else None."""
     name, args = _parse_command(text)
@@ -664,5 +751,11 @@ def dispatch_openclaw_command(
     spec = _BY_NAME.get(name)
     if not spec:
         return f"Okänt kommando /{name}. /commands · /help"
-    ctx = CommandContext(chat_id=chat_id, text=text, args=args, store=store)
+    ctx = CommandContext(
+        chat_id=chat_id,
+        text=text,
+        args=args,
+        store=store,
+        channel=(channel or "telegram").strip().lower(),
+    )
     return spec.handler(ctx)

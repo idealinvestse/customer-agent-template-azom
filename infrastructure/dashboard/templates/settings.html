@@ -55,8 +55,24 @@
           </svg>
         </button>
         <div x-show="open" class="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {% if is_oscar %}
+          <label class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-mist-200 hover:bg-ink-800/60">
+            <input
+              class="h-4 w-4 rounded border-ink-600 bg-ink-950 text-steel-500 focus:ring-steel-500/40"
+              type="checkbox"
+              name="mock_mode"
+              value="1"
+              {% if settings.mock_mode %}checked{% endif %}
+            />
+            Mock-läge (AZOM_USE_MOCK)
+          </label>
+          {% else %}
+          <p class="text-sm text-mist-400 sm:col-span-2">
+            Mock-läge styrs av Oscar (AZOM_USE_MOCK).
+            Nuvarande: {% if settings.mock_mode %}på{% else %}av{% endif %}.
+          </p>
+          {% endif %}
           {% for key, label in [
-            ('mock_mode', 'Mock-läge (AZOM_USE_MOCK)'),
             ('email_enabled', 'Email enabled'),
             ('email_smtp', 'SMTP'),
             ('email_imap', 'IMAP'),

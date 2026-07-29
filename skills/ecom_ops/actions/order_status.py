@@ -54,21 +54,25 @@ class OrderStatusService:
         site: str = "azom",
         actor: Actor | str | None = None,
         note: str | None = None,
+        domain: str | None = None,
     ) -> OrderStatusResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
+        woo = self.woo
+        if domain:
+            woo = client_from_env(use_mock=None, domain=domain)
 
         try:
             require_permission(actor_obj, Permission.ORDER_STATUS_UPDATE)
             oid = validate_order_id(order_id)
             new_status = validate_order_status(status)
 
-            current = self.woo.get_order(oid)
+            current = woo.get_order(oid)
             if current.status == new_status:
                 self.telemetry.record(
                     action="order_status_noop",
                     site=site,
-                    meta={"order_id": oid, "status": new_status},
+                    meta={"order_id": oid, "status": new_status, "domain": domain},
                 )
                 return OrderStatusResult(
                     ok=True,
@@ -78,7 +82,7 @@ class OrderStatusService:
                     message=f"Order {oid} already {new_status}",
                 )
 
-            updated = self.woo.update_order_status(oid, new_status)
+            updated = woo.update_order_status(oid, new_status)
             self.telemetry.record(
                 action="order_status_update",
                 site=site,
@@ -88,6 +92,7 @@ class OrderStatusService:
                     "to": new_status,
                     "actor": actor_obj.name,
                     "note": note,
+                    "domain": domain,
                 },
             )
             return OrderStatusResult(

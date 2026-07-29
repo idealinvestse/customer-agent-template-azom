@@ -113,6 +113,7 @@ class ToolPrefetch:
     pending_action: PendingAction | None = None
     sticky_order_id: str | None = None
     sticky_case_id8: str | None = None
+    sticky_market: str | None = None
 
 
 @dataclass
@@ -131,6 +132,7 @@ class ChatResult:
     pending_action: PendingAction | None = None
     sticky_order_id: str | None = None
     sticky_case_id8: str | None = None
+    sticky_market: str | None = None
 
 
 def wants_escalate(text: str) -> bool:
@@ -187,21 +189,24 @@ def _extract_order_id(text: str) -> str | None:
     return m2.group(1) if m2 else None
 
 
-def tool_lookup_order(order_id: str) -> str:
+def tool_lookup_order(order_id: str, *, domain: str | None = None) -> str:
     try:
         from ecom_ops.integrations.woocommerce import client_from_env
 
         oid = validate_order_id(order_id)
-        woo = client_from_env(use_mock=None)
+        woo = client_from_env(use_mock=None, domain=domain)
         order = woo.get_order(oid)
         block = format_order_context_block(order)
+        market_note = f" (marknad: {domain})" if domain else ""
         return (
             f"{block}\n"
-            "(read-only här — ändra status bara efter bekräftelse: "
+            f"(read-only här{market_note} — ändra status bara efter bekräftelse: "
             f"«sätt order {oid} till completed»)"
         )
     except Exception as exc:
-        return f"Order lookup failed: {exc}"
+        from ecom_ops.bot.recovery import FOOTER_ORDER_FAIL, with_recovery
+
+        return with_recovery(f"Order lookup failed: {exc}", footer=FOOTER_ORDER_FAIL)
 
 
 def tool_list_cases(*, limit: int = 8, suggest_only: bool = False) -> tuple[str, list[str]]:
@@ -213,9 +218,9 @@ def tool_list_cases(*, limit: int = 8, suggest_only: bool = False) -> tuple[str,
             cases = [c for c in cases if getattr(c, "suggest_approve", False)]
         cases = cases[:limit]
         if not cases:
-            if suggest_only:
-                return "Inga ★-föreslagna ärenden just nu.", []
-            return "Inga öppna/eskalerade ärenden.", []
+            from ecom_ops.bot.recovery import empty_queue_text
+
+            return empty_queue_text(suggest_only=suggest_only), []
         suggest_ids: list[str] = []
         title = "★ Föreslagna (suggest-approve):" if suggest_only else "Öppna/eskalerade:"
         lines = [f"{title} {len(cases)}"]
@@ -237,18 +242,24 @@ def tool_list_cases(*, limit: int = 8, suggest_only: bool = False) -> tuple[str,
         return f"Cases list failed: {exc}", []
 
 
-def tool_show_case(id_prefix: str) -> tuple[str, str | None]:
+def tool_show_case(id_prefix: str) -> tuple[str, str | None, str | None]:
     try:
         from ecom_ops.bot.openclaw_commands import _format_case_show
         from ecom_ops.cases.service import CaseService
+        from ecom_ops.order_context import woo_domain_from_market
 
         svc = CaseService()
         case = svc.store.resolve_id_prefix(id_prefix) or svc.get(id_prefix)
         if not case:
-            return f"Hittade inte case {id_prefix!r}", None
-        return _format_case_show(case), case.id[:8]
+            from ecom_ops.bot.recovery import case_not_found_text
+
+            return case_not_found_text(id_prefix), None, None
+        market = woo_domain_from_market(case.market)
+        return _format_case_show(case), case.id[:8], market
     except Exception as exc:
-        return f"Case show failed: {exc}", None
+        from ecom_ops.bot.recovery import FOOTER_CASE_NOT_FOUND, with_recovery
+
+        return with_recovery(f"Case show failed: {exc}", footer=FOOTER_CASE_NOT_FOUND), None, None
 
 
 def _count_open_escalations() -> int:
@@ -330,6 +341,7 @@ def gather_tool_results(
     *,
     sticky_order_id: str | None = None,
     sticky_case_id8: str | None = None,
+    sticky_market: str | None = None,
 ) -> ToolPrefetch:
     """Tool prefetch with sticky multi-turn context (OpenClaw-like follow-ups)."""
     pref = ToolPrefetch(
@@ -337,6 +349,7 @@ def gather_tool_results(
         sticky_case_id8=sticky_case_id8,
     )
     text = user_message or ""
+    woo_domain = sticky_market
 
     # --- Write rails: propose only (never execute here) ---
     order_intent = parse_order_status_intent(text, fallback_order_id=sticky_order_id)
@@ -346,7 +359,7 @@ def gather_tool_results(
         pref.results.append(
             (
                 "lookup_order",
-                tool_lookup_order(order_intent["order_id"]),
+                tool_lookup_order(order_intent["order_id"], domain=woo_domain),
             )
         )
         pref.results.append(
@@ -378,7 +391,9 @@ def gather_tool_results(
 
     regen_id = parse_regenerate_nl(text)
     if regen_id:
-        body, case_id8 = tool_show_case(regen_id)
+        body, case_id8, market = tool_show_case(regen_id)
+        if market:
+            woo_domain = market
         pref.results.append(("show_case", body))
         pref.case_id8 = case_id8
         pref.sticky_case_id8 = case_id8 or sticky_case_id8
@@ -399,7 +414,9 @@ def gather_tool_results(
     # NL approve → show case + confirm button only
     approve_id = parse_approve_nl(text)
     if approve_id:
-        body, case_id8 = tool_show_case(approve_id)
+        body, case_id8, market = tool_show_case(approve_id)
+        if market:
+            woo_domain = market
         pref.results.append(("show_case", body))
         pref.case_id8 = case_id8
         pref.sticky_case_id8 = case_id8 or sticky_case_id8
@@ -409,10 +426,8 @@ def gather_tool_results(
 
     # Explicit order id in message
     oid = _extract_order_id(text)
-    # Pronoun / short follow-up → re-fetch sticky order
-    if not oid and sticky_order_id and (
-        wants_order_followup(text) or len(text.strip()) < 48
-    ):
+    # Pronoun / order follow-up → re-fetch sticky order (not bare chit-chat)
+    if not oid and sticky_order_id and wants_order_followup(text):
         # Only if not clearly cases-only
         if not (CASES_INTENT_RE.search(text) and not wants_order_followup(text)):
             oid = sticky_order_id
@@ -422,7 +437,7 @@ def gather_tool_results(
             pref.sticky_order_id = validate_order_id(oid)
         except Exception:
             pref.sticky_order_id = oid
-        pref.results.append(("lookup_order", tool_lookup_order(oid)))
+        pref.results.append(("lookup_order", tool_lookup_order(oid, domain=woo_domain)))
 
     id_m = CASE_ID_RE.search(text)
     show_case = bool(
@@ -441,7 +456,9 @@ def gather_tool_results(
 
     if show_case and id_m and len(pref.results) < 3:
         cid = id_m.group(1) if hasattr(id_m, "group") else sticky_case_id8
-        body, case_id8 = tool_show_case(str(cid))
+        body, case_id8, market = tool_show_case(str(cid))
+        if market:
+            woo_domain = market
         pref.results.append(("show_case", body))
         pref.case_id8 = case_id8
         pref.sticky_case_id8 = case_id8 or sticky_case_id8
@@ -462,6 +479,7 @@ def gather_tool_results(
 
     # Bare short chit-chat with no tools — still ok; LLM handles
     pref.digest = _make_digest(pref.results)
+    pref.sticky_market = woo_domain
     return pref
 
 
@@ -540,6 +558,7 @@ def run_chat(
     # Prefer session sticky if not passed
     sticky_order_id = sticky_order_id or session.get("last_order_id") or None
     sticky_case_id8 = sticky_case_id8 or session.get("last_case_id8") or None
+    sticky_market = session.get("last_market") or None
 
     def _with_turn(assistant: str) -> list[dict[str, str]]:
         return clamp_messages(
@@ -554,6 +573,7 @@ def run_chat(
         user_message,
         sticky_order_id=str(sticky_order_id) if sticky_order_id else None,
         sticky_case_id8=str(sticky_case_id8) if sticky_case_id8 else None,
+        sticky_market=str(sticky_market) if sticky_market else None,
     )
     tool_bits = pref.results
     case_id8 = pref.case_id8
@@ -575,19 +595,40 @@ def run_chat(
             "pending_action": pref.pending_action,
             "sticky_order_id": pref.sticky_order_id or sticky_order_id,
             "sticky_case_id8": pref.sticky_case_id8 or sticky_case_id8 or case_id8,
+            "sticky_market": pref.sticky_market or sticky_market,
             **extra,
         }
 
     api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-    if not api_key:
+    sticky_for_cont = pref.sticky_order_id or sticky_order_id
+    sticky_case_for_cont = pref.sticky_case_id8 or sticky_case_id8 or case_id8
+
+    def _no_llm_text(reason: str, *, tools_suffix: str = "") -> str:
+        from ecom_ops.bot.recovery import continuity_fallback
+
         if tool_bits or pref.pending_action:
             text = _format_tools_human(
                 tool_bits,
                 approve_confirm=pref.approve_confirm_only,
                 pending=pref.pending_action,
             )
-        else:
-            text = FALLBACK_NO_KEY
+            return text + tools_suffix if tools_suffix else text
+        cont = continuity_fallback(
+            prior_digest=prior_digest,
+            sticky_order_id=str(sticky_for_cont) if sticky_for_cont else None,
+            sticky_case_id8=str(sticky_case_for_cont) if sticky_case_for_cont else None,
+            reason=reason,
+        )
+        if cont:
+            return cont
+        if reason == "budget":
+            return FALLBACK_BUDGET
+        if reason == "error":
+            return FALLBACK_ERROR
+        return FALLBACK_NO_KEY
+
+    if not api_key:
+        text = _no_llm_text("no_key")
         return ChatResult(text=text, messages=_with_turn(text), **_base())
 
     cap = openrouter_cap_usd()
@@ -602,15 +643,10 @@ def run_chat(
                 "kind": "telegram_chat",
             },
         )
-        if tool_bits or pref.pending_action:
-            text = _format_tools_human(
-                tool_bits,
-                approve_confirm=pref.approve_confirm_only,
-                pending=pref.pending_action,
-            )
-            text = text + "\n\n(LLM-budget slut — rå data ovan.)"
-        else:
-            text = FALLBACK_BUDGET
+        text = _no_llm_text(
+            "budget",
+            tools_suffix="\n\n(LLM-budget slut — rå data ovan.)",
+        )
         return ChatResult(text=text, messages=_with_turn(text), **_base())
 
     tool_block = ""
@@ -652,15 +688,10 @@ def run_chat(
             cost_usd=0.0,
             meta={"error": str(exc)[:200]},
         )
-        if tool_bits or pref.pending_action:
-            text = _format_tools_human(
-                tool_bits,
-                approve_confirm=pref.approve_confirm_only,
-                pending=pref.pending_action,
-            )
-            text = text + "\n\n(LLM nere — visar verktygsdata.)"
-        else:
-            text = FALLBACK_ERROR
+        text = _no_llm_text(
+            "error",
+            tools_suffix="\n\n(LLM nere — visar verktygsdata.)",
+        )
         return ChatResult(text=text, messages=_with_turn(text), **_base())
 
     soft_extra = False

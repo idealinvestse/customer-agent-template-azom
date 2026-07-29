@@ -10,6 +10,12 @@
 [ ] AZOM_USE_MOCK=0 on prod host
 [ ] TELEGRAM_ALLOWED_CHAT_IDS set (required in prod)
 [ ] TELEGRAM_ACTOR_MAP set (chat:jonatan / chat:oscar) — unmapped chats denied when map present
+[ ] MESSENGER_ALLOWED_PSIDS set (Jonatan PSID only in prod)
+[ ] MESSENGER_ACTOR_MAP set (psid:jonatan / psid:oscar)
+[ ] MESSENGER_PAGE_ACCESS_TOKEN + APP_SECRET + VERIFY_TOKEN set
+[ ] AZOM_DASHBOARD_PUBLIC_URL=https://agent.azom.se (no trailing slash)
+[ ] curl /health → messenger.send_enabled: true
+[ ] Meta webhook subscribed: messages + messaging_postbacks → /webhooks/messenger
 [ ] AZOM_AUTO_SEND_KILL=1 optional belt; cases_ai auto_send_enabled: false
 [ ] Mailbox credentials / Gmail OAuth OK
 [ ] systemd: azom-dashboard, azom-bot, azom-cases-poll.timer active
@@ -39,9 +45,21 @@ python -m ecom_ops kpis --days 7
 # 4) Daily brief (cases + budget + readiness)
 bash bin/daily-brief-azom.sh
 # Telegram: /brief  /cases  “föreslagna”
+# Messenger: /help /cases /brief (daily driver)
 ```
 
-### Operator (Jonatan) — dashboard / Telegram
+### Operator (Jonatan) — Messenger (primary) + dashboard
+
+```text
+[ ] Messenger /cases — queue lists with ★ count
+[ ] Show one ★ case — order context matches market (SE/NO/DK)
+[ ] Godkänn & skicka postback once — case → replied
+[ ] Godkänn & nästa when queue has another case
+[ ] Deep link “Öppna i dashboard” opens /cases/{id}?from=messenger
+[ ] One regenerate (optional) — does not send
+```
+
+### Operator (Jonatan) — dashboard / Telegram (backup)
 
 ```text
 [ ] Open /cases?suggest=1 (or ★ link) — n★ noted: _____

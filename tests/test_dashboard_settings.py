@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -97,6 +98,29 @@ def dash_client(tmp_path, monkeypatch, config_dir):
     app = _load_dashboard_app()
     app.config["TESTING"] = True
     return app.test_client()
+
+
+def test_jonatan_cannot_toggle_mock_mode(dash_client, monkeypatch):
+    """Jonatan POST must not flip AZOM_USE_MOCK via settings."""
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "jonatan")
+    monkeypatch.setenv("DASHBOARD_OSCAR_PASSWORD", "oscar")
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    resp = dash_client.post(
+        "/settings",
+        headers=_auth(client=dash_client),
+        data={
+            "customer": "azom",
+            "domains": "se",
+            "budget_cap_llm": "80",
+            "openrouter_cap": "100",
+            "mail_provider": "gmail",
+            "mock_mode": "1",
+            "email_enabled": "1",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert os.environ.get("AZOM_USE_MOCK", "0") == "0"
 
 
 def test_settings_page_and_save(dash_client, config_dir):
@@ -319,6 +343,36 @@ def test_case_detail_approve_guard(dash_client):
     assert resp.status_code == 200
     assert b"data-approve-guard" in resp.data
     assert b"confirm(" in resp.data or b"Skicka svar" in resp.data
+
+
+def test_case_detail_resolves_id8_prefix(dash_client):
+    """Messenger deep links often use id8 — redirect to canonical UUID."""
+    import os
+
+    from ecom_ops.cases.store import CaseStore
+
+    store = CaseStore(Path(os.environ["AZOM_DATA_DIR"]) / "cases.db")
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Prefix resolve",
+        from_addr="a@b.co",
+        body="hej",
+        category="other",
+        draft_reply="draft",
+        order_id=None,
+        message_id="<prefix-resolve@x>",
+        status="open",
+    )
+    id8 = case.id[:8]
+    resp = dash_client.get(
+        f"/cases/{id8}?from=messenger",
+        headers=_auth(),
+        follow_redirects=False,
+    )
+    assert resp.status_code in (301, 302)
+    loc = resp.headers.get("Location") or ""
+    assert case.id in loc
+    assert "from=messenger" in loc
 
 
 def test_interact_escalate_cta(dash_client):

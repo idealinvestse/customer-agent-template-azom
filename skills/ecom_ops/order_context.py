@@ -7,6 +7,22 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_WOO_DOMAIN_MARKETS = frozenset({"se", "no", "dk", "fi"})
+
+
+def woo_domain_from_market(market: str | None) -> str | None:
+    """Map case/mailbox market code to Woo ``domain=`` (se/no/dk/fi)."""
+    code = (market or "").strip().lower()
+    if not code:
+        return None
+    if code in _WOO_DOMAIN_MARKETS:
+        return code
+    # Accept azom.se style values
+    for suffix in _WOO_DOMAIN_MARKETS:
+        if code.endswith(f".{suffix}") or code == suffix:
+            return suffix
+    return None
+
 
 def _truncate(value: str | None, *, max_len: int = 200) -> str | None:
     text = (value or "").strip()

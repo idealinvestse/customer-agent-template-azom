@@ -213,11 +213,16 @@ def execute_order_status(
     order_id: str,
     status: str,
     actor: str,
+    domain: str | None = None,
 ) -> tuple[bool, str]:
     from ecom_ops.actions.order_status import OrderStatusService
 
     result = OrderStatusService().update(
-        order_id=order_id, status=status, actor=actor, note="telegram confirm"
+        order_id=order_id,
+        status=status,
+        actor=actor,
+        note="telegram confirm",
+        domain=domain,
     )
     if result.ok:
         return True, result.message
