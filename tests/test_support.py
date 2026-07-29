@@ -128,6 +128,66 @@ def test_soft_draft_asks_order_number_when_missing(telemetry, escalation, monkey
     assert "ordernummer" in result.reply.lower() or "1001" in result.reply
 
 
+def test_path_b2_return_billing_templates_and_soft_ask():
+    """Path B2: richer return/billing bodies + soft ask when order_id missing."""
+    from ecom_ops.actions.support import draft_reply
+
+    ret = draft_reply(
+        category=SupportCategory.RETURN,
+        customer_name="Anna",
+        order_id=None,
+        language="sv",
+    )
+    low = ret.lower()
+    assert "ordernummer" in low
+    assert "foto" in low or "bild" in low
+    assert "ångerrätt" in low or "retur" in low
+    assert "återbetala" not in low
+    assert "pengarna tillbaka" not in low
+
+    bill = draft_reply(
+        category=SupportCategory.BILLING,
+        customer_name="Anna",
+        order_id=None,
+        language="sv",
+    )
+    blow = bill.lower()
+    assert "ordernummer" in blow
+    assert "faktura" in blow or "betal" in blow
+    assert "återbetala" not in blow
+
+
+def test_path_b2_return_billing_never_suggest(telemetry, escalation, monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    svc = SupportService(telemetry=telemetry, escalation=escalation)
+    ret = svc.handle(
+        "Jag vill returnera min beställning, fel storlek",
+        customer_name="Anna",
+        language="sv",
+        actor="agent",
+        use_mock=True,
+    )
+    assert ret.ok
+    assert ret.category == SupportCategory.RETURN
+    assert ret.suggest_approve is False
+    assert ret.reply
+    assert "ordernummer" in ret.reply.lower()
+
+    bill = svc.handle(
+        "Min faktura ser fel ut, dubbel betalning",
+        customer_name="Anna",
+        language="sv",
+        actor="agent",
+        use_mock=True,
+    )
+    assert bill.ok
+    assert bill.category == SupportCategory.BILLING
+    assert bill.suggest_approve is False
+    assert bill.reply
+    assert "ordernummer" in bill.reply.lower()
+
+
 def test_critical_escalates_to_oscar(telemetry, escalation):
     svc = SupportService(telemetry=telemetry, escalation=escalation)
     result = svc.handle(

@@ -23,3 +23,36 @@ def test_check_draft_language_nb():
     checks = _check_draft(draft, {"language": "nb", "order_id": "1001"})
     assert checks["checks"].get("language_nb") is True
     assert checks["score"] >= 0.8
+
+
+def test_check_draft_must_ask_order_id():
+    draft = draft_reply(
+        category=SupportCategory.RETURN,
+        customer_name="Anna",
+        order_id=None,
+        language="sv",
+    )
+    checks = _check_draft(
+        draft,
+        {
+            "language": "sv",
+            "must_ask_order_id": True,
+            "must_not_promise_refund": True,
+        },
+    )
+    assert checks["checks"].get("asks_order_id") is True
+    assert checks["checks"].get("no_refund_promise") is True
+
+
+def test_billing_fixtures_in_pack():
+    result = evaluate_drafts()
+    ids = {r["id"] for r in result.get("results", [])} or set()
+    # evaluate_drafts may nest differently — also check fixture load
+    from ecom_ops.draft_eval import load_draft_fixtures
+
+    fixture_ids = {f["id"] for f in load_draft_fixtures()}
+    assert "billing_sv" in fixture_ids
+    assert "billing_nb" in fixture_ids
+    assert "return_missing_oid_sv" in fixture_ids
+    assert result["ok"] is True
+    assert result["avg_score"] >= 0.8

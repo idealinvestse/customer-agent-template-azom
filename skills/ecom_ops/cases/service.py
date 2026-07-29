@@ -461,6 +461,14 @@ class CaseService:
                 or cat_val == "abuse"
             ):
                 suggest = False
+            thread_priority = None
+            if (
+                cat_val in {"return", "billing"}
+                and threaded.status != "escalated"
+                and cat_val != "abuse"
+                and threaded.category != "abuse"
+            ):
+                thread_priority = "high"
             case = self.store.append_inbound(
                 threaded.id,
                 from_addr=from_addr,
@@ -476,6 +484,7 @@ class CaseService:
                 classify_confidence=getattr(support, "confidence", None),
                 classify_method=getattr(support, "classify_method", None),
                 suggest_approve=suggest,
+                priority=thread_priority,
             )
             if case is None:
                 return None
@@ -515,6 +524,9 @@ class CaseService:
             status = "escalated"
             priority = "high"
             escalation_id = ticket.id
+        elif support.category.value in {"return", "billing"}:
+            # Path B2: elevate triage without Oscar escalation tickets
+            priority = "high"
 
         case = self.store.create_case(
             mailbox_id=mb.id,

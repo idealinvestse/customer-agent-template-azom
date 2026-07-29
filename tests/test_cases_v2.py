@@ -211,6 +211,89 @@ def test_abuse_sets_escalated(case_store, monkeypatch, tmp_path):
     assert cases[0].priority == "high"
 
 
+def test_poll_return_billing_priority_high_not_escalated(case_store, monkeypatch, tmp_path):
+    """Path B2: return/billing get priority=high but stay open (not Oscar-escalated)."""
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    client, _ = _client_with(
+        [
+            MailMessage(
+                subject="Retur fel storlek",
+                body="Jag vill returnera min beställning, fel storlek",
+                from_addr="retur@example.com",
+                message_id="<retur-prio@x>",
+                uid="uid-retur-prio",
+            ),
+            MailMessage(
+                subject="Fakturafel",
+                body="Min faktura ser fel ut, dubbel betalning utan ordernummer",
+                from_addr="bill@example.com",
+                message_id="<bill-prio@x>",
+                uid="uid-bill-prio",
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+    )
+    svc = CaseService(store=case_store, mail=MailService(client=client))
+    result = svc.poll(actor="agent", use_mock=True)
+    assert result.ok
+    opens = case_store.list_cases(status="open")
+    cats = {c.category: c for c in opens}
+    assert "return" in cats
+    assert cats["return"].priority == "high"
+    assert cats["return"].suggest_approve is False
+    assert cats["return"].escalation_id is None
+    assert "billing" in cats
+    assert cats["billing"].priority == "high"
+    assert cats["billing"].suggest_approve is False
+
+
+def test_threaded_return_elevates_priority(case_store, monkeypatch, tmp_path):
+    """Path B2 U4: follow-up classified as return bumps priority without Oscar escalate."""
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    root = case_store.create_case(
+        mailbox_id="support_default",
+        subject="Orderfråga",
+        from_addr="kund@example.com",
+        body="Första",
+        category="order_status",
+        draft_reply="Hej",
+        order_id="1001",
+        message_id="<root-retur-thread@x>",
+        priority="normal",
+    )
+    client, _ = _client_with(
+        [
+            MailMessage(
+                subject="Re: Orderfråga",
+                body="Jag vill returnera ordern, fel storlek",
+                from_addr="kund@example.com",
+                message_id="<follow-retur@x>",
+                uid="uid-follow-retur",
+                in_reply_to="<root-retur-thread@x>",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+    )
+    svc = CaseService(store=case_store, mail=MailService(client=client))
+    result = svc.poll(actor="agent", use_mock=True)
+    assert result.ok
+    updated = case_store.get(root.id)
+    assert updated is not None
+    assert updated.category == "return"
+    assert updated.priority == "high"
+    assert updated.status == "open"
+    assert updated.suggest_approve is False
+    assert updated.escalation_id is None
+
+
 def test_order_enrich_draft(monkeypatch, tmp_path):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AZOM_USE_MOCK", "1")

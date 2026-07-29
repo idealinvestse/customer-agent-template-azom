@@ -24,6 +24,9 @@
       · Confidence: {{ '%.0f'|format((case.classify_confidence or 0) * 100) }}%
       {% endif %}
       · Prio: {{ case.priority or 'normal' }}
+      {% if case.category in ['return', 'billing'] and not case.suggest_approve %}
+      · <span class="rounded bg-amber-900/50 px-2 py-0.5 text-xs font-medium text-amber-100">Kräver manuell granskning — inte ★-godkänn</span>
+      {% endif %}
       · Assignee: {{ case.assignee or '—' }}
       {% if case.order_id %} · Order: <strong class="text-mist-100">{{ case.order_id }}</strong>{% endif %}
       {% if case.escalation_id %}

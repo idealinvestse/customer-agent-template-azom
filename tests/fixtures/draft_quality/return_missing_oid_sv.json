@@ -1,0 +1,8 @@
+{
+  "id": "return_missing_oid_sv",
+  "text": "Jag vill returnera min beställning, fel storlek.",
+  "language": "sv",
+  "expected_category": "return",
+  "must_ask_order_id": true,
+  "must_not_promise_refund": true
+}
