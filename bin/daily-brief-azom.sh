@@ -29,7 +29,7 @@ from ecom_ops.actions.ssh_ops import SSHOpsService
 from ecom_ops.budget import budget_status
 from ecom_ops.cases.service import CaseService
 from ecom_ops.config import load_app_config
-from ecom_ops.ops_status import readiness_from_last_poll
+from ecom_ops.ops_status import readiness_brief_actions, readiness_from_last_poll
 from ecom_ops.telemetry import Telemetry
 
 cfg = load_app_config()
@@ -95,10 +95,8 @@ if budget.get("near_cap"):
     brief["proposed_actions"].insert(
         0, f"BUDGET WARN: {budget.get('message')} — reduce LLM use or raise cap"
     )
-if ready.get("stale") and not ready.get("ok"):
-    brief["proposed_actions"].insert(
-        0, "Cases poll stale or missing — check azom-cases-poll.timer"
-    )
+for action in reversed(readiness_brief_actions(ready)):
+    brief["proposed_actions"].insert(0, action)
 print(json.dumps(brief, ensure_ascii=False, indent=2))
 print("Azom daily KPI brief generated")
 PY

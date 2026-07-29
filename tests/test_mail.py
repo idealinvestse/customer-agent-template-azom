@@ -78,6 +78,88 @@ def test_reply(mail_client, telemetry, escalation):
     assert result.to == ["customer@example.com"]
 
 
+def test_reply_sets_thread_headers_from_original_uid(
+    mail_client, telemetry, escalation
+):
+    """MailService.reply with original_uid must set In-Reply-To / References."""
+    transport = mail_client.transport
+    assert isinstance(transport, InMemoryMailTransport)
+    transport.inbox.append(
+        MailMessage(
+            subject="Thread follow-up",
+            body="Follow up body",
+            from_addr="customer@example.com",
+            uid="thread-uid-1",
+            message_id="<parent@example.com>",
+            references_header="<root@example.com>",
+            in_reply_to="<root@example.com>",
+            is_read=False,
+        )
+    )
+    svc = MailService(client=mail_client, telemetry=telemetry, escalation=escalation)
+    result = svc.reply(
+        to="customer@example.com",
+        subject="Thread follow-up",
+        body="Our reply",
+        original_uid="thread-uid-1",
+        actor="agent",
+    )
+    assert result.ok
+    assert transport.outbox
+    sent = transport.outbox[-1]
+    assert sent.in_reply_to == "<parent@example.com>"
+    assert sent.references_header is not None
+    assert "<root@example.com>" in sent.references_header
+    assert "<parent@example.com>" in sent.references_header
+
+
+def test_reply_succeeds_when_uid_lookup_fails(
+    mail_client, telemetry, escalation, monkeypatch
+):
+    """Reply must still send when original_uid header lookup fails."""
+    transport = mail_client.transport
+    assert isinstance(transport, InMemoryMailTransport)
+    svc = MailService(client=mail_client, telemetry=telemetry, escalation=escalation)
+
+    def boom(_uid: str) -> MailMessage | None:
+        raise RuntimeError("IMAP lookup failed")
+
+    monkeypatch.setattr(svc, "_find_message_by_uid", boom)
+
+    result = svc.reply(
+        to="customer@example.com",
+        subject="Order question",
+        body="Our reply",
+        original_uid="missing-uid",
+        actor="agent",
+    )
+    assert result.ok
+    assert transport.outbox
+    sent = transport.outbox[-1]
+    assert sent.in_reply_to is None
+    assert sent.references_header is None
+
+
+def test_reply_accepts_explicit_thread_headers(mail_client, telemetry, escalation):
+    """Caller may pass in_reply_to / references_header directly."""
+    transport = mail_client.transport
+    svc = MailService(client=mail_client, telemetry=telemetry, escalation=escalation)
+    result = svc.reply(
+        to="customer@example.com",
+        subject="Order question",
+        body="Our reply",
+        original_uid="unused-uid",
+        in_reply_to="<explicit@example.com>",
+        references_header="<ref1@example.com> <explicit@example.com>",
+        actor="agent",
+    )
+    assert result.ok
+    assert transport.outbox
+    sent = transport.outbox[-1]
+    assert sent.in_reply_to == "<explicit@example.com>"
+    assert sent.references_header == "<ref1@example.com> <explicit@example.com>"
+
+
 def test_inmemory_mark_read():
     transport = InMemoryMailTransport()
     client = MailClient(

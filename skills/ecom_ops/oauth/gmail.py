@@ -228,6 +228,30 @@ class GmailOAuthStore:
         return bundle
 
 
+def persist_refreshed_gmail_token(
+    *,
+    access_token: str,
+    expires_in: float | None = None,
+    refresh_token: str | None = None,
+    data_dir: Path | None = None,
+) -> None:
+    store = GmailOAuthStore(data_dir=data_dir)
+    existing = store.load_tokens()
+    if not existing and not refresh_token:
+        return
+    store.save_tokens(
+        GmailTokenBundle(
+            access_token=access_token,
+            refresh_token=refresh_token
+            or (existing.refresh_token if existing else ""),
+            expires_at=(time.time() + float(expires_in)) if expires_in else None,
+            token_type=(existing.token_type if existing else "Bearer"),
+            scope=(existing.scope if existing else GMAIL_SCOPES),
+            email=(existing.email if existing else None),
+        )
+    )
+
+
 def apply_stored_gmail_tokens(config: Any) -> Any:
     """Merge stored Gmail tokens into MailConfig when provider is gmail."""
     from ecom_ops.integrations.mail import MailConfig, MailProvider

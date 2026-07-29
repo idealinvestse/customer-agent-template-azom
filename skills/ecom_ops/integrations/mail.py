@@ -40,8 +40,72 @@ __all__ = [
 def config_from_env(
     *,
     provider: str | MailProvider | None = None,
+    env_prefix: str | None = None,
 ) -> MailConfig:
-    """Build MailConfig from environment variables."""
+    """Build MailConfig from environment variables.
+
+    When ``env_prefix`` is set (e.g. ``MAIL_SE_``), credential fields
+    (USERNAME, PASSWORD, FROM, OAUTH_*, GRAPH_*) prefer ``{prefix}NAME`` and
+    fall back to unprefixed ``MAIL_*`` / ``GRAPH_*`` only when the prefixed
+    variable is absent. Host/port/TLS fields prefer ``{prefix}SMTP_HOST`` etc.
+    and fall back to unprefixed ``SMTP_*`` / ``IMAP_*`` / ``POP3_*`` / defaults.
+    """
+    prefix = (env_prefix or "").strip()
+
+    def _prefixed(name: str) -> str | None:
+        if not prefix:
+            return None
+        return get_env(f"{prefix}{name}")
+
+    def _mail_cred(suffix: str) -> str | None:
+        if prefix:
+            val = _prefixed(suffix)
+            if val is not None:
+                return val
+        return get_env(f"MAIL_{suffix}")
+
+    def _graph_cred(suffix: str) -> str | None:
+        if prefix:
+            val = _prefixed(f"GRAPH_{suffix}")
+            if val is not None:
+                return val
+        return get_env(f"GRAPH_{suffix}")
+
+    def _host(name: str, default: str = "") -> str:
+        if prefix:
+            val = _prefixed(name)
+            if val is not None:
+                return val or ""
+        return get_env(name, default) or ""
+
+    def _int(name: str, default: int) -> int:
+        if prefix:
+            raw = get_env(f"{prefix}{name}")
+            if raw is not None:
+                try:
+                    return int(raw)
+                except ValueError as exc:
+                    raise SecurityError(
+                        f"Invalid integer env {prefix}{name}={raw!r}"
+                    ) from exc
+        raw = get_env(name)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise SecurityError(f"Invalid integer env {name}={raw!r}") from exc
+
+    def _bool(name: str, default: bool) -> bool:
+        if prefix:
+            raw = get_env(f"{prefix}{name}")
+            if raw is not None:
+                return raw.lower() in {"1", "true", "yes", "on"}
+        raw = get_env(name)
+        if raw is None:
+            return default
+        return raw.lower() in {"1", "true", "yes", "on"}
+
     prov_raw = (
         str(provider)
         if provider
@@ -57,46 +121,35 @@ def config_from_env(
 
     defaults = PROVIDER_DEFAULTS.get(prov, {})
 
-    def _int(name: str, default: int) -> int:
-        raw = get_env(name)
-        if raw is None:
-            return default
-        try:
-            return int(raw)
-        except ValueError as exc:
-            raise SecurityError(f"Invalid integer env {name}={raw!r}") from exc
-
-    def _bool(name: str, default: bool) -> bool:
-        raw = get_env(name)
-        if raw is None:
-            return default
-        return raw.lower() in {"1", "true", "yes", "on"}
+    password = _mail_cred("PASSWORD")
+    if password is None:
+        password = get_env("SMTP_PASSWORD", "") or ""
 
     config = MailConfig(
         provider=prov,
-        username=get_env("MAIL_USERNAME", "") or "",
-        password=get_env("MAIL_PASSWORD", "") or get_env("SMTP_PASSWORD", "") or "",
-        from_addr=get_env("MAIL_FROM", "") or "",
-        smtp_host=get_env("SMTP_HOST", defaults.get("smtp_host", "")) or "",
+        username=_mail_cred("USERNAME") or "",
+        password=password or "",
+        from_addr=_mail_cred("FROM") or "",
+        smtp_host=_host("SMTP_HOST", defaults.get("smtp_host", "")),
         smtp_port=_int("SMTP_PORT", int(defaults.get("smtp_port", 587))),
         smtp_use_tls=_bool("SMTP_USE_TLS", bool(defaults.get("smtp_use_tls", True))),
         smtp_use_ssl=_bool("SMTP_USE_SSL", bool(defaults.get("smtp_use_ssl", False))),
-        imap_host=get_env("IMAP_HOST", defaults.get("imap_host", "")) or "",
+        imap_host=_host("IMAP_HOST", defaults.get("imap_host", "")),
         imap_port=_int("IMAP_PORT", int(defaults.get("imap_port", 993))),
         imap_use_ssl=_bool("IMAP_USE_SSL", bool(defaults.get("imap_use_ssl", True))),
-        pop3_host=get_env("POP3_HOST", defaults.get("pop3_host", "")) or "",
+        pop3_host=_host("POP3_HOST", defaults.get("pop3_host", "")),
         pop3_port=_int("POP3_PORT", int(defaults.get("pop3_port", 995))),
         pop3_use_ssl=_bool("POP3_USE_SSL", bool(defaults.get("pop3_use_ssl", True))),
-        oauth_access_token=get_env("MAIL_OAUTH_ACCESS_TOKEN", "") or "",
-        oauth_refresh_token=get_env("MAIL_OAUTH_REFRESH_TOKEN", "") or "",
-        oauth_client_id=get_env("MAIL_OAUTH_CLIENT_ID", "") or "",
-        oauth_client_secret=get_env("MAIL_OAUTH_CLIENT_SECRET", "") or "",
-        oauth_token_url=get_env("MAIL_OAUTH_TOKEN_URL", "") or "",
-        graph_tenant_id=get_env("GRAPH_TENANT_ID", "") or "",
-        graph_client_id=get_env("GRAPH_CLIENT_ID", "") or "",
-        graph_client_secret=get_env("GRAPH_CLIENT_SECRET", "") or "",
-        graph_user=get_env("GRAPH_USER", "") or "",
-        graph_base_url=get_env(
+        oauth_access_token=_mail_cred("OAUTH_ACCESS_TOKEN") or "",
+        oauth_refresh_token=_mail_cred("OAUTH_REFRESH_TOKEN") or "",
+        oauth_client_id=_mail_cred("OAUTH_CLIENT_ID") or "",
+        oauth_client_secret=_mail_cred("OAUTH_CLIENT_SECRET") or "",
+        oauth_token_url=_mail_cred("OAUTH_TOKEN_URL") or "",
+        graph_tenant_id=_graph_cred("TENANT_ID") or "",
+        graph_client_id=_graph_cred("CLIENT_ID") or "",
+        graph_client_secret=_graph_cred("CLIENT_SECRET") or "",
+        graph_user=_graph_cred("USER") or "",
+        graph_base_url=_host(
             "GRAPH_BASE_URL",
             defaults.get("graph_base_url", "https://graph.microsoft.com/v1.0"),
         )
@@ -221,6 +274,7 @@ def _normalize_addrs(value: str | list[str]) -> list[str]:
 def client_from_env(
     *,
     provider: str | MailProvider | None = None,
+    env_prefix: str | None = None,
     use_mock: bool | None = None,
 ) -> MailClient:
     mock = use_mock
@@ -235,4 +289,6 @@ def client_from_env(
             ),
             transport=InMemoryMailTransport(),
         )
-    return MailClient(config=config_from_env(provider=provider))
+    return MailClient(
+        config=config_from_env(provider=provider, env_prefix=env_prefix)
+    )

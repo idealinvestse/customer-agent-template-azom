@@ -58,3 +58,53 @@ def test_token_file_permissions_attempt(tmp_path, monkeypatch):
     data = json.loads(store.token_path.read_text())
     assert "access_token" in data
     assert "refresh_token" in data
+
+
+def test_smtp_imap_refresh_persists_gmail_token(tmp_path, monkeypatch):
+    from ecom_ops.oauth.gmail import GmailOAuthStore, GmailTokenBundle
+    from ecom_ops.integrations.mail_providers.models import MailConfig, MailProvider
+    from ecom_ops.integrations.mail_providers.smtp_imap import SmtpImapTransport
+
+    store = GmailOAuthStore(data_dir=tmp_path)
+    store.save_tokens(
+        GmailTokenBundle(
+            access_token="old-access",
+            refresh_token="refresh-1",
+            expires_at=0,
+            token_type="Bearer",
+            scope="mail",
+        )
+    )
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+
+    cfg = MailConfig(
+        provider=MailProvider.GMAIL,
+        username="a@gmail.com",
+        password="",
+        from_addr="a@gmail.com",
+        smtp_host="smtp.gmail.com",
+        smtp_port=465,
+        smtp_use_ssl=True,
+        oauth_refresh_token="refresh-1",
+        oauth_client_id="cid",
+        oauth_client_secret="sec",
+        oauth_access_token="",
+    )
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "new-access", "expires_in": 3600}
+
+    monkeypatch.setattr(
+        "ecom_ops.integrations.mail_providers.smtp_imap.requests.post",
+        lambda *a, **k: _Resp(),
+    )
+
+    transport = SmtpImapTransport(cfg)
+    assert transport._ensure_oauth_token() == "new-access"
+    loaded = GmailOAuthStore(data_dir=tmp_path).load_tokens()
+    assert loaded is not None
+    assert loaded.access_token == "new-access"
+    assert loaded.refresh_token == "refresh-1"

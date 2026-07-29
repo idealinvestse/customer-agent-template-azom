@@ -6,6 +6,7 @@ import base64
 import email
 import email.policy
 import imaplib
+import logging
 import smtplib
 import ssl
 from email.message import EmailMessage
@@ -22,6 +23,8 @@ from ecom_ops.integrations.mail_providers.models import (
     parse_email_message,
 )
 from ecom_ops.security import SecurityError
+
+logger = logging.getLogger(__name__)
 
 
 class SmtpImapTransport:
@@ -62,6 +65,17 @@ class SmtpImapTransport:
         self._access_token = str(payload.get("access_token", ""))
         if not self._access_token:
             raise SecurityError("OAuth2 token response missing access_token")
+        if self.config.provider == MailProvider.GMAIL:
+            try:
+                from ecom_ops.oauth.gmail import persist_refreshed_gmail_token
+
+                persist_refreshed_gmail_token(
+                    access_token=self._access_token,
+                    expires_in=payload.get("expires_in"),
+                    refresh_token=payload.get("refresh_token") or None,
+                )
+            except Exception:
+                logger.exception("Failed to persist refreshed Gmail OAuth token")
         return self._access_token
 
     def send(self, message: MailMessage) -> dict[str, Any]:

@@ -117,6 +117,24 @@ def test_health_marks_stale_poll_not_ready(tmp_path, monkeypatch):
     assert data["readiness"]["ok"] is False
 
 
+def test_health_marks_partial_poll_not_ready(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-secret")
+    monkeypatch.chdir(DASH_DIR)
+
+    from ecom_ops.ops_status import write_last_case_poll
+
+    write_last_case_poll(ok=True, errors=1, created=2, extra={"partial": True})
+    mod = _load_dashboard()
+    mod.app.config["TESTING"] = True
+    client = mod.app.test_client()
+    data = client.get("/health").get_json()
+    assert data["readiness"]["partial"] is True
+    assert data["readiness"]["ok"] is False
+
+
 def test_smoke_skipped_without_live_flag(monkeypatch, tmp_path):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("AZOM_LIVE_SMOKE", raising=False)
