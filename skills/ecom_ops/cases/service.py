@@ -240,7 +240,31 @@ class CaseService:
 
         mailboxes = enabled_mailboxes()
         if not mailboxes:
-            return IngestResult(ok=True, message="No enabled mailboxes", created=0)
+            if use_mock:
+                return IngestResult(ok=True, message="No enabled mailboxes", created=0)
+            ticket = self.escalation.escalate_critical(
+                "Case poll: no enabled mailboxes",
+                details={"detail": "no_enabled_mailboxes"},
+            )
+            try:
+                from ecom_ops.ops_status import write_last_case_poll
+
+                write_last_case_poll(
+                    ok=False,
+                    errors=1,
+                    created=0,
+                    extra={"detail": "no_enabled_mailboxes", "mailboxes": 0},
+                )
+            except Exception:
+                pass
+            return IngestResult(
+                ok=False,
+                message="No enabled mailboxes configured",
+                created=0,
+                errors=1,
+                escalated=True,
+                ticket_id=ticket.id,
+            )
 
         created = 0
         skipped = 0
@@ -1014,6 +1038,11 @@ class CaseService:
                 to_addr=case.from_addr,
                 from_addr="",
                 subject=subject,
+                message_id=(
+                    (send.provider_status or {}).get("message_id")
+                    if isinstance(send.provider_status, dict)
+                    else None
+                ),
             )
             if not updated:
                 # Mail already sent — leave claim visible as sending for operator triage

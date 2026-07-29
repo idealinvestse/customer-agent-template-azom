@@ -114,6 +114,76 @@ def test_threading_in_reply_to(case_store, monkeypatch, tmp_path):
     assert len(case_store.list_cases(status="open")) == 1
 
 
+def test_poll_threads_into_replied_case_and_reopens(case_store, monkeypatch, tmp_path):
+    """Customer follow-up after approve must reopen the same case, not spawn a duplicate."""
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    root = case_store.create_case(
+        mailbox_id="support_default",
+        subject="Orderfråga",
+        from_addr="kund@example.com",
+        body="Första",
+        category="order_status",
+        draft_reply="Hej",
+        order_id="1001",
+        message_id="<root-replied@x>",
+    )
+    claimed = case_store.claim_for_send(root.id)
+    assert claimed is not None
+    case_store.mark_replied(
+        root.id,
+        outbound_body="Svar",
+        to_addr="kund@example.com",
+        from_addr="support@azom.se",
+        subject="Re: Orderfråga",
+        message_id="<outbound-replied@x>",
+    )
+    assert case_store.get(root.id).status == "replied"
+
+    client, _ = _client_with(
+        [
+            MailMessage(
+                subject="Re: Orderfråga",
+                body="Tack — en följdfråga",
+                from_addr="kund@example.com",
+                message_id="<follow-after-reply@x>",
+                uid="uid-follow-replied",
+                in_reply_to="<root-replied@x>",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+    )
+    svc = CaseService(store=case_store, mail=MailService(client=client))
+    result = svc.poll(actor="agent", use_mock=True)
+    assert result.ok
+    assert result.created == 1
+    assert len(case_store.list_cases()) == 1
+    updated = case_store.get(root.id)
+    assert updated is not None
+    assert updated.status == "open"
+    inbound = [m for m in case_store.messages(root.id) if m.direction == "inbound"]
+    assert len(inbound) == 2
+
+
+def test_poll_no_enabled_mailboxes_fails_in_prod(case_store, monkeypatch, tmp_path):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setattr(
+        "ecom_ops.cases.service.enabled_mailboxes",
+        lambda: [],
+    )
+    from ecom_ops.escalation import EscalationService
+
+    esc = EscalationService(store_path=tmp_path / "escalations.jsonl")
+    svc = CaseService(store=case_store, escalation=esc)
+    result = svc.poll(actor="agent", use_mock=False)
+    assert result.ok is False
+    assert result.escalated is True
+    assert "mailbox" in result.message.lower() or "enabled" in result.message.lower()
+
+
 def test_abuse_sets_escalated(case_store, monkeypatch, tmp_path):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AZOM_USE_MOCK", "1")

@@ -318,7 +318,11 @@ class CaseStore:
         subject: str,
         mailbox_id: str | None = None,
     ) -> Case | None:
-        """Find open/escalated case by In-Reply-To, References, or from+subject."""
+        """Find open/escalated/replied case by In-Reply-To or References.
+
+        Subject fallback only matches open/escalated (not replied) to avoid
+        merging unrelated new mail into an old replied thread.
+        """
         candidates: list[str] = []
         if in_reply_to:
             candidates.append(in_reply_to.strip())
@@ -329,11 +333,11 @@ class CaseStore:
 
         with self._conn() as conn:
             for mid in candidates:
-                # Match root case message_id
+                # Match root case message_id (include replied for follow-ups)
                 row = conn.execute(
                     """
                     SELECT * FROM cases
-                    WHERE message_id = ? AND status IN ('open', 'escalated')
+                    WHERE message_id = ? AND status IN ('open', 'escalated', 'replied')
                     """,
                     (mid,),
                 ).fetchone()
@@ -344,7 +348,8 @@ class CaseStore:
                     """
                     SELECT c.* FROM case_messages m
                     JOIN cases c ON c.id = m.case_id
-                    WHERE m.message_id = ? AND c.status IN ('open', 'escalated')
+                    WHERE m.message_id = ?
+                      AND c.status IN ('open', 'escalated', 'replied')
                     LIMIT 1
                     """,
                     (mid,),
@@ -611,6 +616,8 @@ class CaseStore:
             )
             sets = ["updated_at = ?"]
             params: list[Any] = [now]
+            # Reopen replied threads when customer follows up
+            sets.append("status = CASE WHEN status = 'replied' THEN 'open' ELSE status END")
             if draft_reply is not None:
                 sets.append("draft_reply = ?")
                 params.append(draft_reply)
@@ -724,6 +731,7 @@ class CaseStore:
         to_addr: str,
         from_addr: str,
         subject: str,
+        message_id: str | None = None,
     ) -> Case | None:
         now = _now()
         with self._conn() as conn:
@@ -741,9 +749,18 @@ class CaseStore:
                 INSERT INTO case_messages (
                     id, case_id, direction, from_addr, to_addr, subject, body,
                     message_id, created_at, in_reply_to, references_header
-                ) VALUES (?, ?, 'outbound', ?, ?, ?, ?, NULL, ?, NULL, NULL)
+                ) VALUES (?, ?, 'outbound', ?, ?, ?, ?, ?, ?, NULL, NULL)
                 """,
-                (str(uuid.uuid4()), case_id, from_addr, to_addr, subject, outbound_body, now),
+                (
+                    str(uuid.uuid4()),
+                    case_id,
+                    from_addr,
+                    to_addr,
+                    subject,
+                    outbound_body,
+                    message_id,
+                    now,
+                ),
             )
         return self.get(case_id)
 

@@ -263,6 +263,10 @@ def apply_stored_gmail_tokens(config: Any) -> Any:
     bundle = GmailOAuthStore().load_tokens()
     if not bundle:
         return config
+    # Prefer refresh_token; only reuse access_token when not expired (60s skew).
+    access = bundle.access_token or config.oauth_access_token
+    if bundle.expires_at is not None and time.time() >= float(bundle.expires_at) - 60:
+        access = ""
     return MailConfig(
         provider=config.provider,
         username=config.username,
@@ -278,7 +282,7 @@ def apply_stored_gmail_tokens(config: Any) -> Any:
         pop3_host=config.pop3_host,
         pop3_port=config.pop3_port,
         pop3_use_ssl=config.pop3_use_ssl,
-        oauth_access_token=bundle.access_token or config.oauth_access_token,
+        oauth_access_token=access,
         oauth_refresh_token=bundle.refresh_token or config.oauth_refresh_token,
         oauth_client_id=config.oauth_client_id or get_env("MAIL_OAUTH_CLIENT_ID", "") or "",
         oauth_client_secret=config.oauth_client_secret or get_env("MAIL_OAUTH_CLIENT_SECRET", "") or "",

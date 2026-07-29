@@ -92,7 +92,23 @@ def probe_telegram() -> ProbeResult:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         return _result("telegram", label, "missing", "TELEGRAM_BOT_TOKEN saknas")
-    if os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}:
+    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    if not mock:
+        allow = (os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS") or "").strip()
+        actor_map = (os.environ.get("TELEGRAM_ACTOR_MAP") or "").strip()
+        if not allow or not actor_map:
+            missing = []
+            if not allow:
+                missing.append("TELEGRAM_ALLOWED_CHAT_IDS")
+            if not actor_map:
+                missing.append("TELEGRAM_ACTOR_MAP")
+            return _result(
+                "telegram",
+                label,
+                "error",
+                "Prod fail-open: sätt " + " + ".join(missing),
+            )
+    if mock:
         return _result("telegram", label, "ok", "Token present (mock — skip getMe)")
     try:
         import ssl
@@ -221,12 +237,34 @@ def probe_ssh() -> ProbeResult:
 def probe_gmail_oauth() -> ProbeResult:
     label = "Gmail OAuth"
     try:
+        import time
+
         from ecom_ops.oauth.gmail import GmailOAuthStore, gmail_oauth_configured
 
         configured = gmail_oauth_configured()
         store = GmailOAuthStore()
-        has = store.has_tokens()
-        if has:
+        bundle = store.load_tokens()
+        has = bool(bundle and (bundle.refresh_token or bundle.access_token))
+        if has and bundle:
+            mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+            if (
+                not mock
+                and bundle.expires_at is not None
+                and time.time() >= float(bundle.expires_at) - 60
+            ):
+                if bundle.refresh_token:
+                    return _result(
+                        "gmail_oauth",
+                        label,
+                        "warn",
+                        "Access token expired/expiring — refresh on next mail use",
+                    )
+                return _result(
+                    "gmail_oauth",
+                    label,
+                    "error",
+                    "Access token expired and no refresh_token",
+                )
             return _result("gmail_oauth", label, "ok", "Tokens stored")
         if configured:
             return _result(
@@ -347,11 +385,15 @@ def read_probe_history(*, limit: int = 100) -> list[dict[str, Any]]:
 
 def probe_summary(results: list[ProbeResult] | None = None) -> dict[str, Any]:
     rows = results if results is not None else run_all_probes()
-    counts = {"ok": 0, "missing": 0, "error": 0, "skipped": 0}
+    counts = {"ok": 0, "missing": 0, "error": 0, "skipped": 0, "warn": 0}
     for r in rows:
         counts[r.status] = counts.get(r.status, 0) + 1
     return {
-        "ok": counts.get("error", 0) == 0 and counts.get("missing", 0) == 0,
+        "ok": (
+            counts.get("error", 0) == 0
+            and counts.get("missing", 0) == 0
+            and counts.get("warn", 0) == 0
+        ),
         "counts": counts,
         "results": [r.to_dict() for r in rows],
     }

@@ -39,12 +39,32 @@ class InMemoryMailTransport:
 
     def send(self, message: MailMessage) -> dict[str, Any]:
         self.calls.append(("send", message.to_dict()))
+        mid = message.message_id
+        if not mid:
+            from email.utils import make_msgid
+
+            mid = make_msgid(domain="mock.azom.local")
+            message = MailMessage(
+                subject=message.subject,
+                body=message.body,
+                from_addr=message.from_addr,
+                to_addrs=list(message.to_addrs),
+                cc_addrs=list(message.cc_addrs),
+                html_body=message.html_body,
+                date=message.date,
+                uid=message.uid,
+                message_id=mid,
+                is_read=message.is_read,
+                in_reply_to=message.in_reply_to,
+                references_header=message.references_header,
+            )
         self.outbox.append(message)
         return {
             "status": "sent",
             "to": message.to_addrs,
             "subject": message.subject,
             "provider": "mock",
+            "message_id": mid,
         }
 
     def fetch(

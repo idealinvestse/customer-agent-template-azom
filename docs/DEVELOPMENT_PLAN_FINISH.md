@@ -407,6 +407,7 @@ Sequenced roadmap after this finish plan’s code DoD:
 | v2.2 Fas A H1–H4 | ⬜ | Human-owned (Oscar + Jonatan) |
 | v2.3 Fas 0 land v2.2 | ✅ 2026-07-29 | Commit/push B1 + docs + bulk test + v2.2/v2.3 artifacts |
 | v2.3 Fas 0 verify (docs+gates) | ✅ 2026-07-29 | Core 3.0 ideation + AGENTS sync + gate pytest; **Fas 0 exit** |
+| v2.3 robustness harden | ✅ 2026-07-29 | Reopen replied threads; persist outbound Message-ID; Gmail OAuth expiry refresh; Telegram/Gmail probe posture; empty-mailbox poll fail in prod |
 | v2.3 Fas A soak | ⬜ | Same as Task 1 / FU6 — Oscar — blocker documented in soak checklist |
 | v2.3 Fas C FU9 | ⬜ | Gated — do not start (preconditions doc updated; no wire) |
 | v2.3 Fas D re-evaluate | ⬜ deferred 2026-07-29 | **Decision log:** park product expansion (V3/GA4/FAQ/NO enable/FU9 wire) until A1 soak + baseline KPI exist; continue SE pilot human-approve loop only |

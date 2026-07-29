@@ -35,6 +35,9 @@ class SmtpImapTransport:
         self._access_token = config.oauth_access_token
 
     def _ensure_oauth_token(self) -> str:
+        # Drop stale cached access tokens (Gmail store expires_at) before reuse.
+        if self._access_token and self._oauth_access_token_expired():
+            self._access_token = ""
         if self._access_token:
             return self._access_token
         if not self.config.oauth_refresh_token:
@@ -78,6 +81,22 @@ class SmtpImapTransport:
                 logger.exception("Failed to persist refreshed Gmail OAuth token")
         return self._access_token
 
+    def _oauth_access_token_expired(self) -> bool:
+        """True when Gmail token bundle expires_at is past (skew 60s)."""
+        if self.config.provider != MailProvider.GMAIL:
+            return False
+        try:
+            from ecom_ops.oauth.gmail import GmailOAuthStore
+
+            bundle = GmailOAuthStore().load_tokens()
+        except Exception:
+            return False
+        if not bundle or bundle.expires_at is None:
+            return False
+        import time
+
+        return time.time() >= float(bundle.expires_at) - 60
+
     def send(self, message: MailMessage) -> dict[str, Any]:
         cfg = self.config
         if not cfg.smtp_host:
@@ -92,6 +111,10 @@ class SmtpImapTransport:
             msg["In-Reply-To"] = message.in_reply_to
         if message.references_header:
             msg["References"] = message.references_header
+        if not msg.get("Message-ID"):
+            from email.utils import make_msgid
+
+            msg["Message-ID"] = make_msgid(domain="azom.local")
         if message.html_body:
             msg.set_content(message.body or "")
             msg.add_alternative(message.html_body, subtype="html")
@@ -134,6 +157,7 @@ class SmtpImapTransport:
             "to": message.to_addrs,
             "subject": message.subject,
             "from": msg["From"],
+            "message_id": str(msg["Message-ID"]) if msg.get("Message-ID") else None,
         }
 
     def _imap_connect(self) -> imaplib.IMAP4:

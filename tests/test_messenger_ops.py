@@ -64,6 +64,64 @@ def test_probe_messenger_errors_on_prod_fail_open(monkeypatch):
     assert "fail-open" in result.message.lower() or "ALLOWED" in result.message
 
 
+def test_probe_telegram_errors_on_prod_fail_open(monkeypatch):
+    dash_dir = str(DASH_DIR)
+    if dash_dir not in sys.path:
+        sys.path.insert(0, dash_dir)
+    from secret_probes import probe_telegram
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:ABC")
+    monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
+    monkeypatch.delenv("TELEGRAM_ACTOR_MAP", raising=False)
+    result = probe_telegram()
+    assert result.status == "error"
+    assert (
+        "fail-open" in result.message.lower()
+        or "ALLOWED" in result.message
+        or "ACTOR" in result.message
+    )
+
+
+def test_probe_summary_warn_is_not_ok():
+    dash_dir = str(DASH_DIR)
+    if dash_dir not in sys.path:
+        sys.path.insert(0, dash_dir)
+    from secret_probes import ProbeResult, probe_summary
+
+    rows = [
+        ProbeResult("mail", "Mail", "ok", "fine", checked_at="t"),
+        ProbeResult("messenger", "Messenger", "warn", "no page token", checked_at="t"),
+    ]
+    summary = probe_summary(rows)
+    assert summary["ok"] is False
+    assert summary["counts"].get("warn", 0) == 1
+
+
+def test_probe_gmail_oauth_warns_when_access_expired(tmp_path, monkeypatch):
+    dash_dir = str(DASH_DIR)
+    if dash_dir not in sys.path:
+        sys.path.insert(0, dash_dir)
+    from ecom_ops.oauth.gmail import GmailOAuthStore, GmailTokenBundle
+    from secret_probes import probe_gmail_oauth
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    store = GmailOAuthStore(data_dir=tmp_path)
+    store.save_tokens(
+        GmailTokenBundle(
+            access_token="stale",
+            refresh_token="refresh",
+            expires_at=1.0,
+            token_type="Bearer",
+            scope="mail",
+        )
+    )
+    result = probe_gmail_oauth()
+    assert result.status in {"warn", "error"}
+    assert "expir" in result.message.lower() or "refresh" in result.message.lower()
+
+
 def test_channel_actor_prod_fail_closed(monkeypatch):
     monkeypatch.setenv("AZOM_USE_MOCK", "0")
     monkeypatch.delenv("MESSENGER_ACTOR_MAP", raising=False)

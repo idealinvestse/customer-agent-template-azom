@@ -189,6 +189,10 @@ def test_approve_send_sets_in_reply_to_and_references(case_store_path, telemetry
     assert sent.references_header is not None
     assert "<orig-thread@example.com>" in sent.references_header
     assert "<root@example.com>" in sent.references_header
+    outbound = [m for m in store.messages(case.id) if m.direction == "outbound"]
+    assert len(outbound) == 1
+    assert outbound[0].message_id
+    assert outbound[0].message_id.startswith("<")
 
 
 def test_poll_mailbox_failure_escalates(case_store_path, monkeypatch, tmp_path):

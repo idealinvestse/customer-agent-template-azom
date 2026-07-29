@@ -90,7 +90,7 @@ MESSENGER_ACTOR_MAP=psid:jonatan,...
 - **Shipped:** Path B + Sprint A/B/C + SB5 (approve-flow, ★-measure, order extract/email lookup, richer context, classify fixtures, poll partial rails, Telegram/Messenger actor fail-closed, soft draft utan order_id)
 - **V2.1 (klart):** Woo/WP capacity review + implementation — se nedan
 - **V2.2 (klart på main):** live `probe_mail`, mail env matrix, bulk close — `docs/superpowers/plans/2026-07-29-001-mail-kundhantering-v22-plan.md`
-- **V2.3 Live-proof / Pilot Complete:** code DoD green; **next = Oscar A1 live soak** — `docs/superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md`
+- **V2.3 Live-proof / Pilot Complete:** code DoD green + robustness harden (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak** — `docs/superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md`
 - Finish overview: `docs/DEVELOPMENT_PLAN_FINISH.md`
 - Sprint plan: `docs/superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md`
 - Live soak (människa / FU6): `docs/solutions/2026-07-16-live-soak-checklist.md` — agent får inte markera klar utan Oscar
