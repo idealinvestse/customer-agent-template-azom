@@ -264,3 +264,42 @@ def test_jonatan_still_has_case_reply():
     actor = resolve_actor("jonatan")
     assert actor.has(Permission.CASE_REPLY)
     require_permission(actor, Permission.CASE_REPLY)
+
+
+def test_bulk_close_closes_open_cases_without_send(
+    case_store, mail_client, telemetry, escalation
+):
+    """v2.2 B2: bulk close only — never approve/send."""
+    svc = CaseService(
+        store=case_store,
+        mail_client=mail_client,
+        telemetry=telemetry,
+        escalation=escalation,
+    )
+    a = case_store.create_case(
+        mailbox_id="support_default",
+        subject="Spam 1",
+        from_addr="x@y.co",
+        body="junk",
+        category="other",
+        draft_reply="n/a",
+        order_id=None,
+        message_id="<bulk-a@x>",
+    )
+    b = case_store.create_case(
+        mailbox_id="support_default",
+        subject="Spam 2",
+        from_addr="z@y.co",
+        body="junk",
+        category="other",
+        draft_reply="n/a",
+        order_id=None,
+        message_id="<bulk-b@x>",
+    )
+    before_calls = list(mail_client.transport.calls)
+    summary = svc.bulk_close([a.id, b.id], actor="jonatan", reason="test-bulk")
+    assert summary["ok"] is True
+    assert summary["closed"] == 2
+    assert case_store.get(a.id).status == "closed"
+    assert case_store.get(b.id).status == "closed"
+    assert mail_client.transport.calls == before_calls

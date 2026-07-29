@@ -72,15 +72,16 @@ def probe_mail() -> ProbeResult:
         from ecom_ops.integrations.mail import client_from_env
 
         use_mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
-        # In prod: build a real (non-mock) client and attempt a live fetch.
-        # In mock: keep the mock-safe path so probes work without network.
-        client = client_from_env(use_mock=True if use_mock else None)
+        # Explicit bool: prod (False) must use real IMAP/Graph transport — never
+        # re-interpret None as "maybe mock". Mock mode stays network-free.
+        client = client_from_env(use_mock=use_mock)
         msgs = client.fetch(folder="INBOX", unread_only=True, limit=1)
+        mode = "mock" if use_mock else "live"
         return _result(
             "mail",
             label,
             "ok",
-            f"Client ok · fetch returned {len(msgs)} message(s)",
+            f"Client ok ({mode}) · fetch returned {len(msgs)} message(s)",
         )
     except Exception as exc:
         return _result("mail", label, "error", str(exc)[:200])

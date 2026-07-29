@@ -368,6 +368,18 @@ Sequenced roadmap after this finish plan’s code DoD:
 
 **Order:** live soak/baseline/classify (Fas 0) → mail OAuth persist + per-mailbox creds (Fas 1) → triage friction (Fas 2) → FU9 wire only if gated (Fas 3) → re-evaluate (Fas 4).
 
+### v2.2 — Ops-proof + narrow automation-ready (2026-07-29)
+
+- Spec: [`docs/superpowers/specs/2026-07-29-mail-kundhantering-v22-design.md`](superpowers/specs/2026-07-29-mail-kundhantering-v22-design.md)
+- Plan: [`docs/superpowers/plans/2026-07-29-001-mail-kundhantering-v22-plan.md`](superpowers/plans/2026-07-29-001-mail-kundhantering-v22-plan.md)
+- Next code: **landed via v2.3 Fas 0** — B1 + docs + bulk test on main after commit; Fas A soak still human; Fas C FU9 still gated
+
+### v2.3 — Live proof + gated auto-send (2026-07-29)
+
+- Spec: [`docs/superpowers/specs/2026-07-29-mail-kundhantering-v23-design.md`](superpowers/specs/2026-07-29-mail-kundhantering-v23-design.md)
+- Plan: [`docs/superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md`](superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md)
+- Next: **Oscar A1 live soak**; agent must not wire FU9 until A1–A3 + written enable
+
 ### Execution log (mail-support roadmap)
 
 | Task | Status | Notes |
@@ -379,3 +391,11 @@ Sequenced roadmap after this finish plan’s code DoD:
 | Task 6 Draft diff + regen throttle | ✅ 2026-07-29 | schema v4 `draft_before_regen` / `draft_regenerated_at`; 60s cooldown; case_detail side-by-side |
 | Task 1 / FU6 live soak H1 | ⬜ | Human-owned; still required before Fas 3 / Task 7 |
 | Task 7 FU9 auto-send wire | ⬜ | Gated — do not start |
+| v2.2 B1 live probe_mail + env matrix | ✅ 2026-07-29 | `secret_probes.probe_mail` forces `use_mock` bool; `.env.example` provider matrix; `tests/test_probe_mail.py` |
+| v2.2 B2 bulk close | ✅ pre-existing + test 2026-07-29 | `CaseService.bulk_close` + `/cases/bulk-close` + cases.html; `test_bulk_close_closes_open_cases_without_send` |
+| v2.2 Fas C FU9 | ⬜ | Same gate as Task 7 — do not start |
+| v2.2 Fas A H1–H4 | ⬜ | Human-owned (Oscar + Jonatan) |
+| v2.3 Fas 0 land v2.2 | ✅ 2026-07-29 | Commit/push B1 + docs + bulk test + v2.2/v2.3 artifacts |
+| v2.3 Fas A soak | ⬜ | Same as Task 1 / FU6 — Oscar |
+| v2.3 Fas C FU9 | ⬜ | Gated — do not start |
+| v2.3 Fas D re-evaluate | ⬜ | After KPI |
