@@ -380,6 +380,13 @@ Sequenced roadmap after this finish plan’s code DoD:
 - Plan: [`docs/superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md`](superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md)
 - Next: **Oscar A1 live soak**; agent must not wire FU9 until A1–A3 + written enable
 
+### Core 3.0 — fördjupa Azom / azom.no (2026-07-29)
+
+- Ideation: [`docs/ideation/2026-07-29-azom-core-30-deepen.md`](ideation/2026-07-29-azom-core-30-deepen.md)
+- Scope: **single customer Azom only** — deepen support core + live azom.no; multi-tenant SaaS remains parked
+- Sequence: soak → NO enable (Oscar+creds) → FU7 tune / Path B2 → gated FU9 → KPI re-eval
+- Agent now: ideation + pointers only; **no** FU9 wire; **no** repo `enabled: true` for NO/DK without Oscar
+
 ### Execution log (mail-support roadmap)
 
 | Task | Status | Notes |
@@ -399,3 +406,8 @@ Sequenced roadmap after this finish plan’s code DoD:
 | v2.3 Fas A soak | ⬜ | Same as Task 1 / FU6 — Oscar |
 | v2.3 Fas C FU9 | ⬜ | Gated — do not start |
 | v2.3 Fas D re-evaluate | ⬜ | After KPI |
+| Core 3.0 ideation (Azom/azom.no deepen) | ✅ 2026-07-29 | `docs/ideation/2026-07-29-azom-core-30-deepen.md` — no SaaS |
+| Core 3.0 Fas 1 soak/baseline | ⬜ | Same as FU6 / v2.3 Fas A — Oscar + Jonatan |
+| Core 3.0 Fas 2 azom.no enable | ⬜ | Credentials + Oscar OK first |
+| Core 3.0 Fas 3 quality (FU7/B2) | ⬜ | After soak samples |
+| Core 3.0 Fas 4 FU9 | ⬜ | Hard-gated |
