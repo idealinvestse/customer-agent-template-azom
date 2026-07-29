@@ -69,18 +69,40 @@ def _check_draft(draft: str, fixture: dict[str, Any]) -> dict[str, Any]:
     checks["no_fabricated_tracking"] = len(fabricated) == 0
 
     # 6. Language match (if specified)
-    exp_lang = fixture.get("language", "sv")
+    exp_lang = str(fixture.get("language") or "sv").lower()
+    lowered = text.lower()
     if exp_lang == "sv":
-        checks["language_sv"] = any(w in text.lower() for w in ["hej", "tack", "vänlig", "med vänlig", "ärende"])
+        checks["language_sv"] = any(
+            w in lowered for w in ["hej", "tack", "vänlig", "med vänlig", "ärende"]
+        )
+    elif exp_lang in {"nb", "no"}:
+        checks["language_nb"] = any(
+            w in lowered for w in ["hei", "takk", "vennlig", "ordre", "hilsen"]
+        )
+    elif exp_lang in {"da", "dk"}:
+        checks["language_da"] = any(
+            w in lowered for w in ["hej", "tak", "venlig", "ordre", "hilsen"]
+        )
     elif exp_lang == "en":
-        checks["language_en"] = any(w in text.lower() for w in ["hello", "thank", "regards", "case"])
+        checks["language_en"] = any(
+            w in lowered for w in ["hello", "thank", "regards", "case"]
+        )
     else:
         checks["language_ok"] = True
 
     # 7. Does not contain abuse/legal promises (if flagged)
     if fixture.get("must_not_promise_refund"):
         checks["no_refund_promise"] = not any(
-            w in text.lower() for w in ["återbetala", "refund", "pengarna tillbaka", "compensate"]
+            w in lowered
+            for w in [
+                "återbetala",
+                "refund",
+                "pengarna tillbaka",
+                "compensate",
+                "tilbakebetaling",
+                "refunderer",
+                "pengene tilbake",
+            ]
         )
     else:
         checks["no_refund_promise"] = True
@@ -114,8 +136,13 @@ def evaluate_drafts(
         drafts = []
         for item in fx:
             msg = str(item.get("text") or "")
-            oid = item.get("order_id")
-            result = svc.handle(msg, order_id=oid, language=item.get("language", "sv"))
+            # Order id must appear in text (extract_order_id); do not pass
+            # unsupported order_id= into SupportService.handle.
+            result = svc.handle(
+                msg,
+                language=str(item.get("language") or "sv"),
+                actor="agent",
+            )
             drafts.append(result.reply or "")
     results = []
     total_score = 0.0

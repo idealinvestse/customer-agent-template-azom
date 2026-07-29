@@ -1,0 +1,8 @@
+{
+  "id": "return_nb",
+  "text": "Jeg vil bruke angreretten og returnere ordre 1001.",
+  "order_id": "1001",
+  "language": "nb",
+  "expected_category": "return",
+  "must_not_promise_refund": true
+}

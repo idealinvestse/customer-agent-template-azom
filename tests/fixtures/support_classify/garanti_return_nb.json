@@ -1,0 +1,8 @@
+{
+  "id": "garanti_return_nb",
+  "text": "Reklamasjon på ordre 5502 — produktet feilet innen garanti.",
+  "expected_category": "return",
+  "order_id_in_text": "5502",
+  "suggest_with_llm_confidence": 0.93,
+  "expect_suggest_approve": false
+}

@@ -1,6 +1,10 @@
 # Functional mailboxes for case ingest (N configurable).
 # Credentials still come from env / secrets.env; each mailbox can override provider.
 #
+# Enable gate for NO/DK: set credentials in secrets.env (or dedicated env_prefix when
+# implemented), then flip enabled: true for that mailbox only. Do not enable without
+# working IMAP/SMTP or Graph credentials — poll failures escalate to Oscar.
+#
 # Example:
 # mailboxes:
 #   - id: support_se
@@ -21,3 +25,28 @@ mailboxes:
     market: se
     language: sv
     enabled: true
+
+  # Enable when NO mail credentials are in secrets.env (see docs/CASES.md)
+  - id: support_no
+    label: Support NO
+    address: support@azom.no
+    site: azom
+    market: no
+    language: nb
+    enabled: false
+
+  - id: info_no
+    label: Info NO
+    address: info@azom.no
+    site: azom
+    market: no
+    language: nb
+    enabled: false
+
+  - id: support_dk
+    label: Support DK
+    address: support@azom.dk
+    site: azom
+    market: dk
+    language: da
+    enabled: false

@@ -37,6 +37,7 @@ CRITICAL_KEYWORDS = (
     "advokat",
     "gdpr complaint",
     "datainspektionen",
+    "datatilsynet",
     "chargeback",
     "police",
     "threat",
@@ -156,17 +157,79 @@ def classify_message(text: str) -> SupportCategory:
     t = text.lower()
     if any(k in t for k in CRITICAL_KEYWORDS):
         return SupportCategory.ABUSE
-    if any(k in t for k in ("return", "refund", "retur", "återbetal", "reklamation")):
+    if any(
+        k in t
+        for k in (
+            "return",
+            "refund",
+            "retur",
+            "återbetal",
+            "reklamation",
+            "reklamasjon",
+            "angrerett",
+            "ångerrätt",
+            "forbrukerkjøp",
+            "forbrukerkjøpsloven",
+        )
+    ):
         return SupportCategory.RETURN
-    if any(k in t for k in ("ship", "leverans", "frakt", "tracking", "spårning")):
+    if any(
+        k in t
+        for k in (
+            "ship",
+            "leverans",
+            "leveranse",
+            "frakt",
+            "tracking",
+            "spårning",
+            "sporing",
+            "sporings",
+        )
+    ):
         return SupportCategory.SHIPPING
-    if any(k in t for k in ("invoice", "faktura", "payment", "betalning", "billing")):
+    if any(
+        k in t
+        for k in (
+            "invoice",
+            "faktura",
+            "payment",
+            "betalning",
+            "betaling",
+            "billing",
+        )
+    ):
         return SupportCategory.BILLING
-    if any(k in t for k in ("order", "status", "where is my", "var är min")):
+    if any(
+        k in t
+        for k in (
+            "order",
+            "ordre",
+            "status",
+            "where is my",
+            "var är min",
+            "hvor er min",
+        )
+    ):
         return SupportCategory.ORDER_STATUS
-    if any(k in t for k in ("broken", "bug", "error", "fungerar inte", "login")):
+    if any(k in t for k in ("broken", "bug", "error", "fungerar inte", "fungerer ikke", "login")):
         return SupportCategory.TECHNICAL
-    if any(k in t for k in ("product", "produkt", "size", "storlek", "spec")):
+    if any(
+        k in t
+        for k in (
+            "product",
+            "produkt",
+            "size",
+            "storlek",
+            "spec",
+            "carplay",
+            "dab+",
+            "dab ",
+            "kompatibilitet",
+            "kompatibel",
+            "bilmodell",
+            "garanti",
+        )
+    ):
         return SupportCategory.PRODUCT
     return SupportCategory.OTHER
 
@@ -201,50 +264,145 @@ def draft_reply(
 ) -> str:
     name = customer_name or "du"
     lang = language.lower()
-    oid = order_id or "ditt ordernummer"
+    ask_oid = not order_id
 
     if lang in {"no", "nb"}:
         greeting = f"Hei {name},"
         sign = "Vennlig hilsen\nAzom Support"
-    elif lang in {"da", "dk"}:
-        greeting = f"Hej {name},"
-        sign = "Venlig hilsen\nAzom Support"
-    elif lang in {"en"}:
-        greeting = f"Hi {name},"
-        sign = "Best regards\nAzom Support"
-    else:
-        greeting = f"Hej {name},"
-        sign = "Vänliga hälsningar\nAzom Support"
-
-    ask_oid = not order_id
-    if lang in {"en"}:
-        ask_line = (
-            " Could you reply with your order number (e.g. 1001) so we can check status?"
-            if ask_oid
-            else ""
-        )
-    elif lang in {"no", "nb"}:
+        oid = order_id or "ordrenummeret ditt"
         ask_line = (
             " Kan du sende ordrenummeret (f.eks. 1001) så vi kan sjekke status?"
             if ask_oid
             else ""
         )
+        bodies = {
+            SupportCategory.ORDER_STATUS: (
+                f"Takk for meldingen. Vi ser på ordre {oid} og kommer tilbake "
+                f"så snart status er bekreftet."
+                if not ask_oid
+                else "Takk for meldingen om ordren din. Vi hjelper deg gjerne —"
+                + ask_line.lstrip()
+            ),
+            SupportCategory.SHIPPING: (
+                "Takk! Vi sjekker leveransestatus og sporingsinformasjon for deg."
+                + (ask_line if ask_oid else "")
+            ),
+            SupportCategory.RETURN: (
+                "Vi hjelper deg med retur/reklamasjon (inkl. angrerett innen 14 dager "
+                "der det gjelder). Oppgi gjerne ordrenummer og bilder ved skade. "
+                "Vi bekrefter neste steg etter gjennomgang — uten å love automatisk refusjon."
+            ),
+            SupportCategory.BILLING: (
+                "Vi ser på faktura/betaling og kommer tilbake med bekreftelse."
+            ),
+            SupportCategory.PRODUCT: (
+                "Takk for produktspørsmålet. For bilmultimedia (f.eks. CarPlay/DAB+) "
+                "trenger vi ofte bilmodell og årgang for å bekrefte kompatibilitet. "
+                "Vi kommer tilbake med korrekt informasjon."
+            ),
+            SupportCategory.TECHNICAL: (
+                "Vi feilsøker gjerne. Beskriv steg, enhet og eventuelle feilmeldinger."
+            ),
+            SupportCategory.OTHER: (
+                "Takk for at du kontaktet oss. Vi kommer tilbake så snart vi kan."
+            ),
+            SupportCategory.ABUSE: (
+                "Saken din er eskalert til ansvarlig personell."
+            ),
+        }
     elif lang in {"da", "dk"}:
+        greeting = f"Hej {name},"
+        sign = "Venlig hilsen\nAzom Support"
+        oid = order_id or "dit ordrenummer"
         ask_line = (
             " Kan du sende ordrenummeret (f.eks. 1001), så vi kan tjekke status?"
             if ask_oid
             else ""
         )
+        bodies = {
+            SupportCategory.ORDER_STATUS: (
+                f"Tak for din besked. Vi kigger på ordre {oid} og vender tilbage, "
+                f"så snart status er bekræftet."
+                if not ask_oid
+                else "Tak for din besked om din ordre. Vi hjælper dig gerne —"
+                + ask_line.lstrip()
+            ),
+            SupportCategory.SHIPPING: (
+                "Tak! Vi tjekker leveringsstatus og tracking for dig."
+                + (ask_line if ask_oid else "")
+            ),
+            SupportCategory.RETURN: (
+                "Vi hjælper dig med retur/reklamation. Vedlæg gerne ordrenummer "
+                "og fotos ved skade. Vi bekræfter næste skridt uden automatisk refusionsløfte."
+            ),
+            SupportCategory.BILLING: (
+                "Vi ser på faktura/betaling og vender tilbage med bekræftelse."
+            ),
+            SupportCategory.PRODUCT: (
+                "Tak for dit produktspørgsmål. Ved bilmultimedia skal vi ofte bruge "
+                "bilmodel og årgang for kompatibilitet. Vi vender tilbage med korrekte detaljer."
+            ),
+            SupportCategory.TECHNICAL: (
+                "Vi fejlfinder gerne. Beskriv trin, enhed og eventuelle fejlmeddelelser."
+            ),
+            SupportCategory.OTHER: (
+                "Tak fordi du kontaktede os. Vi vender tilbage snarest."
+            ),
+            SupportCategory.ABUSE: (
+                "Din sag er eskaleret til ansvarligt personale."
+            ),
+        }
+    elif lang in {"en"}:
+        greeting = f"Hi {name},"
+        sign = "Best regards\nAzom Support"
+        oid = order_id or "your order number"
+        ask_line = (
+            " Could you reply with your order number (e.g. 1001) so we can check status?"
+            if ask_oid
+            else ""
+        )
+        bodies = {
+            SupportCategory.ORDER_STATUS: (
+                f"Thanks for reaching out. We are checking order {oid} and will update you shortly."
+                if not ask_oid
+                else "Thanks for reaching out about your order." + ask_line
+            ),
+            SupportCategory.SHIPPING: (
+                "Thanks! We are checking shipping and tracking details for you."
+                + (ask_line if ask_oid else "")
+            ),
+            SupportCategory.RETURN: (
+                "We can help with returns. Please include order number and photos if damaged. "
+                "We confirm next steps after review — no automatic refund promise."
+            ),
+            SupportCategory.BILLING: (
+                "We will review the invoice/payment and confirm shortly."
+            ),
+            SupportCategory.PRODUCT: (
+                "Thanks for your product question. For car multimedia (e.g. CarPlay/DAB+) "
+                "we often need vehicle model and year for compatibility. We will follow up with accurate details."
+            ),
+            SupportCategory.TECHNICAL: (
+                "Happy to troubleshoot. Please share steps, device, and any error messages."
+            ),
+            SupportCategory.OTHER: (
+                "Thanks for contacting us. We will get back to you soon."
+            ),
+            SupportCategory.ABUSE: (
+                "Your case has been escalated to a human specialist."
+            ),
+        }
     else:
+        greeting = f"Hej {name},"
+        sign = "Vänliga hälsningar\nAzom Support"
+        oid = order_id or "ditt ordernummer"
         ask_line = (
             " Kan du svara med ordernumret (t.ex. 1001) så vi kan kolla status?"
             if ask_oid
             else ""
         )
-
-    bodies = {
-        SupportCategory.ORDER_STATUS: (
-            (
+        bodies = {
+            SupportCategory.ORDER_STATUS: (
                 f"Tack för ditt meddelande. Vi tittar på order {oid} och återkommer "
                 f"så snart status är bekräftad."
                 if not ask_oid
@@ -252,56 +410,35 @@ def draft_reply(
                     "Tack för ditt meddelande om din order. "
                     "Vi hjälper dig gärna —" + ask_line.lstrip()
                 )
-            )
-            if lang not in {"en"}
-            else (
-                f"Thanks for reaching out. We are checking order {oid} and will update you shortly."
-                if not ask_oid
-                else "Thanks for reaching out about your order." + ask_line
-            )
-        ),
-        SupportCategory.SHIPPING: (
-            (
+            ),
+            SupportCategory.SHIPPING: (
                 "Tack! Vi kontrollerar leveransstatus och spårningsinformation åt dig."
                 + (ask_line if ask_oid else "")
-            )
-            if lang not in {"en"}
-            else (
-                "Thanks! We are checking shipping and tracking details for you."
-                + (ask_line if ask_oid else "")
-            )
-        ),
-        SupportCategory.RETURN: (
-            "Vi hjälper dig med retur/reklamation. Bifoga gärna ordernummer och foton om det gäller skada."
-            if lang not in {"en"}
-            else "We can help with returns. Please include order number and photos if damaged."
-        ),
-        SupportCategory.BILLING: (
-            "Vi tar en titt på faktura/betalning och återkommer med bekräftelse."
-            if lang not in {"en"}
-            else "We will review the invoice/payment and confirm shortly."
-        ),
-        SupportCategory.PRODUCT: (
-            "Tack för din produktfråga. Vi återkommer med korrekt information."
-            if lang not in {"en"}
-            else "Thanks for your product question. We will follow up with accurate details."
-        ),
-        SupportCategory.TECHNICAL: (
-            "Vi felsöker gärna. Beskriv gärna steg, enhet och eventuella felmeddelanden."
-            if lang not in {"en"}
-            else "Happy to troubleshoot. Please share steps, device, and any error messages."
-        ),
-        SupportCategory.OTHER: (
-            "Tack för att du kontaktade oss. Vi återkommer så snart vi kan."
-            if lang not in {"en"}
-            else "Thanks for contacting us. We will get back to you soon."
-        ),
-        SupportCategory.ABUSE: (
-            "Ditt ärende har eskalerats till ansvarig personal."
-            if lang not in {"en"}
-            else "Your case has been escalated to a human specialist."
-        ),
-    }
+            ),
+            SupportCategory.RETURN: (
+                "Vi hjälper dig med retur/reklamation (inkl. ångerrätt 14 dagar där det gäller). "
+                "Bifoga gärna ordernummer och foton om det gäller skada. "
+                "Vi bekräftar nästa steg efter granskning — utan automatiskt återbetalningslöfte."
+            ),
+            SupportCategory.BILLING: (
+                "Vi tar en titt på faktura/betalning och återkommer med bekräftelse."
+            ),
+            SupportCategory.PRODUCT: (
+                "Tack för din produktfråga. För bilmultimedia (t.ex. CarPlay/DAB+) "
+                "behöver vi ofta bilmodell och årsmodell för kompatibilitet. "
+                "Vi återkommer med korrekt information."
+            ),
+            SupportCategory.TECHNICAL: (
+                "Vi felsöker gärna. Beskriv gärna steg, enhet och eventuella felmeddelanden."
+            ),
+            SupportCategory.OTHER: (
+                "Tack för att du kontaktade oss. Vi återkommer så snart vi kan."
+            ),
+            SupportCategory.ABUSE: (
+                "Ditt ärende har eskalerats till ansvarig personal."
+            ),
+        }
+
     body = bodies.get(category, bodies[SupportCategory.OTHER])
     return f"{greeting}\n\n{body}\n\n{sign}"
 

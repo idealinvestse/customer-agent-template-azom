@@ -4,7 +4,8 @@ Mail → support case → classify/draft → human approve → send.
 
 **Specs:**  
 - [`superpowers/specs/2026-07-11-cases-v2-design.md`](superpowers/specs/2026-07-11-cases-v2-design.md)  
-- Path B plan: [`superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md`](superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md)
+- Path B plan: [`superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md`](superpowers/plans/2026-07-11-001-feat-cases-ai-quality-path-b-plan.md)  
+- Vidareutveckling (2026-07-28): [`superpowers/specs/2026-07-28-mail-support-roadmap-design.md`](superpowers/specs/2026-07-28-mail-support-roadmap-design.md) · [`superpowers/plans/2026-07-28-001-mail-support-vidareutveckling-plan.md`](superpowers/plans/2026-07-28-001-mail-support-vidareutveckling-plan.md)
 
 **Code:** `skills/ecom_ops/cases/` · **Config:** `config/mailboxes.yaml`, `config/cases_ai.yaml` · **DB:** `$AZOM_DATA_DIR/cases.db`
 
@@ -49,9 +50,23 @@ mailboxes:
     language: sv
     enabled: true
     # provider: gmail   # optional override of MAIL_PROVIDER
+
+  # azom.no — keep enabled: false until IMAP/SMTP (or Graph) credentials exist in secrets.env
+  - id: support_no
+    address: support@azom.no
+    market: no
+    language: nb
+    enabled: false
+  - id: info_no
+    address: info@azom.no
+    market: no
+    language: nb
+    enabled: false
 ```
 
-Credentials stay in env / `secrets.env` (shared; per-mailbox secret prefixes deferred).
+Credentials stay in env / `secrets.env` (shared; per-mailbox secret prefixes deferred — mail roadmap Fas 1).
+
+**Enable gate:** Oscar adds working mail creds → set `enabled: true` for `support_no` / `info_no` only. Drafts then use bokmål via `language: nb`.
 
 ---
 

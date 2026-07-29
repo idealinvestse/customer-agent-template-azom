@@ -7,6 +7,8 @@ Anonymized subject+body samples for regression of:
 
 No raw customer PII. Thresholds must only change with notes here or in `docs/solutions/`.
 
+Includes SV Path B pack plus azom.no (bokmål) scenarios from 2026-07-29 vNext (angrerett, sporing, CarPlay compat, Datatilsynet).
+
 Schema per JSON file:
 
 ```json

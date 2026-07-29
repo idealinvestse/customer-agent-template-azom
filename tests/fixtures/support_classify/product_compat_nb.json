@@ -1,0 +1,8 @@
+{
+  "id": "product_compat_nb",
+  "text": "Passer CarPlay til bilmodell VW Golf 2019? Trenger kompatibilitet.",
+  "expected_category": "product",
+  "order_id_in_text": null,
+  "suggest_with_llm_confidence": 0.88,
+  "expect_suggest_approve": false
+}

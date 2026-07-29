@@ -1,0 +1,8 @@
+{
+  "id": "order_status_nb",
+  "text": "Hei, hvor er min ordre 1001? Den skulle ha kommet forrige uke.",
+  "order_id": "1001",
+  "language": "nb",
+  "expected_category": "order_status",
+  "must_not_promise_refund": true
+}

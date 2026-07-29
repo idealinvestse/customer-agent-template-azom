@@ -42,6 +42,72 @@ def test_support_draft_reply(telemetry, escalation):
     assert not result.escalated
 
 
+def test_draft_reply_bokmal_bodies():
+    from ecom_ops.actions.support import draft_reply
+
+    text = draft_reply(
+        category=SupportCategory.ORDER_STATUS,
+        customer_name="Ola",
+        order_id="1001",
+        language="nb",
+    )
+    assert "Hei Ola" in text
+    assert "Takk" in text
+    assert "ordre 1001" in text.lower()
+    assert "Tack för" not in text
+    assert "Vennlig hilsen" in text
+
+    ret = draft_reply(
+        category=SupportCategory.RETURN,
+        customer_name="Ola",
+        order_id="1001",
+        language="nb",
+    )
+    assert "angrerett" in ret.lower()
+    assert "refusjon" in ret.lower() or "reklamasjon" in ret.lower()
+    assert "återbetal" not in ret.lower()
+    assert "produktspørsmålet" in draft_reply(
+        category=SupportCategory.PRODUCT,
+        customer_name="Ola",
+        order_id=None,
+        language="nb",
+    )
+
+
+def test_draft_reply_danish_bodies():
+    from ecom_ops.actions.support import draft_reply
+
+    text = draft_reply(
+        category=SupportCategory.ORDER_STATUS,
+        customer_name="Anne",
+        order_id="1001",
+        language="da",
+    )
+    assert "Hej Anne" in text
+    assert "Tak" in text
+    assert "ordre 1001" in text.lower()
+    assert "Tack för" not in text
+    assert "Venlig hilsen" in text
+
+    ret = draft_reply(
+        category=SupportCategory.RETURN,
+        customer_name="Anne",
+        order_id="1001",
+        language="da",
+    )
+    assert "retur" in ret.lower() or "reklamation" in ret.lower()
+    assert "refusionsløfte" in ret.lower() or "automatisk" in ret.lower()
+    assert "återbetal" not in ret.lower()
+
+
+def test_classify_norwegian_keywords():
+    assert classify_message("Jeg vil bruke angreretten på ordre 1001") == SupportCategory.RETURN
+    assert classify_message("Hvor er min ordre 2244?") == SupportCategory.ORDER_STATUS
+    assert classify_message("Trenger sporing på leveranse 2244") == SupportCategory.SHIPPING
+    assert classify_message("Passer CarPlay til bilmodell 2019?") == SupportCategory.PRODUCT
+    assert classify_message("Jeg kontakter Datatilsynet om dette") == SupportCategory.ABUSE
+
+
 def test_soft_draft_asks_order_number_when_missing(telemetry, escalation, monkeypatch):
     """SB5: status/shipping without order_id asks for number; never suggest."""
     monkeypatch.setenv("AZOM_USE_MOCK", "1")

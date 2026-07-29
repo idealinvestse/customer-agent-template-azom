@@ -347,8 +347,23 @@ Därefter: Jonatan-vecka med suggest-filter + regenerate; justera trösklar (FU7
 | FU4 daily brief cases + readiness | ✅ | `bin/daily-brief-azom.sh` |
 | FU5 budget near-cap | ✅ | `ecom_ops.budget`, status CLI, `/status`, overview warn, limits.yaml |
 | FU6 live soak | ⬜ | Needs prod access (Oscar) |
-| FU7–FU9 | ⬜ | Classify tune / friction / auto-send later |
+| FU7 fixtures/prompts (Approach A) | ✅ partial 2026-07-29 | `azom-no-support-vnext`: prompts 1.1, nb/da templates, NO classify+draft fixtures, draft-eval fix; NO mailboxes remain `enabled: false` |
+| FU7 live threshold tune | ⬜ | Needs live soak samples (after FU6); do not widen suggest allowlist early |
+| FU8 friction polish | ⬜ | After Jonatan feedback |
+| FU9 auto-send wire | ⬜ | Gated — all FU9 preconditions + Oscar written enable |
 
 ---
 
 *Plan authored 2026-07-13. FU1–FU5 shipped in finish execution; next = FU6 live soak when VPS available.*
+
+---
+
+## 16. Mail & support vidareutveckling (2026-07-28)
+
+Sequenced roadmap after this finish plan’s code DoD:
+
+- Spec: [`docs/superpowers/specs/2026-07-28-mail-support-roadmap-design.md`](superpowers/specs/2026-07-28-mail-support-roadmap-design.md)
+- Plan: [`docs/superpowers/plans/2026-07-28-001-mail-support-vidareutveckling-plan.md`](superpowers/plans/2026-07-28-001-mail-support-vidareutveckling-plan.md)
+- Azom.no support quality (2026-07-29): [`docs/superpowers/specs/2026-07-29-azom-no-support-vnext-design.md`](superpowers/specs/2026-07-29-azom-no-support-vnext-design.md) — FU7 fixture/prompt expansion; does **not** enable live NO poll or FU9
+
+**Order:** live soak/baseline/classify (Fas 0) → mail OAuth persist + per-mailbox creds (Fas 1) → triage friction (Fas 2) → FU9 wire only if gated (Fas 3) → re-evaluate (Fas 4).

@@ -1,0 +1,8 @@
+{
+  "id": "order_status_nb",
+  "text": "Hei, hvor er min ordre 3301? Den skulle ha kommet forrige uke.",
+  "expected_category": "order_status",
+  "order_id_in_text": "3301",
+  "suggest_with_llm_confidence": 0.91,
+  "expect_suggest_approve": true
+}

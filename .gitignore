@@ -23,3 +23,5 @@ logs/
 # MCP / tool artifacts
 .playwright-mcp/
 ga-ads-api-feasibility.json
+
+.worktrees/
