@@ -21,6 +21,7 @@
 - **SOUL:** `SOUL.md` — svenska, human-in-the-loop, ingen silent send, order-sanning via tools
 - **Skill card:** `skills/ecom-ops/SKILL.md`
 - Telegram hybrid: `docs/TELEGRAM_OPENCLAW.md`
+- Meta Messenger (daily-driver ops): `docs/MESSENGER_OPENCLAW.md` — fail-closed PSID allowlist/map i prod
 
 ## V1 (core — kvar i v2)
 - order-status, product-desc, support, SSH, mail via `skills/ecom_ops`
@@ -33,8 +34,9 @@
 - Settings UI: Jonatan (non-secret) · Oscar (secrets + resolve escalations)
 - Gmail OAuth browser consent → `AZOM_DATA_DIR/oauth/gmail.json`
 - Telegram bot: OpenClaw-style (`/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` `/verbose` `/think` `/skill` `/context` …) + `/order` `/cases` `/health` `/brief` (`python -m ecom_ops.bot`)
+- Meta Messenger: webhook `/webhooks/messenger`, shared bot brain with Telegram, dashboard handoff `?from=messenger`, fail-closed `MESSENGER_ALLOWED_PSIDS` / `MESSENGER_ACTOR_MAP` i prod
 - Hybrid free-text: tool prefetch (order/cases/ops) + LLM phrasing; approve endast explicit path
-- Oscar secrets: anslutningstester (`POST /oscar/secrets/test`) för Woo/mail/Telegram/OpenRouter/SSH/Gmail OAuth
+- Oscar secrets: anslutningstester (`POST /oscar/secrets/test`) för Woo/mail/Telegram/Messenger/OpenRouter/SSH/Gmail OAuth
 - Dashboard ops polish: nav-badges (ärenden/eskaleringar), snabb översikt (presence + `probe_last.json`), live onboarding/Gmail-status via Alpine, case-triage + approve-confirm
 - One-shot Ubuntu install + systemd + prod Docker (`azom-agent:2.0`)
 - CLI: `python -m ecom_ops version` · `python -m ecom_ops status` · `python -m ecom_ops smoke`
@@ -46,7 +48,7 @@
 - Suggest-approve badge (`config/cases_ai.yaml`); auto-send rails **default off** + `AZOM_AUTO_SEND_KILL`
 - Config: `config/mailboxes.yaml` · DB: `AZOM_DATA_DIR/cases.db`
 - Dashboard: `/cases` (filter, spara draft, RBAC close) · översikt med counts
-- Telegram: `/cases` · `show` · `approve` · `close` (+ NL suggest/confirm, aldrig silent send)
+- Telegram / Messenger: `/cases` · `show` · `approve` · `close` (+ NL suggest/confirm, aldrig silent send)
 - systemd: `azom-cases-poll.timer` (5 min)
 - CLI:
 ```bash
@@ -66,11 +68,16 @@ python -m ecom_ops --mock mail fetch
 python -m ecom_ops status
 ```
 
-## Telegram env (prod)
+## Telegram / Messenger env (prod)
 ```bash
 TELEGRAM_BOT_TOKEN=...
-TELEGRAM_ALLOWED_CHAT_IDS=...          # rekommenderas
-TELEGRAM_ACTOR_MAP=chat:jonatan,...    # unmapped → jonatan
+TELEGRAM_ALLOWED_CHAT_IDS=...          # krävs i prod
+TELEGRAM_ACTOR_MAP=chat:jonatan,...    # unmapped denied when map set
+MESSENGER_PAGE_ACCESS_TOKEN=...
+MESSENGER_APP_SECRET=...
+MESSENGER_VERIFY_TOKEN=...
+MESSENGER_ALLOWED_PSIDS=...            # Jonatan PSID only in prod
+MESSENGER_ACTOR_MAP=psid:jonatan,...
 ```
 
 ## Prod paths (Ubuntu)
@@ -80,14 +87,17 @@ TELEGRAM_ACTOR_MAP=chat:jonatan,...    # unmapped → jonatan
 - Env: `/opt/azom-agent/.env` (`AZOM_USE_MOCK=0`)
 
 ## Status (kod mot nuvarande mål)
-- **Shipped:** Path B + Sprint A/B/C + SB5 (approve-flow, ★-measure, order extract/email lookup, richer context, classify fixtures, poll partial rails, Telegram actor fail-closed, soft draft utan order_id)
+- **Shipped:** Path B + Sprint A/B/C + SB5 (approve-flow, ★-measure, order extract/email lookup, richer context, classify fixtures, poll partial rails, Telegram/Messenger actor fail-closed, soft draft utan order_id)
 - **V2.1 (klart):** Woo/WP capacity review + implementation — se nedan
+- **V2.2 (klart på main):** live `probe_mail`, mail env matrix, bulk close — `docs/superpowers/plans/2026-07-29-001-mail-kundhantering-v22-plan.md`
+- **V2.3 Live-proof / Pilot Complete:** code DoD green; **next = Oscar A1 live soak** — `docs/superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md`
 - Finish overview: `docs/DEVELOPMENT_PLAN_FINISH.md`
 - Sprint plan: `docs/superpowers/plans/2026-07-16-001-sprint-a-approve-flow-and-measure-plan.md`
-- Live soak (människa): `docs/solutions/2026-07-16-live-soak-checklist.md`
+- Live soak (människa / FU6): `docs/solutions/2026-07-16-live-soak-checklist.md` — agent får inte markera klar utan Oscar
 - Mock soft-soak: `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
-- **FU9 auto-send:** rails only — `docs/solutions/2026-07-16-fu9-auto-send-preconditions.md` (inte wire)
-- Inte i scope: V3 multi-tenant, GA4/engagement-program, default-on auto-send
+- **FU9 auto-send:** rails only — `docs/solutions/2026-07-16-fu9-auto-send-preconditions.md` (**inte wire** utan Oscar written enable + soak-preconditions)
+- Core 3.0 (single-customer deepen, NO enable later): `docs/ideation/2026-07-29-azom-core-30-deepen.md` — NO/DK mailboxes remain `enabled: false` until Oscar + creds
+- Inte i scope: V3 multi-tenant, GA4/engagement-program, FAQ/KB, default-on auto-send
 
 ## V2.1 — Woo/WordPress capacity implementation
 - **Rapport:** `docs/solutions/2026-07-17-woo-wordpress-capacity-review.md`
@@ -100,4 +110,4 @@ TELEGRAM_ACTOR_MAP=chat:jonatan,...    # unmapped → jonatan
 - **P2.8:** Fler Woo-endpoints — order notes, refunds, customers, coupons, reports, product variations, webhooks CRUD
 - **P3.9:** `get_system_status()` — Woo/WordPress version + active plugins; `WooSystemStatus`-dataclass
 - **P3.10:** `probe_wordpress` i `secret_probes.py`; `WP_USERNAME`/`WP_APP_PASSWORD`/`WOO_WEBHOOK_SECRET` i secret-redaction (`security.py` + `settings_store.py`)
-- **Tester:** `tests/test_woo_v21_extensions.py` (30), `tests/test_wordpress_client.py` (22), `tests/test_woo_webhooks.py` (19), `tests/test_order_context_v21.py` (11) — 350 totalt, alla gröna; täckning 78–91% på nya moduler
+- **Tester:** `tests/test_woo_v21_extensions.py` (30), `tests/test_wordpress_client.py` (22), `tests/test_woo_webhooks.py` (19), `tests/test_order_context_v21.py` (11); suite ~410 `test_*` totalt (CI: ruff + cov ≥ 65%); täckning 78–91% på V2.1-moduler

@@ -47,6 +47,8 @@
 
 Agent may add fixtures after A3; must not mark H1 done without Oscar.
 
+**2026-07-29 agent note:** A1–A4 remain open. Explicit blocker recorded in soak checklist outcome (`blocked_on: Oscar prod access`) and baseline notes — not a substitute for live soak.
+
 ---
 
 ### Task C: FU9 wire (gated)
@@ -58,17 +60,17 @@ Agent may add fixtures after A3; must not mark H1 done without Oscar.
 - Modify: `docs/solutions/2026-07-16-fu9-auto-send-preconditions.md`
 - Test: `tests/test_auto_send_rails.py`
 
-- [ ] **Step 1:** Deny-by-default test remains green
-- [ ] **Step 2:** Enable-path mock test (order_status + order_id + conf only)
-- [ ] **Step 3:** Single post-ingest call site; overlay only
-- [ ] **Step 4:** Rollback section in FU9 doc
-- [ ] **Step 5:** `pytest tests/test_auto_send_rails.py -v` → PASS
+- [x] **Step 1:** Deny-by-default test remains green (`pytest tests/test_auto_send_rails.py` 2026-07-29)
+- [ ] **Step 2:** Enable-path mock test (order_status + order_id + conf only) — only with wire plan
+- [ ] **Step 3:** Single post-ingest call site; overlay only — **do not start**
+- [x] **Step 4:** Rollback section in FU9 doc (2026-07-29)
+- [x] **Step 5:** `pytest tests/test_auto_send_rails.py -v` → PASS (deny path; no wire)
 
 ---
 
 ### Task D: Fas 4 re-evaluate (human)
 
-- [ ] Record stop / narrow continue / park GA4 / park V3 in finish-plan execution log
+- [x] **2026-07-29 interim:** Record stop / narrow continue / park GA4 / park V3 in finish-plan execution log → **park** expansion until A1–A4 KPI; continue SE human-approve only (see finish plan Fas D row)
 
 ---
 

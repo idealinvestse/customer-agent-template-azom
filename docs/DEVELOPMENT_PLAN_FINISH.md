@@ -304,7 +304,7 @@ Därefter: Jonatan-vecka med suggest-filter + regenerate; justera trösklar (FU7
 
 ## 13. Definition of Done — “systemet färdigt i nuvarande mål”
 
-### Kod / repo (2026-07-16)
+### Kod / repo (2026-07-29 Fas 0 verified)
 
 - [x] Path B U1–U6 merged; U7 baseline doc exists (siffra när möjlig — proxy tooling: `ecom_ops kpis`)  
 - [x] Human approve required; auto-send default off (FU9 preconditions only)  
@@ -313,10 +313,11 @@ Därefter: Jonatan-vecka med suggest-filter + regenerate; justera trösklar (FU7
 - [x] Suggest-approve rails + never-list regression fixtures (live threshold tune still data-gated)  
 - [x] Poll partial-fail visibility + Telegram actor fail-closed when map set  
 - [x] Docs: README / AGENTS / SYSTEM_OVERVIEW / this finish plan + sprint track  
+- [x] **v2.3 Fas 0 (2026-07-29):** Core 3.0 ideation landed; AGENTS drift fixed; gate pytest (`test_auto_send_rails`, `test_probe_mail`, bulk close) — next = Oscar A1  
 
 ### Människa / prod (kan inte stängas av agent ensam)
 
-- [ ] Live soak checklist **executed once** on prod host (Oscar + Jonatan) — [`docs/solutions/2026-07-16-live-soak-checklist.md`](solutions/2026-07-16-live-soak-checklist.md)  
+- [ ] Live soak checklist **executed once** on prod host (Oscar + Jonatan) — [`docs/solutions/2026-07-16-live-soak-checklist.md`](solutions/2026-07-16-live-soak-checklist.md) — **blocker documented 2026-07-29** (`blocked_on: Oscar prod access`)  
 - [ ] Baseline hours or KPI proxy filled after first live week  
 - [ ] Weekly cadence 3× without process chaos  
 
@@ -346,11 +347,12 @@ Därefter: Jonatan-vecka med suggest-filter + regenerate; justera trösklar (FU7
 | FU3 baseline-capture.md | ✅ | `docs/ideation/baseline-capture.md` (siffra TBD med Jonatan) |
 | FU4 daily brief cases + readiness | ✅ | `bin/daily-brief-azom.sh` |
 | FU5 budget near-cap | ✅ | `ecom_ops.budget`, status CLI, `/status`, overview warn, limits.yaml |
-| FU6 live soak | ⬜ | Needs prod access (Oscar) |
+| FU6 live soak | ⬜ | Needs prod access (Oscar) — **blocker listed** in soak checklist 2026-07-29 |
 | FU7 fixtures/prompts (Approach A) | ✅ partial 2026-07-29 | `azom-no-support-vnext`: prompts 1.1, nb/da templates, NO classify+draft fixtures, draft-eval fix; NO mailboxes remain `enabled: false` |
 | FU7 live threshold tune | ⬜ | Needs live soak samples (after FU6); do not widen suggest allowlist early |
 | FU8 friction polish | ✅ partial 2026-07-29 | Mail Task 6: draft diff + 60s regenerate throttle (dashboard) |
-| FU9 auto-send wire | ⬜ | Gated — all FU9 preconditions + Oscar written enable |
+| FU9 auto-send wire | ⬜ | Gated — all FU9 preconditions + Oscar written enable; **v2.3 Fas 3 = docs only** |
+| v2.3 Fas 0 verify (AGENTS + Core 3.0 + gate pytest) | ✅ 2026-07-29 | Agent: docs sync + deny-by-default / probe_mail / bulk-close green; next = Oscar A1 |
 
 ---
 
@@ -379,6 +381,7 @@ Sequenced roadmap after this finish plan’s code DoD:
 - Spec: [`docs/superpowers/specs/2026-07-29-mail-kundhantering-v23-design.md`](superpowers/specs/2026-07-29-mail-kundhantering-v23-design.md)
 - Plan: [`docs/superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md`](superpowers/plans/2026-07-29-002-mail-kundhantering-v23-plan.md)
 - Next: **Oscar A1 live soak**; agent must not wire FU9 until A1–A3 + written enable
+- **Fas 0 verified 2026-07-29** (AGENTS + Core 3.0 + gate pytest). Fas 3 remains docs-only until gates.
 
 ### Core 3.0 — fördjupa Azom / azom.no (2026-07-29)
 
@@ -403,11 +406,25 @@ Sequenced roadmap after this finish plan’s code DoD:
 | v2.2 Fas C FU9 | ⬜ | Same gate as Task 7 — do not start |
 | v2.2 Fas A H1–H4 | ⬜ | Human-owned (Oscar + Jonatan) |
 | v2.3 Fas 0 land v2.2 | ✅ 2026-07-29 | Commit/push B1 + docs + bulk test + v2.2/v2.3 artifacts |
-| v2.3 Fas A soak | ⬜ | Same as Task 1 / FU6 — Oscar |
-| v2.3 Fas C FU9 | ⬜ | Gated — do not start |
-| v2.3 Fas D re-evaluate | ⬜ | After KPI |
+| v2.3 Fas 0 verify (docs+gates) | ✅ 2026-07-29 | Core 3.0 ideation + AGENTS sync + gate pytest; **Fas 0 exit** |
+| v2.3 Fas A soak | ⬜ | Same as Task 1 / FU6 — Oscar — blocker documented in soak checklist |
+| v2.3 Fas C FU9 | ⬜ | Gated — do not start (preconditions doc updated; no wire) |
+| v2.3 Fas D re-evaluate | ⬜ deferred 2026-07-29 | **Decision log:** park product expansion (V3/GA4/FAQ/NO enable/FU9 wire) until A1 soak + baseline KPI exist; continue SE pilot human-approve loop only |
 | Core 3.0 ideation (Azom/azom.no deepen) | ✅ 2026-07-29 | `docs/ideation/2026-07-29-azom-core-30-deepen.md` — no SaaS |
 | Core 3.0 Fas 1 soak/baseline | ⬜ | Same as FU6 / v2.3 Fas A — Oscar + Jonatan |
 | Core 3.0 Fas 2 azom.no enable | ⬜ | Credentials + Oscar OK first |
-| Core 3.0 Fas 3 quality (FU7/B2) | ⬜ | After soak samples |
+| Core 3.0 Fas 3 quality (FU7/B2) | ⬜ | After soak samples — **Q1 blocked_on A3** (no threshold tune without live stick) |
 | Core 3.0 Fas 4 FU9 | ⬜ | Hard-gated |
+
+### v2.3 Live-proof agent closeout (2026-07-29)
+
+| Item | Agent status | Notes |
+|------|--------------|-------|
+| Fas 0 V0.1–V0.4 | ✅ | Core 3.0 docs on branch; AGENTS sync; gate pytest green |
+| A1 soak | ⬜ human | Blocker documented — not executed |
+| A2 baseline numbers | ⬜ human | Tooling ready; numbers not invented |
+| A3 classify stick | ⬜ human | No live samples → no fixture PR |
+| A4 cadence ×3 | ⬜ human | Placeholder row in baseline cadence log |
+| Q1 FU7 tune | ⬜ blocked_on A3 | No `cases_ai.yaml` threshold change |
+| G1 FU9 docs | ✅ | Rollback drill + gate table; still Not wired |
+| R1 Fas D | ✅ interim | Park V3/GA4/NO/FU9 wire until KPI |

@@ -90,7 +90,13 @@ False-positive suggest on return/billing/abuse must be **0**. If any, file ticke
 
 | date | host | n poll create | n★ sample | FP suggest | TTA median | notes |
 |------|------|---------------|-----------|------------|------------|-------|
-| _TBD_ | | | | | | |
+| 2026-07-29 | _blocked_on: Oscar prod access_ | — | — | — | — | Agent Fas 0 verified gates in repo only. **Do not treat soak as done.** Oscar + Jonatan must execute checklist above and replace this row. |
+
+### Explicit blocker (v2.3 Live-proof)
+
+- **Owner:** Oscar (ops) + Jonatan (approve sample)
+- **Blocked since:** 2026-07-29 (agent cannot close A1/FU6)
+- **Unblock:** Run pre-flight + soak script on prod; fill outcome row with real numbers; keep `auto_send_enabled: false`
 
 ## Not in soak
 

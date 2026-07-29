@@ -38,7 +38,7 @@ Record in **Cadence log** below:
 | baseline_median_time_to_approve_sec | Run `python -m ecom_ops kpis --days 7` after first live approve week |
 | baseline_cases_per_week | _TBD from kpis n_case_approved × scale_ |
 | source | telemetry.jsonl via `ecom_ops.kpis.support_kpis_last_days` / CLI `kpis` |
-| notes | Tooling ready (`python -m ecom_ops kpis --days 7`, dashboard KPI card). Fill numbers after live soak; do not invent hours. |
+| notes | Tooling ready (`python -m ecom_ops kpis --days 7`, dashboard KPI card). Fill numbers after live soak; do not invent hours. **v2.3 blocker 2026-07-29:** blocked_on Oscar A1 soak + Jonatan contact — agent must not invent baseline. |
 
 ## Follow-ups (append)
 
@@ -50,4 +50,4 @@ Record in **Cadence log** below:
 
 | week of | median_TTA_sec | n_approved | Jonatan friction note | Oscar ops note | decide suggest/auto? |
 |---------|----------------|------------|----------------------|----------------|----------------------|
-| | | | | | |
+| 2026-07-29 | — | — | _blocked_on: A1 soak not run_ | Agent documented v2.3 Fas 0; no live cadence yet | no auto-send; wait soak |
