@@ -1,5 +1,9 @@
 # Runbook: Dashboard login rate-limited (429)
 
+**Purpose:** Låsa upp dashboard efter för många misslyckade loginförsök.  
+**Audience:** Oscar / ops.  
+**Read this first:** [`../PILOT_OPS.md`](../PILOT_OPS.md).
+
 ## Symptom
 - Dashboard returnerar HTTP 429 "Too many failed login attempts"
 - Användare kan inte logga in även med rätt lösenord

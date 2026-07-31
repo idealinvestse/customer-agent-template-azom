@@ -1,12 +1,19 @@
 # customer-agent-template-azom
 
-**AzomOps-Agent v2.0** — template för dedikerad kundagent + grund för Agent-as-a-Service.
+**AzomOps-Agent** — dedikerad kundagent för Azom (WooCommerce SE/NO/DK) + grund för Agent-as-a-Service.
 
-**Produktionstarget:** Ubuntu 26.x / 24.04 LTS på Hetzner VPS (CX22 / CPX21, 2 vCPU / 4 GB).
+**Package:** 2.0.0 · **Produktionstarget:** Ubuntu 26.x / 24.04 LTS på Hetzner VPS (CX22 / CPX21, 2 vCPU / 4 GB).
 
-**Full systemkarta:** [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) · **Agent-identitet (OpenClaw):** [`SOUL.md`](SOUL.md) · **Kort agent-notes:** [`AGENTS.md`](AGENTS.md)
+| För dig som… | Börja här |
+|--------------|-----------|
+| Operatör / pilot (svenska) | [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) · [`docs/CASES.md`](docs/CASES.md) |
+| Coding agent (English) | [`AGENTS.md`](AGENTS.md) · [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) · [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) |
+| Systemkarta | [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) |
+| Agent-röst / HITL | [`SOUL.md`](SOUL.md) |
 
-## Capabilities (v2.0 + Path B)
+Dokumentationsstil: [`docs/DOC_STYLE.md`](docs/DOC_STYLE.md) · Index: [`docs/README.md`](docs/README.md)
+
+## Capabilities
 
 | Capability | Beskrivning | Eskalering / kontroll |
 |------------|-------------|------------------------|
@@ -18,12 +25,14 @@
 | **mail** | Gmail / Outlook / Exchange Graph / IMAP / POP3 / SMTP | Auth-fel → Oscar |
 | **dashboard** | Onboarding, settings, cases-triage, Oscar admin | Secrets only Oscar |
 | **Gmail OAuth** | Browser consent → `AZOM_DATA_DIR/oauth/gmail.json` | — |
-| **Telegram bot** | OpenClaw slash + hybrid NL chat (tool prefetch) | Draft/send → human path |
+| **Messenger** | Daily-driver ops chat (webhook) | Fail-closed PSID allowlist i prod |
+| **Telegram bot** | Backup OpenClaw slash + hybrid NL | Draft/send → human path |
+| **Woo/WP** | Orders, trackings, WP REST, webhooks | Se [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) |
 | **smoke / readiness** | Opt-in live smoke; `/health` poll-age | — |
 
 **RBAC:** Jonatan = viewer (+ case reply approve/send) · Oscar = full_admin · agent = operator.
 
-**AI rails:** `config/cases_ai.yaml` — suggest-approve on; auto-send **default off** (+ kill-switch `AZOM_AUTO_SEND_KILL`).
+**AI rails:** `config/cases_ai.yaml` — suggest-approve on; auto-send **default off**, **not wired** into poll (+ kill-switch `AZOM_AUTO_SEND_KILL`).
 
 ## Quick start (dev)
 
@@ -43,10 +52,11 @@ python -m ecom_ops --mock cases poll
 python -m ecom_ops support --message "Var är order 1001?"
 python -m ecom_ops kpis --days 7
 python -m ecom_ops classify-eval
-bash bin/mock-soak-azom.sh   # soft ops path (mock)
+bash bin/mock-soak-azom.sh   # soft ops path (mock) — ersätter INTE live soak
 ```
 
-**Finish / ops:** [`docs/DEVELOPMENT_PLAN_FINISH.md`](docs/DEVELOPMENT_PLAN_FINISH.md) · live soak [`docs/solutions/2026-07-16-live-soak-checklist.md`](docs/solutions/2026-07-16-live-soak-checklist.md)
+Mer: [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) · CLI: [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md)  
+Live soak (människa): [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) — agents får inte markera klar.
 
 ## Production: one-shot install
 
@@ -58,7 +68,7 @@ curl -fsSL https://raw.githubusercontent.com/idealinvestse/customer-agent-templa
 # Credentials: sudo cat /root/azom-install-credentials.txt
 ```
 
-Docs: [`docs/AUTO_INSTALL.md`](docs/AUTO_INSTALL.md) · [`docs/V2_RELEASE.md`](docs/V2_RELEASE.md) · [`docs/DEPLOY_UBUNTU24_HETZNER.md`](docs/DEPLOY_UBUNTU24_HETZNER.md) · [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md)
+Docs: [`docs/AUTO_INSTALL.md`](docs/AUTO_INSTALL.md) · [`docs/DEPLOY_UBUNTU24_HETZNER.md`](docs/DEPLOY_UBUNTU24_HETZNER.md) · [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md)
 
 Docker:
 
@@ -81,14 +91,17 @@ docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 | `/settings` | Jonatan: non-secret config |
 | `/cases` | Ärende-kö, draft, approve/close |
 | `/oscar` | Oscar admin (secrets + resolve escalations + probes) |
+| `/webhooks/messenger` | Meta Messenger |
+| `/webhooks/woo` | Woo HMAC webhooks |
 | `/oauth/gmail/start` | Gmail browser OAuth |
 | `/health` | Liveness + cases-poll readiness |
 
 Basic Auth: `jonatan` / `DASHBOARD_PASSWORD` · `oscar` / `DASHBOARD_OSCAR_PASSWORD`  
 (mock fallback: passwords `jonatan` / `oscar` when `AZOM_USE_MOCK=1`)
 
-Telegram (OpenClaw): `/help` `/commands` `/status` `/cases` `/order` … + fri text.  
-→ [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md) · cases → [`docs/CASES.md`](docs/CASES.md)
+Messenger (daily driver) → [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)  
+Telegram (backup) → [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)  
+Cases → [`docs/CASES.md`](docs/CASES.md)
 
 ## CLI (utvalda)
 
@@ -109,34 +122,28 @@ bash tests/test_spinup.sh
 
 ## Documentation index
 
+Full table + coverage matrix: [`docs/README.md`](docs/README.md)
+
 | Doc | Innehåll |
 |-----|----------|
-| [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Arkitektur, ytor, config, säkerhet |
-| [`SOUL.md`](SOUL.md) | OpenClaw / agent personality & hard constraints |
-| [`AGENTS.md`](AGENTS.md) | Budget, roller, runtime, quick CLI |
-| [`docs/CASES.md`](docs/CASES.md) | Cases 2.0 + Path B rails |
-| [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md) | Bot-kommandon & hybrid chat |
-| [`docs/V2_RELEASE.md`](docs/V2_RELEASE.md) | Release notes 2.0 |
-| [`docs/V2_OAUTH_GMAIL.md`](docs/V2_OAUTH_GMAIL.md) | Gmail OAuth |
-| [`docs/AUTO_INSTALL.md`](docs/AUTO_INSTALL.md) | One-shot Ubuntu install |
-| [`docs/DEPLOY_UBUNTU24_HETZNER.md`](docs/DEPLOY_UBUNTU24_HETZNER.md) | Hetzner sizing & deploy |
-| [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md) | Config ro vs data rw |
-| [`docs/V1_IMPLEMENTATION.md`](docs/V1_IMPLEMENTATION.md) | V1 package/security notes |
-| [`docs/ANALYSIS_AND_DEVELOPMENT_PLAN.md`](docs/ANALYSIS_AND_DEVELOPMENT_PLAN.md) | Acceptance + plan |
-| [`docs/GROK_BUILD_PROMPT.md`](docs/GROK_BUILD_PROMPT.md) | Agent fetch+build prompt |
-| [`docs/ideation/`](docs/ideation/) | Beslut & backlog |
-| [`docs/superpowers/`](docs/superpowers/) | Specs & implementation plans |
-| [`docs/solutions/`](docs/solutions/) | Prod-path write-ups |
-| [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md) | Skill card |
+| [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) | Version, shipped, blockers (EN) |
+| [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Arkitektur (EN) |
+| [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Setup, mock, tests (EN) |
+| [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) | CLI (EN) |
+| [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) | Drift + live soak (SV) |
+| [`docs/CASES.md`](docs/CASES.md) | Cases + FU9 (SV) |
+| [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md) | Mail setup (SV) |
+| [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md) | Messenger (SV) |
+| [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md) | Telegram (SV) |
+| [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) | Woo/WP (EN) |
+| [`docs/runbooks/`](docs/runbooks/) | Incident-runbooks (SV) |
+| [`SOUL.md`](SOUL.md) | Agent personality & hard constraints |
+| [`AGENTS.md`](AGENTS.md) | Agent operating notes (EN) |
+| [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md) | Skill card (EN) |
 
-## Roadmap
+## Roadmap (kort)
 
-1. **V1** – order-status, product-desc, support, SSH, mail ✅  
-2. **V2.0** – Dashboard onboarding + Gmail OAuth + Telegram + auto-install ✅  
-3. **Cases 2.0 + Path B** – suggest-approve, richer drafts, auto-send rails (off) ✅ on `main`  
-4. **Finish current goals** – regenerate draft, baseline/KPI ops, classify calibrate; optional auto-send trial → [`docs/DEVELOPMENT_PLAN_FINISH.md`](docs/DEVELOPMENT_PLAN_FINISH.md)  
-5. **V3** – SaaS multi-tenant skalning (deferred)
-
-## Grok Build
-
-Optimal fetch+build prompt for coding agents: [`docs/GROK_BUILD_PROMPT.md`](docs/GROK_BUILD_PROMPT.md)
+1. **V1–V2.3 code** — shipped on `main` (see [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md))  
+2. **Ops next** — Oscar A1 live soak + baseline (human)  
+3. **FU9 auto-send** — rails only until Oscar written enable  
+4. **V3** — SaaS multi-tenant (deferred)

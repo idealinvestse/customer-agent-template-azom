@@ -1,5 +1,9 @@
 # Runbook: cases.db corrupt / SQLite I/O error
 
+**Purpose:** Återställa eller ersätta korrupt `cases.db` säkert.  
+**Audience:** Oscar / ops.  
+**Read this first:** [`../PILOT_OPS.md`](../PILOT_OPS.md) (backup), [`../CASES.md`](../CASES.md).
+
 ## Symptom
 - `sqlite3.DatabaseError: database disk image is malformed`
 - `sqlite3.OperationalError: disk I/O error`

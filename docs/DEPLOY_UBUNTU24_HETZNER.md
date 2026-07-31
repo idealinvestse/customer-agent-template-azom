@@ -1,6 +1,8 @@
 # Deploy: Ubuntu 24.04 LTS på Hetzner VPS
 
-System map after install: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) · install detail: [`AUTO_INSTALL.md`](AUTO_INSTALL.md).
+**Purpose:** Sizing, nätverk och deploy-steg för Azom på Hetzner (Ubuntu 24/26).  
+**Audience:** Oscar / ops.  
+**Read this first:** [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), [`PILOT_OPS.md`](PILOT_OPS.md).
 
 ## Rekommenderad VPS-storlek
 

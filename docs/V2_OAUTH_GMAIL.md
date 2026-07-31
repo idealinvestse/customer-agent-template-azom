@@ -1,6 +1,10 @@
 # V2: Gmail OAuth consent
 
-Browser-based Gmail OAuth for Azom mail connector. Outlook/Graph remain env-based (deferred).
+**Purpose:** Steg för Gmail browser-OAuth till Azom mail-connector.  
+**Audience:** Jonatan (consent) / Oscar (client id/secret).  
+**Read this first:** [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md), [`.env.example`](../.env.example).
+
+Browser-based Gmail OAuth for Azom mail connector. Outlook/Graph remain env-based (no dashboard OAuth UI).
 
 ## Flow
 

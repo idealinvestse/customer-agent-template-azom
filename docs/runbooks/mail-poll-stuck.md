@@ -1,5 +1,9 @@
 # Runbook: Mail poll stuck / credentials expired
 
+**Purpose:** Få cases-poll att skapa ärenden igen när mail-credentials eller inbox är trasig.  
+**Audience:** Oscar / ops.  
+**Read this first:** [`../PILOT_OPS.md`](../PILOT_OPS.md), [`../MAIL_PROVIDERS.md`](../MAIL_PROVIDERS.md).
+
 ## Symptom
 - Inga nya cases skapas från mail (kö står stilla)
 - `azom-cases-poll.timer` kör men `IngestResult.errors > 0`

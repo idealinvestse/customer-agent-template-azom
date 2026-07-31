@@ -1,5 +1,9 @@
 # Runbook: Gmail OAuth refresh-token revoked
 
+**Purpose:** Återställa Gmail när refresh-token är revoked/utgången.  
+**Audience:** Oscar / Jonatan (consent).  
+**Read this first:** [`../V2_OAUTH_GMAIL.md`](../V2_OAUTH_GMAIL.md), [`../MAIL_PROVIDERS.md`](../MAIL_PROVIDERS.md).
+
 ## Symptom
 - Mail-poll misslyckas med "invalid_grant" eller "Token has been expired or revoked"
 - Gmail OAuth probe visar "missing" trots att tokens fanns tidigare

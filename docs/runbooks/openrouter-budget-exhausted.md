@@ -1,5 +1,9 @@
 # Runbook: OpenRouter budget exhausted
 
+**Purpose:** Hantera slut OpenRouter-budget utan att tappa order/cases-tools.  
+**Audience:** Oscar / ops.  
+**Read this first:** [`../PILOT_OPS.md`](../PILOT_OPS.md), [`../CURRENT_STATE.md`](../CURRENT_STATE.md).
+
 ## Symptom
 - LLM-drafts/classify skippas (telemetry: `llm_budget_skip`)
 - Telegram-bot svarar med "OpenRouter-budgeten är slut just nu"

@@ -1,7 +1,10 @@
 # AzomOps Runbooks
 
-Operational runbooks for common incidents. Each runbook has: trigger symptoms,
-diagnosis commands, fix steps, and verification.
+**Purpose:** Incident-procedurer (symptom → diagnos → fix → verify).  
+**Audience:** Oscar / ops.  
+**Read this first:** [`../PILOT_OPS.md`](../PILOT_OPS.md), [`../CURRENT_STATE.md`](../CURRENT_STATE.md).
+
+Varje runbook har: trigger symptoms, diagnosis commands, fix steps, and verification.
 
 | Runbook | Scenario |
 |---------|----------|

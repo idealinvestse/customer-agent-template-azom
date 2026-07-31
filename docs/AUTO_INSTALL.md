@@ -1,6 +1,8 @@
 # Automatisk installation (Ubuntu 26 / 24)
 
-One-shot install som tar en tom VPS till **färdig, körande Azom-agent**.
+**Purpose:** One-shot install som tar en tom VPS till **färdig, körande Azom-agent**.  
+**Audience:** Oscar / ops som installerar på Hetzner.  
+**Read this first:** [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md), [`CURRENT_STATE.md`](CURRENT_STATE.md), därefter [`PILOT_OPS.md`](PILOT_OPS.md) för post-install soak.
 
 ## Snabbast (på ny server)
 

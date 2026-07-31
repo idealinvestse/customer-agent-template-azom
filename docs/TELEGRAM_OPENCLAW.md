@@ -1,9 +1,20 @@
-# Telegram bot — OpenClaw hybrid
+# Telegram-bot — OpenClaw hybrid (backup-yta)
 
-Azom’s Telegram surface mirrors **OpenClaw / datalasse-style** slash dialogue and adds domain flows for order lookup and cases approve.
+**Purpose:** Beskriva Telegram som backup-ops-chat: slash-katalog, hybrid free-text, HITL och fail-closed actors.  
+**Audience:** Jonatan, Oscar, coding agents.  
+**Read this first:** [`SOUL.md`](../SOUL.md), [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) (daily driver), [`CASES.md`](CASES.md).
 
-**Code:** `skills/ecom_ops/bot/`  
-**Identity:** root [`SOUL.md`](../SOUL.md) (aligned with `chat_agent.SYSTEM_PROMPT`)  
+## Ordlista
+
+| Term | Betydelse |
+|------|-----------|
+| **Backup chat** | Telegram — samma `BotHandler` som Messenger, men inte primär yta. |
+| **Fail-closed map** | När `TELEGRAM_ACTOR_MAP` är icke-tom nekas unmapped chat_id. |
+| **Confirm UX only** | NL “godkänn …” visar bekräftelse — skickar **inte** mail. |
+| **tool_digest** | Kort sammanfattning av senast körda read-only tools för följdfrågor. |
+
+**Kod:** `skills/ecom_ops/bot/`  
+**Identitet:** [`SOUL.md`](../SOUL.md)  
 **Entry:** `python -m ecom_ops.bot` · `./bin/dedicated-bot.sh` · systemd `azom-bot.service`
 
 ---
@@ -14,6 +25,7 @@ Azom’s Telegram surface mirrors **OpenClaw / datalasse-style** slash dialogue 
 Incoming update
     │
     ├─ allowlist (TELEGRAM_ALLOWED_CHAT_IDS)?
+    ├─ actor map (TELEGRAM_ACTOR_MAP) — non-empty ⇒ unmapped denied
     ├─ slash → openclaw_commands.dispatch_openclaw_command
     │            (/cases approve → real send via CaseService)
     ├─ mid-flow multi-step (order_lookup …)
@@ -24,7 +36,7 @@ Incoming update
                      BotReply + optional approve / triage keyboards
 ```
 
-**Invariant:** free-text and NL “godkänn &lt;id&gt;” never send mail. Send requires slash approve, inline button wired to the same path, dashboard, or CLI.
+**Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI.
 
 ---
 
@@ -32,43 +44,55 @@ Incoming update
 
 ```bash
 TELEGRAM_BOT_TOKEN=...
-# Strongly recommended in production:
+# Krävs i prod (AZOM_USE_MOCK=0):
 TELEGRAM_ALLOWED_CHAT_IDS=111111111,222222222
-# chat_id → actor (jonatan|oscar|agent); non-empty map → unmapped denied
+# chat_id → actor; non-empty map → unmapped denied
 TELEGRAM_ACTOR_MAP=111111111:jonatan,222222222:oscar
+# TELEGRAM_FAIL_CLOSED=1
 ```
 
-On start the bot registers `TELEGRAM_MENU_COMMANDS` via Telegram `setMyCommands`.
+Vid start registrerar boten `TELEGRAM_MENU_COMMANDS` via Telegram `setMyCommands`.
+
+### Bra / dåligt exempel
+
+**Bra (prod):**
+
+```bash
+TELEGRAM_ALLOWED_CHAT_IDS=111111111
+TELEGRAM_ACTOR_MAP=111111111:jonatan
+```
+
+**Dåligt (prod):** Tom allowlist eller tom map medan live — riskerar fel åtkomstmodell. I live ska map/allowlist vara satta enligt Oscars policy.
 
 ---
 
-## Slash catalog (OpenClaw-compatible + Azom)
+## Slash-katalog (OpenClaw-kompatibel + Azom)
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Short intro (also `/start`) |
-| `/commands` | Full catalog |
-| `/status` | Version, mock/live, customer, OpenRouter spend, Gmail, session knobs |
+| Kommando | Beskrivning |
+|----------|-------------|
+| `/help` | Kort intro (även `/start`) |
+| `/commands` | Full katalog |
+| `/status` | Version, mock/live, customer, OpenRouter spend, Gmail, session |
 | `/whoami` (`/id`) | chat_id + resolved actor |
-| `/new [model]` | Clear dialog; optional model pin |
-| `/reset` · `/reset soft` | Full reset or keep session settings |
-| `/stop` (`/cancel`) | Abort in-progress flow; keep history soft |
+| `/new [model]` | Rensa dialog; valfri model pin |
+| `/reset` · `/reset soft` | Full reset eller behåll session settings |
+| `/stop` (`/cancel`) | Avbryt pågående flow; behåll historik soft |
 | `/tools` · `/tools verbose` | Chat tools vs slash/CLI tools |
 | `/tasks` | Open cases + open escalations count |
 | `/usage` · `/usage cost\|off` | Cost / footer mode |
-| `/model` · `/model <name>\|default` | Session model pin for LLM chat |
+| `/model` · `/model <name>\|default` | Session model pin |
 | `/verbose` · `/think` | Session style knobs |
 | `/skill` | ecom-ops skill summary |
 | `/context` | Flow, turns, tool_digest, session keys |
-| `/health` | SSH health checks (actor-scoped) |
+| `/health` | SSH health (actor-scoped) |
 | `/brief` | Customer + cost brief |
-| `/order [id]` | Order status (read-only; multi-step if bare) |
-| `/cases` | list · show · approve · close · help |
+| `/order [id]` | Order status read-only; multi-step om bart |
+| `/cases` | list · show · approve · regenerate · close · help |
 
 ### `/cases` subcommands
 
 ```text
-/cases                  # open + escalated queue (escalated → high → ★suggest → newest)
+/cases                  # open + escalated (escalated → high → ★suggest → newest)
 /cases show <id8>       # detail + draft + approve keyboard
 /cases approve <id8>    # send draft (RBAC CASE_REPLY / admin)
 /cases regenerate <id8> # new draft from inbound (never sends)
@@ -76,35 +100,33 @@ On start the bot registers `TELEGRAM_MENU_COMMANDS` via Telegram `setMyCommands`
 /cases help
 ```
 
-Suggest-approve rows show `★föreslå` (+ confidence when present).
+Suggest-approve rader visar `★föreslå` (+ confidence när den finns).
 
 ---
 
-## Hybrid free-text (OpenClaw-like multi-turn)
+## Hybrid free-text
 
 Thread state under `AZOM_DATA_DIR/telegram_state.json`:
 
-- **TTL:** 24h idle (refreshed on activity)
-- **History:** last ~40 message turns
+- **TTL:** 24h idle (refreshas vid aktivitet)
+- **History:** senaste ~40 turns
 - **Sticky:** `session.last_order_id`, `session.last_case_id8`
-- **tool_digest** for follow-ups (“och frakten?”, “samma order”)
+- **tool_digest** för följdfrågor (“och frakten?”, “samma order”)
 
-Prefetch tools (`chat_agent.gather_tool_results`):
+Prefetch (`chat_agent.gather_tool_results`):
 
-| Tool | When |
-|------|------|
-| `lookup_order` | Order id **or** sticky follow-up |
+| Tool | När |
+|------|-----|
+| `lookup_order` | Order-id eller sticky follow-up |
 | `list_cases` / `show_case` | Ärende / triage / id8 / sticky case |
 | suggest filter | “föreslagna”, ★ |
 | `ops_snapshot` / capabilities | status / budget / “vad kan du” |
 | approve **confirm-only** | NL “godkänn id8” → UX, no send |
-| `propose_order_status` | “sätt order 1001 till completed” → **confirm button** |
-| `propose_product_desc` | “produktbeskrivning för 42” → **confirm button** |
-| `propose_regenerate` | “regenerera id8” → **confirm button** |
+| `propose_order_status` | → **confirm button** (inte silent) |
+| `propose_product_desc` | → **confirm button** |
+| `propose_regenerate` | → **confirm button** (skickar aldrig) |
 
-### Site write rails (not silent)
-
-Mutations use `dialog_actions` + handler callbacks:
+### Site write rails
 
 | Action | Callback | RBAC |
 |--------|----------|------|
@@ -112,22 +134,20 @@ Mutations use `dialog_actions` + handler callbacks:
 | Product desc | `product:desc:{id}:{0\|1}` | `PRODUCT_DESC_WRITE` |
 | Regen draft | `cases:regen:{id8}` | `CASE_REPLY` (Jonatan OK) |
 
-Jonatan default actor can approve cases but **not** Woo order updates unless mapped via `TELEGRAM_ACTOR_MAP` to `agent`/`oscar`.
+Jonatan kan approve:a cases men **inte** skriva Woo order/product om hen inte är mappad till `agent`/`oscar`.
 
 ---
 
 ## Actors & RBAC
 
-`resolve_telegram_actor(chat_id)` drives approve/close/health.  
-Jonatan: approve case replies. Oscar: full admin.  
-When `TELEGRAM_ACTOR_MAP` is **empty** (dev/mock): unmapped chat → `jonatan`.  
-When the map is **non-empty** (prod): unmapped chat is **denied** (fail-closed). Allowlist still applies if set.
+`resolve_telegram_actor(chat_id)` styr approve/close/health.
 
----
+| Map-läge | Beteende |
+|----------|----------|
+| Tom map (dev/mock) | unmapped → `jonatan` |
+| Icke-tom map (prod) | unmapped → **denied** (fail-closed) |
 
-## Conversation store
-
-`ConversationStore` under `AZOM_DATA_DIR` (default `.azom-data`): per-chat flow, slots, messages, session (`model`, `verbose`, `think`, `usage`), tool_digest.
+Allowlist gäller separat om den är satt.
 
 ---
 
@@ -135,21 +155,28 @@ When the map is **non-empty** (prod): unmapped chat is **denied** (fail-closed).
 
 | Condition | Behavior |
 |-----------|----------|
-| No `OPENROUTER_API_KEY` | Tools still run; if no tools, reuse prior_digest/sticky or fixed Swedish help |
-| Budget at cap | Same — tools / continuity without LLM phrasing |
-| Not in allowlist | Denial + recovery hint (Oscar + TELEGRAM_ALLOWED_CHAT_IDS) |
-| Approve fail | Swedish error + Regenerera / Visa / Lista keyboard |
-| Empty case queue | Hint: next poll (~5 min) or dashboard `/cases` |
-| Unknown slash | “Okänt kommando … /commands · /help” |
+| Ingen `OPENROUTER_API_KEY` | Tools körs; annars prior_digest/sticky eller fast svensk hjälp |
+| Budget at cap | Samma — tools utan LLM-phrasing |
+| Inte i allowlist | Denial + hint (Oscar + `TELEGRAM_ALLOWED_CHAT_IDS`) |
+| Approve fail | Svenskt fel + Regenerera / Visa / Lista |
+| Tom case-kö | Hint: nästa poll (~5 min) eller dashboard `/cases` |
+| Okänt slash | “Okänt kommando … /commands · /help” |
 
 ---
 
 ## Local run
 
 ```bash
+# cwd: repo-root
 export AZOM_USE_MOCK=1
 export TELEGRAM_BOT_TOKEN=...   # optional for pure unit tests
 python -m ecom_ops.bot
 ```
 
-Tests: `tests/test_telegram_state.py`, `test_telegram_actors.py`, `test_chat_agent.py`, `test_suggest_triage_ux.py`, `test_cases_v2.py`.
+Tester: `tests/test_telegram_state.py`, `test_telegram_actors.py`, `test_chat_agent.py`, `test_suggest_triage_ux.py`, `test_cases_v2.py`.
+
+## Relaterat
+
+- Messenger (primär): [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md)
+- Cases: [`CASES.md`](CASES.md)
+- Pilot: [`PILOT_OPS.md`](PILOT_OPS.md)

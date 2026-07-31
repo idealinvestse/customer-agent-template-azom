@@ -1,5 +1,9 @@
 # Runbook: WooCommerce webhook disabled
 
+**Purpose:** Återaktivera Woo-webhook efter misslyckade leveranser / signature-fel.  
+**Audience:** Oscar / ops.  
+**Read this first:** [`../WOO_WORDPRESS.md`](../WOO_WORDPRESS.md), [`../PILOT_OPS.md`](../PILOT_OPS.md).
+
 ## Symptom
 - Webhook-leveranser slutar komma (inga nya events i dashboard)
 - Woo admin → WooCommerce → Settings → Advanced → Webhooks visar status "Disabled"

@@ -1,6 +1,6 @@
 """WordPress REST API client (/wp-json/wp/v2/) using Application Passwords.
 
-V2.1 (see docs/solutions/2026-07-17-woo-wordpress-capacity-review.md §P1.3):
+V2.1 (see docs/WOO_WORDPRESS.md — WordPress client):
 - Read + write for posts, pages, media, users, comments, settings.
 - Auth: HTTP Basic with WordPress username + Application Password
   (``WP_APP_PASSWORD``). Application Passwords are supported by WordPress

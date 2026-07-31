@@ -1,6 +1,6 @@
 """WooCommerce REST API client (order + product + tracking + reports + webhooks).
 
-V2.1 additions (see docs/solutions/2026-07-17-woo-wordpress-capacity-review.md):
+V2.1 additions (see docs/WOO_WORDPRESS.md):
 - Multi-site per-call domain resolution via ``client_from_env(domain=...)``.
 - Dedicated ``/wc/v3/orders/{id}/shipment-trackings`` endpoint (replaces
   fragile meta_data heuristics in ``order_context._extract_tracking``).

@@ -1,6 +1,6 @@
 """WooCommerce webhook receiver + HMAC-SHA256 verification.
 
-V2.1 (see docs/solutions/2026-07-17-woo-wordpress-capacity-review.md §P2.6):
+V2.1 (see docs/WOO_WORDPRESS.md — webhooks):
 - ``verify_webhook_signature`` validates the ``X-WC-Webhook-Signature``
   header against the HMAC-SHA256 of the raw body using the webhook secret.
 - ``WebhookEvent`` dataclass normalizes the payload (topic, resource, action,

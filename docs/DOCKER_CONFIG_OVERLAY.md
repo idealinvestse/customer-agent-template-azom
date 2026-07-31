@@ -1,5 +1,9 @@
 # Docker config & data overlays
 
+**Purpose:** Förklara skillnaden mellan read-only config och skrivbar data i Docker/prod.  
+**Audience:** Ops / developers som kör compose.  
+**Read this first:** [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
+
 Azom separates **read-only config** (YAML in the image/host mount) from **writable runtime data** (`AZOM_DATA_DIR`).
 
 ## Volume layout

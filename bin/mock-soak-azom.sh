@@ -28,4 +28,4 @@ echo "=== mock soak (AZOM_DATA_DIR=$AZOM_DATA_DIR) ==="
 if [[ -x "$ROOT/bin/daily-brief-azom.sh" ]]; then
   bash "$ROOT/bin/daily-brief-azom.sh" || true
 fi
-echo "=== mock soak complete (see docs/solutions/2026-07-16-live-soak-checklist.md for LIVE) ==="
+echo "=== mock soak complete (see docs/PILOT_OPS.md for LIVE soak — human-owned) ==="

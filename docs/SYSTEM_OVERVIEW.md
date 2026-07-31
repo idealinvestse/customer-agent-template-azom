@@ -1,10 +1,18 @@
-# System overview — AzomOps-Agent v2.1
+# System overview — AzomOps-Agent
 
-Single-tenant WooCommerce + WordPress customer-ops agent: CLI + Cases mail loop + Flask dashboard + OpenClaw-style Telegram bot. Primary runtime: Ubuntu 24/26 on Hetzner CX22/CPX21.
+**Purpose:** Full architecture map of the single-tenant Azom customer-ops agent: CLI, cases mail loop, Flask dashboard, Messenger/Telegram bots, Woo/WP integrations.  
+**Audience:** Developers and coding agents.  
+**Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`DOC_STYLE.md`](DOC_STYLE.md), [`AGENTS.md`](../AGENTS.md).
 
-Related identity: [`SOUL.md`](../SOUL.md) · agent notes: [`AGENTS.md`](../AGENTS.md) · skill card: [`skills/ecom-ops/SKILL.md`](../skills/ecom-ops/SKILL.md) · V2.1 review: [`docs/solutions/2026-07-17-woo-wordpress-capacity-review.md`](solutions/2026-07-17-woo-wordpress-capacity-review.md)
+## Glossary
 
----
+| Term | Meaning |
+|------|---------|
+| **Single-tenant** | One customer (Azom). No multi-tenant SaaS control plane (V3 deferred). |
+| **AZOM_DATA_DIR** | Writable data root: DB, OAuth, secrets overlay, telemetry, poll markers. |
+| **AZOM_CONFIG_DIR** | Config root (`config/*.yaml`); read-only in Docker. |
+| **HITL** | Human-in-the-loop — customer mail send requires explicit approve. |
+| **Fail-closed** | In live mode, empty Messenger/Telegram allowlist or actor map denies access. |
 
 ## 1. Architecture
 
@@ -22,22 +30,30 @@ Related identity: [`SOUL.md`](../SOUL.md) · agent notes: [`AGENTS.md`](../AGENT
                                                     │
         ┌───────────────┬───────────────────────────┼──────────────┐
         ▼               ▼                           ▼              ▼
-   CLI ecom_ops    Dashboard Flask              Telegram bot    Escalations
-   (operator)      (Jonatan / Oscar)            (OpenClaw hybrid)  JSONL
+   CLI ecom_ops    Dashboard Flask         Messenger + Telegram   Escalations
+   (operator)      (Jonatan / Oscar)       (shared BotHandler)     JSONL
 ```
 
 | Layer | Path | Role |
 |-------|------|------|
-| Package | `skills/ecom_ops/` | Importable `ecom_ops` (actions, cases, bot, integrations, llm) |
+| Package | `skills/ecom_ops/` | Importable `ecom_ops` |
 | Skill metadata | `skills/ecom-ops/SKILL.md` | Moss/agent skill card |
-| Config (ro in Docker) | `config/*.yaml`, `customer.json` | sites, rbac, mailboxes, limits, cases_ai, integrations |
-| Data (rw) | `AZOM_DATA_DIR` | cases.db, oauth, secrets.env, telemetry, escalations, probes |
-| Dashboard | `infrastructure/dashboard/` | Flask UI + CSRF + Oscar probes |
+| Config (ro in Docker) | `config/*.yaml`, `customer.json` | sites, rbac, mailboxes, limits, cases_ai |
+| Data (rw) | `AZOM_DATA_DIR` | cases.db, oauth, secrets.env, telemetry, probes |
+| Dashboard | `infrastructure/dashboard/` | Flask UI + CSRF + webhooks + Oscar probes |
 | Deploy | `bin/install*.sh`, `infrastructure/systemd/`, Docker | One-shot + services |
 
----
+**Surface roles:**
 
-## 2. Actors & RBAC
+| Surface | Role |
+|---------|------|
+| **Messenger** | Daily-driver ops chat for Jonatan |
+| **Telegram** | Backup chat — same `BotHandler` brain |
+| **Dashboard** | System of record / full power (edit, poll, bulk close, settings, secrets) |
+| **CLI** | Automation and operator tooling |
+| **Timers** | Cases poll every 5 minutes |
+
+## 2. Actors and RBAC
 
 | Actor | Role | Typical powers |
 |-------|------|----------------|
@@ -45,9 +61,10 @@ Related identity: [`SOUL.md`](../SOUL.md) · agent notes: [`AGENTS.md`](../AGENT
 | **Oscar** | `full_admin` | Secrets UI, connection probes, resolve escalations, experiment flags (auto-send) |
 | **agent** | `operator` | order-status, product-desc, support draft, mail send/read, SSH health, **cases poll** |
 
-Config: `config/rbac.yaml`. Telegram maps chat → actor via `TELEGRAM_ACTOR_MAP` (default unmapped → `jonatan`). Allowlist: `TELEGRAM_ALLOWED_CHAT_IDS`.
+Config: `config/rbac.yaml`.
 
----
+- Telegram: `TELEGRAM_ACTOR_MAP` maps chat → actor. Non-empty map ⇒ unmapped denied. Allowlist: `TELEGRAM_ALLOWED_CHAT_IDS`.
+- Messenger: `MESSENGER_ACTOR_MAP` / `MESSENGER_ALLOWED_PSIDS` — **fail-closed when empty in live mode**.
 
 ## 3. Capabilities
 
@@ -56,19 +73,18 @@ Config: `config/rbac.yaml`. Telegram maps chat → actor via `TELEGRAM_ACTOR_MAP
 | **order-status** | `actions/order_status` | Woo status update; validate order id/status |
 | **product-desc** | `actions/product_desc` | Template default; optional OpenRouter |
 | **support** | `actions/support` | Classify + draft; abuse → escalate |
-| **mail** | `actions/mail` + `integrations/mail*` | gmail / outlook / exchange_graph / IMAP / POP3 |
+| **mail** | `actions/mail` + `integrations/mail*` | See [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
 | **SSH** | `actions/ssh_ops` | Allowlist only; else Oscar ticket |
-| **cases** | `cases/*` | Poll → thread → draft → suggest-approve badge → human send |
+| **cases** | `cases/*` | Poll → draft → suggest-approve → human send — [`CASES.md`](CASES.md) |
 | **LLM** | `llm.py` | OpenRouter + cost telemetry + cap |
 | **OAuth Gmail** | `oauth/gmail` | Browser consent → `oauth/gmail.json` |
-| **Telegram** | `bot/*` | OpenClaw slash + hybrid free-text |
+| **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text |
+| **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
 | **smoke / readiness** | `smoke.py`, `ops_status.py` | Opt-in live smoke; `/health` poll age |
-
----
 
 ## 4. Cases 2.0 + Path B (AI)
 
-See also [`docs/CASES.md`](CASES.md).
+See [`CASES.md`](CASES.md) for the full operator guide (Swedish).
 
 **Flow:** mailbox poll (5 min) → ingest/thread → hybrid classify + confidence → LLM/template draft (order-enriched) → optional `suggest_approve` → queue → Jonatan approve → SMTP/Graph reply with In-Reply-To.
 
@@ -82,19 +98,17 @@ See also [`docs/CASES.md`](CASES.md).
 **Path B rails** (`config/cases_ai.yaml`):
 
 - Suggest-approve for allowlisted categories + min confidence + order_id.
-- Auto-send: **default off**; kill-switch `AZOM_AUTO_SEND_KILL`; daily cap; never abuse/return/billing.
+- Auto-send: **default off**; **not wired** into poll; kill-switch `AZOM_AUTO_SEND_KILL`.
 
----
+## 5. Messenger and Telegram
 
-## 5. Telegram (OpenClaw hybrid)
+See [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) and [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md). Identity: [`SOUL.md`](../SOUL.md).
 
-See [`docs/TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) and root [`SOUL.md`](../SOUL.md).
+1. Slash / postback commands — session, tools, cases, order, health, brief.
+2. Free text — intent → **read-only tool prefetch** → LLM phrasing under SOUL-aligned prompt.
+3. Explicit write UX — approve keyboard/postback, `/cases approve`, dashboard, CLI. **Never silent send.**
 
-1. Slash commands (`openclaw_commands.py`) — session, tools, cases, order, health, brief.
-2. Free text (`chat_agent.py`) — intent → **read-only tool prefetch** → LLM phrasing under system prompt aligned with SOUL.
-3. Explicit write UX — approve keyboard, `/cases approve`, escalate confirm. **Never silent send.**
-
----
+Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basic Auth).
 
 ## 6. Dashboard routes
 
@@ -111,33 +125,35 @@ See [`docs/TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) and root [`SOUL.md`](../
 | `/oscar`, `/oscar/secrets`, `/oscar/escalations` | Oscar | Admin + resolve |
 | `/oscar/secrets/test` | Oscar | Connection probes |
 | `/oauth/gmail/*` | auth | Gmail OAuth |
+| `/webhooks/messenger` | Meta | Messenger webhook |
+| `/webhooks/woo` | Woo | HMAC-verified Woo webhooks |
 | `/health` | public | Liveness + readiness (poll age) |
 | `/data/telemetry`, `/data/escalations` | auth | JSON data views |
 | `/logs`, `/telemetry`, `/escalations`, `/manage` | auth | Ops pages |
 
 Auth: Basic (`jonatan` / `oscar` passwords or Werkzeug hashes). CSRF on browser POSTs (`DASHBOARD_SECRET_KEY`).
 
----
+Operator procedures: [`PILOT_OPS.md`](PILOT_OPS.md) (Swedish).
 
 ## 7. CLI map
+
+Full reference: [`CLI_REFERENCE.md`](CLI_REFERENCE.md).
 
 ```bash
 python -m ecom_ops version
 python -m ecom_ops status
-python -m ecom_ops smoke [--live]          # needs AZOM_LIVE_SMOKE=1 or --live
+python -m ecom_ops smoke [--live]
 python -m ecom_ops --mock order-status --order-id 1001 --status completed
 python -m ecom_ops --mock product-desc --product-id 42 --language sv
 python -m ecom_ops --mock support --message "Var är order 1001?"
 python -m ecom_ops --mock mail send|fetch|reply ...
-python -m ecom_ops --mock cases poll|list|show|reply|draft|close ...
-python -m ecom_ops.bot                     # Telegram long-poll
+python -m ecom_ops --mock cases poll|list|show|reply|draft|regenerate|close ...
+python -m ecom_ops.bot
 ```
 
 Global flags: `--mock`, `--actor`, `--site`.
 
----
-
-## 8. Config & env
+## 8. Config and env
 
 | File | Purpose |
 |------|---------|
@@ -155,16 +171,17 @@ Global flags: `--mock`, `--actor`, `--site`.
 |------------------|---------|
 | `AZOM_USE_MOCK` | Mock all integrations |
 | `AZOM_CONFIG_DIR` / `AZOM_DATA_DIR` | Paths |
-| `WOO_*`, `MAIL_*`, `GRAPH_*`, `SSH_*` | Integrations |
+| `WOO_*`, `WP_*`, `MAIL_*`, `GRAPH_*`, `SSH_*` | Integrations |
 | `OPENROUTER_API_KEY` | LLM |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `TELEGRAM_ACTOR_MAP` | Bot (map set ⇒ fail-closed unmapped; optional `TELEGRAM_FAIL_CLOSED=1`) |
+| `TELEGRAM_*` | Bot allowlist + actor map |
+| `MESSENGER_*` | Page token, HMAC secret, PSID allowlist/map |
+| `AZOM_DASHBOARD_PUBLIC_URL` | Deep links from Messenger |
 | `DASHBOARD_*` | Auth + bind |
 | `AZOM_AUTO_SEND_KILL` | Force auto-send off |
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
+| `WOO_WEBHOOK_SECRET` | Inbound Woo webhook HMAC |
 
 Prod paths: code `/opt/azom-agent`, data `/var/lib/azom`, logs `/var/log/azom`.
-
----
 
 ## 9. Services (systemd)
 
@@ -175,64 +192,66 @@ Prod paths: code `/opt/azom-agent`, data `/var/lib/azom`, logs `/var/log/azom`.
 | `azom-cases-poll.timer` | Cases poll every 5 min |
 | `azom-daily-brief.timer` | Daily KPI brief |
 
-Install: [`docs/AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`docs/DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) · Docker: [`docs/DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md).
-
----
+Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) · Docker: [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md).
 
 ## 10. Data artifacts (`AZOM_DATA_DIR`)
 
 | Artifact | Content |
 |----------|---------|
 | `cases.db` | Cases + messages (schema migrate) |
-| `oauth/gmail.json` | Gmail OAuth tokens (0600) |
+| `oauth/gmail.json` | Gmail OAuth tokens (mode 0600) |
 | `secrets.env` | Oscar-written secrets overlay |
 | `runtime.env` | Runtime toggles overlay |
 | `escalations.jsonl` | Escalation tickets |
 | telemetry / KPI files | Cost + case KPIs (`python -m ecom_ops kpis`) |
 | `last_case_poll.json` | Poll readiness (`partial` / errors / age → `/health`) |
 | `probe_last.json` | Last Oscar probe results |
-| cases poll marker | Readiness input for `/health` |
-
----
 
 ## 11. Security model
 
 1. Input validation (`security.py`) on order ids, emails, SSH commands.
-2. Secret redaction in telemetry/escalation.
+2. Secret redaction in telemetry/escalation (includes WP + webhook secrets).
 3. SSH allowlist; shell metacharacters rejected.
 4. RBAC gates mutations and mail send.
 5. Dashboard: Werkzeug password hashes preferred; CSRF; mock default passwords only with `AZOM_USE_MOCK=1`.
-6. Telegram chat allowlist strongly recommended in prod.
-7. Config volume ro in Docker; secrets only in data dir.
+6. Telegram/Messenger allowlists + actor maps fail-closed in prod when configured/required.
+7. Config volume read-only in Docker; secrets only in data dir.
+8. Messenger webhook: Meta verify + HMAC (not dashboard Basic Auth).
 
----
+Compliance retention and DPIA notes: [`COMPLIANCE.md`](COMPLIANCE.md).
 
-## 12. Testing & CI
+## 12. Testing and CI
 
 ```bash
 pytest
 # CI: ruff + pytest with coverage fail_under 65 (pyproject.toml)
-bash tests/test_spinup.sh   # optional spinup smoke
+bash tests/test_spinup.sh
 ```
 
-Key test modules: cases v2, suggest-approve, auto-send rails, chat_agent, openclaw/telegram, dashboard auth, mail, oauth, smoke/readiness, product-desc LLM.
+Developer workflow: [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md).
 
----
+## 13. Status snapshot
 
-## 13. Roadmap snapshot
+Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 
 | Track | Status |
 |-------|--------|
-| V1 core ops | ✅ |
-| V2.0 dashboard + OAuth + bot + install | ✅ |
-| Cases 2.0 MVP | ✅ |
-| Ops hardening P6–P10 | ✅ |
-| Path B suggest-approve + auto-send rails (default off) | ✅ shipped on main |
-| Telegram hybrid dialog vNext (tool prefetch, NL suggest) | ✅ |
-| Finish plan (regenerate, baseline, measure, calibrate) | 📋 `docs/DEVELOPMENT_PLAN_FINISH.md` |
-| Support-time baseline capture | Parallel / required for 50% claim |
-| GA4 / engagement | Parked |
-| V3 multi-tenant SaaS | Deferred |
-| Auto-send live experiment | Oscar-only after finish-plan preconditions |
+| V1 core ops | Shipped |
+| V2.0 dashboard + OAuth + bots + install | Shipped |
+| Cases 2.0 + Path B rails (auto-send off, not wired) | Shipped |
+| V2.1 Woo/WP capacity | Shipped |
+| V2.2 mail probe / env matrix / bulk close | Shipped |
+| V2.3 robustness harden | Shipped (code) |
+| Oscar A1 live soak | **Ops next — human gate** |
+| FU9 auto-send wire | **Not wired** — see [`CASES.md`](CASES.md) |
+| V3 multi-tenant / FAQ / GA4 | Deferred / parked |
 
-Decision history: `docs/ideation/`, plans under `docs/superpowers/`. **Next execution:** FU1 regenerate in `DEVELOPMENT_PLAN_FINISH.md`.
+## Related living docs
+
+| Topic | Doc |
+|-------|-----|
+| Pilot ops (SV) | [`PILOT_OPS.md`](PILOT_OPS.md) |
+| Cases (SV) | [`CASES.md`](CASES.md) |
+| Mail (SV) | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
+| Woo/WP (EN) | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
+| CLI (EN) | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |

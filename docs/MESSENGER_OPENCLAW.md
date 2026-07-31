@@ -1,18 +1,36 @@
-# Messenger OpenClaw hybrid (daily driver)
+# Meta Messenger — OpenClaw hybrid (daily driver)
 
-Jonatan’s primary ops chat. Telegram remains the backup transport with the same `BotHandler` brain.
+**Purpose:** Beskriva Messenger som Jonatans primära ops-chat: webhook, fail-closed PSID, HITL och handoff till dashboard.  
+**Audience:** Jonatan, Oscar, coding agents.  
+**Read this first:** [`SOUL.md`](../SOUL.md), [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md), [`CASES.md`](CASES.md), [`PILOT_OPS.md`](PILOT_OPS.md).
 
-Related: [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) · [`SOUL.md`](../SOUL.md) · design [`superpowers/specs/2026-07-28-meta-messenger-ops-design.md`](superpowers/specs/2026-07-28-meta-messenger-ops-design.md)
+## Ordlista
 
-## Layering
+| Term | Betydelse |
+|------|-----------|
+| **Daily driver** | Messenger — primär yta för triage/approve. |
+| **PSID** | Page-Scoped ID — Meta-användar-id mot sidan. |
+| **Fail-closed** | Tom `MESSENGER_ALLOWED_PSIDS` eller `MESSENGER_ACTOR_MAP` i live (`AZOM_USE_MOCK=0`) nekar. |
+| **Postback** | Knapptryck (t.ex. Godkänn & skicka) som går via webhook — explicit path. |
+| **Dry-run outbound** | Utan page token loggas payload; i live blockeras mutationer. |
 
-| Surface | Role |
-|---------|------|
-| **Messenger** | Daily driver — list/show/approve/next, order lookup, recovery |
-| **Dashboard** | Full power — edit draft, order panel, poll, bulk, settings |
-| **Telegram** | Backup chat |
+**Kod:** samma `BotHandler` som Telegram under `skills/ecom_ops/bot/` + dashboard webhook-route.  
+**Webhook:** `GET|POST /webhooks/messenger` på dashboard-hosten.
 
-Handoff: when Messenger is not enough, replies include **Öppna i dashboard** (`AZOM_DASHBOARD_PUBLIC_URL` + `/cases/{id}?from=messenger`).
+---
+
+## Ytor (lager)
+
+| Yta | Roll |
+|-----|------|
+| **Messenger** | Daily driver — list/show/approve/nästa, order lookup, recovery |
+| **Dashboard** | Full power — edit draft, orderpanel, poll, bulk close, settings |
+| **Telegram** | Backup chat — samma hjärna |
+
+Handoff när Messenger inte räcker: svar inkluderar **Öppna i dashboard**  
+(`AZOM_DASHBOARD_PUBLIC_URL` + `/cases/{id}?from=messenger`).
+
+---
 
 ## Environment
 
@@ -20,30 +38,92 @@ Handoff: when Messenger is not enough, replies include **Öppna i dashboard** (`
 MESSENGER_PAGE_ACCESS_TOKEN=...
 MESSENGER_APP_SECRET=...
 MESSENGER_VERIFY_TOKEN=...
-# Required when AZOM_USE_MOCK=0 (empty = fail-closed)
+# Krävs när AZOM_USE_MOCK=0 (tom = fail-closed)
 MESSENGER_ALLOWED_PSIDS=psid1,psid2
-MESSENGER_ACTOR_MAP=<psid>:jonatan
-# Optional explicit flag (also implied when AZOM_USE_MOCK=0):
-# MESSENGER_FAIL_CLOSED=1
-AZOM_DASHBOARD_PUBLIC_URL=https://ops.example.com
+MESSENGER_ACTOR_MAP=psid1:jonatan,psid2:oscar
+# MESSENGER_FAIL_CLOSED=1   # också implied när AZOM_USE_MOCK=0
+AZOM_DASHBOARD_PUBLIC_URL=https://agent.azom.se
+# ingen trailing slash
 ```
 
-Webhook (no Basic auth — HMAC + verify token):
+### Bra / dåligt exempel (prod)
 
-- `GET|POST https://<host>/webhooks/messenger`
-- Subscribe: `messages`, `messaging_postbacks`
-- Events are deduped by Messenger `mid`; the webhook always returns HTTP 200 after per-event handling so Meta does not retry entire batches.
+**Bra:**
+
+```bash
+MESSENGER_ALLOWED_PSIDS=1000000000000000
+MESSENGER_ACTOR_MAP=1000000000000000:jonatan
+AZOM_DASHBOARD_PUBLIC_URL=https://agent.azom.se
+```
+
+**Dåligt:** Tom allowlist i live — alla nekas (fail-closed) eller fel uppsättning om någon tror att “öppen” är default. Default i live är **stängd**.
+
+---
+
+## Webhook
+
+- URL: `https://<host>/webhooks/messenger`
+- **Ingen** dashboard Basic Auth på webhooken.
+- Skydd: Meta verify-token (GET) + HMAC med `MESSENGER_APP_SECRET` (POST).
+- Prenumerera i Meta: `messages`, `messaging_postbacks`.
+- Dedup: per Messenger `mid`.
+- Svar: HTTP **200** efter per-event-hantering så Meta inte retry:ar hela batchen i onödan.
+
+### Verifiera lokalt / på host
+
+```bash
+curl -sS "http://127.0.0.1:8080/health" | head
+# expect: innehålla messenger-relaterade readiness-fält när konfigurerat
+# prod: messenger.send_enabled: true när page token + live är OK
+```
+
+---
 
 ## Local / mock
 
-With `AZOM_USE_MOCK=1`, empty allowlist/actor-map still works (dev default → jonatan).
+Med `AZOM_USE_MOCK=1` fungerar tom allowlist/actor-map (dev default → jonatan).
 
-Without `MESSENGER_PAGE_ACCESS_TOKEN`:
+Utan `MESSENGER_PAGE_ACCESS_TOKEN`:
 
-- **Outbound Graph Send API** is dry-run (logs payload; operator sees a warning footer).
-- **In prod (`AZOM_USE_MOCK=0`)**, mutating actions are **blocked** (approve / close / order write / product write). Read-only commands (`/cases list|show`, `/order`) still run.
-- In mock mode, approve postbacks still execute (mail via mock) so unit tests can cover HITL.
+| Läge | Beteende |
+|------|----------|
+| Outbound Graph Send | Dry-run (loggar payload; varning i footer) |
+| Live `AZOM_USE_MOCK=0` | **Mutationer blockeras** (approve / close / order write / product write). Read-only (`/cases list\|show`, `/order`) fungerar |
+| Mock | Approve-postbacks körs (mail via mock) så tester täcker HITL |
 
-## HITL
+---
 
-Same as Telegram: NL “godkänn” never sends; postback `/cases approve` or dashboard only.
+## HITL (samma som man Telegram)
+
+**Gör:**
+
+- Skicka via postback **Godkänn & skicka** / `/cases approve` / dashboard / CLI `cases reply`.
+- Använd regenerate — den skickar aldrig.
+
+**Gör inte:**
+
+- Tro att NL “godkänn abcdef01” skickar mail — det är bara confirm UX.
+- Köra prod utan PSID-allowlist och actor map.
+
+Slash/flows speglar Telegram-katalogen: `/help` `/cases` `/order` `/brief` `/status` …  
+Se [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) för full kommando-tabell och free-text prefetch.
+
+---
+
+## Typiskt Jonatan-flöde
+
+1. `/cases` — se kö och ★-antal  
+2. Visa ett ★-ärende — kontrollera order/market  
+3. Godkänn & skicka (postback) — case → `replied`  
+4. Godkänn & nästa om fler finns  
+5. Vid behov: deep link till dashboard för draft-edit  
+
+Full soak-checklista: [`PILOT_OPS.md`](PILOT_OPS.md).
+
+---
+
+## Relaterat
+
+- Cases: [`CASES.md`](CASES.md)
+- Telegram backup: [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md)
+- Systemkarta: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)

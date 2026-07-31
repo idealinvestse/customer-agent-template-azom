@@ -1,6 +1,11 @@
 # Compliance & GDPR — AzomOps Agent
 
-**Senast uppdaterad:** 2026-07-17 · **Ansvarig:** Oscar (full_admin)
+**Purpose:** Behandlingsregister, retention, tredjepartsöverföring och kända compliance-gaps för Azom-piloten.  
+**Audience:** Oscar (ansvarig). Coding agents ska inte “stänga” DPIA.  
+**Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`PILOT_OPS.md`](PILOT_OPS.md), [`CASES.md`](CASES.md).
+
+**Senast uppdaterad:** 2026-07-31 · **Ansvarig:** Oscar (full_admin)  
+**Obs:** Full DPIA vid pilotstart är fortfarande ett mänskligt ägarskap — markera inte som klar i kod-PRs.
 
 ## Behandlingsregister (Art 30)
 

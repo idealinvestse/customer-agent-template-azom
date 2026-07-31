@@ -1,27 +1,86 @@
+# --- Python / packaging ---
 __pycache__/
 *.py[cod]
+*$py.class
+*.egg
 *.egg-info/
 .eggs/
 dist/
 build/
-.pytest_cache/
-.coverage
-htmlcov/
-.azom-data/
-.azom-data-test/
+*.whl
+pip-wheel-metadata/
+
+# --- Virtualenvs ---
 .venv/
 venv/
+.env/
+.envrc
+
+# --- Tests / coverage / linters ---
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.benchmarks/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.pytype/
+.dmypy.json
+dmypy.json
+
+# --- Local env & secrets (never commit) ---
 .env
 .env.*
 !.env.example
+secrets.env
+**/secrets.env
+runtime.env
+**/runtime.env
+*.pem
+*.key
+*credentials*.txt
+azom-install-credentials.txt
+
+# --- Azom runtime data (local defaults) ---
+.azom-data/
+.azom-data-*/
+cases.db
+*.sqlite
+*.sqlite3
+# Accidental token dump at repo root only — package code is skills/ecom_ops/oauth/
+/oauth/
+telegram_state.json
+last_case_poll.json
+probe_last.json
+escalations.jsonl
+telemetry.jsonl
+audit.jsonl
+
+# --- Logs ---
 *.log
 logs/
-.mypy_cache/
-.ruff_cache/
-*.egg-info/
 
-# MCP / tool artifacts
+# --- Tool / agent / MCP artifacts ---
 .playwright-mcp/
+.superpowers/
+.devin/
 ga-ads-api-feasibility.json
 
+# --- Editor / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Local worktrees / docker overrides ---
 .worktrees/
+docker-compose.override.yml
+docker-compose.*.local.yml
