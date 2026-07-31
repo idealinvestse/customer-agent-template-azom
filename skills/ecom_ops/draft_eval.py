@@ -107,6 +107,14 @@ def _check_draft(draft: str, fixture: dict[str, Any]) -> dict[str, Any]:
     else:
         checks["no_refund_promise"] = True
 
+    # 8. Soft-ask for order id when fixture requires it (Path B2 / SB6)
+    if fixture.get("must_ask_order_id"):
+        checks["asks_order_id"] = any(
+            w in lowered for w in ("ordernummer", "order number", "ordrenummer")
+        )
+    else:
+        checks["asks_order_id"] = True
+
     passed = sum(1 for v in checks.values() if v)
     total = len(checks)
     return {

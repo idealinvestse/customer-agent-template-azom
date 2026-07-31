@@ -27,6 +27,16 @@ def test_support_draft_falls_back_to_template_without_api_key(monkeypatch, tel):
     assert "Azom Support" in result.reply or "Vänliga" in result.reply
 
 
+def test_draft_prompt_version_is_1_2():
+    from ecom_ops.prompts import get_prompt, reload_prompts
+
+    reload_prompts()
+    system, version = get_prompt("draft")
+    assert version == "1.2"
+    assert "return" in system.lower() or "billing" in system.lower()
+    assert "repayment" in system.lower() or "refund" in system.lower()
+
+
 @responses.activate
 def test_support_uses_openrouter_when_key_set(monkeypatch, tel, tmp_path):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

@@ -388,7 +388,8 @@ Sequenced roadmap after this finish plan’s code DoD:
 - Ideation: [`docs/ideation/2026-07-29-azom-core-30-deepen.md`](ideation/2026-07-29-azom-core-30-deepen.md)
 - Scope: **single customer Azom only** — deepen support core + live azom.no; multi-tenant SaaS remains parked
 - Sequence: soak → NO enable (Oscar+creds) → FU7 tune / Path B2 → gated FU9 → KPI re-eval
-- Agent now: ideation + pointers only; **no** FU9 wire; **no** repo `enabled: true` for NO/DK without Oscar
+- Path B2 (return/billing draft quality + triage): ✅ code — `docs/plans/2026-07-29-003-path-b2-return-billing-drafts.md`
+- Agent now: **no** FU9 wire; **no** repo `enabled: true` for NO/DK without Oscar; FU7 still blocked on soak samples
 
 ### Execution log (mail-support roadmap)
 
@@ -414,7 +415,8 @@ Sequenced roadmap after this finish plan’s code DoD:
 | Core 3.0 ideation (Azom/azom.no deepen) | ✅ 2026-07-29 | `docs/ideation/2026-07-29-azom-core-30-deepen.md` — no SaaS |
 | Core 3.0 Fas 1 soak/baseline | ⬜ | Same as FU6 / v2.3 Fas A — Oscar + Jonatan |
 | Core 3.0 Fas 2 azom.no enable | ⬜ | Credentials + Oscar OK first |
-| Core 3.0 Fas 3 quality (FU7/B2) | ⬜ | After soak samples — **Q1 blocked_on A3** (no threshold tune without live stick) |
+| Core 3.0 Fas 3 Path B2 drafts (Q2) | ✅ 2026-07-29 | Richer return/billing templates, SB6 soft-ask, draft prompt 1.2, priority+UI triage; never ★ |
+| Core 3.0 Fas 3 FU7 threshold (Q1) | ⬜ | After soak samples — **Q1 blocked_on A3** (no threshold tune without live stick) |
 | Core 3.0 Fas 4 FU9 | ⬜ | Hard-gated |
 
 ### v2.3 Live-proof agent closeout (2026-07-29)

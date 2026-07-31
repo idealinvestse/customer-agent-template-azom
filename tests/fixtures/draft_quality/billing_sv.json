@@ -1,0 +1,8 @@
+{
+  "id": "billing_sv",
+  "text": "Min faktura for order 3010 ser fel ut, dubbel betalning.",
+  "order_id": "3010",
+  "language": "sv",
+  "expected_category": "billing",
+  "must_not_promise_refund": true
+}

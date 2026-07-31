@@ -1,0 +1,8 @@
+{
+  "id": "billing_nb",
+  "text": "Faktura for ordre 3010 ser feil ut, dobbel betaling.",
+  "order_id": "3010",
+  "language": "nb",
+  "expected_category": "billing",
+  "must_not_promise_refund": true
+}

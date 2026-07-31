@@ -591,6 +591,7 @@ class CaseStore:
         classify_confidence: float | None = None,
         classify_method: str | None = None,
         suggest_approve: bool | None = None,
+        priority: str | None = None,
     ) -> Case | None:
         now = _now()
         with self._conn() as conn:
@@ -636,6 +637,9 @@ class CaseStore:
             if suggest_approve is not None:
                 sets.append("suggest_approve = ?")
                 params.append(1 if suggest_approve else 0)
+            if priority is not None:
+                sets.append("priority = ?")
+                params.append(priority)
             params.append(case_id)
             conn.execute(
                 f"UPDATE cases SET {', '.join(sets)} WHERE id = ?",

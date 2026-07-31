@@ -255,6 +255,39 @@ def extract_order_id(text: str) -> str | None:
     return None
 
 
+def soft_order_id_ask(language: str = "sv") -> str:
+    """Shared SB5/SB6 ask line when order_id is missing (status/shipping/return/billing)."""
+    lang = language.lower()
+    if lang in {"en"}:
+        return (
+            "\n\nCould you reply with your order number "
+            "(e.g. 1001) so we can look this up?"
+        )
+    if lang in {"no", "nb"}:
+        return (
+            "\n\nKan du sende ordrenummeret (f.eks. 1001) "
+            "så vi kan slå opp saken?"
+        )
+    if lang in {"da", "dk"}:
+        return (
+            "\n\nKan du sende ordrenummeret (f.eks. 1001), "
+            "så vi kan slå sagen op?"
+        )
+    return (
+        "\n\nKan du svara med ordernumret (t.ex. 1001) "
+        "så vi kan slå upp ärendet?"
+    )
+
+
+def _draft_mentions_order_number(reply: str) -> bool:
+    low = reply.lower()
+    return (
+        "ordernummer" in low
+        or "order number" in low
+        or "ordrenummer" in low
+    )
+
+
 def draft_reply(
     *,
     category: SupportCategory,
@@ -288,12 +321,29 @@ def draft_reply(
                 + (ask_line if ask_oid else "")
             ),
             SupportCategory.RETURN: (
-                "Vi hjelper deg med retur/reklamasjon (inkl. angrerett innen 14 dager "
-                "der det gjelder). Oppgi gjerne ordrenummer og bilder ved skade. "
-                "Vi bekrefter neste steg etter gjennomgang — uten å love automatisk refusjon."
+                (
+                    f"Vi hjelper deg med retur/reklamasjon for ordre {oid} "
+                    if not ask_oid
+                    else "Vi hjelper deg med retur/reklamasjon "
+                )
+                + "(inkl. angrerett innen 14 dager der det gjelder). "
+                "Beskriv gjerne årsak, om pakken er åpnet, og legg ved bilder ved skade. "
+                "Oppgi ordrenummer hvis det mangler. "
+                "Vi bekrefter neste steg (f.eks. RMA) etter gjennomgang — "
+                "uten å love automatisk refusjon."
             ),
             SupportCategory.BILLING: (
-                "Vi ser på faktura/betaling og kommer tilbake med bekreftelse."
+                (
+                    f"Vi ser på faktura/betaling knyttet til ordre {oid}. "
+                    if not ask_oid
+                    else "Vi ser på faktura/betaling. Oppgi gjerne ordrenummer, "
+                )
+                + (
+                    "Send gjerne betalingsdato og eventuell referanse. "
+                    if not ask_oid
+                    else "betalingsdato og eventuell referanse. "
+                )
+                + "Vi kommer tilbake etter manuell gjennomgang — uten å love utfall."
             ),
             SupportCategory.PRODUCT: (
                 "Takk for produktspørsmålet. For bilmultimedia (f.eks. CarPlay/DAB+) "
@@ -332,11 +382,27 @@ def draft_reply(
                 + (ask_line if ask_oid else "")
             ),
             SupportCategory.RETURN: (
-                "Vi hjælper dig med retur/reklamation. Vedlæg gerne ordrenummer "
-                "og fotos ved skade. Vi bekræfter næste skridt uden automatisk refusionsløfte."
+                (
+                    f"Vi hjælper dig med retur/reklamation for ordre {oid}. "
+                    if not ask_oid
+                    else "Vi hjælper dig med retur/reklamation. "
+                )
+                + "Beskriv gerne årsag, om emballagen er åbnet, og vedlæg fotos ved skade. "
+                "Angiv ordrenummer hvis det mangler. "
+                "Vi bekræfter næste skridt efter gennemgang — uden automatisk refusionsløfte."
             ),
             SupportCategory.BILLING: (
-                "Vi ser på faktura/betaling og vender tilbage med bekræftelse."
+                (
+                    f"Vi ser på faktura/betaling for ordre {oid}. "
+                    if not ask_oid
+                    else "Vi ser på faktura/betaling. Angiv gerne ordrenummer, "
+                )
+                + (
+                    "Send gerne betalingsdato og reference. "
+                    if not ask_oid
+                    else "betalingsdato og reference. "
+                )
+                + "Vi vender tilbage efter manuel gennemgang — uden at love udfald."
             ),
             SupportCategory.PRODUCT: (
                 "Tak for dit produktspørgsmål. Ved bilmultimedia skal vi ofte bruge "
@@ -372,11 +438,28 @@ def draft_reply(
                 + (ask_line if ask_oid else "")
             ),
             SupportCategory.RETURN: (
-                "We can help with returns. Please include order number and photos if damaged. "
-                "We confirm next steps after review — no automatic refund promise."
+                (
+                    f"We can help with a return/claim for order {oid}. "
+                    if not ask_oid
+                    else "We can help with a return/claim. "
+                )
+                + "Please describe the reason, whether the package was opened, "
+                "and attach photos if damaged. Include the order number if missing. "
+                "We confirm next steps (e.g. RMA) after review — "
+                "without promising automatic repayment."
             ),
             SupportCategory.BILLING: (
-                "We will review the invoice/payment and confirm shortly."
+                (
+                    f"We will review the invoice/payment for order {oid}. "
+                    if not ask_oid
+                    else "We will review the invoice/payment. Please include your order number, "
+                )
+                + (
+                    "Please share payment date and any reference. "
+                    if not ask_oid
+                    else "payment date and any reference. "
+                )
+                + "We will follow up after manual review — without promising an outcome."
             ),
             SupportCategory.PRODUCT: (
                 "Thanks for your product question. For car multimedia (e.g. CarPlay/DAB+) "
@@ -416,12 +499,29 @@ def draft_reply(
                 + (ask_line if ask_oid else "")
             ),
             SupportCategory.RETURN: (
-                "Vi hjälper dig med retur/reklamation (inkl. ångerrätt 14 dagar där det gäller). "
-                "Bifoga gärna ordernummer och foton om det gäller skada. "
-                "Vi bekräftar nästa steg efter granskning — utan automatiskt återbetalningslöfte."
+                (
+                    f"Vi hjälper dig med retur/reklamation för order {oid} "
+                    if not ask_oid
+                    else "Vi hjälper dig med retur/reklamation "
+                )
+                + "(inkl. ångerrätt 14 dagar där det gäller). "
+                "Beskriv gärna anledning, om förpackningen är öppnad, och bifoga foton vid skada. "
+                "Ange ordernummer om det saknas. "
+                "Vi bekräftar nästa steg (t.ex. RMA) efter granskning — "
+                "utan automatiskt återbetalningslöfte."
             ),
             SupportCategory.BILLING: (
-                "Vi tar en titt på faktura/betalning och återkommer med bekräftelse."
+                (
+                    f"Vi tar en titt på faktura/betalning för order {oid}. "
+                    if not ask_oid
+                    else "Vi tar en titt på faktura/betalning. Ange gärna ordernummer, "
+                )
+                + (
+                    "Skicka gärna betalningsdatum och eventuell referens. "
+                    if not ask_oid
+                    else "betalningsdatum och eventuell referens. "
+                )
+                + "Vi återkommer efter manuell granskning — utan att lova utfall."
             ),
             SupportCategory.PRODUCT: (
                 "Tack för din produktfråga. För bilmultimedia (t.ex. CarPlay/DAB+) "
@@ -550,38 +650,20 @@ class SupportService:
                 )
                 if resolved_context and resolved_context.strip() not in (reply or ""):
                     reply = f"{resolved_context.strip()}\n\n{(reply or '').strip()}"
-            # SB5: LLM drafts for status/shipping without order_id still need a soft ask
+            # SB5/SB6: status/shipping/return/billing without order_id still need a soft ask
             if (
                 not order_id
                 and category
-                in (SupportCategory.ORDER_STATUS, SupportCategory.SHIPPING)
+                in (
+                    SupportCategory.ORDER_STATUS,
+                    SupportCategory.SHIPPING,
+                    SupportCategory.RETURN,
+                    SupportCategory.BILLING,
+                )
                 and reply
-                and "ordernummer" not in reply.lower()
-                and "order number" not in reply.lower()
-                and "ordrenummer" not in reply.lower()
+                and not _draft_mentions_order_number(reply)
             ):
-                lang_l = language.lower()
-                if lang_l in {"en"}:
-                    ask = (
-                        "\n\nCould you reply with your order number "
-                        "(e.g. 1001) so we can check status?"
-                    )
-                elif lang_l in {"no", "nb"}:
-                    ask = (
-                        "\n\nKan du sende ordrenummeret (f.eks. 1001) "
-                        "så vi kan sjekke status?"
-                    )
-                elif lang_l in {"da", "dk"}:
-                    ask = (
-                        "\n\nKan du sende ordrenummeret (f.eks. 1001), "
-                        "så vi kan tjekke status?"
-                    )
-                else:
-                    ask = (
-                        "\n\nKan du svara med ordernumret (t.ex. 1001) "
-                        "så vi kan kolla status?"
-                    )
-                reply = (reply or "").rstrip() + ask
+                reply = (reply or "").rstrip() + soft_order_id_ask(language)
             suggest = is_suggest_approve_eligible(
                 category=category.value,
                 confidence=confidence,

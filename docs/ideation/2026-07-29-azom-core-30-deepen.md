@@ -38,7 +38,7 @@ Multi-tenant, FAQ/KB, IMAP IDLE, GA4/engagement, SSO, bulk approve/send, default
 | FU6 live soak | Open — Oscar |
 | FU7 live threshold tune | Blocked on soak samples |
 | FU9 wire | Gated |
-| Path B2 returns/billing drafts | Not built |
+| Path B2 returns/billing drafts | ✅ Code shipped (`docs/plans/2026-07-29-003-path-b2-return-billing-drafts.md`) — richer templates, SB6 soft-ask, draft prompt 1.2, priority=high + UI hint; still never ★ |
 
 ## Sequence
 
@@ -78,7 +78,7 @@ Code already present: `language=nb`, `woo_domain_from_market("no")`, classify/dr
 | ID | Deliverable |
 |----|-------------|
 | Q1 | FU7: 20–50 redacted samples → `classify-eval`; threshold-only changes in `config/cases_ai.yaml` |
-| Q2 | Path B2: stronger return/billing drafts (never suggest/auto-send); clearer escalate |
+| Q2 | Path B2: stronger return/billing drafts (never suggest/auto-send); clearer escalate via priority=high + UI hint | ✅ code 2026-07-29 — `docs/plans/2026-07-29-003-path-b2-return-billing-drafts.md` |
 | Q3 | Soak-driven core fixes (e.g. send retry on transient mail errors) |
 
 Architecture stays: `MailTransport → CaseService.poll / approve_and_send`.
@@ -102,7 +102,7 @@ After ≥2–4 weeks KPI: stop / widen NO/DK / continue narrow auto-send / park 
 ## Next actions
 
 1. **Oscar:** start C1 live soak (critical path).  
-2. **Agent:** this ideation landed; no FU9 wire; no NO `enabled: true` without Oscar.  
+2. **Agent:** Path B2 drafts shipped; still no FU9 wire; no NO `enabled: true` without Oscar.  
 3. After soak + credentials: plan N1–N3 in an isolated worktree.  
 4. After samples: Q1 FU7 TDD.
 
