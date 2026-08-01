@@ -61,7 +61,7 @@ Details: `docs/MAIL_PROVIDERS.md`.
 
 ## Cases AI rails
 
-`config/cases_ai.yaml`: suggest-approve for `order_status`/`shipping` (default); auto-send **off** and **not wired** into poll unless Oscar enables after FU9 gates (`AZOM_AUTO_SEND_KILL`).
+`config/cases_ai.yaml`: suggest-approve for `order_status`/`shipping` (default); `never_suggest_categories` includes `abuse`/`return`/`billing` (Path B2 still drafts those richer, never ★). Auto-send **off** and **not wired** into poll unless Oscar enables after FU9 gates (`AZOM_AUTO_SEND_KILL`).
 
 ## Woo / WordPress
 

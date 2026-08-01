@@ -125,7 +125,7 @@ bash tests/test_spinup.sh
 | Telegram / Messenger brain | `skills/ecom_ops/bot/` |
 | Woo / WP clients | `skills/ecom_ops/integrations/woocommerce.py`, `wordpress.py`, `webhooks.py` |
 | Mail providers | `skills/ecom_ops/integrations/mail*` |
-| Dashboard routes / probes | `infrastructure/dashboard/` |
+| Dashboard routes / probes | `infrastructure/dashboard/` (probes are Oscar UI, not CLI) |
 | RBAC | `config/rbac.yaml` + security checks in code |
 | Agent voice | `SOUL.md` + `skills/ecom_ops/bot/chat_agent.py` system prompt |
 

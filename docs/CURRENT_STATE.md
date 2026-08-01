@@ -12,7 +12,7 @@
 | **Path B** | Cases AI quality: suggest-approve badge + auto-send **rails** (default off, not wired to poll send). |
 | **Live soak (A1 / FU6)** | Human-run checklist on a real host before any auto-send discussion. |
 | **FU9** | Auto-send wire into poll. **Not done.** Rails and kill-switch exist only. |
-| **Fail-closed** | Empty allowlist or actor map in live mode (`AZOM_USE_MOCK=0`) denies access. |
+| **Fail-closed** | In live mode (`AZOM_USE_MOCK=0`), empty Messenger/Telegram allowlist **or** actor map denies access; unmapped ids denied when map is set. |
 
 ## Source of truth order
 
@@ -25,13 +25,15 @@
 
 | Item | Value |
 |------|--------|
-| Package | **2.0.0** (`pyproject.toml`, `ecom_ops.__version__`) |
+| Package | **2.0.0** (`pyproject.toml` and `ecom_ops.__version__` — keep in sync; V2.1–V2.3 are capability tracks, not bumps) |
+| Docker image tag | `azom-agent:2.0` (`infrastructure/docker-compose.prod.yml`) |
 | Primary OS | Ubuntu 26.x (24.04 LTS supported) |
 | Host sizing | Hetzner CX22 / CPX21 — 2 vCPU, 4 GB RAM |
-| Prod code | `/opt/azom-agent` |
-| Prod data | `/var/lib/azom` (`AZOM_DATA_DIR`) |
-| Prod logs | `/var/log/azom` |
-| Prod env | `/opt/azom-agent/.env` with `AZOM_USE_MOCK=0` |
+| Prod code (systemd) | `/opt/azom-agent` |
+| Prod data (systemd) | `/var/lib/azom` (`AZOM_DATA_DIR`) |
+| Prod logs (systemd) | `/var/log/azom` |
+| Prod env (systemd) | `/opt/azom-agent/.env` with `AZOM_USE_MOCK=0` |
+| Docker data | `/app/.azom-data` (compose volume; not the systemd path) |
 
 ## Shipped (code on main)
 
@@ -111,4 +113,8 @@ Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, fini
 | Cases + FU9 | [`CASES.md`](CASES.md) |
 | Daily pilot ops + soak | [`PILOT_OPS.md`](PILOT_OPS.md) |
 | Mail setup | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
+| Gmail OAuth | [`V2_OAUTH_GMAIL.md`](V2_OAUTH_GMAIL.md) |
 | Woo/WP API surface | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
+| Install / deploy | [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) |
+| Docker overlays | [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md) |
+| Index | [`README.md`](README.md) |

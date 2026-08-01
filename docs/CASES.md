@@ -27,8 +27,11 @@
 |--------|-----------|
 | `open` | Ny / i kö |
 | `escalated` | Abuse/legal/critical eller mänskligt eskalerat |
+| `sending` | Transient claim under `approve_and_send` (claim/release) — syns sällan i UI |
 | `replied` | Utkast godkänt och mejlat |
 | `closed` | Stängt utan kundsvar |
+
+Aktiv kö för draft/regenerate/reply: `open` och `escalated` (inte `replied` / `closed` / `sending`).
 
 ---
 
@@ -190,11 +193,14 @@ Full CLI: [`CLI_REFERENCE.md`](CLI_REFERENCE.md).
 
 ## Dashboard
 
-- `/cases` — filter, age, ★-badges, KPIs, `?suggest=1`
-- `/cases/<id>` — draft edit/save, orderpanel, approve confirm, regenerate, close (RBAC)
-- Overview nav-badges för open/escalated
+| Path | Syfte |
+|------|--------|
+| `/cases` | Kö, filter, age, ★-badges, KPIs, `?suggest=1` |
+| `/cases/<id>` | Draft edit/save, orderpanel, approve confirm, regenerate, close (RBAC) |
+| `POST /cases/poll` | Manuell poll (auth) |
+| `POST /cases/bulk-close` | Bulk close (RBAC/CSRF) — **inte** bulk approve |
 
-Se [`PILOT_OPS.md`](PILOT_OPS.md).
+Nav-badges på översikt för open/escalated. Se [`PILOT_OPS.md`](PILOT_OPS.md).
 
 ---
 

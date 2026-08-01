@@ -27,11 +27,24 @@ sudo bash /tmp/azom/bin/install.sh
 4. Clone eller sync av projektet
 5. `python3 -m venv` + `pip install -r requirements.txt` + `pip install -e .`
 6. Skapar `.env` från `.env.example`, sätter prod-paths, **genererar** dashboard-lösenord
-7. Installerar systemd units (`azom-dashboard`, `azom-bot`, `azom-daily-brief.timer`, `azom-cases-poll.timer` — cases poll every 5 min)
+7. Installerar systemd units (se tabell nedan)
 8. UFW: endast SSH öppet (8080 stängd — använd reverse proxy)
 9. Logrotate + unattended-upgrades + fail2ban
 10. Smoke-tester (order-status, support, ssh, mail i mock)
-11. Startar tjänster (bot endast om `TELEGRAM_BOT_TOKEN` är satt)
+11. Startar tjänster (Telegram-bot endast om `TELEGRAM_BOT_TOKEN` är satt)
+
+### Systemd-enheter som installeras
+
+| Unit | Roll |
+|------|------|
+| `azom-dashboard.service` | Flask dashboard (inkl. Messenger-webhook + Woo-webhook) |
+| `azom-bot.service` | Telegram long-poll — startas bara om token finns |
+| `azom-cases-poll.timer` | Cases poll ~var 5:e minut |
+| `azom-daily-brief.timer` | Daglig brief |
+| `azom-backup.timer` | Backup av data |
+| `azom-retention-purge.timer` | GDPR retention purge |
+
+Messenger har **ingen** egen systemd-unit — den körs via dashboard-webhook.
 
 ## Flaggor
 
@@ -107,5 +120,7 @@ Wrapper: `bin/install.sh` detekterar distro och anropar `install-ubuntu26.sh`.
 ## Relaterat
 
 - Manuell bootstrap (äldre): `bin/bootstrap-ubuntu24.sh`
-- Hetzner sizing: `docs/DEPLOY_UBUNTU24_HETZNER.md`
+- Hetzner sizing: [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md)
+- Docker overlays: [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md)
+- Post-install soak: [`PILOT_OPS.md`](PILOT_OPS.md)
 - systemd units: `infrastructure/systemd/`

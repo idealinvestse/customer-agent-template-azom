@@ -53,7 +53,8 @@ Each major surface has one **primary** living doc:
 | Telegram | [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) |
 | Messenger | [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) |
 | Woo / WordPress | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
-| Install / deploy / Docker | [`AUTO_INSTALL.md`](AUTO_INSTALL.md) + deploy/docker docs |
+| Install / deploy | [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) |
+| Docker overlays | [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md) |
 | Secrets / Gmail OAuth | [`V2_OAUTH_GMAIL.md`](V2_OAUTH_GMAIL.md) + `.env.example` |
 | Incidents | [`runbooks/`](runbooks/) |
 | Compliance | [`COMPLIANCE.md`](COMPLIANCE.md) |

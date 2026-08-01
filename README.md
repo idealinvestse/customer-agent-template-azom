@@ -70,11 +70,13 @@ curl -fsSL https://raw.githubusercontent.com/idealinvestse/customer-agent-templa
 
 Docs: [`docs/AUTO_INSTALL.md`](docs/AUTO_INSTALL.md) · [`docs/DEPLOY_UBUNTU24_HETZNER.md`](docs/DEPLOY_UBUNTU24_HETZNER.md) · [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md)
 
-Docker:
+Docker (data dir `/app/.azom-data`, image `azom-agent:2.0`):
 
 ```bash
 docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 ```
+
+Se [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md).
 
 ## Dashboard + bot + cases
 

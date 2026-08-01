@@ -36,7 +36,7 @@
 
 ## Runtime target
 
-- **Package version:** **2.0.0** (capability tracks V2.1–V2.3 are not package bumps)
+- **Package version:** **2.0.0** (`pyproject.toml` + `ecom_ops.__version__` — keep in sync; capability tracks V2.1–V2.3 are not package bumps)
 - **OS:** Ubuntu 26.x (primary) / 24.04 LTS
 - **Host:** Hetzner Cloud — **CX22 / CPX21** (2 vCPU, 4 GB RAM)
 - **Auto-install:** `sudo bash bin/install.sh` or `bin/install-ubuntu26.sh`
@@ -110,21 +110,24 @@ python -m ecom_ops status
 
 ```bash
 TELEGRAM_BOT_TOKEN=...
-TELEGRAM_ALLOWED_CHAT_IDS=...          # required in prod
-TELEGRAM_ACTOR_MAP=chat:jonatan,...    # unmapped denied when map set
+TELEGRAM_ALLOWED_CHAT_IDS=...          # empty in live = fail-closed (deny all)
+TELEGRAM_ACTOR_MAP=chat:jonatan,...    # empty in live = deny; unmapped denied when map set
 MESSENGER_PAGE_ACCESS_TOKEN=...
 MESSENGER_APP_SECRET=...
 MESSENGER_VERIFY_TOKEN=...
-MESSENGER_ALLOWED_PSIDS=...            # Jonatan PSID only in prod
-MESSENGER_ACTOR_MAP=psid:jonatan,...
+MESSENGER_ALLOWED_PSIDS=...            # Jonatan PSID only in prod; empty = fail-closed
+MESSENGER_ACTOR_MAP=psid:jonatan,...   # empty in live = deny
 ```
 
-## Prod paths (Ubuntu)
+Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram uses `azom-bot.service`.
+
+## Prod paths (Ubuntu systemd)
 
 - Code: `/opt/azom-agent`
 - Data: `/var/lib/azom`
 - Logs: `/var/log/azom`
 - Env: `/opt/azom-agent/.env` (`AZOM_USE_MOCK=0`)
+- Docker data (compose): `/app/.azom-data` — see [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md)
 
 ## Status (code vs goals)
 

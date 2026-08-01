@@ -57,12 +57,15 @@ Mock-lösen `jonatan`/`oscar` gäller **bara** när `AZOM_USE_MOCK=1`.
 
 | Unit | Syfte |
 |------|--------|
-| `azom-dashboard.service` | Flask 127.0.0.1:8080 |
-| `azom-bot.service` | Telegram long-poll |
+| `azom-dashboard.service` | Flask 127.0.0.1:8080 (Messenger- + Woo-webhook) |
+| `azom-bot.service` | Telegram long-poll (ingen Messenger-unit) |
 | `azom-cases-poll.timer` | Cases poll var 5:e minut |
 | `azom-daily-brief.timer` | Daglig brief |
+| `azom-backup.timer` | Backup av data |
+| `azom-retention-purge.timer` | GDPR retention |
 
-Sökvägar: kod `/opt/azom-agent`, data `/var/lib/azom`, loggar `/var/log/azom`, env `/opt/azom-agent/.env`.
+Sökvägar: kod `/opt/azom-agent`, data `/var/lib/azom`, loggar `/var/log/azom`, env `/opt/azom-agent/.env`.  
+Basic Auth-användarnamn är alltid `jonatan` / `oscar` (lösen via env) — se [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
 
 ## Daglig hälsokoll
 
@@ -100,18 +103,18 @@ Vid korrupt DB: [`runbooks/cases-db-corrupt.md`](runbooks/cases-db-corrupt.md).
 
 ```text
 [ ] AZOM_USE_MOCK=0 på prod-host
-[ ] TELEGRAM_ALLOWED_CHAT_IDS satt
-[ ] TELEGRAM_ACTOR_MAP satt (unmapped nekas när map finns)
-[ ] MESSENGER_ALLOWED_PSIDS satt (Jonatan PSID i prod)
-[ ] MESSENGER_ACTOR_MAP satt
+[ ] TELEGRAM_ALLOWED_CHAT_IDS satt (tom i live = fail-closed)
+[ ] TELEGRAM_ACTOR_MAP satt (tom i live = fail-closed; unmapped nekas)
+[ ] MESSENGER_ALLOWED_PSIDS satt (Jonatan PSID i prod; tom = fail-closed)
+[ ] MESSENGER_ACTOR_MAP satt (tom i live = fail-closed)
 [ ] MESSENGER_PAGE_ACCESS_TOKEN + APP_SECRET + VERIFY_TOKEN satt
 [ ] AZOM_DASHBOARD_PUBLIC_URL satt (HTTPS, utan trailing slash)
 [ ] curl /health → messenger.send_enabled: true
 [ ] Meta webhook: messages + messaging_postbacks → /webhooks/messenger
 [ ] AZOM_AUTO_SEND_KILL=1 valfritt bälte; cases_ai auto_send_enabled: false
 [ ] Mailbox / Gmail OAuth OK
-[ ] systemd: azom-dashboard, azom-bot, azom-cases-poll.timer active
-[ ] Backupväg känd för cases.db + secrets.env
+[ ] systemd: azom-dashboard (+ bot om Telegram), cases-poll/backup/retention timers active
+[ ] Backupväg känd för cases.db + secrets.env (+ oauth/gmail.json)
 ```
 
 ### Soak-script (en session)

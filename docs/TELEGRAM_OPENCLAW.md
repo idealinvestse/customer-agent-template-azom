@@ -9,7 +9,7 @@
 | Term | Betydelse |
 |------|-----------|
 | **Backup chat** | Telegram — samma `BotHandler` som Messenger, men inte primär yta. |
-| **Fail-closed map** | När `TELEGRAM_ACTOR_MAP` är icke-tom nekas unmapped chat_id. |
+| **Fail-closed** | Tom `TELEGRAM_ALLOWED_CHAT_IDS` eller tom `TELEGRAM_ACTOR_MAP` i live (`AZOM_USE_MOCK=0`) nekar. Icke-tom map nekar unmapped chat_id. |
 | **Confirm UX only** | NL “godkänn …” visar bekräftelse — skickar **inte** mail. |
 | **tool_digest** | Kort sammanfattning av senast körda read-only tools för följdfrågor. |
 
@@ -62,7 +62,7 @@ TELEGRAM_ALLOWED_CHAT_IDS=111111111
 TELEGRAM_ACTOR_MAP=111111111:jonatan
 ```
 
-**Dåligt (prod):** Tom allowlist eller tom map medan live — riskerar fel åtkomstmodell. I live ska map/allowlist vara satta enligt Oscars policy.
+**Dåligt (prod):** Tom allowlist eller tom map i live — **alla nekas** (fail-closed). Sätt båda enligt Oscars policy innan go-live.
 
 ---
 
@@ -142,12 +142,14 @@ Jonatan kan approve:a cases men **inte** skriva Woo order/product om hen inte ä
 
 `resolve_telegram_actor(chat_id)` styr approve/close/health.
 
-| Map-läge | Beteende |
-|----------|----------|
-| Tom map (dev/mock) | unmapped → `jonatan` |
-| Icke-tom map (prod) | unmapped → **denied** (fail-closed) |
+| Läge | Allowlist / map | Beteende |
+|------|-----------------|----------|
+| Mock (`AZOM_USE_MOCK=1`) | Tom map | unmapped → `jonatan` |
+| Live | Tom allowlist **eller** tom map | **denied** (fail-closed) |
+| Live | Icke-tom map | unmapped → **denied** |
+| Live | Allowlist satt | chat utanför listan → **denied** |
 
-Allowlist gäller separat om den är satt.
+Samma modell som Messenger (`skills/ecom_ops/bot/actors.py`).
 
 ---
 

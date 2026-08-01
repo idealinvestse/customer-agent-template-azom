@@ -21,7 +21,7 @@
 | WP client | `skills/ecom_ops/integrations/wordpress.py` |
 | HTTP transport + retry | `RequestsTransport` in Woo integration module |
 | Webhook receiver | `skills/ecom_ops/integrations/webhooks.py` |
-| Order context / tracking | `skills/ecom_ops/cases/order_context.py` (heuristic fallback remains) |
+| Order context / tracking | `skills/ecom_ops/order_context.py` (heuristic fallback remains) |
 | Dashboard Woo webhook | `POST /webhooks/woo` |
 | Probes | `infrastructure/dashboard/secret_probes.py` (`probe_wordpress`, Woo probes) |
 
@@ -68,10 +68,17 @@ Mock: `InMemoryWooTransport` when `AZOM_USE_MOCK=1`.
 
 `WordPressClient` covers `/wp-json/wp/v2/`:
 
-- posts, pages, media, users, comments, settings, discovery
+| Resource | Client surface |
+|----------|----------------|
+| Posts | list / get / create / update / delete |
+| Pages | list / get only |
+| Media, users, comments | list |
+| Settings | get / update |
+| Discovery | `discover_namespaces` |
 
-Auth: Application Passwords via `WP_USERNAME` + `WP_APP_PASSWORD`.  
-Factory: `wp_client_from_env(domain=)` for multi-site.
+Auth: Application Passwords via `WP_USERNAME` + `WP_APP_PASSWORD` (alias `WORDPRESS_USERNAME` accepted).  
+Factory: `wp_client_from_env(domain=)` for multi-site.  
+No dedicated Woo “stock” client method — stock fields come from product payloads when present.
 
 Secret redaction includes `WP_USERNAME`, `WP_APP_PASSWORD`, `WOO_WEBHOOK_SECRET`.  
 Oscar probe: `probe_wordpress`.

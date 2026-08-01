@@ -102,17 +102,23 @@ python -m ecom_ops --mock ssh-health
 
 ### Quality / KPI helpers
 
+| Command | Flags | Purpose |
+|---------|-------|---------|
+| `kpis` | `--days` (default 7) | Case / approve KPI dump |
+| `classify-eval` | `--fixtures DIR` (default `tests/fixtures/support_classify`) | Fixture accuracy check |
+| `draft-eval` | `--dir DIR` (default `tests/fixtures/draft_quality`) | Draft quality fixtures |
+| `drift-check` | `--days` (default 7) | Ops drift signals |
+| `trends` | `--days` (default 30) | Longer-window trends |
+
 ```bash
 python -m ecom_ops kpis --days 7
-python -m ecom_ops classify-eval [--fixtures DIR]
-# default fixtures: tests/fixtures/support_classify
-
-python -m ecom_ops draft-eval [--dir DIR]
-# default: tests/fixtures/draft_quality
-
+python -m ecom_ops classify-eval
+python -m ecom_ops draft-eval
 python -m ecom_ops drift-check --days 7
 python -m ecom_ops trends --days 30
 ```
+
+**Note:** Connection probes (`probe_mail`, `probe_woocommerce`, …) are **dashboard Oscar** actions (`POST /oscar/secrets/test`), not CLI subcommands.
 
 ### `mail`
 

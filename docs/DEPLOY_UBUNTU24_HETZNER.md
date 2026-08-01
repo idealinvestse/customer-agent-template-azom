@@ -103,19 +103,23 @@ docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 ```
 
 - Port **127.0.0.1:8080** only
+- Image tag: `azom-agent:2.0`
 - Resource limits: dashboard 256 MB, bot 128 MB
-- Data volume: `azom-data`
+- Data volume: `azom-data` → container path **`/app/.azom-data`** (inte `/var/lib/azom`)
+- Detaljer: [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md)
 
 ---
 
-## Filsökvägar på servern
+## Filsökvägar på servern (systemd)
 
 | Path | Innehåll |
 |------|----------|
-| `/opt/azom-agent` | Kod + venv + config |
-| `/var/lib/azom` | telemetry + escalations (prod data dir) |
+| `/opt/azom-agent` | Kod + venv + `.env` |
+| `/var/lib/azom` | `AZOM_DATA_DIR`: cases.db, oauth, secrets, telemetry |
 | `/var/log/azom` | loggar |
-| `/etc/systemd/system/azom-*.service` | units |
+| `/etc/systemd/system/azom-*.service` | units (+ timers) |
+
+Basic Auth: användarnamn är alltid `jonatan` / `oscar`; lösen via `DASHBOARD_PASSWORD*` / `DASHBOARD_OSCAR_PASSWORD*`.
 
 ---
 
@@ -138,7 +142,7 @@ docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 ```bash
 # Status
 systemctl status azom-dashboard azom-bot
-systemctl list-timers azom-daily-brief.timer
+systemctl list-timers 'azom-*'
 
 # Logs
 journalctl -u azom-dashboard -f
@@ -148,3 +152,11 @@ journalctl -u azom-bot -f
 sudo -u azom bash -lc 'cd /opt/azom-agent && .venv/bin/python -m ecom_ops mail fetch'
 sudo -u azom /opt/azom-agent/bin/daily-brief-azom.sh
 ```
+
+Timers som installerats: `azom-cases-poll`, `azom-daily-brief`, `azom-backup`, `azom-retention-purge` — se [`AUTO_INSTALL.md`](AUTO_INSTALL.md).
+
+## Relaterat
+
+- One-shot: [`AUTO_INSTALL.md`](AUTO_INSTALL.md)
+- Pilot / soak: [`PILOT_OPS.md`](PILOT_OPS.md)
+- Messenger: [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md)

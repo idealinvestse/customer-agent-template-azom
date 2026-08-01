@@ -92,6 +92,7 @@ See [`CASES.md`](CASES.md) for the full operator guide (Swedish).
 |--------|---------|
 | `open` | Needs attention |
 | `escalated` | Oscar / high-touch |
+| `sending` | Transient claim during approve-and-send |
 | `replied` | Human-approved send done |
 | `closed` | Closed without reply |
 
@@ -124,14 +125,18 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/interact` | auth | Support draft playground |
 | `/oscar`, `/oscar/secrets`, `/oscar/escalations` | Oscar | Admin + resolve |
 | `/oscar/secrets/test` | Oscar | Connection probes |
-| `/oauth/gmail/*` | auth | Gmail OAuth |
+| `/oauth/gmail/start`, `/status` | auth | Gmail OAuth start / status |
+| `/oauth/gmail/callback` | public | Google redirect (OAuth `state` validated) |
 | `/webhooks/messenger` | Meta | Messenger webhook |
 | `/webhooks/woo` | Woo | HMAC-verified Woo webhooks |
 | `/health` | public | Liveness + readiness (poll age) |
+| `/ready` | public | 503 when cases poll stale |
+| `/oscar/gdpr/export`, `/oscar/gdpr/delete` | Oscar | GDPR export / delete |
+| `/cases/bulk-close` | POST auth | Bulk close (not bulk approve) |
 | `/data/telemetry`, `/data/escalations` | auth | JSON data views |
 | `/logs`, `/telemetry`, `/escalations`, `/manage` | auth | Ops pages |
 
-Auth: Basic (`jonatan` / `oscar` passwords or Werkzeug hashes). CSRF on browser POSTs (`DASHBOARD_SECRET_KEY`).
+Auth: Basic Auth usernames are hardcoded as `jonatan` / `oscar` (password or Werkzeug hash via `DASHBOARD_PASSWORD*` / `DASHBOARD_OSCAR_PASSWORD*`). `DASHBOARD_USER` in `.env` is documentation-only — code does not read it. CSRF on browser POSTs (`DASHBOARD_SECRET_KEY`).
 
 Operator procedures: [`PILOT_OPS.md`](PILOT_OPS.md) (Swedish).
 
@@ -147,11 +152,13 @@ python -m ecom_ops --mock order-status --order-id 1001 --status completed
 python -m ecom_ops --mock product-desc --product-id 42 --language sv
 python -m ecom_ops --mock support --message "Var är order 1001?"
 python -m ecom_ops --mock mail send|fetch|reply ...
-python -m ecom_ops --mock cases poll|list|show|reply|draft|regenerate|close ...
+python -m ecom_ops --mock cases poll|list|show|reply|draft|regenerate|close|retention-purge ...
+python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends
 python -m ecom_ops.bot
 ```
 
-Global flags: `--mock`, `--actor`, `--site`.
+Global flags: `--mock`, `--actor`, `--site`.  
+Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 
 ## 8. Config and env
 
@@ -181,16 +188,19 @@ Global flags: `--mock`, `--actor`, `--site`.
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
 | `WOO_WEBHOOK_SECRET` | Inbound Woo webhook HMAC |
 
-Prod paths: code `/opt/azom-agent`, data `/var/lib/azom`, logs `/var/log/azom`.
+Prod paths (systemd): code `/opt/azom-agent`, data `/var/lib/azom`, logs `/var/log/azom`.  
+Docker data path: `/app/.azom-data` (see [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md)).
 
 ## 9. Services (systemd)
 
 | Unit | Purpose |
 |------|---------|
-| `azom-dashboard.service` | Flask 127.0.0.1:8080 |
-| `azom-bot.service` | Telegram long-poll |
+| `azom-dashboard.service` | Flask 127.0.0.1:8080 (includes Messenger + Woo webhooks) |
+| `azom-bot.service` | Telegram long-poll only (no Messenger unit) |
 | `azom-cases-poll.timer` | Cases poll every 5 min |
 | `azom-daily-brief.timer` | Daily KPI brief |
+| `azom-backup.timer` | Data backup |
+| `azom-retention-purge.timer` | GDPR retention purge |
 
 Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) · Docker: [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md).
 
@@ -214,7 +224,7 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 3. SSH allowlist; shell metacharacters rejected.
 4. RBAC gates mutations and mail send.
 5. Dashboard: Werkzeug password hashes preferred; CSRF; mock default passwords only with `AZOM_USE_MOCK=1`.
-6. Telegram/Messenger allowlists + actor maps fail-closed in prod when configured/required.
+6. Telegram/Messenger allowlists + actor maps **fail-closed in live** when empty (or when map is set and chat/PSID is unmapped).
 7. Config volume read-only in Docker; secrets only in data dir.
 8. Messenger webhook: Meta verify + HMAC (not dashboard Basic Auth).
 

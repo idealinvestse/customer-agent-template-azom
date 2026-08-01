@@ -71,7 +71,16 @@ When you add, rename, or delete a living doc:
 1. Update [`docs/README.md`](README.md) coverage matrix and tables.
 2. Update root [`README.md`](../README.md) documentation index if the file is an entry point.
 3. Update [`AGENTS.md`](../AGENTS.md) “Read order” if agents must load the new file.
-4. Grep the repo for the old path and fix broken links.
+4. Update [`CURRENT_STATE.md`](CURRENT_STATE.md) “Related living docs” when the file is an entry point.
+5. Grep the repo for the old path and fix broken links.
+
+## Accuracy pass (when revising docs)
+
+1. Prefer `CURRENT_STATE` + code/config over chat memory.
+2. Verify CLI flags against `skills/ecom_ops/cli.py`; dashboard routes against `infrastructure/dashboard/`.
+3. Keep `pyproject.toml` version and `ecom_ops.__version__` identical; docs must match both.
+4. Distinguish **systemd paths** (`/var/lib/azom`) from **Docker paths** (`/app/.azom-data`).
+5. Mark human gates (live soak, FU9 wire, NO/DK enable) explicitly — never imply done.
 
 ## What we do not maintain here
 

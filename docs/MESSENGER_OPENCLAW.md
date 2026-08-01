@@ -15,7 +15,8 @@
 | **Dry-run outbound** | Utan page token loggas payload; i live blockeras mutationer. |
 
 **Kod:** samma `BotHandler` som Telegram under `skills/ecom_ops/bot/` + dashboard webhook-route.  
-**Webhook:** `GET|POST /webhooks/messenger` på dashboard-hosten.
+**Webhook:** `GET|POST /webhooks/messenger` på dashboard-hosten (`azom-dashboard.service`).  
+**Ingen** egen `azom-messenger.service` — till skillnad från Telegram (`azom-bot.service`).
 
 ---
 
