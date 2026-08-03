@@ -19,6 +19,42 @@ from ecom_ops.cases.suggest import CasesAiConfig, load_cases_ai_config
 AUTO_SEND_TELEMETRY_ACTION = "case_auto_sent"
 
 
+def explain_auto_send(
+    *,
+    category: str,
+    confidence: float,
+    order_id: str | None,
+    escalated: bool,
+    auto_sends_today: int = 0,
+    config: CasesAiConfig | None = None,
+) -> tuple[bool, str]:
+    """Return (eligible, reason_code) for FU9 rails without sending mail.
+
+    Reason codes: auto_send_disabled, kill_switch, escalated,
+    never_suggest_category, category_not_allowed, low_confidence,
+    missing_order_id, daily_cap, or eligible.
+    """
+    cfg = config or load_cases_ai_config()
+    if not cfg.auto_send_enabled:
+        return False, "auto_send_disabled"
+    if cfg.kill_switch_active():
+        return False, "kill_switch"
+    if escalated:
+        return False, "escalated"
+    cat = (category or "").strip().lower()
+    if cat in {c.lower() for c in cfg.never_suggest_categories}:
+        return False, "never_suggest_category"
+    if cat not in {c.lower() for c in cfg.auto_send_categories}:
+        return False, "category_not_allowed"
+    if confidence < cfg.auto_send_min_confidence:
+        return False, "low_confidence"
+    if not (order_id or "").strip():
+        return False, "missing_order_id"
+    if auto_sends_today >= cfg.max_auto_sends_per_day:
+        return False, "daily_cap"
+    return True, "eligible"
+
+
 def should_auto_send(
     *,
     category: str,
@@ -39,25 +75,15 @@ def should_auto_send(
     config), callers should tag telemetry with that name so auto-send
     outcomes are attributable to a specific experiment.
     """
-    cfg = config or load_cases_ai_config()
-    if not cfg.auto_send_enabled:
-        return False
-    if cfg.kill_switch_active():
-        return False
-    if escalated:
-        return False
-    cat = (category or "").strip().lower()
-    if cat in {c.lower() for c in cfg.never_suggest_categories}:
-        return False
-    if cat not in {c.lower() for c in cfg.auto_send_categories}:
-        return False
-    if confidence < cfg.auto_send_min_confidence:
-        return False
-    if not (order_id or "").strip():
-        return False
-    if auto_sends_today >= cfg.max_auto_sends_per_day:
-        return False
-    return True
+    eligible, _reason = explain_auto_send(
+        category=category,
+        confidence=confidence,
+        order_id=order_id,
+        escalated=escalated,
+        auto_sends_today=auto_sends_today,
+        config=config,
+    )
+    return eligible
 
 
 def active_experiment_name(config: CasesAiConfig | None = None) -> str:

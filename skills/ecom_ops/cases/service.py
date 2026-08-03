@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from ecom_ops.actions.mail import MailService
+from ecom_ops.actions.mail import NULL_SEND_REFUSED_MSG, MailService
 from ecom_ops.actions.support import SupportService, extract_order_id
 from ecom_ops.cases.mailboxes import MailboxConfig, enabled_mailboxes
 from ecom_ops.cases.store import Case, CaseStore
@@ -19,6 +19,7 @@ from ecom_ops.order_context import (
     woo_domain_from_market,
 )
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
+from ecom_ops.runtime_profile import null_send_active
 from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
@@ -215,6 +216,37 @@ class CaseService:
             escalated=escalated,
             auto_sends_today=auto_sends_today,
         )
+
+    def _maybe_record_shadow(self, case: Case) -> Case:
+        """Under null-send: persist FU9 would-have decision; never sends mail."""
+        if not null_send_active():
+            return case
+        from ecom_ops.cases.auto_send import AutoSendDayCounter, explain_auto_send
+
+        escalated = case.status == "escalated" or bool(case.escalation_id)
+        eligible, reason = explain_auto_send(
+            category=case.category,
+            confidence=float(case.classify_confidence or 0.0),
+            order_id=case.order_id,
+            escalated=escalated,
+            auto_sends_today=AutoSendDayCounter().count_today(),
+        )
+        deny = None if eligible else reason
+        updated = self.store.set_shadow_decision(
+            case.id, eligible=eligible, deny_reason=deny
+        )
+        self.telemetry.record(
+            action="case_shadow_decision",
+            site=case.site or "azom",
+            case_id=case.id,
+            meta={
+                "case_id": case.id,
+                "shadow_eligible": eligible,
+                "shadow_deny_reason": deny or "eligible",
+                "mailbox_id": case.mailbox_id,
+            },
+        )
+        return updated or case
 
     def poll(
         self,
@@ -502,6 +534,7 @@ class CaseService:
                     "actor": actor.name,
                 },
             )
+            case = self._maybe_record_shadow(case)
             self._best_effort_mark_read(client, msg)
             return case
 
@@ -563,6 +596,7 @@ class CaseService:
                 "actor": actor.name,
             },
         )
+        case = self._maybe_record_shadow(case)
         self._best_effort_mark_read(client, msg)
         return case
 
@@ -811,6 +845,7 @@ class CaseService:
                 },
             )
             final = patched or self.store.get(case_id) or case
+            final = self._maybe_record_shadow(final)
             return CaseActionResult(
                 ok=True,
                 message=f"Draft regenerated for {case_id[:8]}",
@@ -1001,6 +1036,23 @@ class CaseService:
             body = (body_override or case.draft_reply or "").strip()
             if not body:
                 return CaseActionResult(ok=False, message="No draft to send", case=case.to_dict())
+
+            if null_send_active():
+                self.telemetry.record(
+                    action="case_reply_blocked_null_send",
+                    site=case.site or "azom",
+                    case_id=case_id,
+                    meta={
+                        "case_id": case_id,
+                        "actor": actor_obj.name,
+                        "reason": "null_send",
+                    },
+                )
+                return CaseActionResult(
+                    ok=False,
+                    message=NULL_SEND_REFUSED_MSG,
+                    case=case.to_dict(),
+                )
 
             prior_status = case.status
             claimed = self.store.claim_for_send(case_id)

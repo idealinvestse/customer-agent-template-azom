@@ -10,10 +10,15 @@ from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.integrations.mail import MailClient, MailMessage, client_from_env
 from ecom_ops.integrations.mail_threading import assemble_outbound_thread_headers
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
+from ecom_ops.runtime_profile import null_send_active
 from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 logger = logging.getLogger(__name__)
+
+NULL_SEND_REFUSED_MSG = (
+    "Null-send profil aktiv (AZOM_NULL_SEND) — kundmail skickas inte."
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,12 @@ class MailService:
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
 
+    def _refuse_if_null_send(self) -> MailSendResult | None:
+        """Shared chokepoint for send() and reply() — no client transport call."""
+        if not null_send_active():
+            return None
+        return MailSendResult(ok=False, message=NULL_SEND_REFUSED_MSG)
+
     def send(
         self,
         *,
@@ -86,6 +97,9 @@ class MailService:
     ) -> MailSendResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
+        refused = self._refuse_if_null_send()
+        if refused is not None:
+            return refused
         try:
             require_permission(
                 actor_obj, required_permission or Permission.MAIL_SEND
@@ -255,6 +269,9 @@ class MailService:
         )
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
+        refused = self._refuse_if_null_send()
+        if refused is not None:
+            return refused
         try:
             require_permission(actor_obj, Permission.MAIL_SEND)
             thread_in_reply_to = in_reply_to

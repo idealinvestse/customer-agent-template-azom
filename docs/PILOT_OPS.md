@@ -196,12 +196,16 @@ Siffror får **inte** hittas på av agents. Lägg resultatet i ops-anteckningar 
 ## Mock soft-soak (utvecklare / agent)
 
 ```bash
-# cwd: repo-root, AZOM_USE_MOCK=1
+# cwd: repo-root — script sätter AZOM_USE_MOCK=1 och AZOM_NULL_SEND=1
 bash bin/mock-soak-azom.sh
+# inkluderar cases poll under null-send + cases shadow-report
 python -m ecom_ops classify-eval
 python -m ecom_ops kpis --days 7
-# expect: grönt lokalt — ersätter INTE live soak
+# expect: grönt lokalt + eventuellt skuggspår — ersätter INTE A1 live soak
+# FU9 förblir unwired; agents får inte markera soak klar
 ```
+
+Live-read shadow (senare steg, Oscar): samma null-send-profil med `AZOM_USE_MOCK=0` + credentials — fortfarande ingen kundmail.
 
 ## Incident-runbooks
 

@@ -131,6 +131,15 @@ Return- och billing-ärenden får **rikare utkast** (templates + draft-prompt) o
 **Kod:** `skills/ecom_ops/cases/auto_send.py`, checkpoint `evaluate_auto_send_eligibility` i `service.py` (skickar aldrig).  
 **Tester:** `tests/test_auto_send_rails.py` (inkl. att poll-källan inte anropar auto-send).
 
+### Null-send / Shadow Live Ledger (soft-soak)
+
+**Profil:** `AZOM_NULL_SEND=1` eller CLI `--null-send` (default **av**).  
+Under profilen vägrar `MailService` all kundmail (`send` + `reply`); `approve_and_send` nekar **före** `claim_for_send`.  
+Poll kör fortfarande ingest → classify → draft → suggest; under null-send skrivs `shadow_eligible` / `shadow_deny_reason` + telemetry `case_shadow_decision` (FU9 would-have, aldrig skick).  
+Jonatan ser muted badge `Skugga: …` i dashboard; Oscar läser `python -m ecom_ops cases shadow-report`.  
+Soft-soak: `bash bin/mock-soak-azom.sh` sätter null-send + mock. Live-read-rung = samma profil med `AZOM_USE_MOCK=0` + credentials — fortfarande ingen send.  
+**Detta är inte A1 live soak och inte FU9-wire.** `auto_send_enabled: true` under null-send kan ge `shadow_eligible=true` men mail skickas ändå inte.
+
 ### Aktivera inte förrän ALLA är sanna
 
 1. Sprint A+B gröna i prod (orderpanel, approve&nästa, extract, fixtures).

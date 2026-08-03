@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 # Bump when adding breaking schema changes; _migrate() applies steps in order.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _default_db_path() -> Path:
@@ -60,6 +60,31 @@ class Case:
     suggest_approve: bool = False
     draft_before_regen: str | None = None
     draft_regenerated_at: str | None = None
+    # NULL = not observed under null-send; bool = last shadow FU9 decision
+    shadow_eligible: bool | None = None
+    shadow_deny_reason: str | None = None
+
+    def shadow_hint(self) -> str | None:
+        """Jonatan-facing muted badge text, or None if never observed."""
+        if self.shadow_eligible is None:
+            return None
+        if self.shadow_eligible:
+            return "Skugga: skulle skickats"
+        labels = {
+            "auto_send_disabled": "auto-send av",
+            "kill_switch": "kill-switch",
+            "escalated": "eskalerat",
+            "never_suggest_category": "never-kategori",
+            "category_not_allowed": "kategori ej tillåten",
+            "low_confidence": "låg confidence",
+            "missing_order_id": "saknar order_id",
+            "daily_cap": "dygnstak",
+        }
+        reason = labels.get(
+            self.shadow_deny_reason or "",
+            self.shadow_deny_reason or "okänd",
+        )
+        return f"Skugga: nej ({reason})"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +110,8 @@ class Case:
             "suggest_approve": self.suggest_approve,
             "draft_before_regen": self.draft_before_regen,
             "draft_regenerated_at": self.draft_regenerated_at,
+            "shadow_eligible": self.shadow_eligible,
+            "shadow_deny_reason": self.shadow_deny_reason,
         }
 
 
@@ -238,6 +265,10 @@ class CaseStore:
         if current < 4:
             self._migrate_v4_draft_diff(conn)
             self._record_version(conn, 4)
+            current = 4
+        if current < 5:
+            self._migrate_v5_shadow(conn)
+            self._record_version(conn, 5)
 
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
         case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
@@ -285,6 +316,17 @@ class CaseStore:
             alters.append("ALTER TABLE cases ADD COLUMN draft_before_regen TEXT")
         if "draft_regenerated_at" not in case_cols:
             alters.append("ALTER TABLE cases ADD COLUMN draft_regenerated_at TEXT")
+        for sql in alters:
+            conn.execute(sql)
+
+    def _migrate_v5_shadow(self, conn: sqlite3.Connection) -> None:
+        """Nullable shadow columns — NULL means not observed (no fake denies)."""
+        case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
+        alters: list[str] = []
+        if "shadow_eligible" not in case_cols:
+            alters.append("ALTER TABLE cases ADD COLUMN shadow_eligible INTEGER")
+        if "shadow_deny_reason" not in case_cols:
+            alters.append("ALTER TABLE cases ADD COLUMN shadow_deny_reason TEXT")
         for sql in alters:
             conn.execute(sql)
 
@@ -666,6 +708,48 @@ class CaseStore:
             )
         return self.get(case_id)
 
+    def set_shadow_decision(
+        self,
+        case_id: str,
+        *,
+        eligible: bool,
+        deny_reason: str | None,
+    ) -> Case | None:
+        """Persist last FU9 shadow observation (null-send profile)."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                UPDATE cases
+                SET shadow_eligible = ?, shadow_deny_reason = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    1 if eligible else 0,
+                    None if eligible else deny_reason,
+                    _now(),
+                    case_id,
+                ),
+            )
+        return self.get(case_id)
+
+    def list_shadow_observed(
+        self,
+        *,
+        since_iso: str | None = None,
+        limit: int = 500,
+    ) -> list[Case]:
+        """Cases with a recorded shadow decision (latest columns, not history)."""
+        sql = "SELECT * FROM cases WHERE shadow_eligible IS NOT NULL"
+        params: list[Any] = []
+        if since_iso:
+            sql += " AND updated_at >= ?"
+            params.append(since_iso)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+        with self._conn() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_case(r) for r in rows]
+
     def set_status(self, case_id: str, status: str) -> Case | None:
         with self._conn() as conn:
             conn.execute(
@@ -825,6 +909,16 @@ class CaseStore:
             draft_regenerated_at=(
                 str(row["draft_regenerated_at"])
                 if "draft_regenerated_at" in keys and row["draft_regenerated_at"]
+                else None
+            ),
+            shadow_eligible=(
+                bool(int(row["shadow_eligible"]))
+                if "shadow_eligible" in keys and row["shadow_eligible"] is not None
+                else None
+            ),
+            shadow_deny_reason=(
+                str(row["shadow_deny_reason"])
+                if "shadow_deny_reason" in keys and row["shadow_deny_reason"]
                 else None
             ),
         )

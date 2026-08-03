@@ -49,6 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force mock integrations (no external network)",
     )
+    parser.add_argument(
+        "--null-send",
+        action="store_true",
+        help="Null-send profile: refuse customer mail; record FU9 shadow decisions",
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -192,6 +197,14 @@ def build_parser() -> argparse.ArgumentParser:
         "regenerate", help="Regenerate draft from inbound (never sends)"
     ).add_argument("--id", required=True, dest="case_id")
 
+    p_shadow = cases_sub.add_parser(
+        "shadow-report",
+        help="Summarize FU9 shadow observations (null-send trail)",
+    )
+    p_shadow.add_argument(
+        "--days", type=int, default=7, help="Lookback window (default 7)"
+    )
+
     p_retention = cases_sub.add_parser(
         "retention-purge",
         help="GDPR: delete/redact closed cases older than N days (default 90)",
@@ -217,6 +230,11 @@ def main(argv: list[str] | None = None) -> int:
         import os
 
         os.environ["AZOM_USE_MOCK"] = "1"
+
+    if getattr(args, "null_send", False):
+        from ecom_ops.runtime_profile import enable_null_send
+
+        enable_null_send()
 
     # Defer Woo client — version/status/mail/cases must not require Woo secrets
     woo = None
@@ -285,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         from ecom_ops.config import load_app_config
         from ecom_ops.oauth.gmail import GmailOAuthStore, gmail_oauth_configured
         from ecom_ops.ops_status import readiness_from_last_poll
+        from ecom_ops.runtime_profile import null_send_label
 
         try:
             cfg = load_app_config()
@@ -294,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
                 "version": __version__,
                 "mock": os.environ.get("AZOM_USE_MOCK", "").lower()
                 in {"1", "true", "yes"},
+                "null_send": null_send_label(),
                 "customer": cfg.customer.customer,
                 "domains": list(cfg.customer.domains),
                 "gmail_oauth_configured": gmail_oauth_configured(),
@@ -305,7 +325,12 @@ def main(argv: list[str] | None = None) -> int:
                 "budget": budget,
             }
         except Exception as exc:
-            status = {"ok": False, "version": __version__, "error": str(exc)}
+            status = {
+                "ok": False,
+                "version": __version__,
+                "null_send": null_send_label(),
+                "error": str(exc),
+            }
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0 if status.get("ok") else 1
 
@@ -457,6 +482,12 @@ def main(argv: list[str] | None = None) -> int:
                 use_mock=args.mock or None,
             )
             return _print(result)
+        if args.cases_command == "shadow-report":
+            from ecom_ops.cases.shadow_report import build_shadow_report
+
+            report = build_shadow_report(days=int(getattr(args, "days", 7) or 7))
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
         if args.cases_command == "retention-purge":
             from ecom_ops.cases.retention import purge_closed_cases
 

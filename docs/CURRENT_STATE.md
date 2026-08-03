@@ -49,6 +49,7 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **V2.2 mail ops** | Live `probe_mail`, mail env matrix / per-mailbox `env_prefix`, bulk close (not bulk approve) |
 | **V2.3 robustness** | Thread reopen, OAuth expiry harden, probe fail-closed; code DoD green |
 | **Path B2** | Richer return/billing drafts + priority/UI escalate hints; still never suggest-approve those categories |
+| **Shadow Live Ledger** | Null-send profile (`AZOM_NULL_SEND` / `--null-send`): refuse customer mail; poll records FU9 shadow decisions; dashboard badge + `cases shadow-report`. Soft-soak via `bin/mock-soak-azom.sh`. **Not** FU9 wire; **not** A1 soak complete |
 
 ## Ops next (human-owned — agents must not mark done)
 

@@ -142,6 +142,9 @@ Thread-preserving reply behavior matters for real mail; see [`MAIL_PROVIDERS.md`
 python -m ecom_ops --mock cases poll [--limit 20]
 # ingest mailboxes → create/update cases; partial errors escalate
 
+python -m ecom_ops --mock --null-send cases poll
+# same poll + FU9 shadow observations; customer mail refused while null-send on
+
 python -m ecom_ops --mock cases list [--status open] [--limit 50]
 # --status may be comma-separated, e.g. open,escalated
 
@@ -155,6 +158,10 @@ python -m ecom_ops --mock cases regenerate --id <uuid>
 
 python -m ecom_ops --mock cases reply --id <uuid> [--body "..."]
 # APPROVE AND SEND — human path; use --actor jonatan in real ops
+# under --null-send / AZOM_NULL_SEND=1 this refuses before claim (no customer mail)
+
+python -m ecom_ops cases shadow-report [--days 7]
+# Oscar: latest-per-case FU9 shadow trail (eligible vs denied + reason breakdown)
 
 python -m ecom_ops --mock cases close --id <uuid> [--reason "..."]
 # close without customer reply
@@ -162,6 +169,8 @@ python -m ecom_ops --mock cases close --id <uuid> [--reason "..."]
 python -m ecom_ops --mock cases retention-purge [--days 90] [--redact] [--dry-run]
 # GDPR: delete or redact old closed cases
 ```
+
+Global `--null-send` (or `AZOM_NULL_SEND=1`) activates the null-send profile. `status` always prints `null_send=on|off`.
 
 #### Cases Do / Do not
 
