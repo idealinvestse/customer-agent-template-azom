@@ -14,10 +14,11 @@
    - Pilot / soak: [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) (Swedish)
    - Dev/tests: [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md)
    - CLI: [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md)
-   - Mail: [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md)
-   - Woo/WP: [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
-   - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
-   - Telegram: [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)
+- Mail: [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md)
+ - Woo/WP: [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
+ - Marketing Google (Ads+GA4): [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md)
+ - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
+ - Telegram: [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)
 5. Skill card: [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md)
 
 **Source of truth order:** `CURRENT_STATE` > this file > code/tests > chat memory.
@@ -136,7 +137,7 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 - **Mock soft-soak:** `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
 - **FU9 auto-send:** rails only — see [`docs/CASES.md`](docs/CASES.md) (**do not wire** without Oscar written enable + soak preconditions)
 - **NO/DK mailboxes:** remain `enabled: false` until Oscar + credentials
-- **Out of scope:** V3 multi-tenant, GA4/engagement, FAQ/KB, default-on auto-send
+- **Out of scope:** V3 multi-tenant, FAQ/KB, default-on auto-send, Meta/TikTok ads, default-on Ads mutate
 
 ## V2.1 Woo/WordPress (pointer)
 

@@ -245,6 +245,7 @@
           {% if suggest_cases %}
           <a href="/cases?status=open,escalated&amp;suggest=1" class="az-nav-link text-steel-300">★ Föreslå godkänn ({{ suggest_cases }})</a>
           {% endif %}
+          <a href="/marketing" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/marketing') else '' }}">Marketing</a>
           <a href="/interact" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/interact') else '' }}">Interagera</a>
           <a href="/data/escalations" class="az-nav-link flex items-center justify-between gap-2 {{ 'az-nav-link-active' if path.startswith('/data/escalations') else '' }}">
             <span>Eskaleringar</span>

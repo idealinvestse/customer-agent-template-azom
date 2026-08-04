@@ -1,0 +1,34 @@
+# Google Ads + GA4 marketing config (non-secret IDs / thresholds).
+# Credentials via env / Oscar secrets.env — never commit tokens.
+
+# Fail-closed allowlists (comma-separated env overrides win):
+# AZOM_GA4_PROPERTY_IDS / AZOM_GADS_CUSTOMER_IDS empty in live = deny.
+
+ga4_property_ids: []
+google_ads_customer_ids: []
+# Optional MCC login customer (without dashes)
+google_ads_login_customer_id: ""
+
+# Mutate defaults OFF — enable only with Oscar written approval + kill-switch unset
+ads_mutate_enabled: false
+ga_mutate_enabled: false
+measurement_protocol_enabled: false
+merchant_write_enabled: false
+
+# Kill-switch env names (set to 1/true/yes/on → always deny)
+ads_mutate_kill_env: AZOM_ADS_MUTATE_KILL
+ga_mutate_kill_env: AZOM_GA_MUTATE_KILL
+mp_kill_env: AZOM_MP_KILL
+
+# Consistency bands (Woo vs GA purchases vs Ads conversions)
+purchase_divergence_warn_pct: 25
+purchase_divergence_error_pct: 50
+
+# Waste report: search terms with cost and zero conversions
+waste_min_cost_micros: 5000000  # 5 SEK if currency micros/1e6
+
+# Budget pacing alert when spend > this fraction of period budget mid-period
+pacing_alert_ratio: 1.15
+
+default_currency: SEK
+default_lookback_days: 7

@@ -3,6 +3,9 @@ order_api: true
 selenium: true
 woocommerce_api: true
 wordpress_api: true
+google_analytics: true
+google_ads: true
+google_merchant: true
 email:
   enabled: true
   # Default provider when MAIL_PROVIDER env is unset:

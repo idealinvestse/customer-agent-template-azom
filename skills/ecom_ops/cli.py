@@ -121,6 +121,51 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Fixture directory (default: tests/fixtures/support_classify)",
     )
+    p_mkt = sub.add_parser("marketing", help="Google Ads + GA4 marketing ops")
+    mkt_sub = p_mkt.add_subparsers(dest="marketing_command", required=True)
+    p_mkt_digest = mkt_sub.add_parser("digest", help="Ads + GA4 performance digest")
+    p_mkt_digest.add_argument("--days", type=int, default=None)
+    mkt_sub.add_parser("health", help="Conversion + ecommerce event health")
+    p_mkt_waste = mkt_sub.add_parser("waste", help="Search-term waste report")
+    p_mkt_waste.add_argument("--days", type=int, default=None)
+    mkt_sub.add_parser("pacing", help="Budget pacing alerts (no mutate)")
+    p_mkt_cons = mkt_sub.add_parser(
+        "consistency", help="Woo ↔ GA ↔ Ads purchase consistency"
+    )
+    p_mkt_cons.add_argument("--days", type=int, default=None)
+    p_mkt_cons.add_argument(
+        "--woo-purchases",
+        type=int,
+        default=None,
+        help="Override Woo purchase count for comparison",
+    )
+    p_mkt_mer = mkt_sub.add_parser("mer", help="MER = Woo revenue / Ads spend")
+    p_mkt_mer.add_argument("--days", type=int, default=None)
+    p_mkt_mer.add_argument("--woo-revenue", type=float, default=None)
+    mkt_sub.add_parser("snapshot", help="Compact digest+health+pacing")
+    p_mkt_sug = mkt_sub.add_parser("suggests", help="Suggest queue")
+    sug_sub = p_mkt_sug.add_subparsers(dest="suggests_command", required=True)
+    sug_sub.add_parser("build", help="Build waste/pacing suggests")
+    p_sug_list = sug_sub.add_parser("list", help="List suggests")
+    p_sug_list.add_argument("--status", default="open")
+    p_sug_deny = sug_sub.add_parser("deny", help="Deny a suggest")
+    p_sug_deny.add_argument("--id", required=True, dest="suggest_id")
+    p_sug_approve = sug_sub.add_parser(
+        "approve", help="Approve and mutate (HITL; kill-switch aware)"
+    )
+    p_sug_approve.add_argument("--id", required=True, dest="suggest_id")
+    p_mkt_mp = mkt_sub.add_parser(
+        "mp-queue", help="Queue Measurement Protocol event (HITL, not sent)"
+    )
+    p_mkt_mp.add_argument("--name", required=True, help="Event name e.g. purchase")
+    p_mkt_mp.add_argument("--payload-json", default="{}", help="JSON event params")
+    p_mkt_feed = mkt_sub.add_parser(
+        "merchant-queue", help="Queue Merchant product write (HITL)"
+    )
+    p_mkt_feed.add_argument("--offer-id", required=True)
+    p_mkt_feed.add_argument("--title", default="")
+    p_mkt_feed.add_argument("--op", default="upsert", choices=["upsert", "delete"])
+
     p_smoke = sub.add_parser(
         "smoke",
         help="Opt-in integration smoke (requires AZOM_LIVE_SMOKE=1 or --live)",
@@ -301,23 +346,39 @@ def main(argv: list[str] | None = None) -> int:
 
         from ecom_ops.budget import budget_status
         from ecom_ops.config import load_app_config
+        from ecom_ops.marketing.config import load_marketing_config
         from ecom_ops.oauth.gmail import GmailOAuthStore, gmail_oauth_configured
+        from ecom_ops.oauth.google_marketing import (
+            GoogleMarketingOAuthStore,
+            google_marketing_oauth_configured,
+        )
         from ecom_ops.ops_status import readiness_from_last_poll
         from ecom_ops.runtime_profile import null_send_label
 
         try:
             cfg = load_app_config()
             budget = budget_status()
+            mkt = load_marketing_config()
+            mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            ga4_ready = bool(mkt.ga4_property_ids) or mock
+            ads_ready = bool(mkt.google_ads_customer_ids) or mock
             status = {
                 "ok": True,
                 "version": __version__,
-                "mock": os.environ.get("AZOM_USE_MOCK", "").lower()
-                in {"1", "true", "yes"},
+                "mock": mock,
                 "null_send": null_send_label(),
                 "customer": cfg.customer.customer,
                 "domains": list(cfg.customer.domains),
                 "gmail_oauth_configured": gmail_oauth_configured(),
                 "gmail_tokens_stored": GmailOAuthStore().has_tokens(),
+                "google_marketing_oauth_configured": google_marketing_oauth_configured(),
+                "google_marketing_tokens_stored": GoogleMarketingOAuthStore().has_tokens(),
+                "ga4": "on" if ga4_ready else "off",
+                "ads": "on" if ads_ready else "off",
                 "telegram_configured": bool(
                     os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
                 ),
@@ -329,6 +390,8 @@ def main(argv: list[str] | None = None) -> int:
                 "ok": False,
                 "version": __version__,
                 "null_send": null_send_label(),
+                "ga4": "off",
+                "ads": "off",
                 "error": str(exc),
             }
         print(json.dumps(status, ensure_ascii=False, indent=2))
@@ -521,6 +584,84 @@ def main(argv: list[str] | None = None) -> int:
             )
             return _print(result)
         parser.error(f"Unknown cases command: {args.cases_command}")
+        return 2
+
+    if args.command == "marketing":
+        from ecom_ops.actions.marketing import MarketingService
+
+        mkt = MarketingService(use_mock=args.mock or None)
+        cmd = args.marketing_command
+        if cmd == "digest":
+            return _print(mkt.digest(days=args.days, actor=args.actor))
+        if cmd == "health":
+            return _print(mkt.health(actor=args.actor))
+        if cmd == "waste":
+            return _print(mkt.waste(days=args.days, actor=args.actor))
+        if cmd == "pacing":
+            return _print(mkt.pacing(actor=args.actor))
+        if cmd == "consistency":
+            return _print(
+                mkt.consistency(
+                    days=args.days,
+                    woo_purchases=args.woo_purchases,
+                    actor=args.actor,
+                )
+            )
+        if cmd == "mer":
+            return _print(
+                mkt.mer(
+                    days=args.days,
+                    woo_revenue=args.woo_revenue,
+                    actor=args.actor,
+                )
+            )
+        if cmd == "snapshot":
+            return _print(mkt.snapshot(actor=args.actor))
+        if cmd == "suggests":
+            sc = args.suggests_command
+            if sc == "build":
+                return _print(mkt.build_waste_suggests(actor=args.actor))
+            if sc == "list":
+                return _print(
+                    mkt.list_suggests(status=args.status, actor=args.actor)
+                )
+            if sc == "deny":
+                return _print(
+                    mkt.deny_suggest(args.suggest_id, actor=args.actor)
+                )
+            if sc == "approve":
+                return _print(
+                    mkt.approve_and_mutate(args.suggest_id, actor=args.actor)
+                )
+            parser.error(f"Unknown marketing suggests command: {sc}")
+            return 2
+        if cmd == "mp-queue":
+            from ecom_ops.actions.marketing import MarketingResult
+
+            try:
+                params = json.loads(args.payload_json or "{}")
+            except json.JSONDecodeError:
+                return _print(
+                    MarketingResult(ok=False, message="Invalid --payload-json")
+                )
+            if not isinstance(params, dict):
+                return _print(
+                    MarketingResult(ok=False, message="payload must be object")
+                )
+            return _print(
+                mkt.queue_mp_event(
+                    {"name": args.name, "params": params},
+                    actor=args.actor,
+                )
+            )
+        if cmd == "merchant-queue":
+            product = {"offerId": args.offer_id, "title": args.title or args.offer_id}
+            return _print(
+                mkt.queue_merchant_write(
+                    product, op=args.op, actor=args.actor
+                )
+            )
+        parser.error(f"Unknown marketing command: {cmd}")
         return 2
 
     parser.error(f"Unknown command: {args.command}")

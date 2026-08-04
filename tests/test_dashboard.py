@@ -170,6 +170,28 @@ def test_case_detail_shows_draft_diff(dash_client, tmp_path):
     assert "NYTT UTKAST TEXT" in body
 
 
+def test_marketing_page_renders_digest(dash_client):
+    resp = dash_client.get("/marketing", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Marketing ledger" in body
+    assert "Ads kostnad" in body or "digest" in body.lower()
+
+
+def test_google_marketing_oauth_start_oscar_only(dash_client):
+    assert (
+        dash_client.get(
+            "/oauth/google/start", headers=_auth_headers("jonatan", "jonatan")
+        ).status_code
+        == 403
+    )
+    resp = dash_client.get(
+        "/oauth/google/start", headers=_auth_headers("oscar", "oscar")
+    )
+    assert resp.status_code == 302
+    assert "marketing" in resp.headers.get("Location", "")
+
+
 def test_case_detail_shadow_deny_badge(dash_client):
     import os
     from pathlib import Path

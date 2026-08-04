@@ -3,8 +3,9 @@ name: ecom-ops
 description: >
   Azom WooCommerce ops (order-status, product desc, support, mail, SSH, cases).
   V2: dashboard onboarding, Gmail OAuth, OpenClaw Messenger/Telegram hybrid,
-  Cases 2.0 + Path B suggest-approve rails. Critical/code edits escalate to Oscar.
-  Never silent customer mail — human approve for case reply. Auto-send not wired.
+  Cases 2.0 + Path B suggest-approve rails. Google Ads + GA4 marketing ledger
+  (read → suggest → HITL mutate). Critical/code edits escalate to Oscar.
+  Never silent customer mail or silent Ads mutate — human approve required.
 version: "2.0.0"
 ---
 
@@ -32,6 +33,7 @@ version: "2.0.0"
 | cases poll / approve | `ecom_ops.cases.service` | `python -m ecom_ops cases poll\|list\|show\|reply\|draft\|regenerate\|close --mock` |
 | SSH / VPS | `ecom_ops.actions.ssh_ops` | `python -m ecom_ops ssh --command "uptime" --mock` |
 | mail send/fetch | `ecom_ops.actions.mail` | `python -m ecom_ops mail send\|fetch\|reply --mock` |
+| marketing Ads+GA4 | `ecom_ops.actions.marketing` | `python -m ecom_ops marketing digest\|health\|consistency\|suggests\|… --mock` |
 | runtime status | CLI | `python -m ecom_ops status` · `python -m ecom_ops smoke` |
 
 ## V2 surfaces
@@ -40,6 +42,8 @@ version: "2.0.0"
 |---------|--------|
 | Dashboard | `./bin/start-dashboard.sh` → `/onboarding`, `/settings`, `/cases`, `/oscar` |
 | Gmail OAuth | `/oauth/gmail/start` → tokens in `AZOM_DATA_DIR/oauth/gmail.json` |
+| Google marketing OAuth | `/oauth/google/start` → `AZOM_DATA_DIR/oauth/google_marketing.json` |
+| Marketing dashboard | `/marketing` (Jonatan read + suggest HITL) |
 | Messenger webhook | Dashboard `GET\|POST /webhooks/messenger` |
 | Telegram bot | `python -m ecom_ops.bot` or `./bin/dedicated-bot.sh` |
 | Cases timer | `./bin/cases-poll.sh` / `azom-cases-poll.timer` |
@@ -47,8 +51,8 @@ version: "2.0.0"
 
 ## Messenger / Telegram (OpenClaw hybrid)
 
-Slash: `/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` `/cases` `/order` `/health` `/brief` …  
-Free text: read-only tool prefetch + LLM phrasing (Swedish). **Send only** via `/cases approve` or approve button/postback — never from free-text alone.
+Slash: `/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` `/cases` `/order` `/health` `/brief` `/marketing` …  
+Free text: read-only tool prefetch + LLM phrasing (Swedish). **Send only** via `/cases approve` or approve button/postback — never from free-text alone. **Ads mutates** only via dashboard/CLI approve — never free-text.
 
 ## Mail providers
 

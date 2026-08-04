@@ -1258,6 +1258,144 @@ def oscar_gdpr_export():
         conn.close()
 
 
+@app.route("/marketing")
+@_auth_required
+def marketing_home():
+    from ecom_ops.actions.marketing import MarketingService
+
+    svc = MarketingService(use_mock=_is_mock() or None)
+    actor = g.actor["name"]
+    dig = svc.digest(actor=actor)
+    health = svc.health(actor=actor)
+    cons = svc.consistency(actor=actor)
+    sug = svc.list_suggests(status="open", actor=actor)
+    err = None
+    if not dig.ok:
+        err = dig.message
+    return render_template(
+        "marketing.html",
+        **_dashboard_context(
+            digest=dig.data if dig.ok else None,
+            health=health.data if health.ok else None,
+            consistency=cons.data if cons.ok else None,
+            suggests=(sug.data or {}).get("suggests") if sug.ok else [],
+            error=err,
+        ),
+    )
+
+
+@app.route("/marketing/suggests/build", methods=["POST"])
+@_auth_required
+def marketing_suggests_build():
+    failed = _validate_csrf()
+    if failed:
+        return failed
+    from ecom_ops.actions.marketing import MarketingService
+
+    result = MarketingService(use_mock=_is_mock() or None).build_waste_suggests(
+        actor=g.actor["name"]
+    )
+    frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
+    return redirect(url_for("marketing_home") + f"?{frag}")
+
+
+@app.route("/marketing/suggests/<suggest_id>/deny", methods=["POST"])
+@_auth_required
+def marketing_suggest_deny(suggest_id: str):
+    failed = _validate_csrf()
+    if failed:
+        return failed
+    from ecom_ops.actions.marketing import MarketingService
+
+    result = MarketingService(use_mock=_is_mock() or None).deny_suggest(
+        suggest_id, actor=g.actor["name"]
+    )
+    frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
+    return redirect(url_for("marketing_home") + f"?{frag}")
+
+
+@app.route("/marketing/suggests/<suggest_id>/approve", methods=["POST"])
+@_auth_required
+def marketing_suggest_approve(suggest_id: str):
+    failed = _validate_csrf()
+    if failed:
+        return failed
+    from ecom_ops.actions.marketing import MarketingService
+
+    result = MarketingService(use_mock=_is_mock() or None).approve_and_mutate(
+        suggest_id, actor=g.actor["name"]
+    )
+    frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
+    return redirect(url_for("marketing_home") + f"?{frag}")
+
+
+@app.route("/oauth/google/start")
+@_oscar_required
+def oauth_google_marketing_start():
+    from ecom_ops.oauth.google_marketing import (
+        build_authorize_url,
+        exchange_code,
+        google_marketing_oauth_configured,
+    )
+
+    if _is_mock():
+        exchange_code("mock")
+        return redirect(
+            url_for("marketing_home") + "?msg=Google+marketing+kopplad+(mock)"
+        )
+    if not google_marketing_oauth_configured():
+        return redirect(
+            url_for("oscar_secrets") + "?err=GOOGLE_OAUTH_CLIENT_ID/SECRET+saknas"
+        )
+    url, _state = build_authorize_url()
+    return redirect(url)
+
+
+@app.route("/oauth/google/callback")
+def oauth_google_marketing_callback():
+    from ecom_ops.oauth.google_marketing import (
+        GoogleMarketingOAuthStore,
+        exchange_code,
+    )
+
+    error = request.args.get("error")
+    if error:
+        return Response(f"OAuth error: {error}", 400)
+    code = request.args.get("code", "").strip()
+    state = request.args.get("state", "").strip()
+    if not code or not state:
+        return Response("Missing code or state", 400)
+    store = GoogleMarketingOAuthStore()
+    if not store.consume_state(state):
+        return Response("Invalid or expired OAuth state", 400)
+    try:
+        # Mock tokens only when AZOM_USE_MOCK=1 (enforced inside exchange_code)
+        exchange_code(code)
+    except Exception as exc:
+        return Response(f"Token exchange failed: {exc}", 502)
+    return redirect(url_for("marketing_home") + "?msg=Google+marketing+kopplad")
+
+
+@app.route("/oauth/google/status")
+@_oscar_required
+def oauth_google_marketing_status():
+    from ecom_ops.oauth.google_marketing import (
+        GoogleMarketingOAuthStore,
+        google_marketing_oauth_configured,
+    )
+
+    store = GoogleMarketingOAuthStore()
+    bundle = store.load_tokens()
+    return jsonify(
+        {
+            "configured": google_marketing_oauth_configured(),
+            "connected": store.has_tokens(),
+            "email": bundle.email if bundle else None,
+            "mock_mode": _is_mock(),
+        }
+    )
+
+
 @app.route("/oauth/gmail/start")
 @_auth_required
 def oauth_gmail_start():

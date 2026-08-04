@@ -611,6 +611,8 @@ class WooCommerceClient:
         page: int = 1,
         status: str | None = None,
         search: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
     ) -> list[WooOrder]:
         """List orders (single page). Use ``list_all_orders`` for full pagination."""
         params: dict[str, Any] = {
@@ -621,6 +623,10 @@ class WooCommerceClient:
             params["status"] = status
         if search:
             params["search"] = search
+        if after:
+            params["after"] = after
+        if before:
+            params["before"] = before
         data = self.transport.request(
             "GET",
             self._url("/wp-json/wc/v3/orders"),

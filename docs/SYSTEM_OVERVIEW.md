@@ -254,7 +254,8 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 | V2.3 robustness harden | Shipped (code) |
 | Oscar A1 live soak | **Ops next — human gate** |
 | FU9 auto-send wire | **Not wired** — see [`CASES.md`](CASES.md) |
-| V3 multi-tenant / FAQ / GA4 | Deferred / parked |
+| V3 multi-tenant / FAQ / Meta ads | Deferred / parked |
+| Marketing Google (Ads+GA4) | Mock-first rails shipped; live Google report/mutate APIs stubbed — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 
 ## Related living docs
 
