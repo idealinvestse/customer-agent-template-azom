@@ -48,6 +48,14 @@ APPROVE_NL_RE = re.compile(
     r"|\b([0-9a-f]{8})\b.{0,16}\b(?:godkänn|approve)\b",
     re.I,
 )
+MARKETING_INTENT_RE = re.compile(
+    r"\b("
+    r"marketing|google\s*ads|ads|ga4|analytics|"
+    r"roas|annonsering|kampanj|trafik|"
+    r"hur går\s+(ads|annonserna|trafiken)"
+    r")\b",
+    re.I,
+)
 OPS_INTENT_RE = re.compile(
     r"\b("
     r"status|hälsa|health|budget|kostnad|usage|"
@@ -314,6 +322,31 @@ def tool_ops_snapshot() -> str:
         return f"Ops snapshot failed: {exc}"
 
 
+def tool_marketing_snapshot() -> str:
+    """Read-only Ads+GA4 snapshot for chat (never mutates)."""
+    try:
+        from ecom_ops.actions.marketing import MarketingService
+
+        result = MarketingService(use_mock=None).snapshot(actor="agent")
+        if not result.ok:
+            return f"Marketing: {result.message}"
+        data = result.data or {}
+        dig = data.get("digest") or {}
+        ads = dig.get("ads") or {}
+        ga = dig.get("ga4") or {}
+        health = (data.get("health") or {}).get("labels") or {}
+        return (
+            "Marketing (märkta vyer — Woo är order-sanning)\n"
+            f"Ads kostnad: {ads.get('cost')} · ROAS(Ads): {ads.get('roas_ads_reported')}\n"
+            f"GA köp: {ga.get('ecommerce_purchases')} · GA intäkt: {ga.get('purchase_revenue')}\n"
+            f"Hälsa: purchase_key={health.get('purchase_key_event')} "
+            f"ads_link={health.get('ads_linked')} funnel={health.get('funnel_ok')}\n"
+            "Mutates: endast via dashboard/CLI approve — aldrig från fri text."
+        )
+    except Exception as exc:
+        return f"Marketing snapshot failed: {exc}"
+
+
 def tool_capabilities() -> str:
     return (
         "Jag kan i chatten:\n"
@@ -470,6 +503,9 @@ def gather_tool_results(
         body, suggest_ids = tool_list_cases()
         pref.results.append(("list_cases", body))
         pref.suggest_case_ids = suggest_ids
+
+    if MARKETING_INTENT_RE.search(text) and len(pref.results) < 3:
+        pref.results.append(("marketing_snapshot", tool_marketing_snapshot()))
 
     if OPS_INTENT_RE.search(text) and len(pref.results) < 3:
         if re.search(r"vad kan du|hur funkar|capabilities|verktyg", text, re.I):

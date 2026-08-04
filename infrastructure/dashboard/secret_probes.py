@@ -314,6 +314,88 @@ def probe_wordpress() -> ProbeResult:
         return _result("wordpress", label, "error", str(exc)[:200])
 
 
+def probe_ga4() -> ProbeResult:
+    label = "GA4"
+    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    try:
+        from ecom_ops.integrations.ga4 import client_from_env
+        from ecom_ops.marketing.config import load_marketing_config
+
+        cfg = load_marketing_config()
+        if not mock and not cfg.ga4_property_ids:
+            return _result(
+                "ga4",
+                label,
+                "missing",
+                "AZOM_GA4_PROPERTY_IDS tom — fail-closed",
+            )
+        client = client_from_env(use_mock=mock)
+        dig = client.digest(days=1)
+        mode = "mock" if mock else "live"
+        return _result(
+            "ga4",
+            label,
+            "ok",
+            f"Report ok ({mode}) · purchases={dig.get('ecommerce_purchases')}",
+        )
+    except Exception as exc:
+        return _result("ga4", label, "error", str(exc)[:200])
+
+
+def probe_google_ads() -> ProbeResult:
+    label = "Google Ads"
+    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    try:
+        from ecom_ops.integrations.google_ads import client_from_env
+        from ecom_ops.marketing.config import load_marketing_config
+
+        cfg = load_marketing_config()
+        if not mock and not cfg.google_ads_customer_ids:
+            return _result(
+                "google_ads",
+                label,
+                "missing",
+                "AZOM_GADS_CUSTOMER_IDS tom — fail-closed",
+            )
+        if not mock and not os.environ.get("GOOGLE_ADS_DEVELOPER_TOKEN", "").strip():
+            return _result(
+                "google_ads",
+                label,
+                "missing",
+                "GOOGLE_ADS_DEVELOPER_TOKEN saknas",
+            )
+        client = client_from_env(use_mock=mock)
+        dig = client.digest(days=1)
+        mode = "mock" if mock else "live"
+        return _result(
+            "google_ads",
+            label,
+            "ok",
+            f"Digest ok ({mode}) · cost={dig.get('cost')}",
+        )
+    except Exception as exc:
+        return _result("google_ads", label, "error", str(exc)[:200])
+
+
+def probe_merchant() -> ProbeResult:
+    label = "Merchant"
+    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    try:
+        from ecom_ops.integrations.merchant import client_from_env
+
+        client = client_from_env(use_mock=mock)
+        products = client.list_products()
+        mode = "mock" if mock else "live"
+        return _result(
+            "merchant",
+            label,
+            "ok",
+            f"List ok ({mode}) · {len(products)} product(s)",
+        )
+    except Exception as exc:
+        return _result("merchant", label, "error", str(exc)[:200])
+
+
 PROBES: dict[str, Callable[[], ProbeResult]] = {
     "woocommerce": probe_woocommerce,
     "wordpress": probe_wordpress,
@@ -323,6 +405,9 @@ PROBES: dict[str, Callable[[], ProbeResult]] = {
     "openrouter": probe_openrouter,
     "ssh": probe_ssh,
     "gmail_oauth": probe_gmail_oauth,
+    "ga4": probe_ga4,
+    "google_ads": probe_google_ads,
+    "merchant": probe_merchant,
 }
 
 

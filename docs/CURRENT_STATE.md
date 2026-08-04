@@ -49,6 +49,8 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **V2.2 mail ops** | Live `probe_mail`, mail env matrix / per-mailbox `env_prefix`, bulk close (not bulk approve) |
 | **V2.3 robustness** | Thread reopen, OAuth expiry harden, probe fail-closed; code DoD green |
 | **Path B2** | Richer return/billing drafts + priority/UI escalate hints; still never suggest-approve those categories |
+| **Shadow Live Ledger** | Null-send profile (`AZOM_NULL_SEND` / `--null-send`): refuse customer mail; poll records FU9 shadow decisions; dashboard badge + `cases shadow-report`. Soft-soak via `bin/mock-soak-azom.sh`. **Not** FU9 wire; **not** A1 soak complete |
+| **Marketing Google (Ads+GA4)** | Mock-first ledger + suggest/HITL rails shipped (`marketing` CLI, `/marketing`, probes, kill-switches). **Live Google Data/Ads API clients still stubbed** (`NotImplementedError`) until Oscar wires OAuth + developer token. See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md). |
 
 ## Ops next (human-owned — agents must not mark done)
 
@@ -79,8 +81,8 @@ Treat these as done in the repository. Do not re-implement from scratch.
 Do not start these unless product ownership changes:
 
 - V3 multi-tenant SaaS
-- GA4 / engagement program
 - FAQ / knowledge base
+- Meta / TikTok ads, GA4 BigQuery warehouse, default-on Ads mutate
 - IMAP IDLE (timer poll only)
 - Default-on auto-send
 - Outlook browser OAuth UI (env + probe only today)
@@ -115,6 +117,7 @@ Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, fini
 | Mail setup | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
 | Gmail OAuth | [`V2_OAUTH_GMAIL.md`](V2_OAUTH_GMAIL.md) |
 | Woo/WP API surface | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
+| Google Ads + GA4 | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Install / deploy | [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) |
 | Docker overlays | [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md) |
 | Index | [`README.md`](README.md) |

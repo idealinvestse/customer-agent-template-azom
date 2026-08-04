@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Marketing – Azom{% endblock %}
+{% block page_subtitle %}Google Ads + GA4{% endblock %}
+{% block content %}
+<div class="space-y-5">
+  <section class="az-card">
+    <h2 class="az-page-title">Marketing ledger</h2>
+    <p class="az-muted mt-2 text-sm">
+      Woo = order-sanning. Ads ROAS och GA-intäkt är märkta marketing-vyer.
+      Mutates kräver approve + kill-switch av — se
+      <code class="az-code">docs/MARKETING_GOOGLE.md</code>.
+    </p>
+    {% if error %}
+    <p class="mt-3 text-warn">{{ error }}</p>
+    {% endif %}
+  </section>
+
+  {% if digest %}
+  <section class="az-card">
+    <h2 class="az-section-title">Digest ({{ digest.days }}d)</h2>
+    <dl class="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+      <div>
+        <span class="az-muted">Ads kostnad</span>
+        <p class="text-lg text-mist-100">{{ digest.ads.cost }} {{ digest.currency }}</p>
+      </div>
+      <div>
+        <span class="az-muted">Ads ROAS (märkt)</span>
+        <p class="text-lg text-mist-100">{{ digest.ads.roas_ads_reported or '—' }}</p>
+      </div>
+      <div>
+        <span class="az-muted">GA köp</span>
+        <p class="text-lg text-mist-100">{{ digest.ga4.ecommerce_purchases }}</p>
+      </div>
+      <div>
+        <span class="az-muted">GA intäkt (märkt)</span>
+        <p class="text-lg text-mist-100">{{ digest.ga4.purchase_revenue }} {{ digest.currency }}</p>
+      </div>
+    </dl>
+  </section>
+  {% endif %}
+
+  {% if health %}
+  <section class="az-card">
+    <h2 class="az-section-title">Hälsa</h2>
+    <ul class="mt-2 space-y-1 text-sm">
+      <li>Purchase key event: {{ health.labels.purchase_key_event }}</li>
+      <li>Ads↔GA länk: {{ health.labels.ads_linked }}</li>
+      <li>Funnel ok: {{ health.labels.funnel_ok }}</li>
+      {% if health.ecommerce_events and health.ecommerce_events.missing_expected %}
+      <li class="text-warn">Saknade events: {{ health.ecommerce_events.missing_expected | join(', ') }}</li>
+      {% endif %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if consistency %}
+  <section class="az-card">
+    <h2 class="az-section-title">Konsistens Woo ↔ GA ↔ Ads</h2>
+    <p class="az-muted text-sm mt-1">{{ consistency.truth_note }}</p>
+    <dl class="mt-3 grid gap-2 text-sm sm:grid-cols-3">
+      <div>Woo: <strong>{{ consistency.counts.woo_purchases }}</strong></div>
+      <div>GA: <strong>{{ consistency.counts.ga_ecommerce_purchases }}</strong></div>
+      <div>Ads: <strong>{{ consistency.counts.ads_conversions }}</strong></div>
+    </dl>
+    <p class="mt-2 text-sm">
+      Band: woo/ga={{ consistency.divergence.woo_vs_ga }} ·
+      woo/ads={{ consistency.divergence.woo_vs_ads }} ·
+      ga/ads={{ consistency.divergence.ga_vs_ads }}
+    </p>
+  </section>
+  {% endif %}
+
+  {% if suggests %}
+  <section class="az-card">
+    <h2 class="az-section-title">Öppna förslag ({{ suggests | length }})</h2>
+    <ul class="mt-2 space-y-3 text-sm">
+      {% for s in suggests %}
+      <li class="border-b border-ink-700/50 pb-2">
+        <strong class="text-mist-100">{{ s.title }}</strong>
+        <span class="az-muted"> · {{ s.kind }} · {{ s.reason }}</span>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <form method="post" action="/marketing/suggests/{{ s.id }}/deny">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <button type="submit" class="az-btn-secondary text-xs">Neka</button>
+          </form>
+          {% if is_oscar or s.kind == 'negative' %}
+          <form method="post" action="/marketing/suggests/{{ s.id }}/approve">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <button type="submit" class="az-btn-primary text-xs"
+              onclick="return confirm('Godkänn mutate? (kill-switch / mutate-flag måste tillåta)');">
+              Godkänn &amp; kör
+            </button>
+          </form>
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% else %}
+  <section class="az-card">
+    <p class="az-muted text-sm">Inga öppna marketing-förslag.</p>
+    <form method="post" action="/marketing/suggests/build" class="mt-3">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button type="submit" class="az-btn-secondary text-sm">Bygg waste/pacing-förslag</button>
+    </form>
+  </section>
+  {% endif %}
+
+  {% if is_oscar %}
+  <section class="az-card">
+    <h2 class="az-section-title">Oscar · OAuth</h2>
+    <a class="text-oscar-400 hover:underline text-sm" href="/oauth/google/start">Anslut Google marketing</a>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

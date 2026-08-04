@@ -110,7 +110,7 @@ Soft chat: “Säg *eskalera* om du vill skicka till Oscar.” Hard confirm only
 - Inte en multi-tenant SaaS-kontrollplan (V3 parkerad).
 - Inte en tyst auto-mailer som default.
 - Inte en generell webbläsare eller orestrictad shell.
-- Inte ett marketing-/GA4-produkt (parkerat).
+- Inte en tyst marketing-robot: Ads/GA4-mutates och Measurement Protocol kräver explicit approve + kill-switch av (se `docs/MARKETING_GOOGLE.md`).
 
 ## Kom ihåg
 

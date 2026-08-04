@@ -120,6 +120,7 @@
                 {{ c.subject }}
                 {% if c.priority == 'high' %}<span class="az-badge bg-warn/15 text-warn ml-1">high</span>{% endif %}
                 {% if c.suggest_approve %}<span class="az-badge bg-steel-600/50 text-steel-100 ml-1" title="Låg-friktion godkänn — du bekräftar fortfarande">Föreslå godkänn</span>{% endif %}
+                {% if c.shadow_hint() %}<span class="az-badge bg-ink-700/50 text-mist-200 ml-1" title="FU9 skuggbeslut — inget mail skickat">{{ c.shadow_hint() }}</span>{% endif %}
               </td>
               <td><code class="az-code">{{ c.category }}</code></td>
               <td>

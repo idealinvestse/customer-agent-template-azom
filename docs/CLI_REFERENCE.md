@@ -20,7 +20,7 @@ Most CLI commands print **JSON** to stdout. Exit code `0` when `ok` is true (or 
 ## Global flags
 
 ```bash
-python -m ecom_ops [--site SITE] [--actor ACTOR] [--mock] <command> ...
+python -m ecom_ops [--site SITE] [--actor ACTOR] [--mock] [--null-send] <command> ...
 ```
 
 | Flag | Default | Meaning |
@@ -28,6 +28,7 @@ python -m ecom_ops [--site SITE] [--actor ACTOR] [--mock] <command> ...
 | `--site` | `azom` | Customer / site id |
 | `--actor` | `agent` | RBAC actor: `jonatan` \| `oscar` \| `agent` |
 | `--mock` | off | Sets `AZOM_USE_MOCK=1` for this process (no external network) |
+| `--null-send` | off | Null-send profile (refuse customer mail; shadow FU9) |
 | `--version` | — | Print version and exit (argparse version action) |
 
 **Actor guidance:**
@@ -142,6 +143,9 @@ Thread-preserving reply behavior matters for real mail; see [`MAIL_PROVIDERS.md`
 python -m ecom_ops --mock cases poll [--limit 20]
 # ingest mailboxes → create/update cases; partial errors escalate
 
+python -m ecom_ops --mock --null-send cases poll
+# same poll + FU9 shadow observations; customer mail refused while null-send on
+
 python -m ecom_ops --mock cases list [--status open] [--limit 50]
 # --status may be comma-separated, e.g. open,escalated
 
@@ -155,6 +159,10 @@ python -m ecom_ops --mock cases regenerate --id <uuid>
 
 python -m ecom_ops --mock cases reply --id <uuid> [--body "..."]
 # APPROVE AND SEND — human path; use --actor jonatan in real ops
+# under --null-send / AZOM_NULL_SEND=1 this refuses before claim (no customer mail)
+
+python -m ecom_ops cases shadow-report [--days 7]
+# Oscar: latest-per-case FU9 shadow trail (eligible vs denied + reason breakdown)
 
 python -m ecom_ops --mock cases close --id <uuid> [--reason "..."]
 # close without customer reply
@@ -162,6 +170,8 @@ python -m ecom_ops --mock cases close --id <uuid> [--reason "..."]
 python -m ecom_ops --mock cases retention-purge [--days 90] [--redact] [--dry-run]
 # GDPR: delete or redact old closed cases
 ```
+
+Global `--null-send` (or `AZOM_NULL_SEND=1`) activates the null-send profile. `status` always prints `null_send=on|off`.
 
 #### Cases Do / Do not
 
@@ -177,6 +187,29 @@ python -m ecom_ops --mock cases retention-purge [--days 90] [--redact] [--dry-ru
 - Bulk-approve via CLI inventiveness — there is no bulk approve command; bulk close exists in dashboard with RBAC only.
 - Wire auto-send into poll from a “helpful” CLI change — see FU9 in [`CASES.md`](CASES.md).
 
+### `marketing`
+
+Google Ads + GA4 (mock-first). See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md).
+
+```bash
+python -m ecom_ops --mock marketing digest [--days 7]
+python -m ecom_ops --mock marketing health
+python -m ecom_ops --mock marketing waste [--days 7]
+python -m ecom_ops --mock marketing pacing
+python -m ecom_ops --mock marketing consistency [--days 7] [--woo-purchases N]
+python -m ecom_ops --mock marketing mer [--days 7] [--woo-revenue N]
+python -m ecom_ops --mock marketing snapshot
+python -m ecom_ops --mock --actor jonatan marketing suggests build
+python -m ecom_ops --mock marketing suggests list [--status open]
+python -m ecom_ops --mock --actor jonatan marketing suggests deny --id <uuid>
+python -m ecom_ops --mock --actor jonatan marketing suggests approve --id <uuid>
+# approve requires kill-switch unset + ads_mutate_enabled (negatives: Jonatan; else Oscar)
+python -m ecom_ops --mock --actor jonatan marketing mp-queue --name purchase --payload-json '{}'
+python -m ecom_ops --mock --actor jonatan marketing merchant-queue --offer-id SKU-1 --title "…"
+```
+
+`status` includes `ga4=on|off` and `ads=on|off`. Soft path: `bash bin/mock-marketing-azom.sh`.
+
 ## Environment that changes CLI behavior
 
 | Env | Effect |
@@ -186,9 +219,15 @@ python -m ecom_ops --mock cases retention-purge [--days 90] [--redact] [--dry-ru
 | `AZOM_DATA_DIR` | Data directory for `cases.db`, oauth, secrets overlay |
 | `AZOM_LIVE_SMOKE=1` | Allows `smoke` without `--live` |
 | `AZOM_AUTO_SEND_KILL=1` | Forces auto-send eligibility deny (rails only today) |
+| `AZOM_NULL_SEND=1` | Null-send profile (customer mail refused) |
+| `AZOM_GA4_PROPERTY_IDS` | Fail-closed GA4 allowlist (empty in live = deny) |
+| `AZOM_GADS_CUSTOMER_IDS` | Fail-closed Ads allowlist (empty in live = deny) |
+| `AZOM_ADS_MUTATE_KILL=1` | Always deny Ads mutate / merchant write |
+| `AZOM_MP_KILL=1` | Always deny Measurement Protocol send |
 
 ## Related
 
 - Cases ops (Swedish): [`CASES.md`](CASES.md)
 - Mail setup (Swedish): [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md)
+- Marketing Google: [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md)
 - System map: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)

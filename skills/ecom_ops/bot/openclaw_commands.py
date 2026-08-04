@@ -94,7 +94,7 @@ def cmd_help(ctx: CommandContext) -> str:
         "Vanliga:\n"
         "/status · /whoami · /new · /reset · /stop\n"
         "/tools · /tasks · /usage · /model · /context\n"
-        "/order · /cases · /health · /brief · /commands"
+        "/order · /cases · /health · /brief · /marketing · /commands"
     )
 
 
@@ -423,6 +423,13 @@ def cmd_health(ctx: CommandContext) -> str:
         return f"Health error: {exc}"
 
 
+def cmd_marketing(ctx: CommandContext) -> str:
+    """Read-only Google Ads + GA4 snapshot (no mutates)."""
+    from ecom_ops.bot.chat_agent import tool_marketing_snapshot
+
+    return tool_marketing_snapshot()
+
+
 def cmd_brief(ctx: CommandContext) -> str:
     """Daily brief: customer + cases queue + readiness + budget (SA4)."""
     try:
@@ -698,6 +705,7 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("context", "Session context", cmd_context),
     CommandSpec("health", "SSH health checks", cmd_health),
     CommandSpec("brief", "KPI brief", cmd_brief),
+    CommandSpec("marketing", "Ads+GA4 snapshot (read-only)", cmd_marketing, aliases=("ads", "ga4")),
     CommandSpec("cases", "Ärenden: list|show|approve|close", cmd_cases),
     CommandSpec("order", "Orderstatus (read-only)", cmd_order),
 ]

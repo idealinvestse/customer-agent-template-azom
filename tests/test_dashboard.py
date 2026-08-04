@@ -168,3 +168,147 @@ def test_case_detail_shows_draft_diff(dash_client, tmp_path):
     assert "Nytt utkast" in body
     assert "GAMMALT UTKAST TEXT" in body
     assert "NYTT UTKAST TEXT" in body
+
+
+def test_marketing_page_renders_digest(dash_client):
+    resp = dash_client.get("/marketing", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Marketing ledger" in body
+    assert "Ads kostnad" in body or "digest" in body.lower()
+
+
+def test_google_marketing_oauth_start_oscar_only(dash_client):
+    assert (
+        dash_client.get(
+            "/oauth/google/start", headers=_auth_headers("jonatan", "jonatan")
+        ).status_code
+        == 403
+    )
+    resp = dash_client.get(
+        "/oauth/google/start", headers=_auth_headers("oscar", "oscar")
+    )
+    assert resp.status_code == 302
+    assert "marketing" in resp.headers.get("Location", "")
+
+
+def test_case_detail_shadow_deny_badge(dash_client):
+    import os
+    from pathlib import Path
+
+    from ecom_ops.cases.store import CaseStore
+
+    data_dir = Path(os.environ["AZOM_DATA_DIR"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    store = CaseStore(path=data_dir / "cases.db")
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Saknar order",
+        from_addr="a@b.co",
+        body="hej",
+        category="order_status",
+        draft_reply="Skicka ordernummer",
+        order_id=None,
+        message_id="<dash-shadow-deny@azom>",
+        site="azom",
+    )
+    store.set_shadow_decision(
+        case.id, eligible=False, deny_reason="missing_order_id"
+    )
+    resp = dash_client.get(f"/cases/{case.id}", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Skugga: nej (saknar order_id)" in body
+    assert "Skicka nu?" not in body or "Godkänn" in body  # approve UI still separate
+
+
+def test_case_detail_shadow_eligible_badge(dash_client):
+    import os
+    from pathlib import Path
+
+    from ecom_ops.cases.store import CaseStore
+
+    data_dir = Path(os.environ["AZOM_DATA_DIR"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    store = CaseStore(path=data_dir / "cases.db")
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Order 1001",
+        from_addr="a@b.co",
+        body="order 1001",
+        category="order_status",
+        draft_reply="Skickad",
+        order_id="1001",
+        message_id="<dash-shadow-ok@azom>",
+        site="azom",
+    )
+    store.set_shadow_decision(case.id, eligible=True, deny_reason=None)
+    resp = dash_client.get(f"/cases/{case.id}", headers=_auth_headers())
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Skugga: skulle skickats" in body
+
+
+def test_case_detail_no_shadow_badge_when_unevaluated(dash_client):
+    import os
+    from pathlib import Path
+
+    from ecom_ops.cases.store import CaseStore
+
+    data_dir = Path(os.environ["AZOM_DATA_DIR"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    store = CaseStore(path=data_dir / "cases.db")
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Ingen skugga",
+        from_addr="a@b.co",
+        body="hej",
+        category="other",
+        draft_reply="ok",
+        order_id=None,
+        message_id="<dash-shadow-none@azom>",
+        site="azom",
+    )
+    resp = dash_client.get(f"/cases/{case.id}", headers=_auth_headers())
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Skugga:" not in body
+
+
+def test_approve_under_null_send_does_not_flash_skickat(dash_client, monkeypatch):
+    import os
+    from pathlib import Path
+
+    from ecom_ops.cases.store import CaseStore
+
+    monkeypatch.setenv("AZOM_NULL_SEND", "1")
+    data_dir = Path(os.environ["AZOM_DATA_DIR"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    store = CaseStore(path=data_dir / "cases.db")
+    case = store.create_case(
+        mailbox_id="support_default",
+        subject="Order 1001",
+        from_addr="a@b.co",
+        body="order",
+        category="order_status",
+        draft_reply="Hej kund",
+        order_id="1001",
+        message_id="<dash-null-approve@azom>",
+        site="azom",
+    )
+    # CSRF: grab token from detail page
+    detail = dash_client.get(f"/cases/{case.id}", headers=_auth_headers())
+    assert detail.status_code == 200
+    html = detail.data.decode("utf-8", errors="replace")
+    import re
+
+    m = re.search(r'name="_csrf"\s+value="([^"]+)"', html)
+    assert m, "csrf token missing"
+    resp = dash_client.post(
+        f"/cases/{case.id}",
+        headers=_auth_headers(),
+        data={"_csrf": m.group(1), "action": "reply", "body": "Hej kund"},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    loc = resp.headers.get("Location", "")
+    assert "Skickat" not in loc
+    assert "Null-send" in loc or "err=" in loc
