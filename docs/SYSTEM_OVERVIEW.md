@@ -13,6 +13,8 @@
 | **AZOM_CONFIG_DIR** | Config root (`config/*.yaml`); read-only in Docker. |
 | **HITL** | Human-in-the-loop — customer mail send requires explicit approve. |
 | **Fail-closed** | In live mode, empty Messenger/Telegram allowlist or actor map denies access. |
+| **Null-send** | Profile (`AZOM_NULL_SEND` / `--null-send`) that refuses customer mail and records FU9 shadow decisions. |
+| **Shadow Live Ledger** | Poll-time FU9 would-have trail under null-send; dashboard badge + Oscar `cases shadow-report`. |
 
 ## 1. Architecture
 
@@ -49,22 +51,24 @@
 |---------|------|
 | **Messenger** | Daily-driver ops chat for Jonatan |
 | **Telegram** | Backup chat — same `BotHandler` brain |
-| **Dashboard** | System of record / full power (edit, poll, bulk close, settings, secrets) |
+| **Dashboard** | System of record / full power (edit, poll, bulk close, settings, secrets, marketing) |
 | **CLI** | Automation and operator tooling |
 | **Timers** | Cases poll every 5 minutes |
 
 ## 2. Actors and RBAC
 
+Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.  
+`config/limits.yaml` → `jonatan_role` is **display-only** in the dashboard settings UI (not used for permission checks).
+
 | Actor | Role | Typical powers |
 |-------|------|----------------|
-| **Jonatan** | `viewer` (+ `CASE_REPLY`) | Read mail/SSH, non-secret settings, **approve/send case replies**, cases queue |
-| **Oscar** | `full_admin` | Secrets UI, connection probes, resolve escalations, experiment flags (auto-send) |
-| **agent** | `operator` | order-status, product-desc, support draft, mail send/read, SSH health, **cases poll** |
-
-Config: `config/rbac.yaml`.
+| **Jonatan** | `viewer` | Read + mail/SSH read + **CASE_REPLY** + **MARKETING_READ** + **MARKETING_SUGGEST** (negatives approve) |
+| **Oscar** | `full_admin` | All permissions: secrets, probes, escalations, experiment flags, **MARKETING_MUTATE**, `cases shadow-report`, `retention-purge` |
+| **agent** | `operator` | order/product/support, **MAIL_SEND** + **MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ** only |
 
 - Telegram: `TELEGRAM_ACTOR_MAP` maps chat → actor. Non-empty map ⇒ unmapped denied. Allowlist: `TELEGRAM_ALLOWED_CHAT_IDS`.
 - Messenger: `MESSENGER_ACTOR_MAP` / `MESSENGER_ALLOWED_PSIDS` — **fail-closed when empty in live mode**.
+- Oscar-only CLI: `cases shadow-report` and `cases retention-purge` require `Permission.ADMIN`.
 
 ## 3. Capabilities
 
@@ -76,9 +80,12 @@ Config: `config/rbac.yaml`.
 | **mail** | `actions/mail` + `integrations/mail*` | See [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
 | **SSH** | `actions/ssh_ops` | Allowlist only; else Oscar ticket |
 | **cases** | `cases/*` | Poll → draft → suggest-approve → human send — [`CASES.md`](CASES.md) |
+| **Shadow Live Ledger** | `cases/shadow_report.py`, `runtime_profile.py` | Null-send refuse + FU9 shadow trail — not FU9 wire |
+| **marketing** | `actions/marketing`, `marketing/*` | Google Ads + GA4 mock-first HITL — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | **LLM** | `llm.py` | OpenRouter + cost telemetry + cap |
 | **OAuth Gmail** | `oauth/gmail` | Browser consent → `oauth/gmail.json` |
-| **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text |
+| **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |
+| **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text + `/marketing` read |
 | **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
 | **smoke / readiness** | `smoke.py`, `ops_status.py` | Opt-in live smoke; `/health` poll age |
 
@@ -100,12 +107,14 @@ See [`CASES.md`](CASES.md) for the full operator guide (Swedish).
 
 - Suggest-approve for allowlisted categories + min confidence + order_id.
 - Auto-send: **default off**; **not wired** into poll; kill-switch `AZOM_AUTO_SEND_KILL`.
+- Path B2: richer return/billing drafts; still never ★ / never auto-send.
+- Shadow Live Ledger: under `AZOM_NULL_SEND=1` / `--null-send`, poll records would-have FU9 decisions; customer mail refused. Default **off** (not set in systemd).
 
 ## 5. Messenger and Telegram
 
 See [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) and [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md). Identity: [`SOUL.md`](../SOUL.md).
 
-1. Slash / postback commands — session, tools, cases, order, health, brief.
+1. Slash / postback commands — session, tools, cases, order, health, brief, marketing (read-only).
 2. Free text — intent → **read-only tool prefetch** → LLM phrasing under SOUL-aligned prompt.
 3. Explicit write UX — approve keyboard/postback, `/cases approve`, dashboard, CLI. **Never silent send.**
 
@@ -120,13 +129,17 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/onboarding/status` | auth | Alpine live JSON |
 | `/settings` | Jonatan | Non-secret YAML |
 | `/secrets` | Jonatan | Present/missing (no values) |
-| `/cases`, `/cases/<id>` | J/O | Queue, draft save, approve, close |
+| `/cases`, `/cases/<id>` | J/O | Queue, draft save, approve, close (+ shadow badges) |
 | `/cases/poll` | POST | Manual poll |
+| `/marketing` | J/O | Ads+GA4 digest + suggest HITL |
+| `/marketing/suggests/*` | POST J/O | Build / deny / approve suggests |
 | `/interact` | auth | Support draft playground |
 | `/oscar`, `/oscar/secrets`, `/oscar/escalations` | Oscar | Admin + resolve |
-| `/oscar/secrets/test` | Oscar | Connection probes |
+| `/oscar/secrets/test` | Oscar | Connection probes (incl. ga4 / google_ads / merchant) |
 | `/oauth/gmail/start`, `/status` | auth | Gmail OAuth start / status |
 | `/oauth/gmail/callback` | public | Google redirect (OAuth `state` validated) |
+| `/oauth/google/start`, `/status` | Oscar | Marketing Google OAuth start / status |
+| `/oauth/google/callback` | public | Marketing Google redirect |
 | `/webhooks/messenger` | Meta | Messenger webhook |
 | `/webhooks/woo` | Woo | HMAC-verified Woo webhooks |
 | `/health` | public | Liveness + readiness (poll age) |
@@ -152,12 +165,16 @@ python -m ecom_ops --mock order-status --order-id 1001 --status completed
 python -m ecom_ops --mock product-desc --product-id 42 --language sv
 python -m ecom_ops --mock support --message "Var är order 1001?"
 python -m ecom_ops --mock mail send|fetch|reply ...
-python -m ecom_ops --mock cases poll|list|show|reply|draft|regenerate|close|retention-purge ...
+python -m ecom_ops --mock [--null-send] cases poll|list|show|reply|draft|regenerate|close ...
+python -m ecom_ops --actor oscar cases shadow-report [--days 7]
+python -m ecom_ops --actor oscar cases retention-purge [--dry-run]
+python -m ecom_ops --mock marketing digest|health|suggests|…
 python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends
 python -m ecom_ops.bot
 ```
 
-Global flags: `--mock`, `--actor`, `--site`.  
+Global flags: `--mock`, `--null-send`, `--actor`, `--site`.  
+`shadow-report` / `retention-purge` require Oscar (`ADMIN`).  
 Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 
 ## 8. Config and env
@@ -169,7 +186,8 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `config/mailboxes.yaml` | case ingest mailboxes |
 | `config/limits.yaml` | OpenRouter cap |
 | `config/cases_ai.yaml` | suggest-approve + auto-send rails |
-| `config/integrations.yaml` | mail provider presets / flags |
+| `config/marketing.yaml` | Ads/GA4 allowlists, mutate defaults, kill env names |
+| `config/integrations.yaml` | mail presets; Google flags are **non-gating reserved** |
 | `config/dashboard.yaml` | dashboard feature flags |
 | `config/customer.json` | customer metadata / KPIs |
 | `.env` / `.env.example` | secrets + runtime paths |
@@ -185,6 +203,9 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `AZOM_DASHBOARD_PUBLIC_URL` | Deep links from Messenger |
 | `DASHBOARD_*` | Auth + bind |
 | `AZOM_AUTO_SEND_KILL` | Force auto-send off |
+| `AZOM_NULL_SEND` | Null-send / shadow profile (default off) |
+| `AZOM_GA4_PROPERTY_IDS` / `AZOM_GADS_CUSTOMER_IDS` | Marketing fail-closed allowlists |
+| `AZOM_ADS_MUTATE_KILL` / `AZOM_GA_MUTATE_KILL` / `AZOM_MP_KILL` | Marketing mutate kills (`GA` reserved until admin mutate exists) |
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
 | `WOO_WEBHOOK_SECRET` | Inbound Woo webhook HMAC |
 
@@ -208,11 +229,13 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 
 | Artifact | Content |
 |----------|---------|
-| `cases.db` | Cases + messages (schema migrate) |
+| `cases.db` | Cases + messages + shadow decision columns |
 | `oauth/gmail.json` | Gmail OAuth tokens (mode 0600) |
+| `oauth/google_marketing.json` | Google Ads/GA4 OAuth tokens (Oscar) |
 | `secrets.env` | Oscar-written secrets overlay |
 | `runtime.env` | Runtime toggles overlay |
 | `escalations.jsonl` | Escalation tickets |
+| `marketing_suggests.jsonl` | Marketing suggest ledger |
 | telemetry / KPI files | Cost + case KPIs (`python -m ecom_ops kpis`) |
 | `last_case_poll.json` | Poll readiness (`partial` / errors / age → `/health`) |
 | `probe_last.json` | Last Oscar probe results |
@@ -252,10 +275,12 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 | V2.1 Woo/WP capacity | Shipped |
 | V2.2 mail probe / env matrix / bulk close | Shipped |
 | V2.3 robustness harden | Shipped (code) |
+| Path B2 return/billing drafts | Shipped (never ★) |
+| Shadow Live Ledger (null-send) | Shipped — soft-soak; not A1; not FU9 wire |
+| Marketing Google (Ads+GA4) | Mock-first rails shipped; live APIs stubbed — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Oscar A1 live soak | **Ops next — human gate** |
 | FU9 auto-send wire | **Not wired** — see [`CASES.md`](CASES.md) |
 | V3 multi-tenant / FAQ / Meta ads | Deferred / parked |
-| Marketing Google (Ads+GA4) | Mock-first rails shipped; live Google report/mutate APIs stubbed — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 
 ## Related living docs
 
@@ -264,5 +289,6 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 | Pilot ops (SV) | [`PILOT_OPS.md`](PILOT_OPS.md) |
 | Cases (SV) | [`CASES.md`](CASES.md) |
 | Mail (SV) | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
+| Marketing Google (EN) | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Woo/WP (EN) | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
 | CLI (EN) | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |

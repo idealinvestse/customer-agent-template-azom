@@ -67,10 +67,13 @@ Optional: copy `.env.example` to `.env` and keep `AZOM_USE_MOCK=1`.
 python -m ecom_ops --mock order-status --order-id 1001 --status completed
 python -m ecom_ops --mock mail fetch
 python -m ecom_ops --mock cases poll
+python -m ecom_ops --mock --null-send cases poll
 python -m ecom_ops support --message "Var är order 1001?"
+python -m ecom_ops --mock marketing digest --days 7
 python -m ecom_ops classify-eval
 python -m ecom_ops kpis --days 7
 bash bin/mock-soak-azom.sh
+bash bin/mock-marketing-azom.sh
 # expect: scripts and CLI exit 0; cases/mail use in-memory or local mock stores
 ```
 
@@ -121,12 +124,14 @@ bash tests/test_spinup.sh
 |------|------------|
 | CLI commands | `skills/ecom_ops/cli.py` — also update [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |
 | Cases poll / approve | `skills/ecom_ops/cases/` |
+| Null-send / shadow ledger | `skills/ecom_ops/runtime_profile.py`, `cases/shadow_report.py`, `cases/auto_send.py` |
 | Suggest / auto-send rails | `skills/ecom_ops/cases/suggest.py`, `auto_send.py`, `config/cases_ai.yaml` |
+| Marketing Ads+GA4 | `skills/ecom_ops/actions/marketing.py`, `skills/ecom_ops/marketing/`, `config/marketing.yaml` — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Telegram / Messenger brain | `skills/ecom_ops/bot/` |
 | Woo / WP clients | `skills/ecom_ops/integrations/woocommerce.py`, `wordpress.py`, `webhooks.py` |
 | Mail providers | `skills/ecom_ops/integrations/mail*` |
 | Dashboard routes / probes | `infrastructure/dashboard/` (probes are Oscar UI, not CLI) |
-| RBAC | `config/rbac.yaml` + security checks in code |
+| RBAC | `config/rbac.yaml` + `skills/ecom_ops/rbac.py` (`limits.yaml` jonatan_role is display-only) |
 | Agent voice | `SOUL.md` + `skills/ecom_ops/bot/chat_agent.py` system prompt |
 
 ## Production target (context only)

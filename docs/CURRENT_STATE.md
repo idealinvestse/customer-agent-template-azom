@@ -97,9 +97,9 @@ Do not start these unless product ownership changes:
 
 | Actor | Role | Typical powers |
 |-------|------|----------------|
-| **Jonatan** | `viewer` + `CASE_REPLY` | Read mail/SSH, non-secret settings, **approve/send case replies** |
-| **Oscar** | `full_admin` | Secrets UI, probes, resolve escalations, experiment flags (auto-send) |
-| **agent** | `operator` | order-status, product-desc, support draft, mail send/read, SSH health, cases poll |
+| **Jonatan** | `viewer` | Read mail/SSH, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST** |
+| **Oscar** | `full_admin` | Secrets UI, probes, resolve escalations, experiment flags, **MARKETING_MUTATE**, `shadow-report` / `retention-purge` |
+| **agent** | `operator` | order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH health, cases poll, **MARKETING_READ** |
 
 ## Absorption note (historical docs removed)
 

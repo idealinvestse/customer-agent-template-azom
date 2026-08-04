@@ -60,8 +60,53 @@ def test_cli_shadow_report(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AZOM_NULL_SEND", "1")
     CaseStore(path=tmp_path / "cases.db")
-    code = main(["cases", "shadow-report", "--days", "7"])
+    code = main(["--actor", "oscar", "cases", "shadow-report", "--days", "7"])
     assert code == 0
     data = json.loads(capsys.readouterr().out)
     assert data["ok"] is True
     assert data["null_send"] == "on"
+
+
+def test_cli_shadow_report_requires_admin(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    CaseStore(path=tmp_path / "cases.db")
+    code = main(["--actor", "agent", "cases", "shadow-report", "--days", "7"])
+    assert code == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is False
+    assert data["error"] == "access_denied"
+
+
+def test_cli_retention_purge_requires_admin(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    CaseStore(path=tmp_path / "cases.db")
+    code = main(["--actor", "jonatan", "cases", "retention-purge", "--dry-run"])
+    assert code == 1
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is False
+    assert data["error"] == "access_denied"
+
+
+def test_cli_retention_purge_oscar_dry_run(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    CaseStore(path=tmp_path / "cases.db")
+    code = main(["--actor", "oscar", "cases", "retention-purge", "--dry-run"])
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["ok"] is True
+    assert data["dry_run"] is True
+
+
+def test_systemd_retention_purge_uses_actor_oscar():
+    """Prod timer must pass ADMIN actor after RBAC gate on retention-purge."""
+    from pathlib import Path
+
+    unit = (
+        Path(__file__).resolve().parents[1]
+        / "infrastructure"
+        / "systemd"
+        / "azom-retention-purge.service"
+    )
+    text = unit.read_text(encoding="utf-8")
+    assert "--actor oscar" in text
+    assert "cases retention-purge" in text

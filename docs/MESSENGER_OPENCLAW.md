@@ -106,8 +106,10 @@ Utan `MESSENGER_PAGE_ACCESS_TOKEN`:
 - Tro att NL “godkänn abcdef01” skickar mail — det är bara confirm UX.
 - Köra prod utan PSID-allowlist och actor map.
 
-Slash/flows speglar Telegram-katalogen: `/help` `/cases` `/order` `/brief` `/status` …  
-Se [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) för full kommando-tabell och free-text prefetch.
+Slash/flows speglar Telegram-katalogen: `/help` `/cases` `/order` `/brief` `/status` `/marketing` …
+`/marketing` är **read-only** snapshot — Ads-mutates endast via dashboard/CLI approve.
+Se [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) för full kommando-tabell och free-text prefetch.  
+Marketing: [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md).
 
 ---
 

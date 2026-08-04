@@ -18,7 +18,7 @@ from ecom_ops.integrations.google_ads import (
     client_from_env as ads_client,
 )
 from ecom_ops.marketing.config import clear_marketing_config_cache, load_marketing_config
-from ecom_ops.marketing.kill_switch import ads_mutate_allowed
+from ecom_ops.marketing.kill_switch import ads_mutate_allowed, ga_mutate_allowed
 from ecom_ops.marketing.suggest_store import MarketingSuggestStore
 from ecom_ops.rbac import clear_rbac_cache
 
@@ -52,6 +52,21 @@ def test_ads_mutate_kill_switch(monkeypatch):
     ok, reason = ads_mutate_allowed()
     assert ok is False
     assert reason == "ads_mutate_kill"
+
+
+def test_ga_mutate_kill_switch(monkeypatch):
+    """Reserved GA-admin kill rail — deny when set (no mutate path yet)."""
+    monkeypatch.setenv("AZOM_GA_MUTATE_KILL", "1")
+    ok, reason = ga_mutate_allowed()
+    assert ok is False
+    assert reason == "ga_mutate_kill"
+
+
+def test_ga_mutate_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("AZOM_GA_MUTATE_KILL", raising=False)
+    ok, reason = ga_mutate_allowed()
+    assert ok is False
+    assert reason == "ga_mutate_disabled"
 
 
 def test_ga4_mock_digest():

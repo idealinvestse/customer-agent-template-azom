@@ -306,11 +306,22 @@
           {% if runtime and runtime.mock_mode %}
           <span class="az-badge bg-warn/15 text-warn">mock</span>
           {% endif %}
+          {% if null_send_active %}
+          <span class="az-badge bg-warn/15 text-warn" title="Kundmail skickas inte">null-send</span>
+          {% endif %}
         </div>
       </header>
 
       <main class="flex-1 px-4 py-6 sm:px-6 lg:px-8">
         <div class="mx-auto max-w-6xl space-y-5">
+          {% if null_send_active %}
+          <div
+            class="rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn"
+            role="status"
+          >
+            Null-send aktiv — kundmail skickas inte (Shadow Live Ledger). Oscar: <span class="az-code">cases shadow-report</span>.
+          </div>
+          {% endif %}
           {% if flash is defined and flash %}
           <div
             x-data="{ show: true }"

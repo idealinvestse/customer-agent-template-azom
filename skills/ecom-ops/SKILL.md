@@ -31,6 +31,9 @@ version: "2.0.0"
 | product description | `ecom_ops.actions.product_desc` | `python -m ecom_ops product-desc --product-id ID --language sv --mock` |
 | customer support draft | `ecom_ops.actions.support` | `python -m ecom_ops support --message "..." --mock` |
 | cases poll / approve | `ecom_ops.cases.service` | `python -m ecom_ops cases poll\|list\|show\|reply\|draft\|regenerate\|close --mock` |
+| shadow report (Oscar) | `ecom_ops.cases.shadow_report` | `python -m ecom_ops --actor oscar cases shadow-report` |
+| retention purge (Oscar) | `ecom_ops.cases.retention` | `python -m ecom_ops --actor oscar cases retention-purge --dry-run` |
+| null-send profile | `ecom_ops.runtime_profile` | `--null-send` or `AZOM_NULL_SEND=1` |
 | SSH / VPS | `ecom_ops.actions.ssh_ops` | `python -m ecom_ops ssh --command "uptime" --mock` |
 | mail send/fetch | `ecom_ops.actions.mail` | `python -m ecom_ops mail send\|fetch\|reply --mock` |
 | marketing Ads+GA4 | `ecom_ops.actions.marketing` | `python -m ecom_ops marketing digest\|health\|consistency\|suggests\|… --mock` |
@@ -40,7 +43,7 @@ version: "2.0.0"
 
 | Surface | Entry |
 |---------|--------|
-| Dashboard | `./bin/start-dashboard.sh` → `/onboarding`, `/settings`, `/cases`, `/oscar` |
+| Dashboard | `./bin/start-dashboard.sh` → `/onboarding`, `/settings`, `/cases`, `/marketing`, `/oscar` |
 | Gmail OAuth | `/oauth/gmail/start` → tokens in `AZOM_DATA_DIR/oauth/gmail.json` |
 | Google marketing OAuth | `/oauth/google/start` → `AZOM_DATA_DIR/oauth/google_marketing.json` |
 | Marketing dashboard | `/marketing` (Jonatan read + suggest HITL) |
@@ -65,17 +68,21 @@ Details: `docs/MAIL_PROVIDERS.md`.
 
 ## Cases AI rails
 
-`config/cases_ai.yaml`: suggest-approve for `order_status`/`shipping` (default); `never_suggest_categories` includes `abuse`/`return`/`billing` (Path B2 still drafts those richer, never ★). Auto-send **off** and **not wired** into poll unless Oscar enables after FU9 gates (`AZOM_AUTO_SEND_KILL`).
+`config/cases_ai.yaml`: suggest-approve for `order_status`/`shipping` (default); `never_suggest_categories` includes `abuse`/`return`/`billing` (Path B2 still drafts those richer, never ★). Auto-send **off** and **not wired** into poll unless Oscar enables after FU9 gates (`AZOM_AUTO_SEND_KILL`). Null-send / Shadow Live Ledger: `AZOM_NULL_SEND` / `--null-send` (default off); Oscar `cases shadow-report`.
 
 ## Woo / WordPress
 
 See `docs/WOO_WORDPRESS.md` — shipment trackings, multi-site `domain=`, WordPress Application Passwords, webhook HMAC, retries.
 
+## Marketing Google
+
+See `docs/MARKETING_GOOGLE.md` — mock-first Ads+GA4; live clients stubbed; HITL mutate + kill-switches.
+
 ## RBAC
 
-- **Jonatan:** `viewer` / read-only (+ mail read, SSH read, dashboard settings non-secret, **CASE_REPLY**)
-- **Oscar:** `full_admin` (secrets UI + escalation resolve + probes)
-- **Agent (automation):** `operator` (order/product/support/mail send+read/SSH read/case poll)
+- **Jonatan:** `viewer` (+ mail/SSH read, settings non-secret, **CASE_REPLY**, **MARKETING_READ**, **MARKETING_SUGGEST**)
+- **Oscar:** `full_admin` (secrets UI + escalation resolve + probes + **MARKETING_MUTATE** + `shadow-report` / `retention-purge`)
+- **Agent (automation):** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, case poll, **MARKETING_READ**)
 
 ## Escalation
 

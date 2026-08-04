@@ -8,7 +8,7 @@ User=azom
 Group=azom
 Environment=AZOM_DATA_DIR=/var/lib/azom
 Environment=AZOM_CONFIG_DIR=/opt/azom-agent/config
-ExecStart=/opt/azom-agent/.venv/bin/python -m ecom_ops cases retention-purge --days 90
+ExecStart=/opt/azom-agent/.venv/bin/python -m ecom_ops --actor oscar cases retention-purge --days 90
 WorkingDirectory=/opt/azom-agent
 ProtectSystem=full
 ProtectHome=true

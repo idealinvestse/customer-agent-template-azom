@@ -312,3 +312,58 @@ def test_approve_under_null_send_does_not_flash_skickat(dash_client, monkeypatch
     loc = resp.headers.get("Location", "")
     assert "Skickat" not in loc
     assert "Null-send" in loc or "err=" in loc
+
+
+def test_null_send_banner_when_active(dash_client, monkeypatch):
+    monkeypatch.setenv("AZOM_NULL_SEND", "1")
+    resp = dash_client.get("/", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Null-send aktiv" in body
+    assert "null-send" in body
+
+
+def test_null_send_banner_absent_by_default(dash_client, monkeypatch):
+    monkeypatch.delenv("AZOM_NULL_SEND", raising=False)
+    resp = dash_client.get("/", headers=_auth_headers())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Null-send aktiv" not in body
+
+
+def test_marketing_suggests_build_and_deny(dash_client):
+    import re
+
+    page = dash_client.get("/marketing", headers=_auth_headers())
+    assert page.status_code == 200
+    html = page.data.decode("utf-8", errors="replace")
+    m = re.search(r'name="_csrf"\s+value="([^"]+)"', html)
+    assert m, "csrf token missing"
+    csrf = m.group(1)
+
+    build = dash_client.post(
+        "/marketing/suggests/build",
+        headers=_auth_headers(),
+        data={"_csrf": csrf},
+        follow_redirects=False,
+    )
+    assert build.status_code in (302, 303)
+
+    after = dash_client.get("/marketing", headers=_auth_headers())
+    assert after.status_code == 200
+    body = after.data.decode("utf-8", errors="replace")
+    deny = re.search(
+        r'action="/marketing/suggests/([^"]+)/deny"', body
+    )
+    if deny is None:
+        # Mock may yield empty waste → no open suggests; still proved POST accepted.
+        return
+    csrf2 = re.search(r'name="_csrf"\s+value="([^"]+)"', body)
+    assert csrf2
+    resp = dash_client.post(
+        f"/marketing/suggests/{deny.group(1)}/deny",
+        headers=_auth_headers(),
+        data={"_csrf": csrf2.group(1)},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)

@@ -29,4 +29,12 @@ if [[ "${AZOM_USE_MOCK:-1}" == "1" ]]; then
   MOCK_FLAG=(--mock)
 fi
 
+# Profile log only — never auto-enable null-send (Oscar sets AZOM_NULL_SEND in .env).
+_null_raw="$(printf '%s' "${AZOM_NULL_SEND:-}" | tr '[:upper:]' '[:lower:]')"
+_null_label=off
+case "${_null_raw}" in
+  1|true|yes|on) _null_label=on ;;
+esac
+echo "cases-poll: mock=${AZOM_USE_MOCK:-1} null_send=${_null_label}" >&2
+
 exec "$PY" -m ecom_ops "${MOCK_FLAG[@]}" cases poll "$@"

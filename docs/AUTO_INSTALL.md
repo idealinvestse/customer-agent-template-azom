@@ -42,7 +42,7 @@ sudo bash /tmp/azom/bin/install.sh
 | `azom-cases-poll.timer` | Cases poll ~var 5:e minut |
 | `azom-daily-brief.timer` | Daglig brief |
 | `azom-backup.timer` | Backup av data |
-| `azom-retention-purge.timer` | GDPR retention purge |
+| `azom-retention-purge.timer` | GDPR retention purge (`--actor oscar`) |
 
 Messenger har **ingen** egen systemd-unit — den körs via dashboard-webhook.
 

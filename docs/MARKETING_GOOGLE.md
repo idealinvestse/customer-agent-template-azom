@@ -28,10 +28,22 @@ Never invent metrics. Always cite source + date range. Do not collapse Ads+GA+Wo
 - Fail-closed in live (`AZOM_USE_MOCK=0`): empty `AZOM_GA4_PROPERTY_IDS` or `AZOM_GADS_CUSTOMER_IDS` → deny
 - Mock: `AZOM_USE_MOCK=1` uses in-memory fixtures (no network)
 
+## RBAC
+
+| Actor | Permissions | Typical marketing actions |
+|-------|-------------|---------------------------|
+| **Jonatan** (`viewer`) | `MARKETING_READ`, `MARKETING_SUGGEST` | Digest/health; suggest build/deny; **approve negatives** |
+| **Oscar** (`full_admin`) | + `MARKETING_MUTATE` | Pause/budget/etc. approve; OAuth start; probes |
+| **agent** (`operator`) | `MARKETING_READ` only | Read digest/snapshot — not suggest build |
+
+Auth source: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
+
 ## Mutate / HITL
 
 - Default: `ads_mutate_enabled: false` (and peers) in [`config/marketing.yaml`](../config/marketing.yaml)
 - Kill-switches: `AZOM_ADS_MUTATE_KILL`, `AZOM_GA_MUTATE_KILL`, `AZOM_MP_KILL` → always deny when set
+- `AZOM_GA_MUTATE_KILL` / `ga_mutate_allowed` is a **reserved rail** until a GA-admin mutate path exists (no invent mutate)
+- `config/integrations.yaml` `google_*` flags are **non-gating reserved** — live gating uses marketing.yaml + env allowlists
 - Flow: suggest → human approve → execute (never free-text / silent auto-pause)
 - Recommendation auto-apply subscriptions: **out of scope**
 

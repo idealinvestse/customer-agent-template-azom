@@ -34,6 +34,7 @@ Language split: **Swedish** = ops/pilot/runbooks · **English** = agents/dev/arc
 | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) | Developers | Setup, mock, tests, contrib |
 | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) | Developers | Full CLI |
 | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) | Developers | Woo/WP V2.1 capabilities |
+| [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) | Developers / Oscar | Google Ads + GA4 mock-first HITL |
 | [`../skills/ecom-ops/SKILL.md`](../skills/ecom-ops/SKILL.md) | Skill hosts | Skill card |
 | [`../README.md`](../README.md) | Everyone | Project intro + quick start |
 
@@ -47,9 +48,10 @@ Each major surface has one **primary** living doc:
 | Architecture / RBAC / security | [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) |
 | Local dev / CI | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) |
 | CLI | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |
-| Cases + approve + FU9 | [`CASES.md`](CASES.md) |
+| Cases + approve + FU9 + Shadow Live Ledger | [`CASES.md`](CASES.md) |
 | Pilot / soak / dashboard day-2 | [`PILOT_OPS.md`](PILOT_OPS.md) |
 | Mail providers | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
+| Marketing Google (Ads+GA4) | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Telegram | [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) |
 | Messenger | [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) |
 | Woo / WordPress | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |

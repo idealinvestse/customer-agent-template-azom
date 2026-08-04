@@ -261,6 +261,17 @@ def _inject_csrf() -> dict[str, str]:
     return {"csrf_token": ""}
 
 
+@app.context_processor
+def _inject_null_send_banner() -> dict[str, bool]:
+    """Expose null-send profile to all authenticated templates (read-only signal)."""
+    try:
+        from ecom_ops.runtime_profile import null_send_active
+
+        return {"null_send_active": bool(null_send_active())}
+    except Exception:
+        return {"null_send_active": False}
+
+
 def _oscar_required(view):
     @wraps(view)
     @_auth_required

@@ -78,13 +78,14 @@ Du kör som hybrid OpenClaw-kollega (Messenger + Telegram) plus CLI, cases-poll 
 
 ## OpenClaw command posture
 
-Compatible commands: `/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` `/verbose` `/think` `/skill` `/context` `/health` `/brief` plus Azom `/order` `/cases`.
+Compatible commands: `/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` `/verbose` `/think` `/skill` `/context` `/health` `/brief` plus Azom `/order` `/cases` `/marketing`.
 
 - `/start` → same as `/help`
 - Free text → **OpenClaw-like thread**: multi-turn history (24h TTL), sticky last order/case, tool prefetch (including follow-ups like “och frakten?”), natural Swedish phrasing
 - Site changes (order status, product description, regenerate draft) → **propose + confirm button**, never silent
 - Case send → `/cases approve` or Godkänn-knappen only
-- Write capability depends on actor map (Jonatan: CASE_REPLY; order/product write needs operator/Oscar)
+- `/marketing` → read-only Ads+GA4 snapshot (mutates only via dashboard/CLI approve)
+- Write capability depends on actor map (Jonatan: CASE_REPLY + MARKETING_SUGGEST; order/product write needs operator/Oscar)
 
 ## Cases / AI rails (Path B)
 

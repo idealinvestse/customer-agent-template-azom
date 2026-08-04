@@ -43,7 +43,7 @@
 | Rättighet | Implementering |
 |-----------|----------------|
 | **Insyn (Art 15)** | `GET /oscar/gdpr/export?email=...` (Oscar-admin) |
-| **Radering (Art 17)** | `POST /oscar/gdpr/delete` (Oscar-admin) + retention-purge timer (90 dagar) |
+| **Radering (Art 17)** | `POST /oscar/gdpr/delete` (Oscar-admin) + `azom-retention-purge.timer` (`--actor oscar`, 90 dagar) |
 | **Rättelse (Art 16)** | Manuell via Oscar — ändra i cases.db |
 | **Portabilitet (Art 20)** | `GET /oscar/gdpr/export` returnerar JSON |
 | **Invändning (Art 21)** | Manuell — stoppa poll för mailbox |

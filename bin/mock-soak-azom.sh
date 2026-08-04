@@ -25,7 +25,7 @@ echo "=== mock soak (AZOM_DATA_DIR=$AZOM_DATA_DIR null_send=$AZOM_NULL_SEND) ===
 "$PY" -m ecom_ops --null-send status
 "$PY" -m ecom_ops --mock --null-send cases poll || true
 "$PY" -m ecom_ops --mock cases list --status open,escalated --limit 10 || true
-"$PY" -m ecom_ops --null-send cases shadow-report --days 7 || true
+"$PY" -m ecom_ops --actor oscar --null-send cases shadow-report --days 7 || true
 "$PY" -m ecom_ops kpis --days 7
 "$PY" -m ecom_ops classify-eval
 if [[ -x "$ROOT/bin/daily-brief-azom.sh" ]]; then

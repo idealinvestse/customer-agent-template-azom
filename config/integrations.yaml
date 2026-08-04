@@ -3,6 +3,8 @@ order_api: true
 selenium: true
 woocommerce_api: true
 wordpress_api: true
+# Google flags are reserved / non-gating until live Ads/GA4/Merchant clients ship.
+# Marketing rails use config/marketing.yaml + env allowlists/kill-switches instead.
 google_analytics: true
 google_ads: true
 google_merchant: true

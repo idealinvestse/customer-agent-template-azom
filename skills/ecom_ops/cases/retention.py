@@ -8,8 +8,9 @@ A best-effort redaction mode is also offered: instead of hard delete, overwrite
 aggregate analytics (counts, KPIs) while removing PII. Use ``redact=True`` for
 that mode.
 
-Wired via CLI: ``python -m ecom_ops cases retention-purge`` and a systemd timer
-``azom-retention-purge.timer`` (daily).
+Wired via CLI: ``python -m ecom_ops --actor oscar cases retention-purge``
+(requires ``Permission.ADMIN``) and systemd timer ``azom-retention-purge.timer``
+(daily; unit passes ``--actor oscar``).
 """
 
 from __future__ import annotations

@@ -161,17 +161,18 @@ python -m ecom_ops --mock cases reply --id <uuid> [--body "..."]
 # APPROVE AND SEND — human path; use --actor jonatan in real ops
 # under --null-send / AZOM_NULL_SEND=1 this refuses before claim (no customer mail)
 
-python -m ecom_ops cases shadow-report [--days 7]
-# Oscar: latest-per-case FU9 shadow trail (eligible vs denied + reason breakdown)
+python -m ecom_ops --actor oscar cases shadow-report [--days 7]
+# Oscar ADMIN: latest-per-case FU9 shadow trail (eligible vs denied + reason breakdown)
 
 python -m ecom_ops --mock cases close --id <uuid> [--reason "..."]
 # close without customer reply
 
-python -m ecom_ops --mock cases retention-purge [--days 90] [--redact] [--dry-run]
-# GDPR: delete or redact old closed cases
+python -m ecom_ops --actor oscar cases retention-purge [--days 90] [--redact] [--dry-run]
+# Oscar ADMIN — GDPR: delete or redact old closed cases
 ```
 
-Global `--null-send` (or `AZOM_NULL_SEND=1`) activates the null-send profile. `status` always prints `null_send=on|off`.
+Global `--null-send` (or `AZOM_NULL_SEND=1`) activates the null-send profile. `status` always prints `null_send=on|off`.  
+`shadow-report` and `retention-purge` require `Permission.ADMIN` (use `--actor oscar`).
 
 #### Cases Do / Do not
 
@@ -223,6 +224,7 @@ python -m ecom_ops --mock --actor jonatan marketing merchant-queue --offer-id SK
 | `AZOM_GA4_PROPERTY_IDS` | Fail-closed GA4 allowlist (empty in live = deny) |
 | `AZOM_GADS_CUSTOMER_IDS` | Fail-closed Ads allowlist (empty in live = deny) |
 | `AZOM_ADS_MUTATE_KILL=1` | Always deny Ads mutate / merchant write |
+| `AZOM_GA_MUTATE_KILL=1` | Reserved GA-admin mutate kill (deny when set; no mutate path yet) |
 | `AZOM_MP_KILL=1` | Always deny Measurement Protocol send |
 
 ## Related

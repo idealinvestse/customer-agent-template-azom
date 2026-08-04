@@ -13,13 +13,15 @@
 | **Full power** | Dashboard — draft-redigering, orderpanel, poll, bulk close, settings. |
 | **Live soak (A1)** | Mänsklig verifiering på riktig host innan auto-send ens diskuteras. |
 | **★ / suggest-approve** | Systemet föreslår approve; människa måste fortfarande bekräfta. |
+| **Null-send** | Profil som vägrar kundmail och skriver FU9-skuggspår (`AZOM_NULL_SEND`). Default **av**. |
+| **Shadow Live Ledger** | Skuggobservationer under null-send; badge i `/cases`; Oscar läser `cases shadow-report`. |
 
 ## Roller i drift
 
 | Vem | Gör |
 |-----|-----|
-| **Oscar** | Host, secrets, probes, systemd, backup, eskaleringar, experiment-flaggor |
-| **Jonatan** | Triage, ★-urval, godkänn & skicka, stäng utan svar när lämpligt |
+| **Oscar** | Host, secrets, probes, systemd, backup, eskaleringar, experiment-flaggor, shadow-report, marketing mutate |
+| **Jonatan** | Triage, ★-urval, godkänn & skicka, stäng utan svar, marketing suggest (negatives) |
 | **Agent (automation)** | Poll, draft, readiness — **skickar inte** kundmail utan human path |
 
 ## Ytor (var gör du vad)
@@ -29,10 +31,11 @@
 | Messenger | Daglig triage / approve | [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) |
 | Telegram | Backup | [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) |
 | Dashboard `/cases` | Full power | denna fil + [`CASES.md`](CASES.md) |
+| Dashboard `/marketing` | Ads+GA4 ledger / HITL | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Dashboard `/onboarding` | Checklist, Gmail connect | — |
 | Dashboard `/settings` | Jonatan non-secret | — |
 | Dashboard `/oscar` | Secrets, probes, eskaleringar | — |
-| CLI | Poll, status, kpis | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |
+| CLI | Poll, status, kpis, shadow-report | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |
 
 ### Dashboard — snabbkarta
 
@@ -41,10 +44,12 @@
 | `/` | Översikt, nav-badges, probe-status |
 | `/onboarding` | Wizard: secrets checklist, health, Gmail |
 | `/settings` | Non-secret config (Jonatan) |
-| `/cases` | Kö, filter `suggest=1`, draft, approve, close |
+| `/cases` | Kö, filter `suggest=1`, draft, approve, close, skugg-badges |
 | `/cases/<id>` | Orderpanel, spara draft, regenerate, approve-confirm |
+| `/marketing` | Ads+GA4 digest + suggest HITL |
 | `/oscar` | Admin: secrets, probes, resolve escalations |
 | `/oauth/gmail/start` | Gmail browser OAuth |
+| `/oauth/google/start` | Marketing Google OAuth (Oscar) |
 | `/health` | Liveness + poll-readiness (publik) |
 
 Basic Auth: `jonatan` / `DASHBOARD_PASSWORD` · `oscar` / `DASHBOARD_OSCAR_PASSWORD`.  
@@ -80,8 +85,10 @@ bash bin/daily-brief-azom.sh
 # expect: status/health utan kritiska fel; partial poll → eskalering / last_case_poll.errors
 ```
 
-Messenger: `/help` `/cases` `/brief`  
+Messenger: `/help` `/cases` `/brief` `/marketing`  
 Telegram backup: samma kommandon.
+
+Dashboard visar en **null-send**-banner/badge när `AZOM_NULL_SEND=1` (kundmail skickas inte).
 
 ## Backup
 
@@ -198,14 +205,25 @@ Siffror får **inte** hittas på av agents. Lägg resultatet i ops-anteckningar 
 ```bash
 # cwd: repo-root — script sätter AZOM_USE_MOCK=1 och AZOM_NULL_SEND=1
 bash bin/mock-soak-azom.sh
-# inkluderar cases poll under null-send + cases shadow-report
+# inkluderar cases poll under null-send + cases shadow-report (--actor oscar)
 python -m ecom_ops classify-eval
 python -m ecom_ops kpis --days 7
 # expect: grönt lokalt + eventuellt skuggspår — ersätter INTE A1 live soak
 # FU9 förblir unwired; agents får inte markera soak klar
 ```
 
-Live-read shadow (senare steg, Oscar): samma null-send-profil med `AZOM_USE_MOCK=0` + credentials — fortfarande ingen kundmail.
+### Live soft-soak / shadow (Oscar — inte A1 soak)
+
+Null-send är **default av**. Systemd sätter den **inte**. För live-read skuggspår (fortfarande ingen kundmail):
+
+1. På host `/opt/azom-agent`: öppna `.env`.
+2. Sätt `AZOM_USE_MOCK=0` (redan typiskt i prod) och `AZOM_NULL_SEND=1`.
+3. Starta om: `sudo systemctl restart azom-cases-poll.timer azom-dashboard.service` (eller motsvarande oneshot + dashboard).
+4. Bekräfta: `python -m ecom_ops status` visar `null_send=on`; dashboard visar null-send-banner; `bin/cases-poll.sh` loggar `null_send=on`.
+5. Oscar: `python -m ecom_ops --actor oscar cases shadow-report --days 7`.
+6. Avsluta soft-soak: sätt `AZOM_NULL_SEND=0` (eller ta bort), restart samma tjänster.
+
+**Detta är inte A1 live soak och inte FU9-wire.** Se [`CASES.md`](CASES.md).
 
 ## Incident-runbooks
 

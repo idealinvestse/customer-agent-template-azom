@@ -14,11 +14,11 @@
    - Pilot / soak: [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) (Swedish)
    - Dev/tests: [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md)
    - CLI: [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md)
-- Mail: [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md)
- - Woo/WP: [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
- - Marketing Google (Ads+GA4): [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md)
- - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
- - Telegram: [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)
+   - Mail: [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md)
+   - Woo/WP: [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
+   - Marketing Google (Ads+GA4): [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md)
+   - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
+   - Telegram: [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)
 5. Skill card: [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md)
 
 **Source of truth order:** `CURRENT_STATE` > this file > code/tests > chat memory.
@@ -26,9 +26,9 @@
 ## Budget and roles
 
 - OpenRouter budget: **USD 100** (`config/limits.yaml`)
-- **Jonatan:** `viewer` (+ mail read, SSH read, non-secret settings, **case reply approve/send**)
-- **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags)
-- **Agent automation:** `operator` (order/product/support/mail send+read/SSH read/case poll)
+- **Jonatan:** `viewer` (+ mail/SSH read, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**)
+- **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags + **MARKETING_MUTATE** + `shadow-report` / `retention-purge`)
+- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**)
 
 ## Goals
 
@@ -68,6 +68,7 @@
 - Commit secrets (`.env`, OAuth tokens, `secrets.env`).
 - Weaken tests to pass CI.
 - Recreate deleted history folders (`docs/superpowers/`, `docs/solutions/`, `docs/ideation/`).
+- Default-on `AZOM_NULL_SEND` in systemd (Oscar sets it in `.env` for soft-soak only).
 
 ## V1 core (still in v2)
 
@@ -82,18 +83,23 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 
 - **V2.0:** Dashboard, Gmail OAuth, Telegram + Messenger, install/Docker, status/smoke CLI
 - **Cases 2.0 + Path B:** suggest-approve; auto-send rails **default off** + `AZOM_AUTO_SEND_KILL`; **not wired**
+- **Path B2:** richer return/billing drafts; never ★
+- **Shadow Live Ledger:** null-send (`AZOM_NULL_SEND` / `--null-send`) + `cases shadow-report` (Oscar); mock soak via `bin/mock-soak-azom.sh`
 - **V2.1:** Woo/WP capacity — [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
 - **V2.2:** live `probe_mail`, mail env matrix, bulk close
 - **V2.3:** robustness (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak**
+- **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live APIs still stubbed
 
 ## Cases quick CLI
 
 ```bash
 python -m ecom_ops --mock cases poll
+python -m ecom_ops --mock --null-send cases poll
 python -m ecom_ops --mock cases list --status open,escalated
 python -m ecom_ops --mock cases draft --id <uuid> --body "..."
 python -m ecom_ops --mock cases reply --id <uuid>
 python -m ecom_ops --mock cases close --id <uuid>
+python -m ecom_ops --actor oscar cases shadow-report --days 7
 ./bin/cases-poll.sh
 ```
 
@@ -105,6 +111,14 @@ Full reference: [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) · operator gui
 python -m ecom_ops --mock mail send --to a@b.co --subject "Test" --body "Hej"
 python -m ecom_ops --mock mail fetch
 python -m ecom_ops status
+```
+
+## Marketing CLI (mock)
+
+```bash
+python -m ecom_ops --mock marketing digest --days 7
+python -m ecom_ops --mock --actor jonatan marketing suggests build
+bash bin/mock-marketing-azom.sh
 ```
 
 ## Telegram / Messenger env (prod)
@@ -132,7 +146,7 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 
 ## Status (code vs goals)
 
-- **Shipped:** Path B + Sprint A/B/C + SB5 + V2.1 + V2.2 + V2.3 code DoD/robustness
+- **Shipped:** Path B + Path B2 + Sprint A/B/C + SB5 + V2.1 + V2.2 + V2.3 + Shadow Live Ledger + Marketing Google (mock-first)
 - **Ops next:** Oscar A1 live soak — [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) (agents must not mark done)
 - **Mock soft-soak:** `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
 - **FU9 auto-send:** rails only — see [`docs/CASES.md`](docs/CASES.md) (**do not wire** without Oscar written enable + soak preconditions)

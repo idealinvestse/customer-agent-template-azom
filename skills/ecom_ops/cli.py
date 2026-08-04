@@ -547,12 +547,35 @@ def main(argv: list[str] | None = None) -> int:
             return _print(result)
         if args.cases_command == "shadow-report":
             from ecom_ops.cases.shadow_report import build_shadow_report
+            from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
 
+            try:
+                require_permission(resolve_actor(args.actor), Permission.ADMIN)
+            except AccessDenied as exc:
+                return _print(
+                    {
+                        "ok": False,
+                        "error": "access_denied",
+                        "message": str(exc),
+                    }
+                )
             report = build_shadow_report(days=int(getattr(args, "days", 7) or 7))
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
         if args.cases_command == "retention-purge":
             from ecom_ops.cases.retention import purge_closed_cases
+            from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
+
+            try:
+                require_permission(resolve_actor(args.actor), Permission.ADMIN)
+            except AccessDenied as exc:
+                return _print(
+                    {
+                        "ok": False,
+                        "error": "access_denied",
+                        "message": str(exc),
+                    }
+                )
 
             if args.dry_run:
                 from datetime import datetime, timedelta, timezone

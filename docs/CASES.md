@@ -136,8 +136,8 @@ Return- och billing-ärenden får **rikare utkast** (templates + draft-prompt) o
 **Profil:** `AZOM_NULL_SEND=1` eller CLI `--null-send` (default **av**).  
 Under profilen vägrar `MailService` all kundmail (`send` + `reply`); `approve_and_send` nekar **före** `claim_for_send`.  
 Poll kör fortfarande ingest → classify → draft → suggest; under null-send skrivs `shadow_eligible` / `shadow_deny_reason` + telemetry `case_shadow_decision` (FU9 would-have, aldrig skick).  
-Jonatan ser muted badge `Skugga: …` i dashboard; Oscar läser `python -m ecom_ops cases shadow-report`.  
-Soft-soak: `bash bin/mock-soak-azom.sh` sätter null-send + mock. Live-read-rung = samma profil med `AZOM_USE_MOCK=0` + credentials — fortfarande ingen send.  
+Jonatan ser muted badge `Skugga: …` i dashboard (plus null-send-banner när profilen är aktiv); Oscar läser `python -m ecom_ops --actor oscar cases shadow-report` (**ADMIN** krävs).  
+Soft-soak: `bash bin/mock-soak-azom.sh` sätter null-send + mock. Live soft-soak: Oscar sätter `AZOM_NULL_SEND=1` i `.env` + restart — se [`PILOT_OPS.md`](PILOT_OPS.md). Systemd defaultar **inte** null-send.  
 **Detta är inte A1 live soak och inte FU9-wire.** `auto_send_enabled: true` under null-send kan ge `shadow_eligible=true` men mail skickas ändå inte.
 
 ### Aktivera inte förrän ALLA är sanna
@@ -184,17 +184,20 @@ Inom **1 minut** vid dåligt auto-send:
 # cwd: repo eller /opt/azom-agent
 # mock: AZOM_USE_MOCK=1 eller --mock
 python -m ecom_ops --mock cases poll --limit 20
+python -m ecom_ops --mock --null-send cases poll --limit 20        # shadow trail; ingen kundmail
 python -m ecom_ops --mock cases list --status open,escalated
 python -m ecom_ops --mock cases show --id <uuid>
 python -m ecom_ops --mock cases draft --id <uuid> --body "..."
 python -m ecom_ops --mock cases regenerate --id <uuid>             # skickar aldrig
 python -m ecom_ops --mock cases reply --id <uuid> [--body "..."]   # approve+send
 python -m ecom_ops --mock cases close --id <uuid> [--reason "..."]
-python -m ecom_ops --mock cases retention-purge --dry-run
+python -m ecom_ops --actor oscar cases shadow-report --days 7      # Oscar ADMIN
+python -m ecom_ops --actor oscar cases retention-purge --dry-run   # Oscar ADMIN
 ./bin/cases-poll.sh
 ```
 
-Default actor är `agent` (operator) för poll; använd `--actor jonatan` för reply som butiksägare.
+Default actor är `agent` (operator) för poll; använd `--actor jonatan` för reply som butiksägare.  
+`shadow-report` och `retention-purge` kräver `--actor oscar`.
 
 Full CLI: [`CLI_REFERENCE.md`](CLI_REFERENCE.md).
 

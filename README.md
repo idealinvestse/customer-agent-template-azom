@@ -21,18 +21,20 @@ Dokumentationsstil: [`docs/DOC_STYLE.md`](docs/DOC_STYLE.md) · Index: [`docs/RE
 | **product-desc** | Generera (och valfritt publicera) produktbeskrivning SE/NO/DK | Access-fel → Oscar |
 | **support** | Klassificera ärende + draft-svar (LLM + mall-fallback) | Abuse/legal/critical → Oscar |
 | **cases** | Mail → ärende, trådning, order-berikad draft, suggest-approve | Skicka kräver human approve |
+| **Shadow Live Ledger** | Null-send profil + FU9 skuggspår (`cases shadow-report`) | Default av; Oscar ADMIN för rapport |
+| **marketing** | Google Ads + GA4 digest / suggest / HITL mutate | Mock-first; live API stubbade |
 | **SSH** | Allowlistad health/ops | Osäker/kodredigering → Oscar |
 | **mail** | Gmail / Outlook / Exchange Graph / IMAP / POP3 / SMTP | Auth-fel → Oscar |
-| **dashboard** | Onboarding, settings, cases-triage, Oscar admin | Secrets only Oscar |
+| **dashboard** | Onboarding, settings, cases-triage, marketing, Oscar admin | Secrets only Oscar |
 | **Gmail OAuth** | Browser consent → `AZOM_DATA_DIR/oauth/gmail.json` | — |
 | **Messenger** | Daily-driver ops chat (webhook) | Fail-closed PSID allowlist i prod |
 | **Telegram bot** | Backup OpenClaw slash + hybrid NL | Draft/send → human path |
 | **Woo/WP** | Orders, trackings, WP REST, webhooks | Se [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) |
 | **smoke / readiness** | Opt-in live smoke; `/health` poll-age | — |
 
-**RBAC:** Jonatan = viewer (+ case reply approve/send) · Oscar = full_admin · agent = operator.
+**RBAC:** Jonatan = viewer (+ CASE_REPLY, MARKETING_READ/SUGGEST) · Oscar = full_admin · agent = operator (MAIL_SEND + CASE_REPLY + MARKETING_READ).
 
-**AI rails:** `config/cases_ai.yaml` — suggest-approve on; auto-send **default off**, **not wired** into poll (+ kill-switch `AZOM_AUTO_SEND_KILL`).
+**AI rails:** `config/cases_ai.yaml` — suggest-approve on; auto-send **default off**, **not wired** into poll (+ kill-switch `AZOM_AUTO_SEND_KILL`). Null-send: `AZOM_NULL_SEND` (default off).
 
 ## Quick start (dev)
 
@@ -91,11 +93,13 @@ Se [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md).
 | `/` | Översikt, nav-badges, probe status |
 | `/onboarding` | Wizard: secrets checklist, health, Gmail connect |
 | `/settings` | Jonatan: non-secret config |
-| `/cases` | Ärende-kö, draft, approve/close |
+| `/cases` | Ärende-kö, draft, approve/close (+ skugg-badges) |
+| `/marketing` | Ads+GA4 digest + suggest HITL |
 | `/oscar` | Oscar admin (secrets + resolve escalations + probes) |
 | `/webhooks/messenger` | Meta Messenger |
 | `/webhooks/woo` | Woo HMAC webhooks |
 | `/oauth/gmail/start` | Gmail browser OAuth |
+| `/oauth/google/start` | Marketing Google OAuth (Oscar) |
 | `/health` | Liveness + cases-poll readiness |
 
 Basic Auth: `jonatan` / `DASHBOARD_PASSWORD` · `oscar` / `DASHBOARD_OSCAR_PASSWORD`  
@@ -111,6 +115,8 @@ Cases → [`docs/CASES.md`](docs/CASES.md)
 python -m ecom_ops --mock cases list --status open,escalated
 python -m ecom_ops --mock cases show --id <uuid>
 python -m ecom_ops --mock cases reply --id <uuid>   # approve + send
+python -m ecom_ops --actor oscar cases shadow-report --days 7
+python -m ecom_ops --mock marketing digest --days 7
 python -m ecom_ops smoke --live                     # opt-in; se docs
 ```
 
