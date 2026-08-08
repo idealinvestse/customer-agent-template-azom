@@ -23,10 +23,13 @@ Never invent metrics. Always cite source + date range. Do not collapse Ads+GA+Wo
 
 ## Auth and allowlists
 
-- OAuth tokens: `$AZOM_DATA_DIR/oauth/google_marketing.json`
+- OAuth tokens: `$AZOM_DATA_DIR/oauth/google_marketing.json` (auto-refresh via `ensure_fresh_access_token`)
 - Env: `GOOGLE_OAUTH_CLIENT_ID/SECRET`, `GOOGLE_ADS_DEVELOPER_TOKEN`, optional `GOOGLE_ADS_LOGIN_CUSTOMER_ID`
+- Merchant / MP (live writes): `GOOGLE_MERCHANT_ID`, `GA4_MEASUREMENT_ID`, `GA4_MEASUREMENT_API_SECRET`
+- Scopes: Analytics readonly + AdWords + Content API (`content`); edit scope when Oscar starts OAuth with edit
 - Fail-closed in live (`AZOM_USE_MOCK=0`): empty `AZOM_GA4_PROPERTY_IDS` or `AZOM_GADS_CUSTOMER_IDS` → deny
 - Mock: `AZOM_USE_MOCK=1` uses in-memory fixtures (no network)
+- Live transports use Google **REST** (`requests`) — no `google-ads` / Analytics Data SDK package deps
 
 ## RBAC
 
@@ -61,12 +64,12 @@ python -m ecom_ops --mock marketing suggests list
 
 | Phase | Capability | Live API |
 |-------|------------|----------|
-| P0 | Mock transports, probes, OAuth (Oscar-only start), status | OAuth exchange live; reports mock/stub |
-| P1 | Digest, conversion/event health, waste report, pacing alerts | Mock fixtures; Live* transport stub |
-| P2 | Woo↔GA↔Ads consistency (date-window Woo), landing/shopping read, MER | Woo live when not mock; GA/Ads stub |
+| P0 | Mock transports, probes, OAuth (Oscar-only start), status | OAuth exchange + refresh live |
+| P1 | Digest, conversion/event health, waste report, pacing alerts | Mock fixtures; Live Ads/GA4 REST wired (needs Oscar creds) |
+| P2 | Woo↔GA↔Ads consistency (date-window Woo), landing/shopping read, MER | Woo live when not mock; GA/Ads REST when creds present |
 | P3 | Suggest queue (approve/deny, deduped rebuild) | N/A |
-| P4 | HITL Ads mutate + kill-switch + result gating | Mock mutate only until Live wired |
-| P5 | HITL Measurement Protocol + Merchant write | Mock only until Live wired |
+| P4 | HITL Ads mutate + kill-switch + result gating | Live mutate REST for pause / negative / budget RN |
+| P5 | HITL Measurement Protocol + Merchant write | Live MP + Content API when secrets / merchant id set |
 
 ## Do / Do not
 

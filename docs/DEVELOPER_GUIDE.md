@@ -18,8 +18,9 @@
 | Path | Role |
 |------|------|
 | `skills/ecom_ops/` | Importable `ecom_ops` package (actions, cases, bot, integrations, llm, cli) |
-| `skills/ecom-ops/SKILL.md` | Skill card for Moss / agent hosts |
-| `infrastructure/dashboard/` | Flask dashboard + webhooks + Oscar probes |
+| `skills/ecom-ops/SKILL.md` | Skill card for Moss / agent hosts (hyphen dir is intentional) |
+| `skills/ecom-ops/integrations.py` | Legacy Moss compat shim — prefer `ecom_ops.integrations` |
+| `infrastructure/dashboard/` | Flask dashboard + webhooks + Oscar probes (script path; not a setuptools package) |
 | `infrastructure/systemd/` | Unit files for Ubuntu install |
 | `infrastructure/docker-compose.prod.yml` | Production Docker compose |
 | `config/` | YAML/JSON config (read-only in Docker) |
@@ -27,6 +28,16 @@
 | `tests/` | pytest suite + fixtures |
 | `docs/` | Living documentation (this tree) |
 | `.env.example` | Env var contract — copy to `.env` for local work |
+
+### Legacy CLI shims (do not extend)
+
+These modules only warn and forward to `python -m ecom_ops …`. Coverage omits them; do not add features here:
+
+| Module | Use instead |
+|--------|-------------|
+| `ecom_ops.order_status_update` | `python -m ecom_ops order-status` |
+| `ecom_ops.product_desc_gen` | `python -m ecom_ops product-desc` |
+| `ecom_ops.support_handler` | `python -m ecom_ops support` |
 
 ## Prerequisites
 

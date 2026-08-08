@@ -277,7 +277,7 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 | V2.3 robustness harden | Shipped (code) |
 | Path B2 return/billing drafts | Shipped (never ★) |
 | Shadow Live Ledger (null-send) | Shipped — soft-soak; not A1; not FU9 wire |
-| Marketing Google (Ads+GA4) | Mock-first rails shipped; live APIs stubbed — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
+| Marketing Google (Ads+GA4) | Mock-first rails + live REST transports; Oscar OAuth/creds still required — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Oscar A1 live soak | **Ops next — human gate** |
 | FU9 auto-send wire | **Not wired** — see [`CASES.md`](CASES.md) |
 | V3 multi-tenant / FAQ / Meta ads | Deferred / parked |

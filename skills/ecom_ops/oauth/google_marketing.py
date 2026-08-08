@@ -20,7 +20,8 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = (
     "https://www.googleapis.com/auth/analytics.readonly "
-    "https://www.googleapis.com/auth/adwords"
+    "https://www.googleapis.com/auth/adwords "
+    "https://www.googleapis.com/auth/content"
 )
 SCOPES_EDIT = SCOPES + " https://www.googleapis.com/auth/analytics.edit"
 STATE_TTL_SEC = 600
@@ -231,3 +232,66 @@ def exchange_code(code: str) -> GoogleMarketingTokenBundle:
     )
     store.save_tokens(bundle)
     return bundle
+
+
+def ensure_fresh_access_token(
+    *,
+    data_dir: Path | None = None,
+    skew_sec: float = 60.0,
+) -> str:
+    """Return a usable marketing access token; refresh via OAuth when expired.
+
+    Env ``GOOGLE_OAUTH_ACCESS_TOKEN`` wins when set (tests / short-lived inject).
+    """
+    env_tok = (get_env("GOOGLE_OAUTH_ACCESS_TOKEN") or "").strip()
+    if env_tok:
+        return env_tok
+    store = GoogleMarketingOAuthStore(data_dir=data_dir)
+    bundle = store.load_tokens()
+    if not bundle:
+        return ""
+    now = time.time()
+    if (
+        bundle.access_token
+        and (
+            bundle.expires_at is None
+            or now < float(bundle.expires_at) - skew_sec
+        )
+    ):
+        return bundle.access_token
+    if not bundle.refresh_token:
+        return bundle.access_token or ""
+    if _is_mock():
+        refreshed = GoogleMarketingTokenBundle(
+            access_token="mock-access-refreshed",
+            refresh_token=bundle.refresh_token,
+            expires_at=now + 3600,
+            token_type=bundle.token_type,
+            scope=bundle.scope,
+            email=bundle.email,
+        )
+        store.save_tokens(refreshed)
+        return refreshed.access_token
+    resp = requests.post(
+        TOKEN_URL,
+        data={
+            "client_id": get_env("GOOGLE_OAUTH_CLIENT_ID") or "",
+            "client_secret": get_env("GOOGLE_OAUTH_CLIENT_SECRET") or "",
+            "refresh_token": bundle.refresh_token,
+            "grant_type": "refresh_token",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    new_access = str(data.get("access_token") or "")
+    refreshed = GoogleMarketingTokenBundle(
+        access_token=new_access,
+        refresh_token=str(data.get("refresh_token") or bundle.refresh_token),
+        expires_at=now + float(data.get("expires_in") or 3600),
+        token_type=str(data.get("token_type") or bundle.token_type),
+        scope=str(data.get("scope") or bundle.scope),
+        email=bundle.email,
+    )
+    store.save_tokens(refreshed)
+    return refreshed.access_token

@@ -11,7 +11,6 @@ from ecom_ops.cases.service import CaseService
 from ecom_ops.cases.store import CaseStore
 from ecom_ops.cli import build_parser, main
 from ecom_ops.runtime_profile import (
-    enable_null_send,
     null_send_active,
     null_send_label,
 )
@@ -19,10 +18,13 @@ from ecom_ops.telemetry import Telemetry
 
 
 def test_null_send_env_and_label(monkeypatch):
+    # Use setenv first so monkeypatch always owns the key (delenv on missing
+    # registers no undo; enable_null_send would otherwise leak into later tests).
+    monkeypatch.setenv("AZOM_NULL_SEND", "")
     monkeypatch.delenv("AZOM_NULL_SEND", raising=False)
     assert null_send_active() is False
     assert null_send_label() == "off"
-    enable_null_send()
+    monkeypatch.setenv("AZOM_NULL_SEND", "1")
     assert null_send_active() is True
     assert null_send_label() == "on"
     monkeypatch.setenv("AZOM_NULL_SEND", "0")
@@ -30,14 +32,17 @@ def test_null_send_env_and_label(monkeypatch):
 
 
 def test_cli_null_send_flag_sets_env(monkeypatch):
+    monkeypatch.setenv("AZOM_NULL_SEND", "")
     monkeypatch.delenv("AZOM_NULL_SEND", raising=False)
     parser = build_parser()
     args = parser.parse_args(["--null-send", "status"])
     assert args.null_send is True
-    # main() applies enable_null_send
+    # main() applies enable_null_send (direct os.environ write)
     code = main(["--null-send", "version"])
     assert code == 0
     assert null_send_active() is True
+    # Re-claim via monkeypatch so teardown clears the leak from enable_null_send
+    monkeypatch.setenv("AZOM_NULL_SEND", "1")
 
 
 def test_status_always_includes_null_send(monkeypatch, capsys):

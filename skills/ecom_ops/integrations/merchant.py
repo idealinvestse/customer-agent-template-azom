@@ -1,16 +1,22 @@
-"""Google Merchant / Content API client — mock-first."""
+"""Google Merchant / Content API client — mock-first; live via REST."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import quote
+
+import requests
 
 
 def _use_mock(explicit: bool | None) -> bool:
     if explicit is not None:
         return explicit
     return os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+
+
+CONTENT_API_BASE = "https://shoppingcontent.googleapis.com/content/v2.1"
 
 
 class MerchantTransport(Protocol):
@@ -63,14 +69,71 @@ class InMemoryMerchantTransport:
 
 
 class LiveMerchantTransport:
+    """Content API for Shopping — needs OAuth + ``GOOGLE_MERCHANT_ID``."""
+
+    def __init__(
+        self,
+        *,
+        access_token: str,
+        merchant_id: str,
+        session: requests.Session | None = None,
+        timeout: float = 60.0,
+    ) -> None:
+        self.access_token = (access_token or "").strip()
+        self.merchant_id = (merchant_id or "").strip()
+        self.session = session or requests.Session()
+        self.timeout = timeout
+
+    def _require_creds(self) -> None:
+        if not self.access_token:
+            raise RuntimeError(
+                "Google marketing OAuth access_token required for live Merchant"
+            )
+        if not self.merchant_id:
+            raise RuntimeError("GOOGLE_MERCHANT_ID required for live Merchant")
+
+    def _headers(self) -> dict[str, str]:
+        self._require_creds()
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def _base(self) -> str:
+        self._require_creds()
+        return f"{CONTENT_API_BASE}/{self.merchant_id}"
+
     def list_products(self) -> list[dict[str, Any]]:
-        raise NotImplementedError("Live Merchant API list not wired")
+        url = f"{self._base()}/products"
+        resp = self.session.get(
+            url, headers=self._headers(), timeout=self.timeout
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        resources = data.get("resources") or data.get("products") or []
+        return [r for r in resources if isinstance(r, dict)]
 
     def upsert_product(self, product: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError("Live Merchant upsert not wired")
+        url = f"{self._base()}/products"
+        resp = self.session.post(
+            url,
+            headers=self._headers(),
+            json=product,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json() if resp.content else {}
+        return {"ok": True, "product": data or product}
 
     def delete_product(self, product_id: str) -> dict[str, Any]:
-        raise NotImplementedError("Live Merchant delete not wired")
+        encoded = quote(product_id, safe="")
+        url = f"{self._base()}/products/{encoded}"
+        resp = self.session.delete(
+            url, headers=self._headers(), timeout=self.timeout
+        )
+        if resp.status_code not in {200, 204}:
+            resp.raise_for_status()
+        return {"ok": True, "deleted": product_id}
 
 
 @dataclass
@@ -96,4 +159,12 @@ def client_from_env(
         return MerchantClient(transport=transport)
     if _use_mock(use_mock):
         return MerchantClient(transport=InMemoryMerchantTransport())
-    return MerchantClient(transport=LiveMerchantTransport())
+    from ecom_ops.oauth.google_marketing import ensure_fresh_access_token
+
+    token = ensure_fresh_access_token()
+    merchant_id = os.environ.get("GOOGLE_MERCHANT_ID", "").strip()
+    return MerchantClient(
+        transport=LiveMerchantTransport(
+            access_token=token, merchant_id=merchant_id
+        )
+    )

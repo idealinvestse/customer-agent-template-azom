@@ -1,4 +1,4 @@
-"""GA4 Data / Admin / Measurement Protocol clients (mock-first)."""
+"""GA4 Data / Admin / Measurement Protocol clients (mock-first; live via REST)."""
 
 from __future__ import annotations
 
@@ -6,14 +6,28 @@ import os
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Protocol
+from urllib.parse import urlencode
+
+import requests
 
 from ecom_ops.marketing.config import load_marketing_config
+
+GA4_DATA_BASE = "https://analyticsdata.googleapis.com/v1beta"
+GA4_ADMIN_BASE = "https://analyticsadmin.googleapis.com/v1beta"
+MP_COLLECT_URL = "https://www.google-analytics.com/mp/collect"
 
 
 def _use_mock(explicit: bool | None) -> bool:
     if explicit is not None:
         return explicit
     return os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+
+
+def _property_path(property_id: str) -> str:
+    pid = property_id.strip()
+    if pid.startswith("properties/"):
+        return pid
+    return f"properties/{pid}"
 
 
 class GA4Transport(Protocol):
@@ -110,33 +124,227 @@ class InMemoryGA4Transport:
 
 
 class LiveGA4Transport:
-    """Minimal live stub — raises until Oscar wires OAuth access token use."""
+    """GA4 Data/Admin REST + Measurement Protocol. Needs OAuth access token."""
 
-    def __init__(self, access_token: str) -> None:
-        self.access_token = access_token
+    def __init__(
+        self,
+        access_token: str,
+        *,
+        session: requests.Session | None = None,
+        timeout: float = 60.0,
+        measurement_id: str | None = None,
+        mp_api_secret: str | None = None,
+    ) -> None:
+        self.access_token = (access_token or "").strip()
+        self.session = session or requests.Session()
+        self.timeout = timeout
+        self.measurement_id = (
+            measurement_id
+            or os.environ.get("GA4_MEASUREMENT_ID", "")
+        ).strip()
+        self.mp_api_secret = (
+            mp_api_secret
+            or os.environ.get("GA4_MEASUREMENT_API_SECRET", "")
+        ).strip()
+
+    def _require_token(self) -> None:
+        if not self.access_token:
+            raise RuntimeError(
+                "Google marketing OAuth access_token required for live GA4"
+            )
+
+    def _headers(self) -> dict[str, str]:
+        self._require_token()
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json",
+        }
+
+    def _date_bounds(self, days: int) -> tuple[date, date]:
+        end = date.today()
+        start = end - timedelta(days=max(1, days) - 1)
+        return start, end
 
     def run_report(self, property_id: str, *, days: int) -> dict[str, Any]:
-        raise NotImplementedError(
-            "Live GA4 Data API requires google-analytics-data + OAuth; "
-            "use AZOM_USE_MOCK=1 or extend LiveGA4Transport"
+        start, end = self._date_bounds(days)
+        path = _property_path(property_id)
+        url = f"{GA4_DATA_BASE}/{path}:runReport"
+        body = {
+            "dateRanges": [
+                {"startDate": start.isoformat(), "endDate": end.isoformat()}
+            ],
+            "metrics": [
+                {"name": "sessions"},
+                {"name": "ecommercePurchases"},
+                {"name": "purchaseRevenue"},
+            ],
+        }
+        resp = self.session.post(
+            url, headers=self._headers(), json=body, timeout=self.timeout
         )
+        resp.raise_for_status()
+        data = resp.json()
+        rows = data.get("rows") or []
+        sessions = 0
+        purchases = 0
+        revenue = 0.0
+        if rows:
+            metrics = (rows[0].get("metricValues") or [])
+            if len(metrics) >= 1:
+                sessions = int(float(metrics[0].get("value") or 0))
+            if len(metrics) >= 2:
+                purchases = int(float(metrics[1].get("value") or 0))
+            if len(metrics) >= 3:
+                revenue = float(metrics[2].get("value") or 0)
+        currency = (
+            (data.get("metadata") or {}).get("currencyCode")
+            or load_marketing_config().default_currency
+        )
+        return {
+            "property_id": property_id.strip().removeprefix("properties/"),
+            "source": "ga4_data_api",
+            "attribution": "ga4_reporting_identity",
+            "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+            "sessions": sessions,
+            "ecommerce_purchases": purchases,
+            "purchase_revenue": revenue,
+            "currency": currency,
+            "sampled": bool((data.get("metadata") or {}).get("dataLossFromOtherRow")),
+            "consent_modeled": True,
+        }
 
     def event_counts(self, property_id: str, *, days: int) -> dict[str, int]:
-        raise NotImplementedError("Live GA4 event counts not wired")
+        start, end = self._date_bounds(days)
+        path = _property_path(property_id)
+        url = f"{GA4_DATA_BASE}/{path}:runReport"
+        body = {
+            "dateRanges": [
+                {"startDate": start.isoformat(), "endDate": end.isoformat()}
+            ],
+            "dimensions": [{"name": "eventName"}],
+            "metrics": [{"name": "eventCount"}],
+            "dimensionFilter": {
+                "filter": {
+                    "fieldName": "eventName",
+                    "inListFilter": {
+                        "values": [
+                            "view_item",
+                            "add_to_cart",
+                            "begin_checkout",
+                            "purchase",
+                            "refund",
+                        ]
+                    },
+                }
+            },
+        }
+        resp = self.session.post(
+            url, headers=self._headers(), json=body, timeout=self.timeout
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        counts: dict[str, int] = {}
+        for row in data.get("rows") or []:
+            dims = row.get("dimensionValues") or []
+            mets = row.get("metricValues") or []
+            if not dims or not mets:
+                continue
+            name = str(dims[0].get("value") or "")
+            counts[name] = int(float(mets[0].get("value") or 0))
+        return counts
 
     def key_events(self, property_id: str) -> list[str]:
-        raise NotImplementedError("Live GA4 Admin key events not wired")
+        path = _property_path(property_id)
+        url = f"{GA4_ADMIN_BASE}/{path}/keyEvents"
+        resp = self.session.get(url, headers=self._headers(), timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        names: list[str] = []
+        for item in data.get("keyEvents") or []:
+            n = str(item.get("eventName") or item.get("name") or "")
+            if "/" in n:
+                n = n.rsplit("/", 1)[-1]
+            if n:
+                names.append(n)
+        return names
 
     def ads_linked(self, property_id: str) -> bool:
-        raise NotImplementedError("Live GA4 Admin Ads link not wired")
+        path = _property_path(property_id)
+        url = f"{GA4_ADMIN_BASE}/{path}/googleAdsLinks"
+        resp = self.session.get(url, headers=self._headers(), timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        links = data.get("googleAdsLinks") or []
+        return bool(links)
 
     def landing_pages(
         self, property_id: str, *, days: int
     ) -> list[dict[str, Any]]:
-        raise NotImplementedError("Live GA4 landing pages not wired")
+        start, end = self._date_bounds(days)
+        path = _property_path(property_id)
+        url = f"{GA4_DATA_BASE}/{path}:runReport"
+        body = {
+            "dateRanges": [
+                {"startDate": start.isoformat(), "endDate": end.isoformat()}
+            ],
+            "dimensions": [{"name": "landingPage"}],
+            "metrics": [
+                {"name": "sessions"},
+                {"name": "ecommercePurchases"},
+            ],
+            "limit": 50,
+            "orderBys": [
+                {"metric": {"metricName": "sessions"}, "desc": True}
+            ],
+        }
+        resp = self.session.post(
+            url, headers=self._headers(), json=body, timeout=self.timeout
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        out: list[dict[str, Any]] = []
+        for row in data.get("rows") or []:
+            dims = row.get("dimensionValues") or []
+            mets = row.get("metricValues") or []
+            out.append(
+                {
+                    "landing_page": str(dims[0].get("value") if dims else ""),
+                    "sessions": int(float(mets[0].get("value") or 0)) if mets else 0,
+                    "purchases": int(float(mets[1].get("value") or 0))
+                    if len(mets) > 1
+                    else 0,
+                }
+            )
+        return out
 
     def send_mp_event(self, payload: dict[str, Any]) -> dict[str, Any]:
-        raise NotImplementedError("Live Measurement Protocol not wired")
+        if not self.measurement_id or not self.mp_api_secret:
+            raise RuntimeError(
+                "GA4_MEASUREMENT_ID and GA4_MEASUREMENT_API_SECRET required "
+                "for Measurement Protocol"
+            )
+        qs = urlencode(
+            {
+                "measurement_id": self.measurement_id,
+                "api_secret": self.mp_api_secret,
+            }
+        )
+        url = f"{MP_COLLECT_URL}?{qs}"
+        resp = self.session.post(
+            url, json=payload, timeout=self.timeout, stream=True
+        )
+        try:
+            # MP returns 204 on success; some proxies return 200
+            if resp.status_code not in {200, 204}:
+                resp.raise_for_status()
+                return {"ok": False, "status_code": resp.status_code}
+            return {
+                "ok": True,
+                "validationMessages": [],
+                "status_code": resp.status_code,
+            }
+        finally:
+            resp.close()
 
 
 @dataclass
@@ -222,12 +430,9 @@ def client_from_env(
             transport=InMemoryGA4Transport(),
             property_ids=cfg.ga4_property_ids or ("mock-property",),
         )
-    token = os.environ.get("GOOGLE_OAUTH_ACCESS_TOKEN", "").strip()
-    if not token:
-        from ecom_ops.oauth.google_marketing import GoogleMarketingOAuthStore
+    from ecom_ops.oauth.google_marketing import ensure_fresh_access_token
 
-        bundle = GoogleMarketingOAuthStore().load_tokens()
-        token = (bundle.access_token if bundle else "") or ""
+    token = ensure_fresh_access_token()
     return GA4Client(
         transport=LiveGA4Transport(access_token=token),
         property_ids=cfg.ga4_property_ids,

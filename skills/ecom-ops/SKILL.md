@@ -76,7 +76,7 @@ See `docs/WOO_WORDPRESS.md` — shipment trackings, multi-site `domain=`, WordPr
 
 ## Marketing Google
 
-See `docs/MARKETING_GOOGLE.md` — mock-first Ads+GA4; live clients stubbed; HITL mutate + kill-switches.
+See `docs/MARKETING_GOOGLE.md` — mock-first Ads+GA4; live REST wired (Oscar OAuth/creds); HITL mutate + kill-switches.
 
 ## RBAC
 

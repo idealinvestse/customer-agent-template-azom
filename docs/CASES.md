@@ -67,17 +67,18 @@ mailboxes:
     # provider: gmail
     # env_prefix: MAIL_SE_
 
-  # azom.no — håll enabled: false tills credentials finns + Oscar OK
+  # azom.no / .dk — håll enabled: false tills credentials + Oscar OK
   - id: support_no
     address: support@azom.no
     market: no
     language: nb
     enabled: false
+    env_prefix: MAIL_NO_   # MAIL_NO_USERNAME, MAIL_NO_PASSWORD, …
 ```
 
-Credentials ligger i env / `secrets.env`. Se [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md).
+Credentials ligger i env / `secrets.env` (eller per-mailbox `env_prefix`). Se [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md).
 
-**Enable-gate NO/DK:** Oscar lägger fungerande mail-creds → sätt `enabled: true` först då. Agents får inte aktivera själva.
+**Enable-gate NO/DK:** Oscar lägger fungerande mail-creds under `env_prefix` → sätt `enabled: true` först då. Agents får inte aktivera själva.
 
 ---
 

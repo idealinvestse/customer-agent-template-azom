@@ -50,7 +50,7 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **V2.3 robustness** | Thread reopen, OAuth expiry harden, probe fail-closed; code DoD green |
 | **Path B2** | Richer return/billing drafts + priority/UI escalate hints; still never suggest-approve those categories |
 | **Shadow Live Ledger** | Null-send profile (`AZOM_NULL_SEND` / `--null-send`): refuse customer mail; poll records FU9 shadow decisions; dashboard badge + `cases shadow-report`. Soft-soak via `bin/mock-soak-azom.sh`. **Not** FU9 wire; **not** A1 soak complete |
-| **Marketing Google (Ads+GA4)** | Mock-first ledger + suggest/HITL rails shipped (`marketing` CLI, `/marketing`, probes, kill-switches). **Live Google Data/Ads API clients still stubbed** (`NotImplementedError`) until Oscar wires OAuth + developer token. See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md). |
+| **Marketing Google (Ads+GA4)** | Mock-first ledger + suggest/HITL rails shipped (`marketing` CLI, `/marketing`, probes, kill-switches). **Live Ads/GA4/Merchant REST transports wired** (requests + OAuth refresh); still need Oscar OAuth consent, `GOOGLE_ADS_DEVELOPER_TOKEN`, allowlists, and optional `GOOGLE_MERCHANT_ID` / MP secrets before live probes succeed. See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md). |
 
 ## Ops next (human-owned — agents must not mark done)
 
@@ -68,12 +68,14 @@ Treat these as done in the repository. Do not re-implement from scratch.
 - **Status:** Not wired. `should_auto_send` / day counter exist; poll does **not** send.
 - **Default:** `config/cases_ai.yaml` → `auto_send_enabled: false`.
 - **Kill-switch:** `AZOM_AUTO_SEND_KILL=1` always denies.
+- **Structural lock:** `tests/test_auto_send_rails.py` asserts `CaseService.poll` source does not call eligibility/send helpers. Keep that test until Oscar written enable + all FU9 gates in [`CASES.md`](CASES.md).
 - Full gates and rollback: [`CASES.md`](CASES.md) section “Auto-send (FU9)”.
 
 ## Mailbox enablement
 
 - SE support mailbox is the pilot path (human approve only).
 - **NO/DK** mailboxes in `config/mailboxes.yaml` stay `enabled: false` until Oscar supplies credentials **and** authorizes enablement.
+- Per-mailbox `env_prefix` is implemented (e.g. `MAIL_NO_` → `MAIL_NO_USERNAME` / `MAIL_NO_PASSWORD`); flip `enabled: true` only after credentials work.
 - Do not enable NO/DK in a coding task without that written authorization.
 
 ## Explicit non-goals (parked)

@@ -223,6 +223,9 @@ python -m ecom_ops --mock --actor jonatan marketing merchant-queue --offer-id SK
 | `AZOM_NULL_SEND=1` | Null-send profile (customer mail refused) |
 | `AZOM_GA4_PROPERTY_IDS` | Fail-closed GA4 allowlist (empty in live = deny) |
 | `AZOM_GADS_CUSTOMER_IDS` | Fail-closed Ads allowlist (empty in live = deny) |
+| `GOOGLE_ADS_DEVELOPER_TOKEN` | Required for live Ads REST |
+| `GOOGLE_MERCHANT_ID` | Required for live Merchant Content API |
+| `GA4_MEASUREMENT_ID` / `GA4_MEASUREMENT_API_SECRET` | Required for live Measurement Protocol |
 | `AZOM_ADS_MUTATE_KILL=1` | Always deny Ads mutate / merchant write |
 | `AZOM_GA_MUTATE_KILL=1` | Reserved GA-admin mutate kill (deny when set; no mutate path yet) |
 | `AZOM_MP_KILL=1` | Always deny Measurement Protocol send |

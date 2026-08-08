@@ -383,6 +383,13 @@ def probe_merchant() -> ProbeResult:
     try:
         from ecom_ops.integrations.merchant import client_from_env
 
+        if not mock and not os.environ.get("GOOGLE_MERCHANT_ID", "").strip():
+            return _result(
+                "merchant",
+                label,
+                "missing",
+                "GOOGLE_MERCHANT_ID saknas",
+            )
         client = client_from_env(use_mock=mock)
         products = client.list_products()
         mode = "mock" if mock else "live"
