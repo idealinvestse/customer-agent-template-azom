@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -13,6 +14,12 @@ import urllib.request
 from ecom_ops.bot.handlers import BotHandler
 from ecom_ops.bot.openclaw_commands import TELEGRAM_MENU_COMMANDS
 from ecom_ops.bot.reply import BotReply, as_reply, chunk_text
+from ecom_ops.json_logging import configure_json_logging
+
+os.environ.setdefault("AZOM_LOG_NAME", "bot")
+configure_json_logging()
+
+log = logging.getLogger("azom.bot")
 
 
 def _api(token: str, method: str, **params: object) -> dict:
@@ -28,9 +35,12 @@ def _api(token: str, method: str, **params: object) -> dict:
 def _register_commands(token: str) -> None:
     try:
         _api(token, "setMyCommands", commands=TELEGRAM_MENU_COMMANDS)
-        print(f"Registered {len(TELEGRAM_MENU_COMMANDS)} Telegram menu commands")
+        log.info(
+            "Registered Telegram menu commands",
+            extra={"count": len(TELEGRAM_MENU_COMMANDS)},
+        )
     except Exception as exc:
-        print(f"setMyCommands skipped: {exc}", file=sys.stderr)
+        log.warning("setMyCommands skipped: %s", exc)
 
 
 def _send_reply(token: str, chat_id: object, reply: BotReply) -> None:
@@ -57,7 +67,7 @@ def _handle_update(token: str, handler: BotHandler, update: dict) -> None:
             try:
                 _api(token, "answerCallbackQuery", callback_query_id=cq_id)
             except Exception as exc:
-                print(f"answerCallbackQuery: {exc}", file=sys.stderr)
+                log.warning("answerCallbackQuery failed: %s", exc)
         if chat_id is not None:
             try:
                 _api(token, "sendChatAction", chat_id=chat_id, action="typing")
@@ -91,13 +101,13 @@ def _handle_update(token: str, handler: BotHandler, update: dict) -> None:
 def main() -> int:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
-        print("TELEGRAM_BOT_TOKEN missing; dry-run exit.")
+        log.warning("TELEGRAM_BOT_TOKEN missing; dry-run exit")
         return 0
 
     _register_commands(token)
     handler = BotHandler()
     offset = 0
-    print("Telegram long-poll loop started (OpenClaw hybrid chat)")
+    log.info("Telegram long-poll loop started (OpenClaw hybrid chat)")
     while True:
         try:
             payload = _api(token, "getUpdates", offset=offset, timeout=50)
@@ -106,15 +116,15 @@ def main() -> int:
                 try:
                     _handle_update(token, handler, update)
                 except Exception as exc:
-                    print(f"Update error: {exc}", file=sys.stderr)
+                    log.exception("Update error: %s", exc)
         except urllib.error.URLError as exc:
-            print(f"Network error: {exc}", file=sys.stderr)
+            log.warning("Network error: %s", exc)
             time.sleep(5)
         except KeyboardInterrupt:
-            print("Bot stopped")
+            log.info("Bot stopped")
             return 0
         except Exception as exc:
-            print(f"Loop error: {exc}", file=sys.stderr)
+            log.exception("Loop error: %s", exc)
             time.sleep(3)
 
 

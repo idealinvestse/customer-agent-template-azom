@@ -140,7 +140,7 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 
 - Code: `/opt/azom-agent`
 - Data: `/var/lib/azom`
-- Logs: `/var/log/azom`
+- Logs: `/var/log/azom` (JSON `*.log`) — remote read via dashboard `/logs` (Jonatan + Oscar, redacted)
 - Env: `/opt/azom-agent/.env` (`AZOM_USE_MOCK=0`)
 - Docker data (compose): `/app/.azom-data` — see [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md)
 

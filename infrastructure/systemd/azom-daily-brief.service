@@ -11,6 +11,8 @@ EnvironmentFile=-/opt/azom-agent/.env
 Environment=PYTHONPATH=/opt/azom-agent/skills
 Environment=AZOM_CONFIG_DIR=/opt/azom-agent/config
 Environment=AZOM_DATA_DIR=/var/lib/azom
+Environment=AZOM_LOG_DIR=/var/log/azom
+Environment=AZOM_LOG_NAME=daily-brief
 Environment=AZOM_USE_MOCK=0
 ExecStart=/opt/azom-agent/bin/daily-brief-azom.sh
 Nice=10

@@ -46,11 +46,13 @@ python -m pip install -e .
 export AZOM_USE_MOCK=1
 export AZOM_CONFIG_DIR=./config
 export AZOM_DATA_DIR=./.azom-data
+export AZOM_LOG_DIR=./logs
 
 # Windows PowerShell
 # $env:AZOM_USE_MOCK="1"
 # $env:AZOM_CONFIG_DIR="./config"
 # $env:AZOM_DATA_DIR="./.azom-data"
+# $env:AZOM_LOG_DIR="./logs"
 
 python -m ecom_ops version
 # expect: package version string / JSON including 2.0.0
@@ -60,6 +62,13 @@ python -m ecom_ops status
 ```
 
 Optional: copy `.env.example` to `.env` and keep `AZOM_USE_MOCK=1`.
+
+### Logging (local)
+
+- `AZOM_LOG_DIR` (default prod `/var/log/azom`; local `./logs`) + `AZOM_LOG_NAME` per process (`dashboard`, `bot`, `cases-poll`, …).
+- `AZOM_LOG_LEVEL=INFO`, `AZOM_JSON_LOGGING=0` disables structured setup.
+- Entry points call `configure_json_logging()` → JSON to stderr and `{AZOM_LOG_DIR}/{AZOM_LOG_NAME}.log`.
+- Dashboard `/logs` and `/api/logs` tail allowlisted runtime files + JSONL under `AZOM_DATA_DIR` (redacted). Same access for Jonatan and Oscar.
 
 ### Smoke commands (mock)
 

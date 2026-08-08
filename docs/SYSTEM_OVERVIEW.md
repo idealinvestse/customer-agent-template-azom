@@ -147,7 +147,9 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/oscar/gdpr/export`, `/oscar/gdpr/delete` | Oscar | GDPR export / delete |
 | `/cases/bulk-close` | POST auth | Bulk close (not bulk approve) |
 | `/data/telemetry`, `/data/escalations` | auth | JSON data views |
-| `/logs`, `/telemetry`, `/escalations`, `/manage` | auth | Ops pages |
+| `/logs` | auth (Jonatan + Oscar) | Central log viewer (runtime `*.log` + JSONL); secrets redacted |
+| `/api/logs?source=&lines=&q=` | auth | JSON tail of allowlisted log source |
+| `/telemetry`, `/escalations`, `/manage` | auth | Ops JSON helpers |
 
 Auth: Basic Auth usernames are hardcoded as `jonatan` / `oscar` (password or Werkzeug hash via `DASHBOARD_PASSWORD*` / `DASHBOARD_OSCAR_PASSWORD*`). `DASHBOARD_USER` in `.env` is documentation-only — code does not read it. CSRF on browser POSTs (`DASHBOARD_SECRET_KEY`).
 
@@ -207,10 +209,18 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `AZOM_GA4_PROPERTY_IDS` / `AZOM_GADS_CUSTOMER_IDS` | Marketing fail-closed allowlists |
 | `AZOM_ADS_MUTATE_KILL` / `AZOM_GA_MUTATE_KILL` / `AZOM_MP_KILL` | Marketing mutate kills (`GA` reserved until admin mutate exists) |
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
+| `AZOM_LOG_DIR`, `AZOM_LOG_NAME`, `AZOM_LOG_LEVEL`, `AZOM_JSON_LOGGING` | Structured JSON logging (stderr + file); dashboard `/logs` |
 | `WOO_WEBHOOK_SECRET` | Inbound Woo webhook HMAC |
 
 Prod paths (systemd): code `/opt/azom-agent`, data `/var/lib/azom`, logs `/var/log/azom`.  
-Docker data path: `/app/.azom-data` (see [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md)).
+Docker data path: `/app/.azom-data`; Docker logs: `/app/logs` (see [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md)).
+
+### Logging model
+
+- Entry points call `configure_json_logging()` ([`skills/ecom_ops/json_logging.py`](../skills/ecom_ops/json_logging.py)): JSON lines to stderr (journald) and `{AZOM_LOG_DIR}/{AZOM_LOG_NAME}.log`.
+- Runtime files: `dashboard.log`, `bot.log`, `cases-poll.log`, `daily-brief.log` (allowlisted).
+- Event JSONL under `AZOM_DATA_DIR`: `telemetry.jsonl`, `audit.jsonl`, `escalations.jsonl`, `probe_history.jsonl`.
+- Central remote read: authenticated dashboard `/logs` (same for Jonatan and Oscar; `redact_secrets` applied). Host fallback: `journalctl -u azom-*`.
 
 ## 9. Services (systemd)
 

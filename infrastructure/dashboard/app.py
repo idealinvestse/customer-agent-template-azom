@@ -47,6 +47,15 @@ from settings_store import (  # noqa: E402
 )
 from status import health_probe, runtime_status  # noqa: E402
 
+from ecom_ops.json_logging import configure_json_logging  # noqa: E402
+
+os.environ.setdefault("AZOM_LOG_NAME", "dashboard")
+configure_json_logging()
+
+import logging  # noqa: E402
+
+_log = logging.getLogger("azom.dashboard")
+
 app = Flask(__name__)
 
 
@@ -205,6 +214,7 @@ def _auth_required(view):
         if auth is not None:
             ip = request.remote_addr or "unknown"
             if _login_rate_limited(ip):
+                _log.warning("Login rate-limited", extra={"ip": ip})
                 return Response(
                     "Too many failed login attempts. Try again later.",
                     429,
@@ -1383,6 +1393,7 @@ def oauth_google_marketing_callback():
         # Mock tokens only when AZOM_USE_MOCK=1 (enforced inside exchange_code)
         exchange_code(code)
     except Exception as exc:
+        _log.error("Google marketing OAuth token exchange failed: %s", exc)
         return Response(f"Token exchange failed: {exc}", 502)
     return redirect(url_for("marketing_home") + "?msg=Google+marketing+kopplad")
 
@@ -1439,6 +1450,7 @@ def oauth_gmail_callback():
     try:
         store.exchange_code(code)
     except Exception as exc:
+        _log.error("Gmail OAuth token exchange failed: %s", exc)
         return Response(f"Token exchange failed: {exc}", 502)
     finally:
         store.clear_state()
@@ -1630,14 +1642,56 @@ def _get_woo_webhook_receiver(secret: str):
 
 @app.route("/logs")
 @_auth_required
-def logs():
-    data = _data_dir()
-    return jsonify(
-        {
-            "telemetry": _tail_jsonl(data / "telemetry.jsonl", 100),
-            "escalations": _tail_jsonl(data / "escalations.jsonl", 100),
-        }
+def logs_page():
+    """Central log viewer (Oscar + Jonatan) — runtime files + JSONL events."""
+    from ecom_ops.log_reader import DEFAULT_LINES, list_sources
+
+    source = (request.args.get("source") or "dashboard").strip()
+    q = (request.args.get("q") or "").strip()
+    try:
+        lines = int(request.args.get("lines") or DEFAULT_LINES)
+    except (TypeError, ValueError):
+        lines = DEFAULT_LINES
+    payload = None
+    error = None
+    try:
+        from ecom_ops.log_reader import read_log_source
+
+        payload = read_log_source(source, lines=lines, query=q)
+    except ValueError as exc:
+        error = str(exc)
+        payload = {"ok": False, "source": source, "rows": [], "exists": False}
+    return render_template(
+        "logs.html",
+        **_dashboard_context(
+            sources=list_sources(),
+            source=source,
+            q=q,
+            lines=lines,
+            log_payload=payload,
+            log_error=error,
+        ),
     )
+
+
+@app.route("/api/logs")
+@_auth_required
+def logs_api():
+    """JSON tail of an allowlisted log source (redacted)."""
+    from ecom_ops.log_reader import DEFAULT_LINES, list_sources, read_log_source
+
+    source = (request.args.get("source") or "").strip()
+    if not source:
+        return jsonify({"ok": True, "sources": list_sources()})
+    q = (request.args.get("q") or "").strip()
+    try:
+        lines = int(request.args.get("lines") or DEFAULT_LINES)
+    except (TypeError, ValueError):
+        lines = DEFAULT_LINES
+    try:
+        return jsonify(read_log_source(source, lines=lines, query=q))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
 
 
 @app.route("/telemetry")

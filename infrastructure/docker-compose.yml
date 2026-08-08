@@ -27,6 +27,8 @@ services:
     environment:
       AZOM_CONFIG_DIR: /app/config
       AZOM_DATA_DIR: /app/.azom-data
+      AZOM_LOG_DIR: /app/logs
+      AZOM_LOG_NAME: dashboard
       AZOM_USE_MOCK: ${AZOM_USE_MOCK:-1}
       DASHBOARD_USER: ${DASHBOARD_USER:-jonatan}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}

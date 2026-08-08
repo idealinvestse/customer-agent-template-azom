@@ -72,6 +72,8 @@ Mock-lösen `jonatan`/`oscar` gäller **bara** när `AZOM_USE_MOCK=1`.
 Sökvägar: kod `/opt/azom-agent`, data `/var/lib/azom`, loggar `/var/log/azom`, env `/opt/azom-agent/.env`.  
 Basic Auth-användarnamn är alltid `jonatan` / `oscar` (lösen via env) — se [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
 
+**Loggar på distans:** öppna dashboard `/logs` (Jonatan och Oscar). Runtime-filer under `/var/log/azom` + JSONL under `/var/lib/azom`; secrets redigeras bort. Host-fallback: `journalctl -u azom-dashboard|azom-bot|azom-cases-poll`.
+
 ## Daglig hälsokoll
 
 ```bash

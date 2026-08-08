@@ -206,6 +206,7 @@
           <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Drift</p>
           <a href="/settings" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/settings') else '' }}">Inställningar</a>
           <a href="/secrets" class="az-nav-link {{ 'az-nav-link-active' if path == '/secrets' else '' }}">Secrets</a>
+          <a href="/logs" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/logs') or path.startswith('/api/logs') else '' }}">Loggar</a>
           <a href="/data/telemetry" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/telemetry') else '' }}">Telemetry</a>
           <div
             class="px-1"

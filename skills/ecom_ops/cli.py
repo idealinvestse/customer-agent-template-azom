@@ -268,18 +268,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import os
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.mock:
-        import os
-
         os.environ["AZOM_USE_MOCK"] = "1"
 
     if getattr(args, "null_send", False):
         from ecom_ops.runtime_profile import enable_null_send
 
         enable_null_send()
+
+    # Ops logs to stderr/file only — never touch CLI JSON stdout contract.
+    log_name = "cli"
+    if args.command == "cases" and getattr(args, "cases_command", None) == "poll":
+        log_name = "cases-poll"
+    os.environ.setdefault("AZOM_LOG_NAME", log_name)
+    from ecom_ops.json_logging import configure_json_logging
+
+    configure_json_logging(log_name=log_name)
 
     # Defer Woo client — version/status/mail/cases must not require Woo secrets
     woo = None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -22,6 +23,8 @@ from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, r
 from ecom_ops.runtime_profile import null_send_active
 from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
+
+logger = logging.getLogger(__name__)
 
 _ACTIVE = ("open", "escalated")
 REGENERATE_COOLDOWN_SEC = 60
@@ -409,6 +412,14 @@ class CaseService:
             pass
         if all_failed:
             msg = f"Polled {len(mailboxes)} mailbox(es) — all failed"
+            logger.error(
+                msg,
+                extra={
+                    "errors": errors,
+                    "mailboxes": len(mailboxes),
+                    "failed_mailboxes": [e.get("mailbox_id") for e in error_details],
+                },
+            )
         elif partial:
             failed_ids = ",".join(
                 str(e.get("mailbox_id") or "?") for e in error_details[:5]
@@ -417,8 +428,21 @@ class CaseService:
                 f"Polled {len(mailboxes)} mailbox(es) — PARTIAL "
                 f"({errors} failed: {failed_ids})"
             )
+            logger.warning(
+                msg,
+                extra={
+                    "errors": errors,
+                    "mailboxes": len(mailboxes),
+                    "partial": True,
+                    "failed_mailboxes": [e.get("mailbox_id") for e in error_details],
+                },
+            )
         else:
             msg = f"Polled {len(mailboxes)} mailbox(es)"
+            logger.info(
+                msg,
+                extra={"created": created, "skipped": skipped, "mailboxes": len(mailboxes)},
+            )
         return IngestResult(
             ok=not all_failed,
             message=msg,

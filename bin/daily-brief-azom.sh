@@ -23,14 +23,25 @@ else
   PY=python
 fi
 
+export AZOM_LOG_DIR="${AZOM_LOG_DIR:-$ROOT/logs}"
+export AZOM_LOG_NAME="${AZOM_LOG_NAME:-daily-brief}"
+
 "$PY" - <<'PY'
 import json
+import logging
+import os
+
 from ecom_ops.actions.ssh_ops import SSHOpsService
 from ecom_ops.budget import budget_status
 from ecom_ops.cases.service import CaseService
 from ecom_ops.config import load_app_config
+from ecom_ops.json_logging import configure_json_logging
 from ecom_ops.ops_status import readiness_brief_actions, readiness_from_last_poll
 from ecom_ops.telemetry import Telemetry
+
+os.environ.setdefault("AZOM_LOG_NAME", "daily-brief")
+configure_json_logging()
+log = logging.getLogger("azom.daily_brief")
 
 cfg = load_app_config()
 tel = Telemetry()
@@ -66,6 +77,7 @@ try:
             }
         )
 except Exception as exc:
+    log.warning("daily brief cases lookup failed: %s", exc)
     stuck = [{"error": str(exc)[:120]}]
 
 brief = {
@@ -98,5 +110,12 @@ if budget.get("near_cap"):
 for action in reversed(readiness_brief_actions(ready)):
     brief["proposed_actions"].insert(0, action)
 print(json.dumps(brief, ensure_ascii=False, indent=2))
-print("Azom daily KPI brief generated")
+log.info(
+    "Azom daily KPI brief generated",
+    extra={
+        "open_cases": open_n,
+        "escalated": escalated_n,
+        "suggest_approve": suggest_n,
+    },
+)
 PY

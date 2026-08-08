@@ -51,6 +51,7 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **Path B2** | Richer return/billing drafts + priority/UI escalate hints; still never suggest-approve those categories |
 | **Shadow Live Ledger** | Null-send profile (`AZOM_NULL_SEND` / `--null-send`): refuse customer mail; poll records FU9 shadow decisions; dashboard badge + `cases shadow-report`. Soft-soak via `bin/mock-soak-azom.sh`. **Not** FU9 wire; **not** A1 soak complete |
 | **Marketing Google (Ads+GA4)** | Mock-first ledger + suggest/HITL rails shipped (`marketing` CLI, `/marketing`, probes, kill-switches). **Live Google Data/Ads API clients still stubbed** (`NotImplementedError`) until Oscar wires OAuth + developer token. See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md). |
+| **Central dashboard logs** | JSON logging wired (`AZOM_LOG_*` → `/var/log/azom` or `./logs`); dashboard `/logs` + `/api/logs` for Jonatan and Oscar (redacted). No Loki/SaaS shipper. |
 
 ## Ops next (human-owned — agents must not mark done)
 

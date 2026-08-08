@@ -116,7 +116,7 @@ docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 |------|----------|
 | `/opt/azom-agent` | Kod + venv + `.env` |
 | `/var/lib/azom` | `AZOM_DATA_DIR`: cases.db, oauth, secrets, telemetry |
-| `/var/log/azom` | loggar |
+| `/var/log/azom` | JSON runtime-loggar (`dashboard.log`, `bot.log`, …) — läses via dashboard `/logs` |
 | `/etc/systemd/system/azom-*.service` | units (+ timers) |
 
 Basic Auth: användarnamn är alltid `jonatan` / `oscar`; lösen via `DASHBOARD_PASSWORD*` / `DASHBOARD_OSCAR_PASSWORD*`.
@@ -144,9 +144,12 @@ Basic Auth: användarnamn är alltid `jonatan` / `oscar`; lösen via `DASHBOARD_
 systemctl status azom-dashboard azom-bot
 systemctl list-timers 'azom-*'
 
-# Logs
+# Logs — primärt via dashboard (Basic Auth, tunnel/proxy till :8080)
+#   http://127.0.0.1:8080/logs
+# Host-fallback (journald):
 journalctl -u azom-dashboard -f
 journalctl -u azom-bot -f
+ls -la /var/log/azom/
 
 # Manual ops
 sudo -u azom bash -lc 'cd /opt/azom-agent && .venv/bin/python -m ecom_ops mail fetch'

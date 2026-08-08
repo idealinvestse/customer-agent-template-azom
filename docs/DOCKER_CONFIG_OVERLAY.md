@@ -20,7 +20,7 @@ Azom skiljer **read-only config** (YAML i image/host-mount) från **skrivbar run
 |------|---------|--------|
 | `/app/config` | `:ro` i prod & dev | `sites.yaml`, `rbac.yaml`, `mailboxes.yaml`, `cases_ai.yaml`, … |
 | `/app/.azom-data` | **read-write** | `secrets.env`, `runtime.env`, `cases.db`, OAuth-tokens, telemetry, poll-marker |
-| `/app/logs` | rw (prod) | Valfri logg-mount |
+| `/app/logs` | rw (prod) | Runtime JSON-loggar (`AZOM_LOG_DIR=/app/logs`); dashboard `/logs` |
 
 **Dev:** `infrastructure/docker-compose.yml` mountar data **utan** `:ro` så secrets/settings/cases.db kan skrivas.
 

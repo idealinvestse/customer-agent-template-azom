@@ -29,6 +29,9 @@ if [[ "${AZOM_USE_MOCK:-1}" == "1" ]]; then
   MOCK_FLAG=(--mock)
 fi
 
+export AZOM_LOG_DIR="${AZOM_LOG_DIR:-$ROOT/logs}"
+export AZOM_LOG_NAME="${AZOM_LOG_NAME:-cases-poll}"
+
 # Profile log only — never auto-enable null-send (Oscar sets AZOM_NULL_SEND in .env).
 _null_raw="$(printf '%s' "${AZOM_NULL_SEND:-}" | tr '[:upper:]' '[:lower:]')"
 _null_label=off

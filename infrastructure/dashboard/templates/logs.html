@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Loggar – Azom{% endblock %}
+{% block page_subtitle %}Loggar{% endblock %}
+{% block content %}
+<div class="space-y-5">
+  <div>
+    <h2 class="az-page-title">Loggar</h2>
+    <p class="az-muted mt-1">
+      Runtime-loggar under loggkatalogen och JSONL-händelser under data-katalogen.
+      Secrets redigeras bort innan visning. Jonatan och Oscar har samma vy.
+    </p>
+  </div>
+
+  <section class="az-card">
+    <form method="get" action="/logs" class="flex flex-wrap items-end gap-3">
+      <label class="block text-sm">
+        <span class="az-muted">Källa</span>
+        <select name="source" class="az-input mt-1 block min-w-[12rem]">
+          {% for s in sources %}
+          <option value="{{ s.id }}" {% if s.id == source %}selected{% endif %}>
+            {{ s.id }}{% if not s.exists %} (saknas){% endif %}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="block text-sm grow">
+        <span class="az-muted">Filter</span>
+        <input
+          type="search"
+          name="q"
+          value="{{ q }}"
+          placeholder="sök i rader…"
+          class="az-input mt-1 block w-full min-w-[12rem]"
+        />
+      </label>
+      <label class="block text-sm">
+        <span class="az-muted">Rader</span>
+        <input
+          type="number"
+          name="lines"
+          value="{{ lines }}"
+          min="1"
+          max="500"
+          class="az-input mt-1 block w-24"
+        />
+      </label>
+      <button type="submit" class="az-btn-primary">Visa</button>
+      <a class="az-btn-secondary" href="/api/logs?source={{ source }}&amp;lines={{ lines }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">JSON</a>
+    </form>
+    {% if log_error %}
+    <p class="mt-3 text-sm text-warn">{{ log_error }}</p>
+    {% endif %}
+    {% if log_payload and not log_payload.exists %}
+    <p class="az-muted mt-3">Ingen fil för <code class="az-code">{{ source }}</code> ännu.</p>
+    {% endif %}
+  </section>
+
+  <section class="az-card">
+    <h2 class="az-section-title">
+      {{ source }}
+      {% if log_payload %}
+      <span class="az-muted font-normal text-sm">· {{ log_payload.lines }} rader</span>
+      {% endif %}
+    </h2>
+    {% if log_payload and log_payload.rows %}
+    <div class="mt-3 max-h-[70vh] overflow-auto rounded border border-ink-700/80 bg-ink-950/40 p-3 font-mono text-xs leading-relaxed text-mist-200">
+      {% for row in log_payload.rows %}
+      <div class="border-b border-ink-800/80 py-1.5 last:border-0 whitespace-pre-wrap break-all">{{ row.raw }}</div>
+      {% endfor %}
+    </div>
+    {% elif not log_error %}
+    <p class="az-muted mt-2">Inga rader att visa.</p>
+    {% endif %}
+  </section>
+
+  <section class="az-card">
+    <h2 class="az-section-title">Källor</h2>
+    <ul class="mt-2 grid gap-2 sm:grid-cols-2">
+      {% for s in sources %}
+      <li>
+        <a
+          class="az-nav-link {% if s.id == source %}az-nav-link-active{% endif %}"
+          href="/logs?source={{ s.id }}&amp;lines={{ lines }}"
+        >
+          <span>{{ s.id }}</span>
+          <span class="az-muted text-xs">{{ s.kind }}{% if not s.exists %} · saknas{% endif %}</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+{% endblock %}

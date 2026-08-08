@@ -13,6 +13,8 @@ services:
     environment:
       AZOM_CONFIG_DIR: /app/config
       AZOM_DATA_DIR: /app/.azom-data
+      AZOM_LOG_DIR: /app/logs
+      AZOM_LOG_NAME: dashboard
       AZOM_USE_MOCK: ${AZOM_USE_MOCK:-0}
       DASHBOARD_HOST: 0.0.0.0
       DASHBOARD_PORT: "8080"
@@ -55,6 +57,8 @@ services:
     environment:
       AZOM_CONFIG_DIR: /app/config
       AZOM_DATA_DIR: /app/.azom-data
+      AZOM_LOG_DIR: /app/logs
+      AZOM_LOG_NAME: bot
       AZOM_USE_MOCK: ${AZOM_USE_MOCK:-0}
     volumes:
       - ../config:/app/config:ro
