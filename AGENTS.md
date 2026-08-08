@@ -17,6 +17,7 @@
    - Mail: [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md)
    - Woo/WP: [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
    - Marketing Google (Ads+GA4): [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md)
+   - FAQ / knowledge base: [`docs/FAQ_KB.md`](docs/FAQ_KB.md)
    - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
    - Telegram: [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)
 5. Skill card: [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md)
@@ -26,9 +27,9 @@
 ## Budget and roles
 
 - OpenRouter budget: **USD 100** (`config/limits.yaml`)
-- **Jonatan:** `viewer` (+ mail/SSH read, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**)
-- **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags + **MARKETING_MUTATE** + `shadow-report` / `retention-purge`)
-- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**)
+- **Jonatan:** `viewer` (+ mail/SSH read, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**, **FAQ_READ**)
+- **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags + **MARKETING_MUTATE** + **FAQ_PUBLISH** + `shadow-report` / `retention-purge`)
+- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**, **FAQ_READ**)
 
 ## Goals
 
@@ -89,6 +90,7 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 - **V2.2:** live `probe_mail`, mail env matrix, bulk close
 - **V2.3:** robustness (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak**
 - **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live APIs still stubbed
+- **FAQ/KB v1:** lexical corpus + draft enrichment + WP page draft/publish (Oscar) — [`docs/FAQ_KB.md`](docs/FAQ_KB.md); live SE page is ops-gated
 
 ## Cases quick CLI
 
@@ -146,12 +148,12 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 
 ## Status (code vs goals)
 
-- **Shipped:** Path B + Path B2 + Sprint A/B/C + SB5 + V2.1 + V2.2 + V2.3 + Shadow Live Ledger + Marketing Google (mock-first)
-- **Ops next:** Oscar A1 live soak — [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) (agents must not mark done)
+- **Shipped:** Path B + Path B2 + Sprint A/B/C + SB5 + V2.1 + V2.2 + V2.3 + Shadow Live Ledger + Marketing Google (mock-first) + FAQ/KB v1 rails
+- **Ops next:** Oscar A1 live soak — [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) (agents must not mark done); live SE FAQ page after WP draft review
 - **Mock soft-soak:** `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
 - **FU9 auto-send:** rails only — see [`docs/CASES.md`](docs/CASES.md) (**do not wire** without Oscar written enable + soak preconditions)
 - **NO/DK mailboxes:** remain `enabled: false` until Oscar + credentials
-- **Out of scope:** V3 multi-tenant, FAQ/KB, default-on auto-send, Meta/TikTok ads, default-on Ads mutate
+- **Out of scope:** V3 multi-tenant, FAQ embeddings/chat `/faq`, default-on auto-send, Meta/TikTok ads, default-on Ads mutate
 
 ## V2.1 Woo/WordPress (pointer)
 

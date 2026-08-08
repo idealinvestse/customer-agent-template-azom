@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}FAQ – Oscar – Azom{% endblock %}
+{% block page_subtitle %}FAQ / kunskapsbas{% endblock %}
+{% block content %}
+{% if flash_msg %}
+<p class="mb-4 rounded-lg border border-ok/30 bg-ok/10 px-3 py-2 text-sm text-ok">{{ flash_msg }}</p>
+{% endif %}
+{% if flash_err %}
+<p class="mb-4 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">{{ flash_err }}</p>
+{% endif %}
+
+<div class="mb-5 flex flex-wrap items-center gap-3">
+  <form method="get" action="/oscar/faq" class="flex items-center gap-2">
+    <label class="az-label mb-0" for="market">Marknad</label>
+    <select class="az-select max-w-[8rem]" id="market" name="market" onchange="this.form.submit()">
+      {% for m in markets %}
+      <option value="{{ m }}" {% if m == market %}selected{% endif %}>{{ m }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  <span class="az-muted text-sm">
+    inject={{ faq_cfg.inject_into_draft }} · live_ok={{ live_allowed }}
+    {% if kill_switch %}<span class="text-danger"> · kill-switch ON</span>{% endif %}
+  </span>
+</div>
+
+<section class="az-card mb-5 border-oscar-600/35">
+  <h2 class="az-section-title text-oscar-400/80">WordPress sync</h2>
+  {% if parent_publish %}
+  <p class="mt-2 text-sm">Page id <code>{{ parent_publish.wp_page_id }}</code> · status <strong>{{ parent_publish.status }}</strong>
+    {% if parent_publish.link %} · <a class="text-steel-400 underline" href="{{ parent_publish.link }}" target="_blank" rel="noopener">länk</a>{% endif %}
+  </p>
+  <p class="az-muted text-xs mt-1">hash {{ parent_publish.content_hash }} · {{ parent_publish.updated_at[:19] }}</p>
+  {% else %}
+  <p class="az-muted mt-2">Ingen synkad FAQ-sida för {{ market }} ännu.</p>
+  {% endif %}
+  <div class="mt-4 flex flex-wrap gap-2">
+    <form method="post" action="/oscar/faq/sync-draft">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="market" value="{{ market }}" />
+      <button type="submit" class="az-btn-oscar">Sync draft till WP</button>
+    </form>
+    <form method="post" action="/oscar/faq/publish" onsubmit="return confirm('Publicera FAQ-sidan live för {{ market }}?');">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="market" value="{{ market }}" />
+      <input type="hidden" name="status" value="publish" />
+      <button type="submit" class="az-btn-secondary" {% if not parent_publish %}disabled{% endif %}>Publish</button>
+    </form>
+  </div>
+  <p class="az-muted text-xs mt-3">YAML under <code>config/faq/</code> är source of truth. Publish kräver Oscar + saknar kill-switch. NO/DK live blockeras tills allowlist.</p>
+</section>
+
+<section class="az-card border-oscar-600/35">
+  <h2 class="az-section-title text-oscar-400/80">Artiklar ({{ articles|length }})</h2>
+  <div class="mt-3 overflow-x-auto">
+    <table class="az-table">
+      <thead>
+        <tr><th>Id</th><th>Kategori</th><th>Titel</th><th>Safe</th></tr>
+      </thead>
+      <tbody>
+        {% for a in articles %}
+        <tr>
+          <td><code>{{ a.id }}</code></td>
+          <td>{{ a.category }}</td>
+          <td>{{ a.title }}</td>
+          <td>{% if a.customer_safe %}<span class="az-present">ja</span>{% else %}<span class="az-missing">nej</span>{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="az-muted">Inga artiklar</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

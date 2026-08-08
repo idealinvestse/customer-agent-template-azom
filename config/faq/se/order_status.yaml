@@ -1,0 +1,23 @@
+- id: se-order-status-processing
+  market: se
+  language: sv
+  category: order_status
+  title: Order under behandling
+  tags: [order, status, behandling]
+  customer_safe: true
+  body: |
+    När en order har status "under behandling" plockas och packas den.
+    Du får ett mejl när den skickas. Ange gärna ordernummer så kan vi
+    bekräfta exakt status från WooCommerce.
+
+- id: se-order-status-how-to-find
+  market: se
+  language: sv
+  category: order_status
+  title: Hitta ditt ordernummer
+  tags: [ordernummer, kvitto, bekräftelse]
+  customer_safe: true
+  body: |
+    Ordernumret står i orderbekräftelsen du fick via mejl efter köpet.
+    Det är vanligtvis ett numeriskt id. Utan ordernummer kan vi behöva
+    söka via den mejladress du använde vid köpet.

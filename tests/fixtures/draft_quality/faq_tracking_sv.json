@@ -1,0 +1,10 @@
+{
+  "id": "faq_tracking_sv",
+  "language": "sv",
+  "category": "shipping",
+  "customer_message": "Jag har inte fått något trackingnummer, kan ni hjälpa mig spåra?",
+  "order_id": "1003",
+  "must_include_any": ["spår", "tracking", "order", "skick"],
+  "must_not_include": ["ersättning garanteras"],
+  "notes": "FAQ enrichment — tracking help"
+}

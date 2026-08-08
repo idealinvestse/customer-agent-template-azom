@@ -1,0 +1,10 @@
+{
+  "id": "faq_shipping_sv",
+  "language": "sv",
+  "category": "shipping",
+  "customer_message": "Hej, hur lång tid tar leveransen och hur spårar jag paketet?",
+  "order_id": "1001",
+  "must_include_any": ["leverans", "spår", "arbetsdag", "order"],
+  "must_not_include": ["återbetalning garanteras", "refund guaranteed"],
+  "notes": "FAQ enrichment scenario — shipping policy"
+}

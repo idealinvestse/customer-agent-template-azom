@@ -71,10 +71,12 @@ Mock: `InMemoryWooTransport` when `AZOM_USE_MOCK=1`.
 | Resource | Client surface |
 |----------|----------------|
 | Posts | list / get / create / update / delete |
-| Pages | list / get only |
+| Pages | list / get / **create** / **update** (FAQ publish uses pages) |
 | Media, users, comments | list |
 | Settings | get / update |
 | Discovery | `discover_namespaces` |
+
+FAQ customer pages: see [`FAQ_KB.md`](FAQ_KB.md) (`faq sync-draft` / `faq publish`). Always draft first; Oscar publish only.
 
 Auth: Application Passwords via `WP_USERNAME` + `WP_APP_PASSWORD` (alias `WORDPRESS_USERNAME` accepted).  
 Factory: `wp_client_from_env(domain=)` for multi-site.  

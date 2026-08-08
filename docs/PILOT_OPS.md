@@ -50,6 +50,7 @@
 | `/oscar` | Admin: secrets, probes, resolve escalations |
 | `/oauth/gmail/start` | Gmail browser OAuth |
 | `/oauth/google/start` | Marketing Google OAuth (Oscar) |
+| `/oscar/faq` | FAQ corpus + WP sync-draft / publish (Oscar) |
 | `/health` | Liveness + poll-readiness (publik) |
 
 Basic Auth: `jonatan` / `DASHBOARD_PASSWORD` · `oscar` / `DASHBOARD_OSCAR_PASSWORD`.  

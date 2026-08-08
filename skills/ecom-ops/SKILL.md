@@ -4,8 +4,9 @@ description: >
   Azom WooCommerce ops (order-status, product desc, support, mail, SSH, cases).
   V2: dashboard onboarding, Gmail OAuth, OpenClaw Messenger/Telegram hybrid,
   Cases 2.0 + Path B suggest-approve rails. Google Ads + GA4 marketing ledger
-  (read → suggest → HITL mutate). Critical/code edits escalate to Oscar.
-  Never silent customer mail or silent Ads mutate — human approve required.
+  (read → suggest → HITL mutate). FAQ/KB lexical draft enrich + WP page HITL.
+  Critical/code edits escalate to Oscar.
+  Never silent customer mail, silent Ads mutate, or silent FAQ publish.
 version: "2.0.0"
 ---
 
@@ -20,6 +21,7 @@ version: "2.0.0"
 **Messenger (daily driver):** `docs/MESSENGER_OPENCLAW.md`  
 **Telegram (backup):** `docs/TELEGRAM_OPENCLAW.md`  
 **Cases:** `docs/CASES.md`  
+**FAQ/KB:** `docs/FAQ_KB.md`  
 **CLI:** `docs/CLI_REFERENCE.md`  
 **Dev setup:** `docs/DEVELOPER_GUIDE.md`
 
@@ -37,13 +39,14 @@ version: "2.0.0"
 | SSH / VPS | `ecom_ops.actions.ssh_ops` | `python -m ecom_ops ssh --command "uptime" --mock` |
 | mail send/fetch | `ecom_ops.actions.mail` | `python -m ecom_ops mail send\|fetch\|reply --mock` |
 | marketing Ads+GA4 | `ecom_ops.actions.marketing` | `python -m ecom_ops marketing digest\|health\|consistency\|suggests\|… --mock` |
+| faq search / WP publish | `ecom_ops.faq` | `python -m ecom_ops faq list\|search\|sync-draft\|publish --mock` |
 | runtime status | CLI | `python -m ecom_ops status` · `python -m ecom_ops smoke` |
 
 ## V2 surfaces
 
 | Surface | Entry |
 |---------|--------|
-| Dashboard | `./bin/start-dashboard.sh` → `/onboarding`, `/settings`, `/cases`, `/marketing`, `/oscar` |
+| Dashboard | `./bin/start-dashboard.sh` → `/onboarding`, `/settings`, `/cases`, `/marketing`, `/oscar`, `/oscar/faq` |
 | Gmail OAuth | `/oauth/gmail/start` → tokens in `AZOM_DATA_DIR/oauth/gmail.json` |
 | Google marketing OAuth | `/oauth/google/start` → `AZOM_DATA_DIR/oauth/google_marketing.json` |
 | Marketing dashboard | `/marketing` (Jonatan read + suggest HITL) |

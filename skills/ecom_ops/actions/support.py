@@ -84,6 +84,7 @@ class SupportResult:
     confidence: float = 0.0
     classify_method: str = "keyword"
     suggest_approve: bool = False
+    faq_article_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +98,7 @@ class SupportResult:
             "confidence": self.confidence,
             "classify_method": self.classify_method,
             "suggest_approve": self.suggest_approve,
+            "faq_article_ids": list(self.faq_article_ids),
         }
 
 
@@ -564,6 +566,7 @@ class SupportService:
         actor: Actor | str | None = None,
         use_mock: bool | None = None,
         order_context: str | None = None,
+        market: str | None = None,
     ) -> SupportResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
@@ -589,6 +592,28 @@ class SupportService:
             resolved_context = order_context
             if resolved_context is None and order_id:
                 resolved_context = resolve_order_context(order_id, use_mock=use_mock)
+
+            faq_ids: tuple[str, ...] = ()
+            faq_context: str | None = None
+            try:
+                from ecom_ops.faq.config import load_faq_config
+                from ecom_ops.faq.format import format_faq_context_block
+                from ecom_ops.faq.search import search_faq
+
+                faq_cfg = load_faq_config()
+                if faq_cfg.enabled and faq_cfg.inject_into_draft:
+                    hits = search_faq(
+                        text,
+                        market=market,
+                        language=language,
+                        category=category.value,
+                    )
+                    faq_ids = tuple(h.article.id for h in hits)
+                    block = format_faq_context_block(hits)
+                    faq_context = block or None
+            except Exception:  # noqa: BLE001 — FAQ must never break support
+                faq_ids = ()
+                faq_context = None
 
             if category == SupportCategory.ABUSE:
                 ticket = self.escalation.escalate(
@@ -629,6 +654,7 @@ class SupportService:
                     confidence=confidence,
                     classify_method=classify_method,
                     suggest_approve=False,
+                    faq_article_ids=faq_ids,
                 )
 
             reply = draft_support_with_llm(
@@ -638,6 +664,7 @@ class SupportService:
                 customer_name=customer_name,
                 order_id=order_id,
                 order_context=resolved_context,
+                faq_context=faq_context,
                 telemetry=self.telemetry,
                 site=site,
             )
@@ -680,6 +707,7 @@ class SupportService:
                     "confidence": confidence,
                     "classify_method": classify_method,
                     "suggest_approve": suggest,
+                    "faq_article_ids": list(faq_ids),
                 },
             )
             return SupportResult(
@@ -693,6 +721,7 @@ class SupportService:
                 confidence=confidence,
                 classify_method=classify_method,
                 suggest_approve=suggest,
+                faq_article_ids=faq_ids,
             )
         except AccessDenied as exc:
             ticket = self.escalation.escalate_critical(

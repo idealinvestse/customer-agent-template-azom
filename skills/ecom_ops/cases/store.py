@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 # Bump when adding breaking schema changes; _migrate() applies steps in order.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _default_db_path() -> Path:
@@ -63,6 +63,8 @@ class Case:
     # NULL = not observed under null-send; bool = last shadow FU9 decision
     shadow_eligible: bool | None = None
     shadow_deny_reason: str | None = None
+    # Comma-separated FAQ article ids used for last draft enrichment
+    faq_article_ids: str | None = None
 
     def shadow_hint(self) -> str | None:
         """Jonatan-facing muted badge text, or None if never observed."""
@@ -112,6 +114,7 @@ class Case:
             "draft_regenerated_at": self.draft_regenerated_at,
             "shadow_eligible": self.shadow_eligible,
             "shadow_deny_reason": self.shadow_deny_reason,
+            "faq_article_ids": self.faq_article_ids,
         }
 
 
@@ -269,6 +272,10 @@ class CaseStore:
         if current < 5:
             self._migrate_v5_shadow(conn)
             self._record_version(conn, 5)
+            current = 5
+        if current < 6:
+            self._migrate_v6_faq(conn)
+            self._record_version(conn, 6)
 
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
         case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
@@ -329,6 +336,11 @@ class CaseStore:
             alters.append("ALTER TABLE cases ADD COLUMN shadow_deny_reason TEXT")
         for sql in alters:
             conn.execute(sql)
+
+    def _migrate_v6_faq(self, conn: sqlite3.Connection) -> None:
+        case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
+        if "faq_article_ids" not in case_cols:
+            conn.execute("ALTER TABLE cases ADD COLUMN faq_article_ids TEXT")
 
     def find_by_message_id(self, message_id: str) -> Case | None:
         if not message_id:
@@ -531,6 +543,7 @@ class CaseStore:
         classify_confidence: float | None = None,
         classify_method: str | None = None,
         suggest_approve: bool = False,
+        faq_article_ids: str | None = None,
     ) -> Case:
         if message_id:
             existing = self.find_by_message_id(message_id)
@@ -559,6 +572,7 @@ class CaseStore:
             classify_confidence=classify_confidence,
             classify_method=classify_method,
             suggest_approve=bool(suggest_approve),
+            faq_article_ids=faq_article_ids,
         )
         msg_id = str(uuid.uuid4())
         with self._conn() as conn:
@@ -568,8 +582,9 @@ class CaseStore:
                     id, mailbox_id, subject, from_addr, category, status,
                     order_id, draft_reply, message_id, site, market, language,
                     created_at, updated_at, escalation_id, priority, assignee,
-                    classify_confidence, classify_method, suggest_approve
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    classify_confidence, classify_method, suggest_approve,
+                    faq_article_ids
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     case.id,
@@ -592,6 +607,7 @@ class CaseStore:
                     case.classify_confidence,
                     case.classify_method,
                     1 if case.suggest_approve else 0,
+                    case.faq_article_ids,
                 ),
             )
             conn.execute(
@@ -634,6 +650,7 @@ class CaseStore:
         classify_method: str | None = None,
         suggest_approve: bool | None = None,
         priority: str | None = None,
+        faq_article_ids: str | None = None,
     ) -> Case | None:
         now = _now()
         with self._conn() as conn:
@@ -682,6 +699,9 @@ class CaseStore:
             if priority is not None:
                 sets.append("priority = ?")
                 params.append(priority)
+            if faq_article_ids is not None:
+                sets.append("faq_article_ids = ?")
+                params.append(faq_article_ids)
             params.append(case_id)
             conn.execute(
                 f"UPDATE cases SET {', '.join(sets)} WHERE id = ?",
@@ -919,6 +939,11 @@ class CaseStore:
             shadow_deny_reason=(
                 str(row["shadow_deny_reason"])
                 if "shadow_deny_reason" in keys and row["shadow_deny_reason"]
+                else None
+            ),
+            faq_article_ids=(
+                str(row["faq_article_ids"])
+                if "faq_article_ids" in keys and row["faq_article_ids"]
                 else None
             ),
         )

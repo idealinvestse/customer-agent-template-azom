@@ -1,0 +1,35 @@
+- id: se-shipping-delivery-times
+  market: se
+  language: sv
+  category: shipping
+  title: Leveranstider Sverige
+  tags: [leverans, frakt, tid, postnord]
+  customer_safe: true
+  body: |
+    Beställningar som skickas inom Sverige levereras normalt inom 1–3 arbetsdagar
+    efter att ordern markerats som skickad. Du får ett spårningsnummer när
+    försändelsen lämnar lagret. Helger och röda dagar kan förlänga leveranstiden.
+
+- id: se-shipping-tracking
+  market: se
+  language: sv
+  category: shipping
+  title: Spåra din leverans
+  tags: [spårning, tracking, paket]
+  customer_safe: true
+  body: |
+    När din order skickats får du ett mejl med spårningslänk från transportören.
+    Du kan också be support om ordernummer så kollar vi status i vårt system.
+    Om spårningen inte uppdaterats på 48 timmar efter skickat-status, kontakta oss.
+
+- id: se-shipping-missing-package
+  market: se
+  language: sv
+  category: shipping
+  title: Saknat eller försenat paket
+  tags: [saknas, försenat, paket]
+  customer_safe: true
+  body: |
+    Om leveranstiden passerat och spårningen står stilla hjälper vi dig att
+    utreda med transportören. Ha ordernummer till hands. Vi återkommer med
+    nästa steg när utredningen är klar — vi lovar inte ersättning i förväg.

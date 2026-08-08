@@ -166,6 +166,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_mkt_feed.add_argument("--title", default="")
     p_mkt_feed.add_argument("--op", default="upsert", choices=["upsert", "delete"])
 
+    p_faq = sub.add_parser("faq", help="FAQ / knowledge base (search + WP publish)")
+    faq_sub = p_faq.add_subparsers(dest="faq_command", required=True)
+    p_faq_list = faq_sub.add_parser("list", help="List FAQ articles")
+    p_faq_list.add_argument("--market", default=None)
+    p_faq_list.add_argument("--category", default=None)
+    p_faq_search = faq_sub.add_parser("search", help="Lexical FAQ search")
+    p_faq_search.add_argument("--q", required=True, dest="query")
+    p_faq_search.add_argument("--market", default="se")
+    p_faq_search.add_argument("--category", default=None)
+    p_faq_search.add_argument("--limit", type=int, default=None)
+    p_faq_sync = faq_sub.add_parser(
+        "sync-draft", help="Upsert WP FAQ page as draft (Oscar)"
+    )
+    p_faq_sync.add_argument("--market", default="se")
+    p_faq_pub = faq_sub.add_parser(
+        "publish", help="Set WP FAQ page status (Oscar; default publish)"
+    )
+    p_faq_pub.add_argument("--market", default="se")
+    p_faq_pub.add_argument(
+        "--status",
+        default="publish",
+        choices=["publish", "draft", "private"],
+    )
+
     p_smoke = sub.add_parser(
         "smoke",
         help="Opt-in integration smoke (requires AZOM_LIVE_SMOKE=1 or --live)",
@@ -616,6 +640,69 @@ def main(argv: list[str] | None = None) -> int:
             )
             return _print(result)
         parser.error(f"Unknown cases command: {args.cases_command}")
+        return 2
+
+    if args.command == "faq":
+        from ecom_ops.faq.config import load_faq_config
+        from ecom_ops.faq.publish import publish_page, sync_draft
+        from ecom_ops.faq.search import search_faq
+        from ecom_ops.faq.store import default_faq_store
+        from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
+
+        actor_obj = resolve_actor(args.actor)
+        cmd = args.faq_command
+        if cmd == "list":
+            try:
+                require_permission(actor_obj, Permission.FAQ_READ)
+            except AccessDenied as exc:
+                return _print({"ok": False, "message": str(exc)})
+            arts = default_faq_store().list(
+                market=args.market, category=args.category
+            )
+            return _print(
+                {
+                    "ok": True,
+                    "count": len(arts),
+                    "enabled": load_faq_config().enabled,
+                    "articles": [a.to_dict() for a in arts],
+                }
+            )
+        if cmd == "search":
+            try:
+                require_permission(actor_obj, Permission.FAQ_READ)
+            except AccessDenied as exc:
+                return _print({"ok": False, "message": str(exc)})
+            hits = search_faq(
+                args.query,
+                market=args.market,
+                category=args.category,
+                limit=args.limit,
+            )
+            return _print(
+                {
+                    "ok": True,
+                    "count": len(hits),
+                    "hits": [h.to_dict() for h in hits],
+                }
+            )
+        if cmd == "sync-draft":
+            return _print(
+                sync_draft(
+                    args.market,
+                    actor=actor_obj,
+                    use_mock=args.mock or None,
+                )
+            )
+        if cmd == "publish":
+            return _print(
+                publish_page(
+                    args.market,
+                    status=args.status,
+                    actor=actor_obj,
+                    use_mock=args.mock or None,
+                )
+            )
+        parser.error(f"Unknown faq command: {cmd}")
         return 2
 
     if args.command == "marketing":

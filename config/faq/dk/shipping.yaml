@@ -1,0 +1,23 @@
+# DK stubs — localize before live WP publish (Oscar gate).
+- id: dk-shipping-delivery-times
+  market: dk
+  language: da
+  category: shipping
+  title: Leveringstid Danmark
+  tags: [levering, fragt]
+  customer_safe: true
+  body: |
+    Ordrer i Danmark leveres normalt inden 2–5 hverdage efter afsendelse.
+    Du får et trackingnummer, når pakken forlader lageret.
+    (Stub — færdiggør dansk tekst før live publish.)
+
+- id: dk-shipping-tracking
+  market: dk
+  language: da
+  category: shipping
+  title: Spor din levering
+  tags: [tracking, spor]
+  customer_safe: true
+  body: |
+    Når ordren er sendt, får du en e-mail med sporingslink. Kontakt support
+    med ordrenummer, hvis du har brug for hjælp. (Stub — færdiggør før live publish.)

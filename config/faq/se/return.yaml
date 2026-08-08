@@ -1,0 +1,26 @@
+- id: se-return-window
+  market: se
+  language: sv
+  category: return
+  title: Ångerrätt och returfrist
+  tags: [retur, ångerrätt, 14 dagar]
+  customer_safe: true
+  body: |
+    Som konsument har du normalt 14 dagars ångerrätt från att du mottog varan,
+    enligt distansavtalslagen. Varan ska vara oanvänd och i säljbart skick.
+    Kontakta support med ordernummer innan du skickar tillbaka något så får
+    du rätt returadress och instruktioner. Vi bekräftar inte återbetalning
+    innan returen är mottagen och kontrollerad.
+
+- id: se-return-how-to
+  market: se
+  language: sv
+  category: return
+  title: Så returnerar du
+  tags: [retur, instruktion, frakt]
+  customer_safe: true
+  body: |
+    1) Mejla support med ordernummer och vilka artiklar som ska returneras.
+    2) Vänta på returinstruktion och adress.
+    3) Packa varan säkert med eventuell följesedel.
+    Returfrakt kan belasta dig enligt gällande villkor om felet inte är vårt.

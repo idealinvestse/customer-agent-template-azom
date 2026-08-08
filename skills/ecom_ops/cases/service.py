@@ -490,6 +490,7 @@ class CaseService:
             actor="agent",
             use_mock=use_mock,
             order_context=order_ctx,
+            market=mb.market,
         )
         draft = _enrich_draft_with_order(
             support.reply,
@@ -498,6 +499,7 @@ class CaseService:
             order_context=order_ctx,
             domain=woo_domain,
         )
+        faq_ids_csv = ",".join(getattr(support, "faq_article_ids", ()) or ()) or None
 
         threaded = self.store.find_by_thread_headers(
             in_reply_to=in_reply_to,
@@ -541,6 +543,7 @@ class CaseService:
                 classify_method=getattr(support, "classify_method", None),
                 suggest_approve=suggest,
                 priority=thread_priority,
+                faq_article_ids=faq_ids_csv,
             )
             if case is None:
                 return None
@@ -556,6 +559,7 @@ class CaseService:
                     "mailbox_id": mb.id,
                     "category": case.category,
                     "actor": actor.name,
+                    "faq_article_ids": list(getattr(support, "faq_article_ids", ()) or ()),
                 },
             )
             case = self._maybe_record_shadow(case)
@@ -607,6 +611,7 @@ class CaseService:
             classify_method=getattr(support, "classify_method", None),
             suggest_approve=bool(getattr(support, "suggest_approve", False))
             and status != "escalated",
+            faq_article_ids=faq_ids_csv,
         )
         self.telemetry.record(
             action="case_created",
@@ -618,6 +623,7 @@ class CaseService:
                 "category": case.category,
                 "status": case.status,
                 "actor": actor.name,
+                "faq_article_ids": list(getattr(support, "faq_article_ids", ()) or ()),
             },
         )
         case = self._maybe_record_shadow(case)
@@ -813,6 +819,7 @@ class CaseService:
                 actor="agent",
                 use_mock=use_mock,
                 order_context=order_ctx,
+                market=case.market,
             )
             draft = _enrich_draft_with_order(
                 support.reply,
@@ -839,6 +846,9 @@ class CaseService:
                 or category == "abuse"
             ):
                 suggest = False
+            faq_ids_csv = (
+                ",".join(getattr(support, "faq_article_ids", ()) or ()) or None
+            )
 
             patched = self._patch_case_after_regen(
                 case.id,
@@ -849,6 +859,7 @@ class CaseService:
                 classify_confidence=conf if isinstance(conf, (int, float)) else None,
                 classify_method=method,
                 suggest_approve=suggest,
+                faq_article_ids=faq_ids_csv,
             )
             if getattr(support, "escalated", False) and patched and not patched.escalation_id:
                 patched = self._maybe_escalate(patched, support)
@@ -863,6 +874,9 @@ class CaseService:
                     "classify_method": method,
                     "confidence": conf,
                     "suggest_approve": suggest,
+                    "faq_article_ids": list(
+                        getattr(support, "faq_article_ids", ()) or ()
+                    ),
                     "draft_edit_distance": round(
                         _edit_distance_ratio(previous, draft or previous), 4
                     ),
@@ -912,6 +926,7 @@ class CaseService:
         classify_confidence: float | None,
         classify_method: str | None,
         suggest_approve: bool,
+        faq_article_ids: str | None = None,
     ) -> Case | None:
         """Update draft + AI fields without inserting phantom messages."""
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -927,6 +942,7 @@ class CaseService:
                     classify_confidence = ?,
                     classify_method = ?,
                     suggest_approve = ?,
+                    faq_article_ids = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -939,6 +955,7 @@ class CaseService:
                     classify_confidence,
                     classify_method,
                     1 if suggest_approve else 0,
+                    faq_article_ids,
                     now,
                     case_id,
                 ),

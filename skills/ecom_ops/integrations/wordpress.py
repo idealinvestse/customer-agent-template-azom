@@ -155,6 +155,7 @@ class InMemoryWpTransport:
                         for r in rows
                         if search in str(r.get("title", {}).get("rendered", "")).lower()
                         or search in str(r.get("name", "")).lower()
+                        or search in str(r.get("slug", "")).lower()
                     ]
                 per_page = int(params.get("per_page") or 10)
                 page = int(params.get("page") or 1)
@@ -175,6 +176,13 @@ class InMemoryWpTransport:
                     row["title"] = {"rendered": str(row["title"])}
                 elif "title" not in row:
                     row["title"] = {"rendered": ""}
+                if "slug" in row:
+                    row["slug"] = str(row["slug"])
+                title_txt = str(row.get("title", {}).get("rendered", "") or "")
+                row.setdefault(
+                    "link",
+                    f"https://azom.no/{row.get('slug') or title_txt.lower().replace(' ', '-')}",
+                )
                 store[row["id"]] = row
                 return row
             raise SecurityError(f"Unhandled WP collection op: {method}")
@@ -389,6 +397,61 @@ class WordPressClient:
             "GET",
             self._url(f"/wp-json/wp/v2/pages/{pid}"),
             auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return self._to_post(data)
+
+    def create_page(
+        self,
+        *,
+        title: str,
+        content: str = "",
+        status: str = "draft",
+        slug: str | None = None,
+        excerpt: str | None = None,
+    ) -> WpPost:
+        payload: dict[str, Any] = {
+            "title": sanitize_text(title, max_len=300),
+            "content": content,
+            "status": status,
+        }
+        if slug:
+            payload["slug"] = sanitize_text(slug, max_len=200)
+        if excerpt:
+            payload["excerpt"] = sanitize_text(excerpt, max_len=600)
+        data = self.transport.request(
+            "POST",
+            self._url("/wp-json/wp/v2/pages"),
+            auth=self._auth(),
+            json=payload,
+            timeout=self.timeout,
+        )
+        return self._to_post(data)
+
+    def update_page(
+        self,
+        page_id: str | int,
+        *,
+        title: str | None = None,
+        content: str | None = None,
+        status: str | None = None,
+        slug: str | None = None,
+    ) -> WpPost:
+        pid = _validate_int_id(page_id)
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = sanitize_text(title, max_len=300)
+        if content is not None:
+            payload["content"] = content
+        if status is not None:
+            payload["status"] = status
+        if slug is not None:
+            payload["slug"] = sanitize_text(slug, max_len=200)
+        data = self.transport.request(
+            "POST",
+            self._url(f"/wp-json/wp/v2/pages/{pid}"),
+            auth=self._auth(),
+            json=payload,
             timeout=self.timeout,
         )
         return self._to_post(data)

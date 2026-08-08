@@ -211,6 +211,19 @@ python -m ecom_ops --mock --actor jonatan marketing merchant-queue --offer-id SK
 
 `status` includes `ga4=on|off` and `ads=on|off`. Soft path: `bash bin/mock-marketing-azom.sh`.
 
+### `faq`
+
+FAQ / knowledge base (lexical search + WordPress page HITL). See [`FAQ_KB.md`](FAQ_KB.md).
+
+```bash
+python -m ecom_ops --mock faq list [--market se] [--category shipping]
+python -m ecom_ops --mock faq search --q "spårning" --market se
+python -m ecom_ops --mock --actor oscar faq sync-draft --market se
+python -m ecom_ops --mock --actor oscar faq publish --market se --status publish
+```
+
+`sync-draft` / `publish` require **FAQ_PUBLISH** (Oscar). Kill-switch: `AZOM_FAQ_PUBLISH_KILL=1`.
+
 ## Environment that changes CLI behavior
 
 | Env | Effect |
@@ -226,6 +239,8 @@ python -m ecom_ops --mock --actor jonatan marketing merchant-queue --offer-id SK
 | `AZOM_ADS_MUTATE_KILL=1` | Always deny Ads mutate / merchant write |
 | `AZOM_GA_MUTATE_KILL=1` | Reserved GA-admin mutate kill (deny when set; no mutate path yet) |
 | `AZOM_MP_KILL=1` | Always deny Measurement Protocol send |
+| `AZOM_FAQ_PUBLISH_KILL=1` | Deny FAQ WP sync-draft / publish |
+| `AZOM_FAQ_INJECT_INTO_DRAFT=0|1` | Override FAQ draft enrichment flag |
 
 ## Related
 

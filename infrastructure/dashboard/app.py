@@ -1108,6 +1108,79 @@ def oscar_home():
     )
 
 
+@app.route("/oscar/faq")
+@_oscar_required
+def oscar_faq():
+    from ecom_ops.faq.config import load_faq_config
+    from ecom_ops.faq.kill_switch import faq_publish_killed
+    from ecom_ops.faq.publish_map import FaqPublishMap
+    from ecom_ops.faq.store import default_faq_store
+
+    market = (request.args.get("market") or "se").strip().lower()
+    cfg = load_faq_config()
+    articles = default_faq_store().list(market=market, customer_safe_only=True)
+    pub_rows = FaqPublishMap().list_market(market)
+    parent = next((r for r in pub_rows if r.article_id == ""), None)
+    return render_template(
+        "oscar_faq.html",
+        **_dashboard_context(
+            market=market,
+            markets=["se", "no", "dk"],
+            articles=articles,
+            parent_publish=parent,
+            publish_rows=pub_rows,
+            faq_cfg=cfg,
+            kill_switch=faq_publish_killed(),
+            live_allowed=market in {m.lower() for m in cfg.live_markets_allowed},
+            flash_msg=request.args.get("msg"),
+            flash_err=request.args.get("err"),
+        ),
+    )
+
+
+@app.route("/oscar/faq/sync-draft", methods=["POST"])
+@_oscar_required
+def oscar_faq_sync_draft():
+    failed = _validate_csrf()
+    if failed:
+        return failed
+    from ecom_ops.faq.publish import sync_draft
+
+    market = (request.form.get("market") or "se").strip().lower()
+    use_mock = os.environ.get("AZOM_USE_MOCK", "").strip() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    result = sync_draft(market, actor="oscar", use_mock=use_mock)
+    frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
+    return redirect(url_for("oscar_faq", market=market) + f"?{frag}")
+
+
+@app.route("/oscar/faq/publish", methods=["POST"])
+@_oscar_required
+def oscar_faq_publish():
+    failed = _validate_csrf()
+    if failed:
+        return failed
+    from ecom_ops.faq.publish import publish_page
+
+    market = (request.form.get("market") or "se").strip().lower()
+    status = (request.form.get("status") or "publish").strip().lower()
+    use_mock = os.environ.get("AZOM_USE_MOCK", "").strip() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    result = publish_page(
+        market, status=status, actor="oscar", use_mock=use_mock
+    )
+    frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
+    return redirect(url_for("oscar_faq", market=market) + f"?{frag}")
+
+
 @app.route("/oscar/secrets", methods=["GET", "POST"])
 @_oscar_required
 def oscar_secrets():

@@ -52,6 +52,7 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **Shadow Live Ledger** | Null-send profile (`AZOM_NULL_SEND` / `--null-send`): refuse customer mail; poll records FU9 shadow decisions; dashboard badge + `cases shadow-report`. Soft-soak via `bin/mock-soak-azom.sh`. **Not** FU9 wire; **not** A1 soak complete |
 | **Marketing Google (Ads+GA4)** | Mock-first ledger + suggest/HITL rails shipped (`marketing` CLI, `/marketing`, probes, kill-switches). **Live Google Data/Ads API clients still stubbed** (`NotImplementedError`) until Oscar wires OAuth + developer token. See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md). |
 | **Central dashboard logs** | JSON logging wired (`AZOM_LOG_*` → `/var/log/azom` or `./logs`); dashboard `/logs` + `/api/logs` for Jonatan and Oscar (redacted). No Loki/SaaS shipper. |
+| **FAQ/KB v1** | Lexical FAQ corpus (`config/faq/`), draft enrichment (`FAQ context:`), WP page sync-draft + Oscar publish, CLI `faq`, dashboard `/oscar/faq`. See [`FAQ_KB.md`](FAQ_KB.md). **Live SE FAQ page** is an ops gate — not marked done here. |
 
 ## Ops next (human-owned — agents must not mark done)
 
@@ -61,6 +62,8 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | Baseline KPI / support hours | Oscar + Jonatan | Open — needed for “50% less support time” story |
 | Live classify calibration (20–50 redacted samples) | Oscar + Jonatan | Open — do not lower suggest thresholds without this |
 | Weekly ops cadences | Oscar / Jonatan | Open after soak |
+| **Live SE FAQ page** | Oscar (WP draft review + publish) | Open — code rails shipped; first live page needs probe + wp-admin review |
+| **NO/DK FAQ live publish** | Oscar | Blocked — stubs only; same gate as NO/DK mailboxes |
 
 **Agent rule:** Never mark live soak complete. Never open a PR that wires auto-send into poll until every FU9 gate in [`CASES.md`](CASES.md) is green **and** Oscar gives written enable.
 
@@ -82,7 +85,7 @@ Treat these as done in the repository. Do not re-implement from scratch.
 Do not start these unless product ownership changes:
 
 - V3 multi-tenant SaaS
-- FAQ / knowledge base
+- FAQ embeddings / vector DB, ops chat `/faq`, WP→repo sync (v1 rails shipped — see FAQ/KB track)
 - Meta / TikTok ads, GA4 BigQuery warehouse, default-on Ads mutate
 - IMAP IDLE (timer poll only)
 - Default-on auto-send
@@ -98,9 +101,9 @@ Do not start these unless product ownership changes:
 
 | Actor | Role | Typical powers |
 |-------|------|----------------|
-| **Jonatan** | `viewer` | Read mail/SSH, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST** |
-| **Oscar** | `full_admin` | Secrets UI, probes, resolve escalations, experiment flags, **MARKETING_MUTATE**, `shadow-report` / `retention-purge` |
-| **agent** | `operator` | order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH health, cases poll, **MARKETING_READ** |
+| **Jonatan** | `viewer` | Read mail/SSH, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**, **FAQ_READ** |
+| **Oscar** | `full_admin` | Secrets UI, probes, resolve escalations, experiment flags, **MARKETING_MUTATE**, **FAQ_PUBLISH**, `shadow-report` / `retention-purge` |
+| **agent** | `operator` | order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH health, cases poll, **MARKETING_READ**, **FAQ_READ** |
 
 ## Absorption note (historical docs removed)
 
@@ -119,6 +122,7 @@ Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, fini
 | Gmail OAuth | [`V2_OAUTH_GMAIL.md`](V2_OAUTH_GMAIL.md) |
 | Woo/WP API surface | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
 | Google Ads + GA4 | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
+| FAQ / knowledge base | [`FAQ_KB.md`](FAQ_KB.md) |
 | Install / deploy | [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) |
 | Docker overlays | [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md) |
 | Index | [`README.md`](README.md) |

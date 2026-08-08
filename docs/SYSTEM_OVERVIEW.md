@@ -62,9 +62,9 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 
 | Actor | Role | Typical powers |
 |-------|------|----------------|
-| **Jonatan** | `viewer` | Read + mail/SSH read + **CASE_REPLY** + **MARKETING_READ** + **MARKETING_SUGGEST** (negatives approve) |
-| **Oscar** | `full_admin` | All permissions: secrets, probes, escalations, experiment flags, **MARKETING_MUTATE**, `cases shadow-report`, `retention-purge` |
-| **agent** | `operator` | order/product/support, **MAIL_SEND** + **MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ** only |
+| **Jonatan** | `viewer` | Read + mail/SSH read + **CASE_REPLY** + **MARKETING_READ** + **MARKETING_SUGGEST** (negatives approve) + **FAQ_READ** |
+| **Oscar** | `full_admin` | All permissions: secrets, probes, escalations, experiment flags, **MARKETING_MUTATE**, **FAQ_PUBLISH**, `cases shadow-report`, `retention-purge` |
+| **agent** | `operator` | order/product/support, **MAIL_SEND** + **MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**, **FAQ_READ** |
 
 - Telegram: `TELEGRAM_ACTOR_MAP` maps chat → actor. Non-empty map ⇒ unmapped denied. Allowlist: `TELEGRAM_ALLOWED_CHAT_IDS`.
 - Messenger: `MESSENGER_ACTOR_MAP` / `MESSENGER_ALLOWED_PSIDS` — **fail-closed when empty in live mode**.
@@ -82,6 +82,7 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **cases** | `cases/*` | Poll → draft → suggest-approve → human send — [`CASES.md`](CASES.md) |
 | **Shadow Live Ledger** | `cases/shadow_report.py`, `runtime_profile.py` | Null-send refuse + FU9 shadow trail — not FU9 wire |
 | **marketing** | `actions/marketing`, `marketing/*` | Google Ads + GA4 mock-first HITL — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
+| **faq** | `faq/*`, CLI `faq` | Lexical KB + draft enrich + WP page HITL — [`FAQ_KB.md`](FAQ_KB.md) |
 | **LLM** | `llm.py` | OpenRouter + cost telemetry + cap |
 | **OAuth Gmail** | `oauth/gmail` | Browser consent → `oauth/gmail.json` |
 | **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |
@@ -189,6 +190,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `config/limits.yaml` | OpenRouter cap |
 | `config/cases_ai.yaml` | suggest-approve + auto-send rails |
 | `config/marketing.yaml` | Ads/GA4 allowlists, mutate defaults, kill env names |
+| `config/faq.yaml` + `config/faq/{market}/` | FAQ flags + YAML corpus |
 | `config/integrations.yaml` | mail presets; Google flags are **non-gating reserved** |
 | `config/dashboard.yaml` | dashboard feature flags |
 | `config/customer.json` | customer metadata / KPIs |
@@ -208,6 +210,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `AZOM_NULL_SEND` | Null-send / shadow profile (default off) |
 | `AZOM_GA4_PROPERTY_IDS` / `AZOM_GADS_CUSTOMER_IDS` | Marketing fail-closed allowlists |
 | `AZOM_ADS_MUTATE_KILL` / `AZOM_GA_MUTATE_KILL` / `AZOM_MP_KILL` | Marketing mutate kills (`GA` reserved until admin mutate exists) |
+| `AZOM_FAQ_PUBLISH_KILL` / `AZOM_FAQ_INJECT_INTO_DRAFT` | FAQ publish kill + draft inject override |
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
 | `AZOM_LOG_DIR`, `AZOM_LOG_NAME`, `AZOM_LOG_LEVEL`, `AZOM_JSON_LOGGING` | Structured JSON logging (stderr + file); dashboard `/logs` |
 | `WOO_WEBHOOK_SECRET` | Inbound Woo webhook HMAC |
@@ -246,6 +249,7 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 | `runtime.env` | Runtime toggles overlay |
 | `escalations.jsonl` | Escalation tickets |
 | `marketing_suggests.jsonl` | Marketing suggest ledger |
+| `faq_publish.db` | FAQ → WP page id map |
 | telemetry / KPI files | Cost + case KPIs (`python -m ecom_ops kpis`) |
 | `last_case_poll.json` | Poll readiness (`partial` / errors / age → `/health`) |
 | `probe_last.json` | Last Oscar probe results |
@@ -290,7 +294,7 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 | Marketing Google (Ads+GA4) | Mock-first rails shipped; live APIs stubbed — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Oscar A1 live soak | **Ops next — human gate** |
 | FU9 auto-send wire | **Not wired** — see [`CASES.md`](CASES.md) |
-| V3 multi-tenant / FAQ / Meta ads | Deferred / parked |
+| V3 multi-tenant / FAQ embeddings / Meta ads | Deferred / parked (FAQ/KB v1 rails shipped) |
 
 ## Related living docs
 

@@ -194,6 +194,7 @@ def draft_support_with_llm(
     customer_name: str | None,
     order_id: str | None,
     order_context: str | None = None,
+    faq_context: str | None = None,
     telemetry: Telemetry | None = None,
     site: str = "azom",
 ) -> str | None:
@@ -203,7 +204,7 @@ def draft_support_with_llm(
 
     When ``order_context`` is provided (Woo status/total/currency), include it
     in the prompt so the model can reference real order data — never invent
-    tracking numbers.
+    tracking numbers. ``faq_context`` is optional lexical KB snippets.
     """
     api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
     if not api_key:
@@ -227,12 +228,15 @@ def draft_support_with_llm(
     system, draft_prompt_version = get_prompt("draft")
     ctx = (order_context or "").strip()
     context_block = f"Order context:\n{ctx}\n" if ctx else "Order context: (none)\n"
+    faq = (faq_context or "").strip()
+    faq_block = f"FAQ context:\n{faq}\n" if faq else "FAQ context: (none)\n"
     user = (
         f"Language: {lang}\n"
         f"Category: {category}\n"
         f"Customer name: {name}\n"
         f"Order id: {oid}\n"
         f"{context_block}"
+        f"{faq_block}"
         f"Customer message:\n{customer_message[:4000]}"
     )
     try:

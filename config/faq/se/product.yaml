@@ -1,0 +1,24 @@
+- id: se-product-compatibility
+  market: se
+  language: sv
+  category: product
+  title: Kompatibilitet och passform
+  tags: [kompatibilitet, storlek, passform]
+  customer_safe: true
+  body: |
+    Produktens beskrivning och specifikationslista på produktsidan anger
+    kompatibilitet. Om du är osäker, skicka modell/årtal eller bild så hjälper
+    vi dig att bedöma om produkten passar — utan att garantera passform om
+    underlaget saknas.
+
+- id: se-product-warranty
+  market: se
+  language: sv
+  category: product
+  title: Garanti och reklamation
+  tags: [garanti, reklamation, fel]
+  customer_safe: true
+  body: |
+    Vid misstänkt fabrikationsfel, kontakta support med ordernummer, beskrivning
+    och gärna foto. Vi utreder reklamationen enligt konsumentköplagen.
+    Vi lovar inte byte eller ersättning innan utredningen är klar.

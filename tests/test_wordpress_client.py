@@ -89,6 +89,26 @@ def test_get_page(wp):
     assert page.type == "page"
 
 
+def test_create_page(wp):
+    page = wp.create_page(
+        title="Vanliga frågor",
+        content="<p>FAQ</p>",
+        status="draft",
+        slug="faq",
+    )
+    assert page.title == "Vanliga frågor"
+    assert page.status == "draft"
+    assert page.type == "page"
+    assert (page.raw or {}).get("slug") == "faq"
+
+
+def test_update_page(wp):
+    page = wp.create_page(title="FAQ draft", content="<p>x</p>", status="draft")
+    updated = wp.update_page(page.id, status="publish", title="FAQ live")
+    assert updated.status == "publish"
+    assert updated.title == "FAQ live"
+
+
 # --------------------------------------------------------------------------- #
 # Media / Users / Comments / Settings
 # --------------------------------------------------------------------------- #

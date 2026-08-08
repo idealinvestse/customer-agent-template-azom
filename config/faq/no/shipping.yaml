@@ -1,0 +1,23 @@
+# NO stubs — localize before live WP publish (Oscar gate).
+- id: no-shipping-delivery-times
+  market: no
+  language: nb
+  category: shipping
+  title: Leveringstid Norge
+  tags: [levering, frakt]
+  customer_safe: true
+  body: |
+    Bestillinger i Norge leveres normalt innen 2–5 virkedager etter at ordren
+    er markert som sendt. Du får sporingsnummer når forsendelsen forlater lageret.
+    (Stub — fullfør norsk tekst før live publish.)
+
+- id: no-shipping-tracking
+  market: no
+  language: nb
+  category: shipping
+  title: Spor leveransen
+  tags: [sporing, tracking]
+  customer_safe: true
+  body: |
+    Når ordren er sendt får du e-post med sporingslenke. Oppgi ordrenummer
+    til support hvis du trenger hjelp. (Stub — fullfør før live publish.)

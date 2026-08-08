@@ -270,9 +270,13 @@ python -m ecom_ops classify-eval
 
 ---
 
+## FAQ i case-utkast
+
+När FAQ/KB är på (`config/faq.yaml` → `inject_into_draft`) hämtas lexical träffar efter classify och skickas in som `FAQ context:` till LLM/mall. Artiklar sparas på caset som `faq_article_ids` (audit). Suggest-approve / never-suggest-regler är oförändrade. Kundvänd WP-sida: Oscar via `faq sync-draft` / `faq publish` — se [`FAQ_KB.md`](FAQ_KB.md).
+
 ## Icke-mål (nu)
 
-- FAQ/KB
+- FAQ embeddings / chat-uppslag `/faq` (v1 har bara draft + WP pages)
 - IMAP IDLE (bara timer-poll)
 - Multi-tenant cases
 - Default-on auto-send

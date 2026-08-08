@@ -25,6 +25,8 @@ class Permission(str, Enum):
     MARKETING_READ = "marketing_read"
     MARKETING_SUGGEST = "marketing_suggest"
     MARKETING_MUTATE = "marketing_mutate"
+    FAQ_READ = "faq_read"
+    FAQ_PUBLISH = "faq_publish"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
@@ -36,6 +38,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.CASE_REPLY,
             Permission.MARKETING_READ,
             Permission.MARKETING_SUGGEST,
+            Permission.FAQ_READ,
         }
     ),
     # ``read_only`` is an alias for ``viewer`` (kept for config compatibility).
@@ -47,6 +50,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.CASE_REPLY,
             Permission.MARKETING_READ,
             Permission.MARKETING_SUGGEST,
+            Permission.FAQ_READ,
         }
     ),
     "operator": frozenset(
@@ -60,6 +64,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.CASE_REPLY,
             Permission.SSH_READ,
             Permission.MARKETING_READ,
+            Permission.FAQ_READ,
         }
     ),
     "full_admin": frozenset(set(Permission)),

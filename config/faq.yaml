@@ -1,0 +1,19 @@
+# FAQ / knowledge base (v1) — lexical retrieval + WP page publish
+# Source of truth for article bodies: config/faq/{market}/*.yaml
+
+enabled: true
+# Inject FAQ snippets into case drafts (LLM prompt + template path).
+# Set false to disable enrichment without unloading the corpus.
+inject_into_draft: true
+max_hits: 3
+max_chars_per_hit: 600
+# Parent WP page slug per market (create/update via faq sync-draft)
+wp_parent_slug: faq
+wp_parent_title:
+  se: Vanliga frågor
+  no: Vanlige spørsmål
+  dk: Ofte stillede spørgsmål
+publish_kill_env: AZOM_FAQ_PUBLISH_KILL
+# Live publish to NO/DK requires Oscar written enable (same gate as mailboxes).
+live_markets_allowed:
+  - se
