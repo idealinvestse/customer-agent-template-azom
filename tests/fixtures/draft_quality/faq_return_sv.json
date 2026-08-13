@@ -1,10 +1,11 @@
 {
   "id": "faq_return_sv",
-  "language": "sv",
-  "category": "return",
-  "customer_message": "Jag vill returnera min order, hur många dagar har jag på mig?",
+  "text": "Jag vill returnera order 1002, hur många dagar har jag på mig?",
   "order_id": "1002",
-  "must_include_any": ["14", "ånger", "retur", "order"],
+  "language": "sv",
+  "expected_category": "return",
+  "must_include_any": ["14", "ånger", "retur", "order", "1002"],
   "must_not_include": ["vi återbetalar direkt", "full refund now"],
+  "must_not_promise_refund": true,
   "notes": "FAQ enrichment — return window without refund promise"
 }

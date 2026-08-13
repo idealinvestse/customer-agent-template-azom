@@ -22,6 +22,24 @@ _LANG_TO_MARKET = {
     "en": "se",
 }
 
+# Lightweight synonym expansion (no embeddings) — SE + shared Nordic stems.
+_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "spåra": ("spårning", "spårnings", "tracking", "track"),
+    "spårning": ("spåra", "tracking", "track"),
+    "tracking": ("spårning", "spåra", "track"),
+    "retur": ("returnera", "ånger", "ångerrätt", "return"),
+    "returnera": ("retur", "ånger", "return"),
+    "ånger": ("ångerrätt", "retur", "returnera"),
+    "leverans": ("leverera", "frakt", "delivery", "shipping"),
+    "frakt": ("leverans", "shipping", "delivery"),
+    "faktura": ("invoice", "kvitto", "betalning"),
+    "betalning": ("faktura", "payment", "swish"),
+    "paket": ("försändelse", "parcel", "package"),
+    "order": ("ordernummer", "beställning", "ordre"),
+    "installation": ("montering", "setup", "igångsättning"),
+    "trasig": ("defekt", "fel", "reklamation"),
+}
+
 
 def market_from_language(language: str | None, market: str | None = None) -> str:
     if market and str(market).strip():
@@ -32,6 +50,20 @@ def market_from_language(language: str | None, market: str | None = None) -> str
 
 def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text or "") if len(t) > 1]
+
+
+def _expand_tokens(tokens: Iterable[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        if tok not in seen:
+            out.append(tok)
+            seen.add(tok)
+        for syn in _SYNONYMS.get(tok, ()):
+            if syn not in seen:
+                out.append(syn)
+                seen.add(syn)
+    return out
 
 
 def _score(article: FaqArticle, query_tokens: Iterable[str], category: str | None) -> float:
@@ -55,18 +87,36 @@ def _score(article: FaqArticle, query_tokens: Iterable[str], category: str | Non
             score += 2.5
         if tok in article.category:
             score += 1.5
-        # term frequency-ish
         score += 0.5 * blob.count(tok)
     if category and article.category == category.strip().lower():
-        score += 4.0
+        # Strong boost only when query tokens also matched; else weak category-only.
+        if score > 0:
+            score += 4.0
+        else:
+            score += 0.5
     return score
 
 
-def _snippet(body: str, max_chars: int) -> str:
+def _snippet(body: str, max_chars: int, query_tokens: list[str] | None = None) -> str:
     text = " ".join((body or "").split())
+    if not text:
+        return ""
     if len(text) <= max_chars:
         return text
-    return text[: max_chars - 1].rstrip() + "…"
+    # Prefer a window around the first query-token hit.
+    lowered = text.lower()
+    anchor = 0
+    for tok in query_tokens or []:
+        idx = lowered.find(tok)
+        if idx >= 0:
+            anchor = max(0, idx - max_chars // 4)
+            break
+    chunk = text[anchor : anchor + max_chars]
+    if anchor > 0:
+        chunk = "…" + chunk.lstrip()
+    if anchor + max_chars < len(text):
+        chunk = chunk.rstrip() + "…"
+    return chunk
 
 
 def search_faq(
@@ -78,6 +128,7 @@ def search_faq(
     limit: int | None = None,
     customer_safe_only: bool = True,
     store: FaqStore | None = None,
+    min_score: float | None = None,
 ) -> list[FaqHit]:
     cfg = load_faq_config()
     if not cfg.enabled:
@@ -88,22 +139,18 @@ def search_faq(
         market=mkt,
         customer_safe_only=customer_safe_only,
     )
-    tokens = _tokenize(query)
+    tokens = _expand_tokens(_tokenize(query))
+    floor = cfg.min_score if min_score is None else float(min_score)
     scored: list[FaqHit] = []
     for art in candidates:
         s = _score(art, tokens, category)
-        if s <= 0 and not (category and art.category == (category or "").lower()):
-            continue
-        if s <= 0:
-            # category-only fallback: mild score so empty query + category still works
-            s = 1.0 if category and art.category == category.lower() else 0.0
-        if s <= 0:
+        if s < floor:
             continue
         scored.append(
             FaqHit(
                 article=art,
                 score=s,
-                snippet=_snippet(art.body, cfg.max_chars_per_hit),
+                snippet=_snippet(art.body, cfg.max_chars_per_hit, tokens),
             )
         )
     scored.sort(key=lambda h: (-h.score, h.article.id))

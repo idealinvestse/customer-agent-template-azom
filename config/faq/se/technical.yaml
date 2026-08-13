@@ -1,0 +1,23 @@
+- id: se-technical-setup
+  market: se
+  language: sv
+  category: technical
+  title: Installation och igångsättning
+  tags: [installation, setup, montering, teknisk]
+  customer_safe: true
+  body: |
+    Följ monterings-/installationsanvisningen som följer med produkten eller
+    finns på produktsidan. Saknar du anvisningen, mejla support med ordernummer
+    och produktnamn så skickar vi rätt dokumentation.
+
+- id: se-technical-defect
+  market: se
+  language: sv
+  category: technical
+  title: Misstänkt tekniskt fel
+  tags: [fel, trasig, defekt, reklamation]
+  customer_safe: true
+  body: |
+    Vid misstänkt tekniskt fel, beskriv symptomen och bifoga gärna foto eller
+    kort video. Ange ordernummer. Vi utreder enligt konsumentköplagen och
+    lovar inte byte eller ersättning innan utredningen är klar.

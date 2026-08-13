@@ -32,6 +32,12 @@
       {% endif %}
       · Assignee: {{ case.assignee or '—' }}
       {% if case.order_id %} · Order: <strong class="text-mist-100">{{ case.order_id }}</strong>{% endif %}
+      {% if case.faq_article_ids %}
+      · FAQ:
+        {% for fid in case.faq_article_ids.split(',') %}
+        <code class="az-code text-xs">{{ fid.strip() }}</code>{% if not loop.last %} {% endif %}
+        {% endfor %}
+      {% endif %}
       {% if case.escalation_id %}
       · Eskalering:
         {% if is_oscar %}

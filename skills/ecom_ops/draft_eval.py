@@ -115,6 +115,28 @@ def _check_draft(draft: str, fixture: dict[str, Any]) -> dict[str, Any]:
     else:
         checks["asks_order_id"] = True
 
+    # 9. must_include_any — at least one phrase present (FAQ / policy fixtures)
+    any_need = fixture.get("must_include_any") or []
+    if isinstance(any_need, str):
+        any_need = [any_need]
+    if any_need:
+        checks["must_include_any"] = any(
+            str(p).lower() in lowered for p in any_need if str(p).strip()
+        )
+    else:
+        checks["must_include_any"] = True
+
+    # 10. must_not_include — none of the forbidden phrases
+    forbid = fixture.get("must_not_include") or []
+    if isinstance(forbid, str):
+        forbid = [forbid]
+    if forbid:
+        checks["must_not_include"] = not any(
+            str(p).lower() in lowered for p in forbid if str(p).strip()
+        )
+    else:
+        checks["must_not_include"] = True
+
     passed = sum(1 for v in checks.values() if v)
     total = len(checks)
     return {
@@ -143,13 +165,14 @@ def evaluate_drafts(
         svc = SupportService()
         drafts = []
         for item in fx:
-            msg = str(item.get("text") or "")
+            msg = str(item.get("text") or item.get("customer_message") or "")
             # Order id must appear in text (extract_order_id); do not pass
             # unsupported order_id= into SupportService.handle.
             result = svc.handle(
                 msg,
                 language=str(item.get("language") or "sv"),
                 actor="agent",
+                market=str(item.get("market") or "se"),
             )
             drafts.append(result.reply or "")
     results = []

@@ -1,4 +1,3 @@
-# DK stubs — localize before live WP publish (Oscar gate).
 - id: dk-shipping-delivery-times
   market: dk
   language: da
@@ -9,7 +8,7 @@
   body: |
     Ordrer i Danmark leveres normalt inden 2–5 hverdage efter afsendelse.
     Du får et trackingnummer, når pakken forlader lageret.
-    (Stub — færdiggør dansk tekst før live publish.)
+    Hellagdage kan forlænge leveringstiden.
 
 - id: dk-shipping-tracking
   market: dk
@@ -20,4 +19,4 @@
   customer_safe: true
   body: |
     Når ordren er sendt, får du en e-mail med sporingslink. Kontakt support
-    med ordrenummer, hvis du har brug for hjælp. (Stub — færdiggør før live publish.)
+    med ordrenummer, hvis du har brug for hjælp til at spore pakken.

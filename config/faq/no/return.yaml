@@ -1,0 +1,23 @@
+- id: no-return-window
+  market: no
+  language: nb
+  category: return
+  title: Angrerett og returfrist
+  tags: [retur, angrerett, 14]
+  customer_safe: true
+  body: |
+    Som forbruker har du normalt 14 dagers angrerett fra du mottok varen.
+    Varen skal være ubrukt og i salgbar stand. Kontakt support med ordrenummer
+    før du sender noe tilbake, så får du riktig returadresse. Vi bekrefter ikke
+    refusjon før returen er mottatt og kontrollert.
+
+- id: no-order-status-processing
+  market: no
+  language: nb
+  category: order_status
+  title: Ordre under behandling
+  tags: [ordre, status, behandling]
+  customer_safe: true
+  body: |
+    Når en ordre har status under behandling, plukkes og pakkes den.
+    Du får e-post når den sendes. Oppgi gjerne ordrenummer så bekrefter vi status.

@@ -1,0 +1,11 @@
+- id: no-product-compatibility
+  market: no
+  language: nb
+  category: product
+  title: Kompatibilitet
+  tags: [kompatibilitet, passform]
+  customer_safe: true
+  body: |
+    Produktbeskrivelsen og spesifikasjonene på produktsiden angir kompatibilitet.
+    Er du usikker, send modell/årgang eller bilde til support så hjelper vi deg
+    å vurdere — uten å garantere passform hvis underlaget mangler.

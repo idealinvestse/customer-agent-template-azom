@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}FAQ – Azom{% endblock %}
+{% block page_subtitle %}FAQ / kunskapsbas (läs){% endblock %}
+{% block content %}
+<div class="mb-5 flex flex-wrap items-center gap-3">
+  <form method="get" action="/faq" class="flex flex-wrap items-end gap-2">
+    <div>
+      <label class="az-label" for="market">Marknad</label>
+      <select class="az-select max-w-[8rem]" id="market" name="market">
+        {% for m in markets %}
+        <option value="{{ m }}" {% if m == market %}selected{% endif %}>{{ m }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="az-label" for="q">Sök</label>
+      <input class="az-input" id="q" name="q" value="{{ search_q or '' }}" placeholder="t.ex. retur" />
+    </div>
+    <button type="submit" class="az-btn-secondary">Sök</button>
+  </form>
+  <span class="az-muted text-sm">{{ articles|length }} artiklar · read-only</span>
+</div>
+
+{% if search_hits is not none %}
+<section class="az-card mb-5">
+  <h2 class="az-section-title">Sökresultat</h2>
+  <ul class="mt-3 space-y-2 text-sm">
+    {% for h in search_hits %}
+    <li class="rounded border border-ink-700/60 p-2">
+      <strong>{{ h.article.title }}</strong>
+      <code class="az-code text-xs">{{ h.article.id }}</code>
+      <p class="az-muted mt-1">{{ h.snippet }}</p>
+    </li>
+    {% else %}
+    <li class="az-muted">Inga träffar</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="az-card">
+  <h2 class="az-section-title">Artiklar</h2>
+  <div class="mt-3 overflow-x-auto">
+    <table class="az-table">
+      <thead>
+        <tr><th>Id</th><th>Kategori</th><th>Titel</th><th>Utdrag</th></tr>
+      </thead>
+      <tbody>
+        {% for a in articles %}
+        <tr>
+          <td><code>{{ a.id }}</code></td>
+          <td>{{ a.category }}</td>
+          <td>{{ a.title }}</td>
+          <td class="az-muted text-xs max-w-md">{{ a.body[:160] }}{% if a.body|length > 160 %}…{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="az-muted">Inga artiklar</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if is_oscar %}
+  <p class="mt-4"><a class="az-btn-oscar" href="/oscar/faq?market={{ market }}">Oscar: sync / publish →</a></p>
+  {% endif %}
+</section>
+{% endblock %}

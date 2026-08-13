@@ -41,10 +41,15 @@ def article_to_html(article: FaqArticle) -> str:
 
 def build_parent_html(articles: list[FaqArticle], *, market: str) -> str:
     cfg = load_faq_config()
-    title = cfg.wp_parent_title.get(market, "FAQ")
+    mkt = market.strip().lower()
+    title = cfg.wp_parent_title.get(mkt, "FAQ")
+    intro = cfg.wp_intro.get(
+        mkt,
+        "Vanliga frågor om order, leverans och produkter.",
+    )
     parts = [
         f"<h1>{html.escape(title)}</h1>",
-        "<p>Vanliga frågor om order, leverans och produkter.</p>",
+        f"<p>{html.escape(intro)}</p>",
         "<ul>",
     ]
     for art in articles:
@@ -122,6 +127,7 @@ def sync_draft(
     use_mock: bool | None = None,
     store: FaqStore | None = None,
     publish_map: FaqPublishMap | None = None,
+    force: bool = False,
 ) -> FaqPublishResult:
     """Upsert parent FAQ page as WordPress draft for market."""
     actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
@@ -159,6 +165,27 @@ def sync_draft(
     title = cfg.wp_parent_title.get(mkt, "FAQ")
     pmap = publish_map or FaqPublishMap()
     existing = pmap.get(mkt, "")
+
+    # Skip WP write when corpus hash unchanged (unless force, e.g. before publish).
+    if (
+        not force
+        and existing
+        and existing.content_hash == chash
+        and existing.wp_page_id
+    ):
+        return FaqPublishResult(
+            ok=True,
+            message=f"FAQ draft unchanged for {mkt} (skipped WP write)",
+            market=mkt,
+            wp_page_id=existing.wp_page_id,
+            status=existing.status,
+            link=existing.link,
+            details={
+                "content_hash": chash,
+                "articles": len(articles),
+                "skipped": True,
+            },
+        )
 
     try:
         client = _wp_client(mkt, use_mock=mock)
@@ -230,15 +257,29 @@ def sync_draft(
     )
 
 
+def corpus_content_hash(
+    market: str,
+    *,
+    store: FaqStore | None = None,
+) -> str | None:
+    """Current YAML-derived parent HTML hash for market (None if no articles)."""
+    faq_store = store or default_faq_store()
+    articles = faq_store.list(market=market.strip().lower(), customer_safe_only=True)
+    if not articles:
+        return None
+    return _content_hash(build_parent_html(articles, market=market.strip().lower()))
+
+
 def publish_page(
     market: str,
     *,
     status: str = "publish",
     actor: Actor | str | None = None,
     use_mock: bool | None = None,
+    store: FaqStore | None = None,
     publish_map: FaqPublishMap | None = None,
 ) -> FaqPublishResult:
-    """Set WP FAQ page status (publish requires Oscar + FAQ_PUBLISH)."""
+    """Sync corpus then set WP FAQ page status (Oscar + FAQ_PUBLISH)."""
     actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
     try:
         require_permission(actor_obj, Permission.FAQ_PUBLISH)
@@ -268,11 +309,23 @@ def publish_page(
         )
 
     pmap = publish_map or FaqPublishMap()
+    # Always re-sync corpus before status flip so YAML remains source of truth.
+    synced = sync_draft(
+        mkt,
+        actor=actor_obj,
+        use_mock=mock,
+        store=store,
+        publish_map=pmap,
+        force=True,
+    )
+    if not synced.ok:
+        return synced
+
     existing = pmap.get(mkt, "")
     if existing is None:
         return FaqPublishResult(
             ok=False,
-            message="No synced FAQ page — run faq sync-draft first",
+            message="No synced FAQ page after sync-draft",
             market=mkt,
         )
 
@@ -314,4 +367,5 @@ def publish_page(
         wp_page_id=row.wp_page_id,
         status=row.status,
         link=row.link,
+        details={"synced_first": True, "content_hash": row.content_hash},
     )

@@ -1,0 +1,23 @@
+- id: dk-return-window
+  market: dk
+  language: da
+  category: return
+  title: Fortrydelsesret og returfrist
+  tags: [retur, fortrydelse, 14]
+  customer_safe: true
+  body: |
+    Som forbruger har du normalt 14 dages fortrydelsesret fra du modtog varen.
+    Varen skal være ubrugt og i salgbar stand. Kontakt support med ordrenummer
+    før du sender noget tilbage, så får du den rigtige returadresse. Vi bekræfter
+    ikke refundering, før returen er modtaget og kontrolleret.
+
+- id: dk-order-status-processing
+  market: dk
+  language: da
+  category: order_status
+  title: Ordre under behandling
+  tags: [ordre, status, behandling]
+  customer_safe: true
+  body: |
+    Når en ordre har status under behandling, plukkes og pakkes den.
+    Du får en e-mail, når den sendes. Angiv gerne ordrenummer, så bekræfter vi status.

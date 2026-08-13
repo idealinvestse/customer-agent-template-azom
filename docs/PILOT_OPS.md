@@ -215,6 +215,17 @@ python -m ecom_ops kpis --days 7
 # FU9 förblir unwired; agents får inte markera soak klar
 ```
 
+### FAQ soft-soak (SE — ersätter inte A1)
+
+Se [`FAQ_KB.md`](FAQ_KB.md). Kort:
+
+1. `python -m ecom_ops --mock faq validate` + `faq coverage`
+2. Poll/mock: bekräfta `faq_article_ids` på case-detalj
+3. Oscar live: `probe_wordpress` → `faq sync-draft --market se` → wp-admin → `faq publish`
+4. Veckovis 15 min korpus-cadence (Jonatan flaggar policy-redits → Oscar YAML)
+
+**Agents får inte markera live SE FAQ-sida som klar.**
+
 ### Live soft-soak / shadow (Oscar — inte A1 soak)
 
 Null-send är **default av**. Systemd sätter den **inte**. För live-read skuggspår (fortfarande ingen kundmail):

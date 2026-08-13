@@ -1,0 +1,24 @@
+- id: se-billing-invoice
+  market: se
+  language: sv
+  category: billing
+  title: Faktura och betalningsbekräftelse
+  tags: [faktura, betalning, kvitto, invoice]
+  customer_safe: true
+  body: |
+    Orderbekräftelse och kvitto skickas till den mejladress som angavs vid köpet.
+    Behöver du en kopia, kontakta support med ordernummer så hjälper vi dig.
+    Vi bekräftar inte återbetalning eller kredit innan ärendet är utrett.
+
+- id: se-billing-payment-pending
+  market: se
+  language: sv
+  category: billing
+  title: Väntande betalning
+  tags: [betalning, pending, swish, kort]
+  customer_safe: true
+  body: |
+    Om en order står som väntande betalning har vi inte registrerat en slutförd
+    betalning ännu. Kontrollera att betalningen gick igenom hos din bank/Swish.
+    Skicka gärna ordernummer och tidpunkt så kan vi stämma av i systemet —
+    utan att lova kreditering i förväg.

@@ -1,0 +1,11 @@
+- id: dk-product-compatibility
+  market: dk
+  language: da
+  category: product
+  title: Kompatibilitet
+  tags: [kompatibilitet, pasform]
+  customer_safe: true
+  body: |
+    Produktbeskrivelsen og specifikationen på produktsiden angiver kompatibilitet.
+    Er du usikker, send model/årgang eller foto til support, så hjælper vi dig
+    med at vurdere — uden at garantere pasform, hvis underlaget mangler.

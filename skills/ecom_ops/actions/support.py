@@ -611,9 +611,28 @@ class SupportService:
                     faq_ids = tuple(h.article.id for h in hits)
                     block = format_faq_context_block(hits)
                     faq_context = block or None
-            except Exception:  # noqa: BLE001 — FAQ must never break support
+                    self.telemetry.record(
+                        action="faq_retrieve",
+                        site=site,
+                        meta={
+                            "hit_count": len(faq_ids),
+                            "faq_article_ids": list(faq_ids),
+                            "category": category.value,
+                            "market": market or "",
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001 — FAQ must never break support
                 faq_ids = ()
                 faq_context = None
+                self.telemetry.record(
+                    action="faq_retrieve_error",
+                    site=site,
+                    meta={
+                        "error": str(exc)[:200],
+                        "category": category.value,
+                        "market": market or "",
+                    },
+                )
 
             if category == SupportCategory.ABUSE:
                 ticket = self.escalation.escalate(
@@ -677,6 +696,12 @@ class SupportService:
                 )
                 if resolved_context and resolved_context.strip() not in (reply or ""):
                     reply = f"{resolved_context.strip()}\n\n{(reply or '').strip()}"
+                # Mirror order-context: inject FAQ into template path (Jonatan edits before send)
+                if faq_context and faq_context.strip() not in (reply or ""):
+                    reply = (
+                        f"FAQ context:\n{faq_context.strip()}\n\n"
+                        f"{(reply or '').strip()}"
+                    )
             # SB5/SB6: status/shipping/return/billing without order_id still need a soft ask
             if (
                 not order_id

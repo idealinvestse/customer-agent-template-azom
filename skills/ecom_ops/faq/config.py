@@ -41,8 +41,10 @@ class FaqConfig:
     inject_into_draft: bool
     max_hits: int
     max_chars_per_hit: int
+    min_score: float
     wp_parent_slug: str
     wp_parent_title: dict[str, str]
+    wp_intro: dict[str, str]
     publish_kill_env: str
     live_markets_allowed: tuple[str, ...]
 
@@ -62,19 +64,36 @@ def load_faq_config() -> FaqConfig:
         titles = {}
     title_map = {str(k).lower(): str(v) for k, v in titles.items()}
 
+    intros = raw.get("wp_intro") or {}
+    if not isinstance(intros, dict):
+        intros = {}
+    intro_map = {str(k).lower(): str(v) for k, v in intros.items()}
+
+    enabled = bool(raw.get("enabled", True))
+    env_enabled = _env_bool("AZOM_FAQ_ENABLED")
+    if env_enabled is not None:
+        enabled = env_enabled
+
     inject = bool(raw.get("inject_into_draft", False))
     env_inject = _env_bool("AZOM_FAQ_INJECT_INTO_DRAFT")
     if env_inject is not None:
         inject = env_inject
 
     return FaqConfig(
-        enabled=bool(raw.get("enabled", True)),
+        enabled=enabled,
         inject_into_draft=inject,
         max_hits=max(1, min(int(raw.get("max_hits", 3)), 10)),
         max_chars_per_hit=max(100, min(int(raw.get("max_chars_per_hit", 600)), 4000)),
+        min_score=max(0.0, float(raw.get("min_score", 1.0))),
         wp_parent_slug=str(raw.get("wp_parent_slug") or "faq").strip() or "faq",
         wp_parent_title=title_map
         or {"se": "Vanliga frågor", "no": "Vanlige spørsmål", "dk": "Ofte stillede spørgsmål"},
+        wp_intro=intro_map
+        or {
+            "se": "Vanliga frågor om order, leverans och produkter.",
+            "no": "Vanlige spørsmål om ordre, levering og produkter.",
+            "dk": "Ofte stillede spørgsmål om ordre, levering og produkter.",
+        },
         publish_kill_env=str(raw.get("publish_kill_env") or "AZOM_FAQ_PUBLISH_KILL"),
         live_markets_allowed=tuple(
             m.lower()

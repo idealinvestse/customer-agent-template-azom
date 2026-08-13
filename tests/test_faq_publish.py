@@ -71,3 +71,27 @@ def test_oscar_has_faq_publish():
     jon = resolve_actor("jonatan")
     assert jon.has(Permission.FAQ_READ)
     assert not jon.has(Permission.FAQ_PUBLISH)
+
+
+def test_publish_auto_syncs_before_status(tmp_path):
+    """publish must sync corpus first so YAML remains source of truth."""
+    pmap = FaqPublishMap(path=tmp_path / "faq_publish.db")
+    # Publish without prior sync — should still succeed via auto-sync
+    pub = publish_page(
+        "se", status="publish", actor="oscar", use_mock=True, publish_map=pmap
+    )
+    assert pub.ok, pub.message
+    assert pub.status == "publish"
+    assert (pub.details or {}).get("synced_first") is True
+    row = pmap.get("se", "")
+    assert row is not None
+    assert row.content_hash
+
+
+def test_sync_skips_unchanged(tmp_path):
+    pmap = FaqPublishMap(path=tmp_path / "faq_publish.db")
+    first = sync_draft("se", actor="oscar", use_mock=True, publish_map=pmap)
+    assert first.ok, first.message
+    second = sync_draft("se", actor="oscar", use_mock=True, publish_map=pmap)
+    assert second.ok, second.message
+    assert (second.details or {}).get("skipped") is True
