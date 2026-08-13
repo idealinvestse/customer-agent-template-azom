@@ -18,6 +18,8 @@
 | Audit-log | Spårbarhet | Legitimt intresse | 12 mån | `/var/lib/azom/audit.jsonl` |
 | OAuth-tokens (Gmail) | Mail-anslutning | Samtycke (användare) | Tills revoke | `/var/lib/azom/oauth/gmail.json` |
 
+**Känd lucka (FAQ ingest):** `{AZOM_DATA_DIR}/faq_dataset/` och `faq_staging/` ingår **inte** i GDPR export/delete/retention. De är intern eval/HITL-staging, inte cases-path. `GET/POST /oscar/gdpr/*` och `retention-purge` rör bara `cases.db`. Se [`FAQ_KB.md`](FAQ_KB.md).
+
 ## Dataresidency & tredjepartsöverföring (P8.4)
 
 ### OpenRouter (LLM)

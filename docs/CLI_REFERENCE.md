@@ -216,13 +216,22 @@ python -m ecom_ops --mock --actor jonatan marketing merchant-queue --offer-id SK
 FAQ / knowledge base (lexical search + WordPress page HITL). See [`FAQ_KB.md`](FAQ_KB.md).
 
 ```bash
-python -m ecom_ops --mock faq list [--market se] [--category shipping]
+python -m ecom_ops --mock faq list [--market se] [--category shipping] [--all]
 python -m ecom_ops --mock faq search --q "spårning" --market se
+python -m ecom_ops --mock faq coverage
+python -m ecom_ops --mock faq validate
+python -m ecom_ops --mock faq reload
 python -m ecom_ops --mock --actor oscar faq sync-draft --market se
 python -m ecom_ops --mock --actor oscar faq publish --market se --status publish
+python -m ecom_ops --mock --actor oscar faq dataset export [--market se] [--since-days 180] [--exclude-stale] [--raw]
+python -m ecom_ops --mock --actor oscar faq ingest site --market se [--pages|--no-pages] [--posts|--no-posts]
+python -m ecom_ops --mock --actor oscar faq ingest products --market se [--no-guides]
+python -m ecom_ops --mock --actor oscar faq suggest articles --from products|staging|dataset --market se
+python -m ecom_ops --mock --actor oscar faq promote --id <article-id> [--apply]
+python -m ecom_ops --mock faq staging
 ```
 
-`sync-draft` / `publish` require **FAQ_PUBLISH** (Oscar). Kill-switch: `AZOM_FAQ_PUBLISH_KILL=1`.
+`sync-draft` / `publish` / `promote --apply` require **FAQ_PUBLISH** (Oscar). Kill-switches: `AZOM_FAQ_PUBLISH_KILL=1`, `AZOM_FAQ_INGEST_KILL=1`. Publish auto-syncs corpus first. Ingest writes staging only.
 
 ## Environment that changes CLI behavior
 
@@ -239,7 +248,9 @@ python -m ecom_ops --mock --actor oscar faq publish --market se --status publish
 | `AZOM_ADS_MUTATE_KILL=1` | Always deny Ads mutate / merchant write |
 | `AZOM_GA_MUTATE_KILL=1` | Reserved GA-admin mutate kill (deny when set; no mutate path yet) |
 | `AZOM_MP_KILL=1` | Always deny Measurement Protocol send |
+| `AZOM_FAQ_ENABLED=0|1` | Enable/disable entire FAQ module |
 | `AZOM_FAQ_PUBLISH_KILL=1` | Deny FAQ WP sync-draft / publish |
+| `AZOM_FAQ_INGEST_KILL=1` | Deny FAQ dataset/site/product ingest + suggest |
 | `AZOM_FAQ_INJECT_INTO_DRAFT=0|1` | Override FAQ draft enrichment flag |
 
 ## Related

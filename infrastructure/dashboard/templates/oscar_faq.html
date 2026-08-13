@@ -19,10 +19,39 @@
     </select>
   </form>
   <span class="az-muted text-sm">
-    inject={{ faq_cfg.inject_into_draft }} · live_ok={{ live_allowed }}
-    {% if kill_switch %}<span class="text-danger"> · kill-switch ON</span>{% endif %}
+    enabled={{ faq_cfg.enabled }} · inject={{ faq_cfg.inject_into_draft }} · live_ok={{ live_allowed }}
+    {% if kill_switch %}<span class="text-danger"> · kill-switch ON (blockerar sync &amp; publish)</span>{% endif %}
+    {% if corpus_drift %}<span class="text-warn"> · corpus drift vs senast synkad</span>{% endif %}
   </span>
 </div>
+
+{% if not use_mock and not wp_probe_ok %}
+<p class="mb-4 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
+  WordPress-probe: {{ wp_probe_message }} — kör sync/publish först efter att probe är grön.
+</p>
+{% endif %}
+
+<section class="az-card mb-5 border-oscar-600/35">
+  <h2 class="az-section-title text-oscar-400/80">Ingest / staging</h2>
+  <p class="mt-2 text-sm">
+    Staging ({{ market }}): site {{ staging_counts.site_docs }} · produkter {{ staging_counts.product_docs }}
+    · guider {{ staging_counts.guide_docs }} · artikelutkast {{ staging_counts.article_drafts }}
+    · dataset-filer {{ staging_counts.dataset_files }}
+    {% if ingest_kill %}<span class="text-danger"> · ingest kill-switch ON</span>{% endif %}
+  </p>
+  <p class="az-muted text-xs mt-2">
+    CLI (Oscar / mock):
+    <code>faq dataset export</code> ·
+    <code>faq ingest site --market {{ market }}</code> ·
+    <code>faq ingest products --market {{ market }}</code> ·
+    <code>faq suggest articles --from products</code> ·
+    <code>faq promote --id … [--apply]</code>
+  </p>
+  <p class="az-muted text-xs mt-1">
+    Staging under <code>AZOM_DATA_DIR/faq_staging</code> och dataset under <code>faq_dataset</code>.
+    Promote skriver till <code>config/faq/</code> endast med <code>--apply</code> — aldrig silent WP-publish.
+  </p>
+</section>
 
 <section class="az-card mb-5 border-oscar-600/35">
   <h2 class="az-section-title text-oscar-400/80">WordPress sync</h2>
@@ -30,24 +59,64 @@
   <p class="mt-2 text-sm">Page id <code>{{ parent_publish.wp_page_id }}</code> · status <strong>{{ parent_publish.status }}</strong>
     {% if parent_publish.link %} · <a class="text-steel-400 underline" href="{{ parent_publish.link }}" target="_blank" rel="noopener">länk</a>{% endif %}
   </p>
-  <p class="az-muted text-xs mt-1">hash {{ parent_publish.content_hash }} · {{ parent_publish.updated_at[:19] }}</p>
+  <p class="az-muted text-xs mt-1">
+    synkad hash {{ parent_publish.content_hash }} · corpus hash {{ corpus_hash or '—' }}
+    · {{ parent_publish.updated_at[:19] }}
+  </p>
   {% else %}
   <p class="az-muted mt-2">Ingen synkad FAQ-sida för {{ market }} ännu.</p>
   {% endif %}
   <div class="mt-4 flex flex-wrap gap-2">
+    <form method="post" action="/oscar/faq/reload">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="market" value="{{ market }}" />
+      <button type="submit" class="az-btn-secondary">Ladda om korpus</button>
+    </form>
     <form method="post" action="/oscar/faq/sync-draft">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <input type="hidden" name="market" value="{{ market }}" />
-      <button type="submit" class="az-btn-oscar">Sync draft till WP</button>
+      <button type="submit" class="az-btn-oscar" {% if kill_switch %}disabled{% endif %}>Sync draft till WP</button>
     </form>
-    <form method="post" action="/oscar/faq/publish" onsubmit="return confirm('Publicera FAQ-sidan live för {{ market }}?');">
+    <form method="post" action="/oscar/faq/publish" onsubmit="return confirm('Publicera FAQ-sidan live för {{ market }}? (sync körs först)');">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <input type="hidden" name="market" value="{{ market }}" />
       <input type="hidden" name="status" value="publish" />
-      <button type="submit" class="az-btn-secondary" {% if not parent_publish %}disabled{% endif %}>Publish</button>
+      <button type="submit" class="az-btn-secondary" {% if kill_switch or not live_allowed %}disabled{% endif %}>Publish</button>
     </form>
   </div>
-  <p class="az-muted text-xs mt-3">YAML under <code>config/faq/</code> är source of truth. Publish kräver Oscar + saknar kill-switch. NO/DK live blockeras tills allowlist.</p>
+  <p class="az-muted text-xs mt-3">YAML under <code>config/faq/</code> är source of truth. Publish kräver Oscar + FAQ_PUBLISH; kill-switch blockerar både sync och publish. NO/DK live blockeras tills allowlist.</p>
+</section>
+
+<section class="az-card mb-5 border-oscar-600/35">
+  <h2 class="az-section-title text-oscar-400/80">Sök / preview</h2>
+  <form method="get" action="/oscar/faq" class="mt-3 flex flex-wrap gap-2 items-end">
+    <input type="hidden" name="market" value="{{ market }}" />
+    <div>
+      <label class="az-label" for="q">Query</label>
+      <input class="az-input" id="q" name="q" value="{{ search_q or '' }}" placeholder="t.ex. spårning" />
+    </div>
+    <button type="submit" class="az-btn-secondary">Sök</button>
+  </form>
+  {% if search_hits is not none %}
+  <ul class="mt-3 space-y-2 text-sm">
+    {% for h in search_hits %}
+    <li class="rounded border border-ink-700/60 p-2">
+      <strong>{{ h.article.title }}</strong>
+      <code class="az-code text-xs">{{ h.article.id }}</code>
+      <span class="az-muted">score {{ '%.1f'|format(h.score) }}</span>
+      <p class="az-muted mt-1">{{ h.snippet }}</p>
+    </li>
+    {% else %}
+    <li class="az-muted">Inga träffar</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if html_preview %}
+  <details class="mt-4">
+    <summary class="cursor-pointer text-sm text-steel-400">HTML preview (WP parent)</summary>
+    <pre class="mt-2 max-h-64 overflow-auto rounded bg-ink-950 p-3 text-xs whitespace-pre-wrap">{{ html_preview }}</pre>
+  </details>
+  {% endif %}
 </section>
 
 <section class="az-card border-oscar-600/35">
@@ -55,7 +124,7 @@
   <div class="mt-3 overflow-x-auto">
     <table class="az-table">
       <thead>
-        <tr><th>Id</th><th>Kategori</th><th>Titel</th><th>Safe</th></tr>
+        <tr><th>Id</th><th>Kategori</th><th>Titel</th><th>Safe</th><th>Utdrag</th></tr>
       </thead>
       <tbody>
         {% for a in articles %}
@@ -64,9 +133,10 @@
           <td>{{ a.category }}</td>
           <td>{{ a.title }}</td>
           <td>{% if a.customer_safe %}<span class="az-present">ja</span>{% else %}<span class="az-missing">nej</span>{% endif %}</td>
+          <td class="az-muted text-xs max-w-xs truncate">{{ a.body[:120] }}{% if a.body|length > 120 %}…{% endif %}</td>
         </tr>
         {% else %}
-        <tr><td colspan="4" class="az-muted">Inga artiklar</td></tr>
+        <tr><td colspan="5" class="az-muted">Inga artiklar</td></tr>
         {% endfor %}
       </tbody>
     </table>

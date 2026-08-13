@@ -82,7 +82,7 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **cases** | `cases/*` | Poll → draft → suggest-approve → human send — [`CASES.md`](CASES.md) |
 | **Shadow Live Ledger** | `cases/shadow_report.py`, `runtime_profile.py` | Null-send refuse + FU9 shadow trail — not FU9 wire |
 | **marketing** | `actions/marketing`, `marketing/*` | Google Ads + GA4 mock-first HITL — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
-| **faq** | `faq/*`, CLI `faq` | Lexical KB + draft enrich + WP page HITL — [`FAQ_KB.md`](FAQ_KB.md) |
+| **faq** | `faq/*`, CLI `faq` | Lexical KB + draft enrich + WP page HITL + ingest staging — [`FAQ_KB.md`](FAQ_KB.md) |
 | **LLM** | `llm.py` | OpenRouter + cost telemetry + cap |
 | **OAuth Gmail** | `oauth/gmail` | Browser consent → `oauth/gmail.json` |
 | **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |

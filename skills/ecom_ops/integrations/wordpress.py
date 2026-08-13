@@ -15,10 +15,27 @@ V2.1 (see docs/WOO_WORDPRESS.md — WordPress client):
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from html import unescape
+from typing import Any, Iterator, Protocol
 
 from ecom_ops.security import SecurityError, get_env, sanitize_text
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+
+def extract_plain_text(html: str) -> str:
+    """Strip HTML tags and normalize whitespace for FAQ ingest."""
+    if not html:
+        return ""
+    text = unescape(str(html))
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p\s*>", "\n", text)
+    text = _TAG_RE.sub(" ", text)
+    text = _WS_RE.sub(" ", text).strip()
+    return text
 
 # --------------------------------------------------------------------------- #
 # Data models
@@ -148,6 +165,13 @@ class InMemoryWpTransport:
                 elif collection == "pages":
                     rows = [r for r in rows if r.get("type") == "page"]
                 params = params or {}
+                status_f = str(params.get("status") or "").strip().lower()
+                if status_f and status_f != "any":
+                    rows = [
+                        r
+                        for r in rows
+                        if str(r.get("status") or "").lower() == status_f
+                    ]
                 search = str(params.get("search") or "").lower()
                 if search:
                     rows = [
@@ -302,6 +326,26 @@ class WordPressClient:
         )
         return self._to_posts(data) if isinstance(data, list) else []
 
+    def list_all_posts(
+        self,
+        *,
+        per_page: int = 100,
+        max_pages: int = 50,
+        search: str | None = None,
+        status: str = "publish",
+    ) -> Iterator[WpPost]:
+        """Paginate through all posts (bounded by ``max_pages``)."""
+        for page in range(1, max_pages + 1):
+            batch = self.list_posts(
+                per_page=per_page, page=page, search=search, status=status
+            )
+            if not batch:
+                return
+            for post in batch:
+                yield post
+            if len(batch) < per_page:
+                return
+
     def get_post(self, post_id: str | int) -> WpPost:
         pid = _validate_int_id(post_id)
         data = self.transport.request(
@@ -374,11 +418,17 @@ class WordPressClient:
     # --- pages ------------------------------------------------------------ #
 
     def list_pages(
-        self, *, per_page: int = 10, page: int = 1, search: str | None = None
+        self,
+        *,
+        per_page: int = 10,
+        page: int = 1,
+        search: str | None = None,
+        status: str = "publish",
     ) -> list[WpPost]:
         params: dict[str, Any] = {
             "per_page": max(1, min(int(per_page), 100)),
             "page": max(1, int(page)),
+            "status": status,
         }
         if search:
             params["search"] = search
@@ -390,6 +440,26 @@ class WordPressClient:
             timeout=self.timeout,
         )
         return self._to_posts(data) if isinstance(data, list) else []
+
+    def list_all_pages(
+        self,
+        *,
+        per_page: int = 100,
+        max_pages: int = 50,
+        search: str | None = None,
+        status: str = "publish",
+    ) -> Iterator[WpPost]:
+        """Paginate through all pages (bounded by ``max_pages``)."""
+        for page in range(1, max_pages + 1):
+            batch = self.list_pages(
+                per_page=per_page, page=page, search=search, status=status
+            )
+            if not batch:
+                return
+            for item in batch:
+                yield item
+            if len(batch) < per_page:
+                return
 
     def get_page(self, page_id: str | int) -> WpPost:
         pid = _validate_int_id(page_id)

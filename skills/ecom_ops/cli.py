@@ -171,11 +171,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_faq_list = faq_sub.add_parser("list", help="List FAQ articles")
     p_faq_list.add_argument("--market", default=None)
     p_faq_list.add_argument("--category", default=None)
+    p_faq_list.add_argument(
+        "--all",
+        action="store_true",
+        help="Include non-customer_safe articles",
+    )
     p_faq_search = faq_sub.add_parser("search", help="Lexical FAQ search")
     p_faq_search.add_argument("--q", required=True, dest="query")
     p_faq_search.add_argument("--market", default="se")
     p_faq_search.add_argument("--category", default=None)
     p_faq_search.add_argument("--limit", type=int, default=None)
+    faq_sub.add_parser("coverage", help="Corpus counts per market/category")
+    faq_sub.add_parser("reload", help="Reload corpus cache (long-lived workers)")
+    faq_sub.add_parser("validate", help="Validate YAML corpus schema")
     p_faq_sync = faq_sub.add_parser(
         "sync-draft", help="Upsert WP FAQ page as draft (Oscar)"
     )
@@ -188,6 +196,83 @@ def build_parser() -> argparse.ArgumentParser:
         "--status",
         default="publish",
         choices=["publish", "draft", "private"],
+    )
+
+    p_faq_ds = faq_sub.add_parser("dataset", help="FAQ Q&A dataset export")
+    faq_ds_sub = p_faq_ds.add_subparsers(dest="faq_dataset_command", required=True)
+    p_faq_ds_exp = faq_ds_sub.add_parser(
+        "export", help="Export inbound→outbound Q&A pairs from cases.db"
+    )
+    p_faq_ds_exp.add_argument("--market", default=None)
+    p_faq_ds_exp.add_argument("--since-days", type=int, default=None)
+    p_faq_ds_exp.add_argument(
+        "--exclude-stale",
+        action="store_true",
+        help="Drop pairs older than dataset_max_age_days (default: include stale)",
+    )
+    p_faq_ds_exp.add_argument(
+        "--raw",
+        action="store_true",
+        help="Skip PII redaction (Oscar only)",
+    )
+
+    p_faq_ingest = faq_sub.add_parser("ingest", help="FAQ staging ingest")
+    faq_ingest_sub = p_faq_ingest.add_subparsers(
+        dest="faq_ingest_command", required=True
+    )
+    p_faq_ing_site = faq_ingest_sub.add_parser(
+        "site", help="Ingest WP pages/posts into staging"
+    )
+    p_faq_ing_site.add_argument("--market", default="se")
+    p_faq_ing_site.add_argument(
+        "--pages", action="store_true", help="Include pages (default from config)"
+    )
+    p_faq_ing_site.add_argument(
+        "--posts", action="store_true", help="Include posts (default from config)"
+    )
+    p_faq_ing_site.add_argument(
+        "--no-pages", action="store_true", help="Skip pages"
+    )
+    p_faq_ing_site.add_argument(
+        "--no-posts", action="store_true", help="Skip posts"
+    )
+    p_faq_ing_prod = faq_ingest_sub.add_parser(
+        "products", help="Ingest Woo products (+ allowlisted guides)"
+    )
+    p_faq_ing_prod.add_argument("--market", default="se")
+    p_faq_ing_prod.add_argument(
+        "--no-guides", action="store_true", help="Skip guide URL fetch"
+    )
+
+    p_faq_sug = faq_sub.add_parser(
+        "suggest", help="Suggest FAQ article drafts into staging"
+    )
+    faq_sug_sub = p_faq_sug.add_subparsers(dest="faq_suggest_command", required=True)
+    p_faq_sug_art = faq_sug_sub.add_parser(
+        "articles", help="Write YAML drafts under faq_staging/articles"
+    )
+    p_faq_sug_art.add_argument("--market", default="se")
+    p_faq_sug_art.add_argument(
+        "--from",
+        dest="source",
+        default="products",
+        choices=["staging", "dataset", "products"],
+    )
+    p_faq_sug_art.add_argument("--limit", type=int, default=50)
+
+    p_faq_prom = faq_sub.add_parser(
+        "promote", help="Promote staging draft to config/faq (Oscar)"
+    )
+    p_faq_prom.add_argument("--id", required=True, dest="article_id")
+    p_faq_prom.add_argument("--market", default=None)
+    p_faq_prom.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write to config/faq (default dry-run)",
+    )
+
+    faq_sub.add_parser(
+        "staging", help="Show FAQ staging counts under AZOM_DATA_DIR"
     )
 
     p_smoke = sub.add_parser(
@@ -644,9 +729,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "faq":
         from ecom_ops.faq.config import load_faq_config
-        from ecom_ops.faq.publish import publish_page, sync_draft
+        from ecom_ops.faq.publish import (
+            corpus_content_hash,
+            publish_page,
+            sync_draft,
+        )
+        from ecom_ops.faq.publish_map import FaqPublishMap
         from ecom_ops.faq.search import search_faq
-        from ecom_ops.faq.store import default_faq_store
+        from ecom_ops.faq.store import (
+            default_faq_store,
+            load_faq_corpus,
+            reload_faq_store,
+        )
         from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
 
         actor_obj = resolve_actor(args.actor)
@@ -657,7 +751,9 @@ def main(argv: list[str] | None = None) -> int:
             except AccessDenied as exc:
                 return _print({"ok": False, "message": str(exc)})
             arts = default_faq_store().list(
-                market=args.market, category=args.category
+                market=args.market,
+                category=args.category,
+                customer_safe_only=not args.all,
             )
             return _print(
                 {
@@ -685,6 +781,66 @@ def main(argv: list[str] | None = None) -> int:
                     "hits": [h.to_dict() for h in hits],
                 }
             )
+        if cmd == "coverage":
+            try:
+                require_permission(actor_obj, Permission.FAQ_READ)
+            except AccessDenied as exc:
+                return _print({"ok": False, "message": str(exc)})
+            store = default_faq_store()
+            cov = store.coverage()
+            drift: dict[str, Any] = {}
+            pmap = FaqPublishMap()
+            for mkt in ("se", "no", "dk"):
+                current = corpus_content_hash(mkt, store=store)
+                row = pmap.get(mkt, "")
+                drift[mkt] = {
+                    "corpus_hash": current,
+                    "published_hash": row.content_hash if row else None,
+                    "drift": bool(
+                        row and current and row.content_hash != current
+                    ),
+                    "wp_status": row.status if row else None,
+                }
+            return _print({"ok": True, "coverage": cov, "drift": drift})
+        if cmd == "reload":
+            try:
+                require_permission(actor_obj, Permission.FAQ_READ)
+            except AccessDenied as exc:
+                return _print({"ok": False, "message": str(exc)})
+            store = reload_faq_store()
+            return _print(
+                {
+                    "ok": True,
+                    "count": len(store.list()),
+                    "issues": [
+                        {"level": i.level, "message": i.message, "path": i.path}
+                        for i in store.last_issues
+                    ],
+                }
+            )
+        if cmd == "validate":
+            try:
+                require_permission(actor_obj, Permission.FAQ_READ)
+            except AccessDenied as exc:
+                return _print({"ok": False, "message": str(exc)})
+            report = load_faq_corpus()
+            errors = [i for i in report.issues if i.level == "error"]
+            return _print(
+                {
+                    "ok": len(errors) == 0,
+                    "article_count": len(report.articles),
+                    "error_count": len(errors),
+                    "issues": [
+                        {
+                            "level": i.level,
+                            "message": i.message,
+                            "path": i.path,
+                            "article_id": i.article_id,
+                        }
+                        for i in report.issues
+                    ],
+                }
+            )
         if cmd == "sync-draft":
             return _print(
                 sync_draft(
@@ -702,6 +858,91 @@ def main(argv: list[str] | None = None) -> int:
                     use_mock=args.mock or None,
                 )
             )
+        if cmd == "dataset":
+            from ecom_ops.faq.dataset import export_qa_pairs
+
+            if args.faq_dataset_command == "export":
+                include_stale = not bool(getattr(args, "exclude_stale", False))
+                return _print(
+                    export_qa_pairs(
+                        market=args.market,
+                        since_days=args.since_days,
+                        include_stale=include_stale,
+                        redact=not bool(args.raw),
+                        actor=actor_obj,
+                        use_mock=args.mock or None,
+                    )
+                )
+            parser.error(f"Unknown faq dataset command: {args.faq_dataset_command}")
+            return 2
+        if cmd == "ingest":
+            use_mock = args.mock or None
+            if args.faq_ingest_command == "site":
+                from ecom_ops.faq.ingest_site import ingest_site
+
+                pages = None
+                posts = None
+                if args.pages:
+                    pages = True
+                if args.no_pages:
+                    pages = False
+                if args.posts:
+                    posts = True
+                if args.no_posts:
+                    posts = False
+                return _print(
+                    ingest_site(
+                        market=args.market,
+                        pages=pages,
+                        posts=posts,
+                        actor=actor_obj,
+                        use_mock=use_mock,
+                    )
+                )
+            if args.faq_ingest_command == "products":
+                from ecom_ops.faq.ingest_products import ingest_products
+
+                return _print(
+                    ingest_products(
+                        market=args.market,
+                        actor=actor_obj,
+                        use_mock=use_mock,
+                        fetch_guides=not bool(args.no_guides),
+                    )
+                )
+            parser.error(f"Unknown faq ingest command: {args.faq_ingest_command}")
+            return 2
+        if cmd == "suggest":
+            from ecom_ops.faq.suggest_articles import suggest_articles
+
+            if args.faq_suggest_command == "articles":
+                return _print(
+                    suggest_articles(
+                        market=args.market,
+                        source=args.source,
+                        limit=args.limit,
+                        actor=actor_obj,
+                        use_mock=args.mock or None,
+                    )
+                )
+            parser.error(f"Unknown faq suggest command: {args.faq_suggest_command}")
+            return 2
+        if cmd == "promote":
+            from ecom_ops.faq.promote import promote_article
+
+            return _print(
+                promote_article(
+                    args.article_id,
+                    market=args.market,
+                    apply=bool(args.apply),
+                    actor=actor_obj,
+                )
+            )
+        if cmd == "staging":
+            from ecom_ops.faq.staging import staging_counts
+
+            counts = staging_counts()
+            return _print({"ok": True, "staging": counts})
         parser.error(f"Unknown faq command: {cmd}")
         return 2
 

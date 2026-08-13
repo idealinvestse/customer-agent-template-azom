@@ -1108,19 +1108,80 @@ def oscar_home():
     )
 
 
+def _faq_use_mock() -> bool:
+    return os.environ.get("AZOM_USE_MOCK", "").strip() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+@app.route("/faq")
+@_auth_required
+def faq_browse():
+    """Jonatan + Oscar read-only FAQ browse / search."""
+    from ecom_ops.faq.search import search_faq
+    from ecom_ops.faq.store import default_faq_store
+
+    market = (request.args.get("market") or "se").strip().lower()
+    q = (request.args.get("q") or "").strip()
+    articles = default_faq_store().list(market=market, customer_safe_only=True)
+    hits = search_faq(q, market=market) if q else None
+    return render_template(
+        "faq.html",
+        **_dashboard_context(
+            market=market,
+            markets=["se", "no", "dk"],
+            articles=articles,
+            search_q=q,
+            search_hits=hits,
+        ),
+    )
+
+
 @app.route("/oscar/faq")
 @_oscar_required
 def oscar_faq():
     from ecom_ops.faq.config import load_faq_config
     from ecom_ops.faq.kill_switch import faq_publish_killed
+    from ecom_ops.faq.publish import build_parent_html, corpus_content_hash
     from ecom_ops.faq.publish_map import FaqPublishMap
+    from ecom_ops.faq.search import search_faq
     from ecom_ops.faq.store import default_faq_store
 
     market = (request.args.get("market") or "se").strip().lower()
+    q = (request.args.get("q") or "").strip()
     cfg = load_faq_config()
-    articles = default_faq_store().list(market=market, customer_safe_only=True)
+    store = default_faq_store()
+    articles = store.list(market=market, customer_safe_only=True)
     pub_rows = FaqPublishMap().list_market(market)
     parent = next((r for r in pub_rows if r.article_id == ""), None)
+    current_hash = corpus_content_hash(market, store=store)
+    drift = bool(
+        parent and current_hash and parent.content_hash != current_hash
+    )
+    hits = search_faq(q, market=market) if q else None
+    html_preview = (
+        build_parent_html(articles, market=market) if articles else ""
+    )
+    wp_probe_ok = True
+    wp_probe_message = ""
+    use_mock = _faq_use_mock()
+    if not use_mock:
+        try:
+            from secret_probes import run_probe
+
+            probe = run_probe("wordpress")
+            wp_probe_ok = probe.status == "ok"
+            wp_probe_message = probe.message
+        except Exception as exc:  # noqa: BLE001
+            wp_probe_ok = False
+            wp_probe_message = str(exc)[:200]
+    from ecom_ops.faq.ingest_config import faq_ingest_killed
+    from ecom_ops.faq.staging import staging_counts
+
+    staging = staging_counts(market)
     return render_template(
         "oscar_faq.html",
         **_dashboard_context(
@@ -1131,10 +1192,37 @@ def oscar_faq():
             publish_rows=pub_rows,
             faq_cfg=cfg,
             kill_switch=faq_publish_killed(),
+            ingest_kill=faq_ingest_killed(),
+            staging_counts=staging,
             live_allowed=market in {m.lower() for m in cfg.live_markets_allowed},
+            corpus_hash=current_hash,
+            corpus_drift=drift,
+            search_q=q,
+            search_hits=hits,
+            html_preview=html_preview,
+            wp_probe_ok=wp_probe_ok,
+            wp_probe_message=wp_probe_message,
+            use_mock=use_mock,
             flash_msg=request.args.get("msg"),
             flash_err=request.args.get("err"),
         ),
+    )
+
+
+@app.route("/oscar/faq/reload", methods=["POST"])
+@_oscar_required
+def oscar_faq_reload():
+    failed = _validate_csrf()
+    if failed:
+        return failed
+    from ecom_ops.faq.store import reload_faq_store
+
+    market = (request.form.get("market") or "se").strip().lower()
+    store = reload_faq_store()
+    n = len(store.list(market=market))
+    return redirect(
+        url_for("oscar_faq", market=market)
+        + f"?{_flash_q(f'Korpus omladdad ({n} artiklar för {market})')}"
     )
 
 
@@ -1145,15 +1233,11 @@ def oscar_faq_sync_draft():
     if failed:
         return failed
     from ecom_ops.faq.publish import sync_draft
+    from ecom_ops.faq.store import reload_faq_store
 
     market = (request.form.get("market") or "se").strip().lower()
-    use_mock = os.environ.get("AZOM_USE_MOCK", "").strip() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    result = sync_draft(market, actor="oscar", use_mock=use_mock)
+    reload_faq_store()
+    result = sync_draft(market, actor="oscar", use_mock=_faq_use_mock())
     frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
     return redirect(url_for("oscar_faq", market=market) + f"?{frag}")
 
@@ -1165,17 +1249,13 @@ def oscar_faq_publish():
     if failed:
         return failed
     from ecom_ops.faq.publish import publish_page
+    from ecom_ops.faq.store import reload_faq_store
 
     market = (request.form.get("market") or "se").strip().lower()
     status = (request.form.get("status") or "publish").strip().lower()
-    use_mock = os.environ.get("AZOM_USE_MOCK", "").strip() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    reload_faq_store()
     result = publish_page(
-        market, status=status, actor="oscar", use_mock=use_mock
+        market, status=status, actor="oscar", use_mock=_faq_use_mock()
     )
     frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
     return redirect(url_for("oscar_faq", market=market) + f"?{frag}")

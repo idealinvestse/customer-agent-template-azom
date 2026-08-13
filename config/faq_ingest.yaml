@@ -1,0 +1,30 @@
+# FAQ ingest pipelines — dataset export, site/product scrape, article suggestions
+# Staging lives under AZOM_DATA_DIR (not git). Promote to config/faq/ is Oscar-only.
+
+dataset_max_age_days: 365
+dataset_exclude_categories:
+  - abuse
+dataset_min_reply_chars: 40
+
+# Site ingest (WordPress REST)
+max_pages_per_site: 50
+max_posts_per_site: 50
+ingest_pages: true
+ingest_posts: true
+
+# Product + guide ingest
+guide_allowlist_hosts:
+  - azom.se
+  - www.azom.se
+  - azom.no
+  - www.azom.no
+  - azom.dk
+  - www.azom.dk
+guide_urls: []
+max_guide_bytes: 500000
+max_products_per_market: 200
+
+# Reserved — template-first only; ignored when true (no LLM polish wired)
+llm_suggest_enabled: false
+
+ingest_kill_env: AZOM_FAQ_INGEST_KILL
