@@ -78,3 +78,16 @@ def test_min_score_filters_weak_category_only():
     # Nonsense query should not return weak category-only hits below min_score
     hits = search_faq("zzzznotatoken", market="se", category="shipping", min_score=1.0)
     assert hits == []
+
+
+def test_search_respects_market():
+    clear_faq_config_cache()
+    clear_faq_store_cache()
+    hits = search_faq("spårning", market="no", category="shipping")
+    assert hits
+    assert all(h.article.market == "no" for h in hits)
+
+
+def test_format_context_empty():
+    assert format_faq_context_block([]) == ""
+    assert format_faq_citation_footer([]) == ""

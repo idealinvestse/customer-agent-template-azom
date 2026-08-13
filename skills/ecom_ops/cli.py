@@ -85,7 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="Print runtime status (config + mock flags)")
     p_kpis = sub.add_parser(
         "kpis",
-        help="Support-loop KPIs last N days (time-to-approve, edit distance)",
+        help="Support-loop KPIs last N days (TTA, edit distance, FAQ retrieve hits)",
     )
     p_kpis.add_argument(
         "--days",

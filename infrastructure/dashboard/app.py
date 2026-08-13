@@ -615,6 +615,9 @@ def prometheus_metrics():
         lines.append(f"azom_median_time_to_approve_sec {kpis['median_time_to_approve_sec']}")
     if kpis.get("mean_draft_edit_distance") is not None:
         lines.append(f"azom_mean_draft_edit_distance {kpis['mean_draft_edit_distance']}")
+    lines.append("# TYPE azom_faq_retrieve_total gauge")
+    lines.append(f"azom_faq_retrieve_total {kpis.get('n_faq_retrieve', 0)}")
+    lines.append(f"azom_faq_hit_total {kpis.get('n_faq_hit', 0)}")
     # Case counts
     import sqlite3
 

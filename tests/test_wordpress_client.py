@@ -67,7 +67,7 @@ def test_delete_post(wp):
 
 
 def test_list_posts_search(wp):
-    wp.create_post(title="SEO guide", content="x")
+    wp.create_post(title="SEO guide", content="x", status="publish")
     results = wp.list_posts(search="SEO")
     assert any(p.title == "SEO guide" for p in results)
 

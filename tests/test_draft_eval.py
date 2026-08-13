@@ -46,7 +46,6 @@ def test_check_draft_must_ask_order_id():
 
 def test_billing_fixtures_in_pack():
     result = evaluate_drafts()
-    ids = {r["id"] for r in result.get("results", [])} or set()
     # evaluate_drafts may nest differently — also check fixture load
     from ecom_ops.draft_eval import load_draft_fixtures
 
@@ -56,3 +55,26 @@ def test_billing_fixtures_in_pack():
     assert "return_missing_oid_sv" in fixture_ids
     assert result["ok"] is True
     assert result["avg_score"] >= 0.8
+
+
+def test_faq_fixture_must_include_and_forbid_refund():
+    from ecom_ops.draft_eval import load_draft_fixtures
+
+    fixtures = {f["id"]: f for f in load_draft_fixtures()}
+    fx = fixtures["faq_shipping_sv"]
+    good = (
+        "Hej Anna,\n\nLeverans tar 1–3 arbetsdagar. Du kan spåra order 1001 "
+        "via länken i bekräftelsen.\n\nMed vänlig hälsning\nAzom Support"
+    )
+    checks = _check_draft(good, fx)
+    assert checks["checks"]["must_include_any"] is True
+    assert checks["checks"]["no_refund_promise"] is True
+    assert checks["checks"]["must_not_include"] is True
+
+    bad = (
+        "Hej,\n\nÅterbetalning garanteras och refund guaranteed för order 1001.\n\n"
+        "Azom Support"
+    )
+    bad_checks = _check_draft(bad, fx)
+    assert bad_checks["checks"]["no_refund_promise"] is False
+    assert bad_checks["checks"]["must_not_include"] is False

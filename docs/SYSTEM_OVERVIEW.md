@@ -250,7 +250,7 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 | `escalations.jsonl` | Escalation tickets |
 | `marketing_suggests.jsonl` | Marketing suggest ledger |
 | `faq_publish.db` | FAQ → WP page id map |
-| telemetry / KPI files | Cost + case KPIs (`python -m ecom_ops kpis`) |
+| telemetry / KPI files | Cost + case KPIs + FAQ retrieve hits (`python -m ecom_ops kpis`) |
 | `last_case_poll.json` | Poll readiness (`partial` / errors / age → `/health`) |
 | `probe_last.json` | Last Oscar probe results |
 

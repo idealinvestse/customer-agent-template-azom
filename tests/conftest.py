@@ -19,6 +19,10 @@ def _isolate_env(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("AZOM_CONFIG_DIR", str(Path(__file__).resolve().parents[1] / "config"))
+    # CLI --null-send writes os.environ directly; do not leak into later tests.
+    monkeypatch.delenv("AZOM_NULL_SEND", raising=False)
+    monkeypatch.delenv("AZOM_FAQ_INGEST_KILL", raising=False)
+    monkeypatch.delenv("AZOM_FAQ_PUBLISH_KILL", raising=False)
     clear_rbac_cache()
     yield
     clear_rbac_cache()

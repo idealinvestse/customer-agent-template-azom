@@ -97,3 +97,32 @@ def test_template_fallback_includes_faq_context(monkeypatch, tmp_path):
     assert result.reply
     assert "FAQ context:" in result.reply
     assert result.faq_article_ids
+
+
+def test_support_handle_skips_faq_when_inject_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_FAQ_INJECT_INTO_DRAFT", "0")
+    clear_faq_config_cache()
+    clear_faq_store_cache()
+    tel = Telemetry(path=tmp_path / "telemetry.jsonl")
+
+    monkeypatch.setattr(
+        "ecom_ops.actions.support.hybrid_classify",
+        lambda *a, **k: (SupportCategory.SHIPPING, 0.9, "llm"),
+    )
+    monkeypatch.setattr(
+        "ecom_ops.actions.support.draft_support_with_llm",
+        lambda **kwargs: "Draft utan FAQ",
+    )
+
+    svc = SupportService(telemetry=tel)
+    result = svc.handle(
+        "Hej, hur spårar jag mitt paket?",
+        language="sv",
+        market="se",
+        actor="agent",
+        use_mock=True,
+    )
+    assert result.ok
+    assert result.faq_article_ids == ()

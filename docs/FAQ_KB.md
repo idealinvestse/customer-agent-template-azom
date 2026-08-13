@@ -91,7 +91,7 @@ After classify, `SupportService.handle` calls `faq.search` when `enabled` and `i
 
 Env: `AZOM_FAQ_ENABLED`, `AZOM_FAQ_INJECT_INTO_DRAFT`, `AZOM_FAQ_PUBLISH_KILL`, `AZOM_FAQ_INGEST_KILL`.
 
-CLI extras: `faq coverage`, `faq validate`, `faq reload`, `faq staging`.
+CLI extras: `faq coverage`, `faq validate`, `faq reload`, `faq staging`. FAQ retrieve/hit rates (per category) are on `python -m ecom_ops kpis --days 7` (`n_faq_hit`, `faq_by_category`).
 
 ## Ingest pipelines (HITL)
 
@@ -135,7 +135,7 @@ Track in ops notes (not agent-marked done):
 
 | Metric | How |
 |--------|-----|
-| FAQ hit rate | Share of open cases with non-empty `faq_article_ids` per category |
+| FAQ hit rate | `python -m ecom_ops kpis --days 7` → `n_faq_hit` / `n_faq_retrieve` and `faq_by_category` (from `faq_retrieve` telemetry; a hit is `hit_count > 0`) |
 | Policy rewrite rate | Approves where Jonatan rewrote shipping/return policy text |
 | Zero silent publish | Kill-switch + Oscar-only publish; confirm no unexpected WP publishes |
 

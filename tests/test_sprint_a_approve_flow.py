@@ -326,3 +326,140 @@ def test_cli_kpis(tmp_path, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["n_case_approved"] == 1
     assert out["median_time_to_approve_sec"] == 42
+
+
+def test_support_kpis_faq_hit_rate_per_category(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    path = tmp_path / "telemetry.jsonl"
+    tel = Telemetry(path=path)
+    now = datetime.now(timezone.utc)
+    for _ in range(2):
+        tel.record(
+            action="faq_retrieve",
+            site="azom",
+            meta={
+                "hit_count": 2,
+                "faq_article_ids": ["se-shipping-1", "se-shipping-2"],
+                "category": "order_status",
+                "market": "se",
+            },
+        )
+    tel.record(
+        action="faq_retrieve",
+        site="azom",
+        meta={
+            "hit_count": 1,
+            "faq_article_ids": ["se-ship-1"],
+            "category": "shipping",
+            "market": "se",
+        },
+    )
+    tel.record(
+        action="faq_retrieve",
+        site="azom",
+        meta={
+            "hit_count": 0,
+            "faq_article_ids": [],
+            "category": "shipping",
+            "market": "se",
+        },
+    )
+    tel.record(
+        action="faq_retrieve",
+        site="azom",
+        meta={
+            "hit_count": 0,
+            "faq_article_ids": [],
+            "category": "other",
+            "market": "se",
+        },
+    )
+    k = support_kpis_last_days(telemetry=tel, days=7, now=now)
+    assert k["n_faq_retrieve"] == 5
+    assert k["n_faq_hit"] == 3
+    assert k["n_faq_miss"] == 2
+    assert k["faq_hit_rate"] == 0.6
+    by_cat = k["faq_by_category"]
+    assert by_cat["order_status"] == {
+        "n_retrieve": 2,
+        "n_hit": 2,
+        "n_miss": 0,
+        "hit_rate": 1.0,
+    }
+    assert by_cat["shipping"] == {
+        "n_retrieve": 2,
+        "n_hit": 1,
+        "n_miss": 1,
+        "hit_rate": 0.5,
+    }
+    assert by_cat["other"] == {
+        "n_retrieve": 1,
+        "n_hit": 0,
+        "n_miss": 1,
+        "hit_rate": 0.0,
+    }
+    assert "FAQ 3/5 hits" in k["message"]
+
+
+def test_support_kpis_faq_ignores_old_and_counts_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    path = tmp_path / "telemetry.jsonl"
+    tel = Telemetry(path=path)
+    now = datetime.now(timezone.utc)
+    tel.record(
+        action="faq_retrieve",
+        site="azom",
+        meta={"hit_count": 1, "category": "order_status", "market": "se"},
+    )
+    tel.record(
+        action="faq_retrieve_error",
+        site="azom",
+        meta={"error": "boom", "category": "shipping", "market": "se"},
+    )
+    old = (now - timedelta(days=30)).isoformat()
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "id": "old-faq",
+                    "action": "faq_retrieve",
+                    "site": "azom",
+                    "units": 1,
+                    "unit_type": "api_calls",
+                    "cost_usd": 0,
+                    "meta": {"hit_count": 9, "category": "billing"},
+                    "created_at": old,
+                }
+            )
+            + "\n"
+        )
+    k = support_kpis_last_days(telemetry=tel, days=7, now=now)
+    assert k["n_faq_retrieve"] == 1
+    assert k["n_faq_hit"] == 1
+    assert k["n_faq_retrieve_error"] == 1
+    assert "billing" not in k["faq_by_category"]
+
+
+def test_cli_kpis_includes_faq_retrieve(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    tel = Telemetry(path=tmp_path / "telemetry.jsonl")
+    tel.record(
+        action="faq_retrieve",
+        site="azom",
+        meta={"hit_count": 1, "category": "order_status", "market": "se"},
+    )
+    tel.record(
+        action="faq_retrieve",
+        site="azom",
+        meta={"hit_count": 0, "category": "return", "market": "se"},
+    )
+    code = main(["kpis", "--days", "7"])
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["n_faq_retrieve"] == 2
+    assert out["n_faq_hit"] == 1
+    assert out["n_faq_miss"] == 1
+    assert out["faq_hit_rate"] == 0.5
+    assert out["faq_by_category"]["order_status"]["n_hit"] == 1
+    assert out["faq_by_category"]["return"]["n_miss"] == 1
+    assert "FAQ 1/2 hits" in out["message"]

@@ -90,7 +90,7 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 - **V2.2:** live `probe_mail`, mail env matrix, bulk close
 - **V2.3:** robustness (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak**
 - **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live APIs still stubbed
-- **FAQ/KB v1:** lexical corpus + draft enrichment + WP page draft/publish (Oscar) + HITL ingest (dataset/site/products → staging → promote) — [`docs/FAQ_KB.md`](docs/FAQ_KB.md); live SE page is ops-gated
+- **FAQ/KB v1:** lexical corpus + draft enrichment + WP page draft/publish (Oscar) + HITL ingest (dataset/site/products → staging → promote) + `kpis` FAQ retrieve/hit per category — [`docs/FAQ_KB.md`](docs/FAQ_KB.md); live SE page is ops-gated. Lands with this branch until merge.
 
 ## Cases quick CLI
 
@@ -148,7 +148,7 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 
 ## Status (code vs goals)
 
-- **Shipped:** Path B + Path B2 + Sprint A/B/C + SB5 + V2.1 + V2.2 + V2.3 + Shadow Live Ledger + Marketing Google (mock-first) + FAQ/KB v1 rails + FAQ ingest HITL
+- **Shipped:** Path B + Path B2 + Sprint A/B/C + SB5 + V2.1 + V2.2 + V2.3 + Shadow Live Ledger + Marketing Google (mock-first); FAQ/KB v1 rails + FAQ ingest HITL + central dashboard logs + `kpis` FAQ-hit land with this branch until merge
 - **Ops next:** Oscar A1 live soak — [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) (agents must not mark done); live SE FAQ page after WP draft review
 - **Mock soft-soak:** `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
 - **FU9 auto-send:** rails only — see [`docs/CASES.md`](docs/CASES.md) (**do not wire** without Oscar written enable + soak preconditions)

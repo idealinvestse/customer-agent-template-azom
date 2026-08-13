@@ -97,7 +97,7 @@ def test_schema_v5_nullable_shadow(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     store = CaseStore(path=tmp_path / "cases.db")
     assert store.schema_version() >= 5
-    assert SCHEMA_VERSION == 5
+    assert SCHEMA_VERSION >= 5
     case = store.create_case(
         mailbox_id="support_default",
         subject="Hej",

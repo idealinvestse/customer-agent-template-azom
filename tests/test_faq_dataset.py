@@ -225,6 +225,28 @@ def test_export_excludes_abuse_and_requires_permission(
     assert result.pair_count == 0
 
 
+def test_short_outbound_is_not_paired(store: CaseStore, data_env: Path) -> None:
+    _seed_pair(
+        store,
+        body_q="Var är min order just nu egentligen?",
+        body_a="Ok.",
+    )
+    result = export_qa_pairs(actor="oscar", store=store, use_mock=True)
+    assert result.ok
+    assert result.pair_count == 0
+
+
+def test_agent_mock_export_allowed(store: CaseStore, data_env: Path) -> None:
+    _seed_pair(
+        store,
+        body_q="Hur lång är leveranstiden till ombud just nu?",
+        body_a="Vanligtvis 1–3 arbetsdagar beroende på transportör och destination.",
+    )
+    result = export_qa_pairs(actor="agent", store=store, use_mock=True)
+    assert result.ok, result.message
+    assert result.pair_count == 1
+
+
 def test_ingest_kill_switch(
     store: CaseStore, data_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

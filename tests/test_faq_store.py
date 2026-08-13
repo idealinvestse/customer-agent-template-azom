@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import yaml
 
 from ecom_ops.faq.store import FaqStore, clear_faq_store_cache
@@ -53,3 +51,37 @@ def test_parse_from_explicit_list():
     )
     # empty store
     assert store.list() == []
+
+
+def test_coverage_counts_seed_corpus():
+    clear_faq_store_cache()
+    store = FaqStore()
+    cov = store.coverage()
+    assert cov["total"] >= 5
+    assert cov["markets"]["se"]["total"] >= 5
+    assert cov["markets"]["se"]["categories"].get("shipping", 0) >= 1
+
+
+def test_load_faq_corpus_reports_invalid_overlay(tmp_path, monkeypatch):
+    from ecom_ops.faq.store import load_faq_corpus
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    overlay = tmp_path / "faq" / "se"
+    overlay.mkdir(parents=True)
+    (overlay / "bad.yaml").write_text(
+        yaml.dump(
+            [
+                {
+                    "id": "",
+                    "market": "se",
+                    "language": "sv",
+                    "category": "shipping",
+                    "title": "Saknar id",
+                    "body": "x",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    report = load_faq_corpus()
+    assert any(i.level == "error" and "missing id" in i.message for i in report.issues)

@@ -105,7 +105,7 @@ python -m ecom_ops --mock ssh-health
 
 | Command | Flags | Purpose |
 |---------|-------|---------|
-| `kpis` | `--days` (default 7) | Case / approve KPI dump |
+| `kpis` | `--days` (default 7) | Case / approve KPIs plus FAQ retrieve hit rate (`n_faq_hit` / `faq_by_category`) |
 | `classify-eval` | `--fixtures DIR` (default `tests/fixtures/support_classify`) | Fixture accuracy check |
 | `draft-eval` | `--dir DIR` (default `tests/fixtures/draft_quality`) | Draft quality fixtures |
 | `drift-check` | `--days` (default 7) | Ops drift signals |
@@ -113,6 +113,8 @@ python -m ecom_ops --mock ssh-health
 
 ```bash
 python -m ecom_ops kpis --days 7
+# expect: JSON with n_case_approved, median_time_to_approve_sec, n_faq_retrieve,
+#         n_faq_hit, faq_hit_rate, faq_by_category (per support category)
 python -m ecom_ops classify-eval
 python -m ecom_ops draft-eval
 python -m ecom_ops drift-check --days 7

@@ -201,3 +201,187 @@ def test_mock_product_ingest_skips_guide_http(
     assert result.ok, result.message
     assert called["n"] == 0
     assert result.guides_written == 0
+
+
+def test_ingest_site_kill_switch_and_live_rbac(data_env: Path, oscar_actor, monkeypatch):
+    monkeypatch.setenv("AZOM_FAQ_INGEST_KILL", "1")
+    clear_faq_ingest_config_cache()
+    killed = ingest_site(market="se", actor=oscar_actor, use_mock=True)
+    assert not killed.ok
+    assert "kill-switch" in killed.message.lower()
+
+    monkeypatch.delenv("AZOM_FAQ_INGEST_KILL", raising=False)
+    clear_faq_ingest_config_cache()
+    from ecom_ops.rbac import Actor
+
+    denied = ingest_site(
+        market="se", actor=Actor("jonatan", "viewer"), use_mock=True
+    )
+    assert not denied.ok
+
+    live_agent = ingest_site(
+        market="se", actor=Actor("agent", "operator"), use_mock=False
+    )
+    assert not live_agent.ok
+
+
+def test_ingest_site_skips_unchanged(data_env: Path, oscar_actor):
+    first = ingest_site(market="se", actor=oscar_actor, use_mock=True)
+    assert first.ok and first.written >= 1
+    second = ingest_site(market="se", actor=oscar_actor, use_mock=True)
+    assert second.ok
+    assert second.skipped >= first.written
+    assert second.written == 0
+
+
+def test_suggest_from_site_staging(data_env: Path, oscar_actor):
+    from ecom_ops.faq.staging import site_staging_dir
+
+    ingested = ingest_site(market="se", actor=oscar_actor, use_mock=True)
+    assert ingested.ok
+    (site_staging_dir("se") / "page_99.json").write_text(
+        (
+            '{"id": 99, "type": "page", "title": "Fraktpolicy",'
+            '"text": "Leverans inom Sverige tar vanligtvis 1 till 3 arbetsdagar efter att ordern skickats från lagret.",'
+            '"url": "https://azom.se/frakt"}'
+        ),
+        encoding="utf-8",
+    )
+    sug = suggest_articles(
+        market="se",
+        source="staging",
+        actor=oscar_actor,
+        use_mock=True,
+        limit=10,
+    )
+    assert sug.ok, sug.message
+    assert sug.written >= 1
+    drafts = list(articles_staging_dir("se").glob("*.yaml"))
+    assert drafts
+    raw = yaml.safe_load(drafts[0].read_text(encoding="utf-8"))
+    article = raw[0] if isinstance(raw, list) else raw
+    assert article["customer_safe"] is False
+    assert article.get("needs_review") is True
+    assert str(article["id"]).startswith("se-site-")
+
+
+def test_suggest_sanitizes_refund_promise(data_env: Path, oscar_actor):
+    from ecom_ops.faq.staging import products_staging_dir
+
+    pdir = products_staging_dir("se")
+    (pdir / "product_9.json").write_text(
+        (
+            '{"id": 9, "name": "Headset refund", "sku": "X",'
+            '"description": "Vi återbetalar alltid hela beloppet utan granskning och det är en lång nog text.",'
+            '"short_description": "Headset för daglig användning i bilen.",'
+            '"faq_category": "product"}'
+        ),
+        encoding="utf-8",
+    )
+    sug = suggest_articles(
+        market="se", source="products", actor=oscar_actor, use_mock=True, limit=5
+    )
+    assert sug.ok and sug.written >= 1
+    text = (articles_staging_dir("se") / "se-headset-refund.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "Vi återbetalar" not in text
+    assert "[REDACTED_PROMISE]" in text
+
+
+def test_suggest_from_dataset_skips_stale_and_raw(data_env: Path, oscar_actor):
+    import json
+    from datetime import datetime, timezone
+
+    ds = data_env / "faq_dataset"
+    ds.mkdir(parents=True)
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    good = {
+        "case_id": "c1",
+        "market": "se",
+        "language": "sv",
+        "category": "shipping",
+        "question": "Var är mitt paket just nu?",
+        "answer": "Paketet är skickat och du får spårning i bekräftelsemejlet snart nog.",
+        "answered_at": datetime.now(timezone.utc).isoformat(),
+        "stale": False,
+    }
+    stale = dict(good, case_id="c2", question="Gammal fråga om fraktstatus här?", stale=True)
+    jsonl = ds / f"qa_se_{day}.jsonl"
+    jsonl.write_text(
+        json.dumps(good, ensure_ascii=False)
+        + "\n"
+        + json.dumps(stale, ensure_ascii=False)
+        + "\n",
+        encoding="utf-8",
+    )
+    (ds / f"qa_se_{day}.manifest.json").write_text(
+        json.dumps({"redacted": True}), encoding="utf-8"
+    )
+    raw_path = ds / f"qa_se_{day}.raw.jsonl"
+    raw_path.write_text(
+        json.dumps({**good, "case_id": "raw1", "question": "hemlig@exempel.se rådata fråga här"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (ds / f"qa_se_{day}.raw.manifest.json").write_text(
+        json.dumps({"redacted": False}), encoding="utf-8"
+    )
+
+    sug = suggest_articles(
+        market="se", source="dataset", actor=oscar_actor, use_mock=True, limit=20
+    )
+    assert sug.ok, sug.message
+    assert sug.written == 1
+    drafts = list(articles_staging_dir("se").glob("*.yaml"))
+    blob = "\n".join(p.read_text(encoding="utf-8") for p in drafts)
+    assert "hemlig@exempel.se" not in blob
+    assert "Gammal fråga" not in blob
+
+
+def test_suggest_kill_switch(data_env: Path, oscar_actor, monkeypatch):
+    monkeypatch.setenv("AZOM_FAQ_INGEST_KILL", "1")
+    clear_faq_ingest_config_cache()
+    sug = suggest_articles(
+        market="se", source="products", actor=oscar_actor, use_mock=True
+    )
+    assert not sug.ok
+    assert "kill-switch" in sug.message.lower()
+
+
+def test_promote_rejects_missing_and_invalid(data_env: Path, oscar_actor):
+    missing = promote_article("se-missing-id", market="se", apply=True, actor=oscar_actor)
+    assert not missing.ok
+    assert "not found" in missing.message.lower()
+
+    bad_mkt = promote_article("xx-bad", market="xx", apply=False, actor=oscar_actor)
+    assert not bad_mkt.ok
+
+    staging = articles_staging_dir("se")
+    (staging / "se-broken.yaml").write_text("not: [valid", encoding="utf-8")
+    invalid = promote_article("se-broken", market="se", apply=True, actor=oscar_actor)
+    assert not invalid.ok
+
+
+def test_staging_counts_include_guides_and_dataset(data_env: Path):
+    from ecom_ops.faq.staging import (
+        guides_staging_dir,
+        products_staging_dir,
+        site_staging_dir,
+    )
+
+    (site_staging_dir("se") / "page_1.json").write_text("{}", encoding="utf-8")
+    (site_staging_dir("se") / "_candidates.json").write_text("{}", encoding="utf-8")
+    (products_staging_dir("se") / "product_1.json").write_text("{}", encoding="utf-8")
+    (guides_staging_dir("se") / "guide_1.json").write_text("{}", encoding="utf-8")
+    (articles_staging_dir("se") / "se-draft.yaml").write_text("[]", encoding="utf-8")
+    ds = data_env / "faq_dataset"
+    ds.mkdir()
+    (ds / "qa_se_20260101.jsonl").write_text("{}\n", encoding="utf-8")
+    (ds / "qa_se_20260101.raw.jsonl").write_text("{}\n", encoding="utf-8")
+    counts = staging_counts("se")
+    assert counts["site_docs"] == 1  # _candidates excluded
+    assert counts["product_docs"] == 1
+    assert counts["guide_docs"] == 1
+    assert counts["article_drafts"] == 1
+    assert counts["dataset_files"] == 1  # raw excluded

@@ -35,9 +35,11 @@
 | Prod env (systemd) | `/opt/azom-agent/.env` with `AZOM_USE_MOCK=0` |
 | Docker data | `/app/.azom-data` (compose volume; not the systemd path) |
 
-## Shipped (code on main)
+## Shipped (code in this repository)
 
-Treat these as done in the repository. Do not re-implement from scratch.
+Treat these as done in the working tree. Do not re-implement from scratch.
+
+**Not on `main` until this branch merges:** central dashboard logs, FAQ/KB v1, FAQ ingest HITL, and FAQ retrieve fields on `python -m ecom_ops kpis`. Other rows below are already on `main`. After merge, this note is obsolete — keep the table, drop the branch caveat.
 
 | Track | What shipped |
 |-------|----------------|
@@ -52,7 +54,7 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **Shadow Live Ledger** | Null-send profile (`AZOM_NULL_SEND` / `--null-send`): refuse customer mail; poll records FU9 shadow decisions; dashboard badge + `cases shadow-report`. Soft-soak via `bin/mock-soak-azom.sh`. **Not** FU9 wire; **not** A1 soak complete |
 | **Marketing Google (Ads+GA4)** | Mock-first ledger + suggest/HITL rails shipped (`marketing` CLI, `/marketing`, probes, kill-switches). **Live Google Data/Ads API clients still stubbed** (`NotImplementedError`) until Oscar wires OAuth + developer token. See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md). |
 | **Central dashboard logs** | JSON logging wired (`AZOM_LOG_*` → `/var/log/azom` or `./logs`); dashboard `/logs` + `/api/logs` for Jonatan and Oscar (redacted). No Loki/SaaS shipper. |
-| **FAQ/KB v1** | Lexical FAQ corpus (`config/faq/`), draft enrichment (LLM + template), WP sync-before-publish + drift, CLI `faq` (coverage/validate/reload), dashboard `/faq` + `/oscar/faq`. See [`FAQ_KB.md`](FAQ_KB.md). **Live SE FAQ page** is an ops gate — not marked done here. |
+| **FAQ/KB v1** | Lexical FAQ corpus (`config/faq/`), draft enrichment (LLM + template), WP sync-before-publish + drift, CLI `faq` (coverage/validate/reload), dashboard `/faq` + `/oscar/faq`, `kpis` FAQ retrieve/hit rate per category (`faq_retrieve` telemetry). See [`FAQ_KB.md`](FAQ_KB.md). **Live SE FAQ page** is an ops gate — not marked done here. |
 | **FAQ ingest** | HITL pipelines: `faq dataset export` (cases Q&A), `faq ingest site/products`, `faq suggest articles`, Oscar `faq promote --apply`. Staging under `AZOM_DATA_DIR`; kill-switch `AZOM_FAQ_INGEST_KILL`. No silent YAML/WP write. |
 
 ## Ops next (human-owned — agents must not mark done)

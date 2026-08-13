@@ -441,7 +441,11 @@ class CaseService:
             msg = f"Polled {len(mailboxes)} mailbox(es)"
             logger.info(
                 msg,
-                extra={"created": created, "skipped": skipped, "mailboxes": len(mailboxes)},
+                extra={
+                    "created_count": created,
+                    "skipped": skipped,
+                    "mailboxes": len(mailboxes),
+                },
             )
         return IngestResult(
             ok=not all_failed,

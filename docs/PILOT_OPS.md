@@ -173,7 +173,7 @@ False-positive suggest på return/billing/abuse måste vara **0**. Vid FP: skapa
 ### Efter soak
 
 ```text
-[ ] python -m ecom_ops kpis --days 7 → median TTA / n_approved
+[ ] python -m ecom_ops kpis --days 7 → median TTA / n_approved / FAQ hits (`n_faq_hit`)
 [ ] Fyll outcome-rad nedan med riktiga tal
 [ ] Behåll auto_send_enabled: false
 ```
