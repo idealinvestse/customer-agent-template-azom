@@ -1,0 +1,61 @@
+# Lexical FAQ synonym expansion (no embeddings).
+# Query tokens expand one hop via shared + market maps.
+# Prefix-related keys (token length >= 4) also expand.
+
+shared:
+  tracking: [track, spårning, spåra, sporing, spor]
+  track: [tracking, spårning, sporing]
+  spårning: [spåra, tracking, track, sporing]
+  spåra: [spårning, tracking, track, sporing]
+  delivery: [shipping, leverans, levering, frakt]
+  shipping: [delivery, leverans, levering, frakt]
+  return: [retur, returnera, ånger, angrerett, fortrydelse]
+  invoice: [faktura, kvitto, betalning]
+  payment: [betalning, faktura, swish]
+  parcel: [paket, package, forsändelse, forsendelse]
+  package: [paket, parcel]
+  order: [ordernummer, beställning, ordre]
+  setup: [installation, montering, igångsättning]
+  warranty: [garanti, reklamation]
+
+se:
+  spåra: [spårning, tracking, track]
+  spårning: [spåra, tracking, track]
+  retur: [returnera, ånger, ångerrätt, return]
+  returnera: [retur, ånger, return]
+  ånger: [ångerrätt, retur, returnera]
+  ångerrätt: [ånger, retur]
+  leverans: [leverera, frakt, delivery, shipping]
+  frakt: [leverans, shipping, delivery]
+  faktura: [invoice, kvitto, betalning]
+  betalning: [faktura, payment, swish]
+  paket: [försändelse, parcel, package]
+  installation: [montering, setup, igångsättning]
+  trasig: [defekt, fel, reklamation]
+  garanti: [reklamation, warranty]
+  reklamation: [garanti, fel]
+
+no:
+  sporing: [spor, tracking, track, spårning]
+  spor: [sporing, tracking]
+  levering: [frakt, delivery, shipping, leverans]
+  frakt: [levering, shipping]
+  angrerett: [retur, return, ångerrätt]
+  retur: [angrerett, return]
+  ordre: [ordrenummer, order]
+  pakke: [paket, parcel, package]
+  reklamasjon: [garanti, warranty, fel]
+  garanti: [reklamasjon, warranty]
+
+dk:
+  fragt: [levering, shipping, delivery, frakt]
+  levering: [fragt, shipping, delivery]
+  spor: [sporing, tracking, track]
+  sporing: [spor, tracking]
+  fortrydelse: [retur, fortrydelsesret, return]
+  fortrydelsesret: [fortrydelse, retur]
+  retur: [fortrydelse, return]
+  ordre: [ordrenummer, order]
+  pakke: [paket, parcel, package]
+  reklamationsret: [garanti, warranty]
+  garanti: [reklamation, warranty]

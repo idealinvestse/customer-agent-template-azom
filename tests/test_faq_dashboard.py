@@ -136,7 +136,61 @@ def test_oscar_faq_reload_with_csrf(dash_client):
     assert "Korpus" in loc or "oscar/faq" in loc
 
 
-def test_jonatan_cannot_post_oscar_faq_publish(dash_client):
+def test_faq_article_detail_jonatan(dash_client):
+    resp = dash_client.get("/faq/se-shipping-tracking", headers=_auth())
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "Spåra" in body or "spår" in body.lower()
+    assert "se-shipping-tracking" in body
+
+
+def test_faq_browse_category_filter_and_score(dash_client):
+    resp = dash_client.get(
+        "/faq?market=se&category=shipping&q=sp%C3%A5rning", headers=_auth()
+    )
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="replace")
+    assert "score" in body
+    assert 'name="category"' in body
+
+
+def test_oscar_faq_promote_dry_run_csrf(dash_client):
+    import os
+
+    import yaml
+
+    from ecom_ops.faq.staging import articles_staging_dir
+
+    staging = articles_staging_dir("se")
+    article = {
+        "id": "se-dash-promote",
+        "market": "se",
+        "language": "sv",
+        "category": "product",
+        "title": "Dash promote",
+        "body": "En tillräckligt lång brödtext för att passera validering av FAQ-artikel.",
+        "customer_safe": False,
+        "needs_review": True,
+    }
+    (staging / "se-dash-promote.yaml").write_text(
+        yaml.safe_dump([article], allow_unicode=True),
+        encoding="utf-8",
+    )
+    assert os.environ.get("AZOM_DATA_DIR")
+    page = dash_client.get("/oscar/faq", headers=_auth("oscar", "oscar"))
+    assert page.status_code == 200
+    html = page.data.decode("utf-8", errors="replace")
+    assert "se-dash-promote" in html or "Staging-utkast" in html
+    csrf = _csrf(html)
+    resp = dash_client.post(
+        "/oscar/faq/promote",
+        headers=_auth("oscar", "oscar"),
+        data={"_csrf": csrf, "market": "se", "article_id": "se-dash-promote"},
+        follow_redirects=False,
+    )
+    assert resp.status_code in (302, 303)
+    loc = resp.headers.get("Location", "")
+    assert "err=" not in loc
     page = dash_client.get("/faq", headers=_auth("jonatan", "jonatan"))
     assert page.status_code == 200
     with dash_client.session_transaction() as sess:

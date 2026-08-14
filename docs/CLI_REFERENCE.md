@@ -105,7 +105,7 @@ python -m ecom_ops --mock ssh-health
 
 | Command | Flags | Purpose |
 |---------|-------|---------|
-| `kpis` | `--days` (default 7) | Case / approve KPIs plus FAQ retrieve hit rate (`n_faq_hit` / `faq_by_category`) |
+| `kpis` | `--days` (default 7) | Case / approve KPIs plus FAQ retrieve hit rate (`n_faq_hit` / `faq_by_category` / `faq_by_market` / `faq_top_articles`) |
 | `classify-eval` | `--fixtures DIR` (default `tests/fixtures/support_classify`) | Fixture accuracy check |
 | `draft-eval` | `--dir DIR` (default `tests/fixtures/draft_quality`) | Draft quality fixtures |
 | `drift-check` | `--days` (default 7) | Ops drift signals |
@@ -114,7 +114,7 @@ python -m ecom_ops --mock ssh-health
 ```bash
 python -m ecom_ops kpis --days 7
 # expect: JSON with n_case_approved, median_time_to_approve_sec, n_faq_retrieve,
-#         n_faq_hit, faq_hit_rate, faq_by_category (per support category)
+#         n_faq_hit, faq_hit_rate, faq_by_category, faq_by_market, faq_top_articles
 python -m ecom_ops classify-eval
 python -m ecom_ops draft-eval
 python -m ecom_ops drift-check --days 7
@@ -220,6 +220,7 @@ FAQ / knowledge base (lexical search + WordPress page HITL). See [`FAQ_KB.md`](F
 ```bash
 python -m ecom_ops --mock faq list [--market se] [--category shipping] [--all]
 python -m ecom_ops --mock faq search --q "spårning" --market se
+python -m ecom_ops --mock faq search --q "sporing" --market no
 python -m ecom_ops --mock faq coverage
 python -m ecom_ops --mock faq validate
 python -m ecom_ops --mock faq reload
@@ -228,12 +229,13 @@ python -m ecom_ops --mock --actor oscar faq publish --market se --status publish
 python -m ecom_ops --mock --actor oscar faq dataset export [--market se] [--since-days 180] [--exclude-stale] [--raw]
 python -m ecom_ops --mock --actor oscar faq ingest site --market se [--pages|--no-pages] [--posts|--no-posts]
 python -m ecom_ops --mock --actor oscar faq ingest products --market se [--no-guides]
-python -m ecom_ops --mock --actor oscar faq suggest articles --from products|staging|dataset --market se
-python -m ecom_ops --mock --actor oscar faq promote --id <article-id> [--apply]
+python -m ecom_ops --mock --actor oscar faq suggest articles --from products|staging|dataset|guides --market se
+python -m ecom_ops --mock --actor oscar faq promote --id <article-id> [--apply] [--force]
 python -m ecom_ops --mock faq staging
+python -m ecom_ops --mock --actor oscar faq staging purge --days 90 [--apply]
 ```
 
-`sync-draft` / `publish` / `promote --apply` require **FAQ_PUBLISH** (Oscar). Kill-switches: `AZOM_FAQ_PUBLISH_KILL=1`, `AZOM_FAQ_INGEST_KILL=1`. Publish auto-syncs corpus first. Ingest writes staging only.
+`sync-draft` / `publish` / `promote --apply` / `staging purge --apply` require **FAQ_PUBLISH** (Oscar). Kill-switches: `AZOM_FAQ_PUBLISH_KILL=1`, `AZOM_FAQ_INGEST_KILL=1` (ingest/suggest only — promote is not gated by ingest kill). Publish auto-syncs corpus first. Ingest writes staging only. Promote dest is `config/faq/{market}/ingest_{id}.yaml`; overwrite needs `--force`. `faq coverage` includes `gaps_vs_se`. `cases retention-purge` also purges aged FAQ staging/dataset files.
 
 ## Environment that changes CLI behavior
 
@@ -260,4 +262,5 @@ python -m ecom_ops --mock faq staging
 - Cases ops (Swedish): [`CASES.md`](CASES.md)
 - Mail setup (Swedish): [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md)
 - Marketing Google: [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md)
+- FAQ / knowledge base: [`FAQ_KB.md`](FAQ_KB.md)
 - System map: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)

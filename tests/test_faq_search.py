@@ -91,3 +91,77 @@ def test_search_respects_market():
 def test_format_context_empty():
     assert format_faq_context_block([]) == ""
     assert format_faq_citation_footer([]) == ""
+
+
+def test_search_native_no_sporing():
+    clear_faq_config_cache()
+    clear_faq_store_cache()
+    hits = search_faq("sporing", market="no", category="shipping")
+    assert hits
+    assert all(h.article.market == "no" for h in hits)
+    assert any(h.article.id == "no-shipping-tracking" for h in hits)
+
+
+def test_search_native_dk_fragt():
+    clear_faq_config_cache()
+    clear_faq_store_cache()
+    hits = search_faq("fragt", market="dk", category="shipping")
+    assert hits
+    assert all(h.article.market == "dk" for h in hits)
+    assert any("shipping" in h.article.id for h in hits)
+
+
+def test_search_inflection_sparar_hits_tracking():
+    clear_faq_config_cache()
+    clear_faq_store_cache()
+    hits = search_faq("spårar", market="se", category="shipping")
+    assert hits
+    assert any(
+        h.article.id == "se-shipping-tracking" or "spår" in h.article.title.lower()
+        for h in hits
+    )
+
+
+def test_search_empty_query_without_category_is_empty():
+    clear_faq_config_cache()
+    clear_faq_store_cache()
+    assert search_faq("", market="se") == []
+
+
+def test_search_shipping_ranks_above_return_for_tracking_query():
+    clear_faq_config_cache()
+    clear_faq_store_cache()
+    hits = search_faq("spårning paket", market="se", category="shipping", limit=5)
+    assert hits
+    assert hits[0].article.category == "shipping"
+    assert all(h.article.customer_safe for h in hits)
+
+
+def test_search_title_phrase_bonus():
+    store = FaqStore(
+        articles=[
+            FaqArticle(
+                id="se-phrase-hit",
+                market="se",
+                language="sv",
+                category="shipping",
+                title="Spåra din leverans",
+                body="Övrig text utan extra nyckelord.",
+                tags=("annat",),
+                customer_safe=True,
+            ),
+            FaqArticle(
+                id="se-phrase-miss",
+                market="se",
+                language="sv",
+                category="shipping",
+                title="Retur av vara",
+                body="Spåra din leverans nämns bara i brödtexten här.",
+                tags=("spårning",),
+                customer_safe=True,
+            ),
+        ]
+    )
+    hits = search_faq("Spåra din leverans", market="se", store=store, limit=2)
+    assert hits
+    assert hits[0].article.id == "se-phrase-hit"

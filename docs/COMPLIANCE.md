@@ -4,7 +4,7 @@
 **Audience:** Oscar (ansvarig). Coding agents ska inte “stänga” DPIA.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`PILOT_OPS.md`](PILOT_OPS.md), [`CASES.md`](CASES.md).
 
-**Senast uppdaterad:** 2026-08-01 · **Ansvarig:** Oscar (full_admin)  
+**Senast uppdaterad:** 2026-08-14 · **Ansvarig:** Oscar (full_admin)  
 **Obs:** Full DPIA vid pilotstart är fortfarande ett mänskligt ägarskap — markera inte som klar i kod-PRs.
 
 ## Behandlingsregister (Art 30)
@@ -18,7 +18,7 @@
 | Audit-log | Spårbarhet | Legitimt intresse | 12 mån | `/var/lib/azom/audit.jsonl` |
 | OAuth-tokens (Gmail) | Mail-anslutning | Samtycke (användare) | Tills revoke | `/var/lib/azom/oauth/gmail.json` |
 
-**Känd lucka (FAQ ingest):** `{AZOM_DATA_DIR}/faq_dataset/` och `faq_staging/` ingår **inte** i GDPR export/delete/retention. De är intern eval/HITL-staging, inte cases-path. `GET/POST /oscar/gdpr/*` och `retention-purge` rör bara `cases.db`. Se [`FAQ_KB.md`](FAQ_KB.md).
+**Känd lucka (FAQ ingest, delvis stängd):** `{AZOM_DATA_DIR}/faq_dataset/` rader med `case_id` tas bort vid `POST /oscar/gdpr/delete`. `cases retention-purge` (Oscar-timer) kör även ålderspurge av `faq_staging/` + `faq_dataset/`-filer (default 90 dagar). Heuristisk PII-strip på dataset-export är ops-hygien, **inte** ett personuppgiftsregister. Site/product-JSON är egen sajttext och rensas på ålder, inte e-post. Se [`FAQ_KB.md`](FAQ_KB.md).
 
 ## Dataresidency & tredjepartsöverföring (P8.4)
 
@@ -45,7 +45,7 @@
 | Rättighet | Implementering |
 |-----------|----------------|
 | **Insyn (Art 15)** | `GET /oscar/gdpr/export?email=...` (Oscar-admin) |
-| **Radering (Art 17)** | `POST /oscar/gdpr/delete` (Oscar-admin) + `azom-retention-purge.timer` (`--actor oscar`, 90 dagar) |
+| **Radering (Art 17)** | `POST /oscar/gdpr/delete` (Oscar-admin; cases + `faq_dataset` rader med `case_id`) + `azom-retention-purge.timer` (`--actor oscar`, 90 dagar; cases + ålderspurge av FAQ staging) |
 | **Rättelse (Art 16)** | Manuell via Oscar — ändra i cases.db |
 | **Portabilitet (Art 20)** | `GET /oscar/gdpr/export` returnerar JSON |
 | **Invändning (Art 21)** | Manuell — stoppa poll för mailbox |

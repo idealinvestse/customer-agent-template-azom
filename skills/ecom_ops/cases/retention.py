@@ -32,6 +32,7 @@ class RetentionResult:
     deleted: int = 0
     redacted: int = 0
     retention_days: int = DEFAULT_RETENTION_DAYS
+    case_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +41,7 @@ class RetentionResult:
             "deleted": self.deleted,
             "redacted": self.redacted,
             "retention_days": self.retention_days,
+            "case_ids": list(self.case_ids),
         }
 
 
@@ -70,6 +72,15 @@ def purge_closed_cases(
     conn = sqlite3.connect(str(cs.path))
     conn.row_factory = sqlite3.Row
     try:
+        id_rows = conn.execute(
+            """
+            SELECT id FROM cases
+            WHERE status = 'closed' AND updated_at < ?
+            """,
+            (cutoff_iso,),
+        ).fetchall()
+        case_ids = tuple(str(r[0]) for r in id_rows)
+
         if redact:
             # Redact PII fields but keep the row for aggregate analytics.
             cur = conn.execute(
@@ -105,6 +116,7 @@ def purge_closed_cases(
                 message=f"Redacted {redacted} closed cases older than {days}d",
                 redacted=redacted,
                 retention_days=days,
+                case_ids=case_ids,
             )
         # Hard delete: messages first (FK), then cases
         conn.execute(
@@ -128,6 +140,7 @@ def purge_closed_cases(
             message=f"Deleted {deleted} closed cases older than {days}d",
             deleted=deleted,
             retention_days=days,
+            case_ids=case_ids,
         )
     except Exception as exc:
         conn.rollback()

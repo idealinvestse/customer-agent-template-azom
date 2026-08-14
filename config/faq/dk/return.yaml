@@ -21,3 +21,30 @@
   body: |
     Når en ordre har status under behandling, plukkes og pakkes den.
     Du får en e-mail, når den sendes. Angiv gerne ordrenummer, så bekræfter vi status.
+
+- id: dk-return-how-to
+  market: dk
+  language: da
+  category: return
+  title: Sådan returnerer du
+  tags: [retur, instruktion, fragt]
+  customer_safe: false
+  needs_review: true
+  body: |
+    1) Mail support med ordrenummer og hvilke varer der skal returneres.
+    2) Vent på returinstruktion og adresse.
+    3) Pak varen sikkert med eventuel følgeseddel.
+    Returfragt kan belaste dig efter gældende vilkår, hvis fejlen ikke er vores.
+
+- id: dk-order-status-how-to-find
+  market: dk
+  language: da
+  category: order_status
+  title: Find dit ordrenummer
+  tags: [ordrenummer, kvittering, bekræftelse]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Ordrenummeret står i ordrebekræftelsen, du fik på e-mail efter købet.
+    Det er som regel et numerisk id. Uden ordrenummer kan vi have brug for at
+    søge via den e-mail, du brugte ved købet.

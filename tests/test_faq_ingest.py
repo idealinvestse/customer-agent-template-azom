@@ -67,6 +67,7 @@ def test_ingest_site_writes_staging(data_env: Path, oscar_actor) -> None:
     assert any(site_dir.glob("page_*.json"))
     counts = staging_counts("se")
     assert counts["site_docs"] >= 1
+    assert not (site_dir / "_candidates.json").is_file()
 
 
 def test_ingest_products_and_suggest_promote(
@@ -146,7 +147,9 @@ def test_ingest_products_and_suggest_promote(
         yaml.safe_dump([article], allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
-    forced = promote_article(aid, market="se", apply=True, actor=oscar_actor)
+    forced = promote_article(
+        aid, market="se", apply=True, force=True, actor=oscar_actor
+    )
     assert forced.ok, forced.message
     written = yaml.safe_load(Path(forced.dest or "").read_text(encoding="utf-8"))
     row = written[0] if isinstance(written, list) else written
@@ -385,3 +388,97 @@ def test_staging_counts_include_guides_and_dataset(data_env: Path):
     assert counts["guide_docs"] == 1
     assert counts["article_drafts"] == 1
     assert counts["dataset_files"] == 1  # raw excluded
+
+
+def test_suggest_from_guides(data_env: Path, oscar_actor) -> None:
+    from ecom_ops.faq.staging import guides_staging_dir
+
+    gdir = guides_staging_dir("se")
+    (gdir / "guide_abcd.json").write_text(
+        (
+            '{"url": "https://azom.se/guides/headset",'
+            '"text": "Installationsguide för Azom Pro Headset. Följ stegen i '
+            'manualen och kontakta support med ordernummer om något saknas."}'
+        ),
+        encoding="utf-8",
+    )
+    sug = suggest_articles(
+        market="se", source="guides", actor=oscar_actor, use_mock=True, limit=5
+    )
+    assert sug.ok, sug.message
+    assert sug.written >= 1
+    drafts = list(articles_staging_dir("se").glob("*.yaml"))
+    assert drafts
+    raw = yaml.safe_load(drafts[0].read_text(encoding="utf-8"))
+    article = raw[0] if isinstance(raw, list) else raw
+    assert article["customer_safe"] is False
+    assert article.get("needs_review") is True
+    assert str(article["id"]).startswith("se-guide-")
+
+
+def test_promote_overwrite_requires_force(data_env: Path, oscar_actor) -> None:
+    staging = articles_staging_dir("se")
+    article = {
+        "id": "se-force-demo",
+        "market": "se",
+        "language": "sv",
+        "category": "product",
+        "title": "Force demo",
+        "body": "En tillräckligt lång brödtext för att passera validering av FAQ-artikel.",
+        "customer_safe": False,
+        "needs_review": True,
+    }
+    (staging / "se-force-demo.yaml").write_text(
+        yaml.safe_dump([article], allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    first = promote_article("se-force-demo", market="se", apply=True, actor=oscar_actor)
+    assert first.ok and first.dest
+    dest = Path(first.dest)
+    assert dest.name == "ingest_se-force-demo.yaml"
+    blocked = promote_article(
+        "se-force-demo", market="se", apply=True, actor=oscar_actor
+    )
+    assert not blocked.ok
+    assert "force" in blocked.message.lower()
+    dry_blocked = promote_article(
+        "se-force-demo", market="se", apply=False, actor=oscar_actor
+    )
+    assert not dry_blocked.ok
+    overwritten = promote_article(
+        "se-force-demo", market="se", apply=True, force=True, actor=oscar_actor
+    )
+    assert overwritten.ok
+    assert dest.is_file()
+
+
+def test_promote_dest_not_category_prefixed(data_env: Path, oscar_actor) -> None:
+    """Old ingest_{category}_{id} naming duplicated ids; new dest is ingest_{id}."""
+    staging = articles_staging_dir("se")
+    article = {
+        "id": "se-cat-change",
+        "market": "se",
+        "language": "sv",
+        "category": "shipping",
+        "title": "Category change",
+        "body": "En tillräckligt lång brödtext för att passera validering av FAQ-artikel.",
+        "customer_safe": False,
+        "needs_review": True,
+    }
+    (staging / "se-cat-change.yaml").write_text(
+        yaml.safe_dump([article], allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    first = promote_article("se-cat-change", market="se", apply=True, actor=oscar_actor)
+    article["category"] = "return"
+    (staging / "se-cat-change.yaml").write_text(
+        yaml.safe_dump([article], allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    second = promote_article(
+        "se-cat-change", market="se", apply=True, force=True, actor=oscar_actor
+    )
+    assert first.ok and second.ok
+    dest_dir = Path(first.dest).parent
+    matches = list(dest_dir.glob("ingest_*se-cat-change.yaml"))
+    assert [p.name for p in matches] == ["ingest_se-cat-change.yaml"]

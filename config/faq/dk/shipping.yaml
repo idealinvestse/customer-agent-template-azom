@@ -20,3 +20,17 @@
   body: |
     Når ordren er sendt, får du en e-mail med sporingslink. Kontakt support
     med ordrenummer, hvis du har brug for hjælp til at spore pakken.
+
+- id: dk-shipping-missing-package
+  market: dk
+  language: da
+  category: shipping
+  title: Manglende eller forsinket pakke
+  tags: [mangler, forsinket, pakke]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Hvis leveringstiden er overskredet, og sporingen står stille, hjælper vi dig
+    med at undersøge sagen hos transportøren. Hav ordrenummer parat. Vi vender
+    tilbage med næste skridt, når undersøgelsen er færdig — vi lover ikke
+    erstatning på forhånd.

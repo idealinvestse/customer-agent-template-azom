@@ -21,12 +21,13 @@ from ecom_ops.faq.rbac_ingest import require_faq_ingest
 from ecom_ops.faq.staging import (
     articles_staging_dir,
     data_dir,
+    guides_staging_dir,
     products_staging_dir,
     site_staging_dir,
 )
 from ecom_ops.rbac import AccessDenied, Actor
 
-SourceKind = Literal["staging", "dataset", "products"]
+SourceKind = Literal["staging", "dataset", "products", "guides"]
 
 _FORBIDDEN = re.compile(
     r"(?i)\b("
@@ -125,6 +126,41 @@ def _from_products(market: str, out_dir: Path, *, limit: int) -> int:
                 }
             ],
             "body": body,
+        }
+        _write_draft(out_dir / f"{aid}.yaml", article)
+        written += 1
+    return written
+
+
+def _from_guides(market: str, out_dir: Path, *, limit: int) -> int:
+    src = guides_staging_dir(market)
+    written = 0
+    for path in sorted(src.glob("guide_*.json")):
+        if written >= limit:
+            break
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        url = str(doc.get("url") or path.stem).strip()
+        text = _sanitize_body(str(doc.get("text") or ""))
+        if len(text) < 40:
+            continue
+        title = url.rstrip("/").rsplit("/", 1)[-1] or "Guide"
+        title = title.replace("-", " ").replace("_", " ")[:120]
+        aid = f"{market}-guide-{_slug(url)}"
+        article = {
+            "id": aid,
+            "market": market,
+            "language": {"se": "sv", "no": "nb", "dk": "da"}.get(market, "sv"),
+            "category": "product",
+            "title": title,
+            "tags": ["ingest", "guide"],
+            "customer_safe": False,
+            "needs_review": True,
+            "updated_at": _now()[:10],
+            "sources": [{"type": "guide_url", "url": url}],
+            "body": text[:4000],
         }
         _write_draft(out_dir / f"{aid}.yaml", article)
         written += 1
@@ -282,6 +318,10 @@ def suggest_articles(
     out_dir = articles_staging_dir(domain)
     if source == "products":
         n = _from_products(domain, out_dir, limit=limit)
+        if n < limit:
+            n += _from_guides(domain, out_dir, limit=limit - n)
+    elif source == "guides":
+        n = _from_guides(domain, out_dir, limit=limit)
     elif source == "staging":
         n = _from_site(domain, out_dir, limit=limit)
     elif source == "dataset":

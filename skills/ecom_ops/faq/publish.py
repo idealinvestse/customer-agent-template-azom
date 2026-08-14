@@ -27,7 +27,8 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def article_to_html(article: FaqArticle) -> str:
+def article_to_html(article: FaqArticle, *, heading: str = "h2") -> str:
+    tag = heading if heading in {"h2", "h3"} else "h2"
     title = html.escape(article.title)
     paras = [
         f"<p>{html.escape(p.strip())}</p>"
@@ -36,7 +37,7 @@ def article_to_html(article: FaqArticle) -> str:
     ]
     if not paras:
         paras = [f"<p>{html.escape(article.body)}</p>"]
-    return f"<h2 id=\"{html.escape(article.id)}\">{title}</h2>\n" + "\n".join(paras)
+    return f'<{tag} id="{html.escape(article.id)}">{title}</{tag}>\n' + "\n".join(paras)
 
 
 def build_parent_html(articles: list[FaqArticle], *, market: str) -> str:
@@ -47,18 +48,27 @@ def build_parent_html(articles: list[FaqArticle], *, market: str) -> str:
         mkt,
         "Vanliga frågor om order, leverans och produkter.",
     )
+    lang = {"se": "sv", "no": "nb", "dk": "da"}.get(mkt, "sv")
+    grouped: dict[str, list[FaqArticle]] = {}
+    for art in articles:
+        grouped.setdefault(art.category, []).append(art)
     parts = [
+        f'<div class="azom-faq" lang="{html.escape(lang)}">',
         f"<h1>{html.escape(title)}</h1>",
         f"<p>{html.escape(intro)}</p>",
-        "<ul>",
     ]
-    for art in articles:
-        parts.append(
-            f'<li><a href="#{html.escape(art.id)}">{html.escape(art.title)}</a></li>'
-        )
-    parts.append("</ul>")
-    for art in articles:
-        parts.append(article_to_html(art))
+    for cat, arts in grouped.items():
+        cat_label = html.escape(cat.replace("_", " "))
+        parts.append(f"<h2 id=\"cat-{html.escape(cat)}\">{cat_label}</h2>")
+        parts.append("<ul>")
+        for art in arts:
+            parts.append(
+                f'<li><a href="#{html.escape(art.id)}">{html.escape(art.title)}</a></li>'
+            )
+        parts.append("</ul>")
+        for art in arts:
+            parts.append(article_to_html(art, heading="h3"))
+    parts.append("</div>")
     return "\n".join(parts)
 
 

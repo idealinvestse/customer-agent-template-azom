@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import statistics
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,8 @@ def support_kpis_last_days(
     n_faq_miss = 0
     n_faq_retrieve_error = 0
     faq_cats: dict[str, dict[str, int]] = {}
+    faq_mkts: dict[str, dict[str, int]] = {}
+    article_hits: Counter[str] = Counter()
 
     if path.is_file():
         with path.open(encoding="utf-8") as fh:
@@ -125,12 +128,24 @@ def support_kpis_last_days(
                         faq_cats, str(meta.get("category") or "")
                     )
                     bucket["n_retrieve"] += 1
+                    m_bucket = _faq_cat_bucket(
+                        faq_mkts, str(meta.get("market") or "") or "unknown"
+                    )
+                    m_bucket["n_retrieve"] += 1
                     if hit_count > 0:
                         n_faq_hit += 1
                         bucket["n_hit"] += 1
+                        m_bucket["n_hit"] += 1
                     else:
                         n_faq_miss += 1
                         bucket["n_miss"] += 1
+                        m_bucket["n_miss"] += 1
+                    ids = meta.get("faq_article_ids") or []
+                    if isinstance(ids, list):
+                        for aid in ids:
+                            key = str(aid).strip()
+                            if key:
+                                article_hits[key] += 1
                 elif action == "faq_retrieve_error":
                     n_faq_retrieve_error += 1
 
@@ -145,6 +160,18 @@ def support_kpis_last_days(
         }
         for cat, counts in sorted(faq_cats.items())
     }
+    faq_by_market = {
+        mkt: {
+            "n_retrieve": counts["n_retrieve"],
+            "n_hit": counts["n_hit"],
+            "n_miss": counts["n_miss"],
+            "hit_rate": _hit_rate(counts["n_hit"], counts["n_retrieve"]),
+        }
+        for mkt, counts in sorted(faq_mkts.items())
+    }
+    faq_top_articles = [
+        {"id": aid, "n": n} for aid, n in article_hits.most_common(10)
+    ]
     faq_rate = _hit_rate(n_faq_hit, n_faq_retrieve)
     tta_part = (
         f", median TTA {median_tta:.0f}s"
@@ -175,5 +202,7 @@ def support_kpis_last_days(
         "n_faq_retrieve_error": n_faq_retrieve_error,
         "faq_hit_rate": faq_rate,
         "faq_by_category": faq_by_category,
+        "faq_by_market": faq_by_market,
+        "faq_top_articles": faq_top_articles,
         "message": f"Last {days}d: {n_replied} approves{tta_part}{faq_part}",
     }

@@ -15,6 +15,7 @@ from urllib.parse import quote
 from flask import (
     Flask,
     Response,
+    abort,
     g,
     jsonify,
     redirect,
@@ -618,6 +619,8 @@ def prometheus_metrics():
     lines.append("# TYPE azom_faq_retrieve_total gauge")
     lines.append(f"azom_faq_retrieve_total {kpis.get('n_faq_retrieve', 0)}")
     lines.append(f"azom_faq_hit_total {kpis.get('n_faq_hit', 0)}")
+    lines.append("# TYPE azom_faq_retrieve_error_total gauge")
+    lines.append(f"azom_faq_retrieve_error_total {kpis.get('n_faq_retrieve_error', 0)}")
     # Case counts
     import sqlite3
 
@@ -1129,17 +1132,42 @@ def faq_browse():
 
     market = (request.args.get("market") or "se").strip().lower()
     q = (request.args.get("q") or "").strip()
-    articles = default_faq_store().list(market=market, customer_safe_only=True)
-    hits = search_faq(q, market=market) if q else None
+    category = (request.args.get("category") or "").strip().lower() or None
+    store = default_faq_store()
+    articles = store.list(
+        market=market, category=category, customer_safe_only=True
+    )
+    categories = sorted({a.category for a in store.list(market=market, customer_safe_only=True)})
+    hits = (
+        search_faq(q, market=market, category=category) if q else None
+    )
     return render_template(
         "faq.html",
         **_dashboard_context(
             market=market,
             markets=["se", "no", "dk"],
             articles=articles,
+            categories=categories,
+            category=category or "",
             search_q=q,
             search_hits=hits,
         ),
+    )
+
+
+@app.route("/faq/<article_id>")
+@_auth_required
+def faq_article_detail(article_id: str):
+    from ecom_ops.faq.store import default_faq_store
+
+    art = default_faq_store().get(article_id)
+    if art is None:
+        abort(404)
+    if not art.customer_safe and not g.actor.get("is_oscar"):
+        abort(404)
+    return render_template(
+        "faq_article.html",
+        **_dashboard_context(article=art),
     )
 
 
@@ -1155,9 +1183,15 @@ def oscar_faq():
 
     market = (request.args.get("market") or "se").strip().lower()
     q = (request.args.get("q") or "").strip()
+    show_all = (request.args.get("all") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     cfg = load_faq_config()
     store = default_faq_store()
-    articles = store.list(market=market, customer_safe_only=True)
+    articles = store.list(market=market, customer_safe_only=not show_all)
     pub_rows = FaqPublishMap().list_market(market)
     parent = next((r for r in pub_rows if r.article_id == ""), None)
     current_hash = corpus_content_hash(market, store=store)
@@ -1182,9 +1216,10 @@ def oscar_faq():
             wp_probe_ok = False
             wp_probe_message = str(exc)[:200]
     from ecom_ops.faq.ingest_config import faq_ingest_killed
-    from ecom_ops.faq.staging import staging_counts
+    from ecom_ops.faq.staging import list_article_drafts, staging_counts
 
     staging = staging_counts(market)
+    drafts = list_article_drafts(market)
     return render_template(
         "oscar_faq.html",
         **_dashboard_context(
@@ -1197,6 +1232,8 @@ def oscar_faq():
             kill_switch=faq_publish_killed(),
             ingest_kill=faq_ingest_killed(),
             staging_counts=staging,
+            staging_drafts=drafts,
+            show_all=show_all,
             live_allowed=market in {m.lower() for m in cfg.live_markets_allowed},
             corpus_hash=current_hash,
             corpus_drift=drift,
@@ -1260,6 +1297,32 @@ def oscar_faq_publish():
     result = publish_page(
         market, status=status, actor="oscar", use_mock=_faq_use_mock()
     )
+    frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
+    return redirect(url_for("oscar_faq", market=market) + f"?{frag}")
+
+
+@app.route("/oscar/faq/promote", methods=["POST"])
+@_oscar_required
+def oscar_faq_promote():
+    failed = _validate_csrf()
+    if failed:
+        return failed
+    from ecom_ops.faq.promote import promote_article
+    from ecom_ops.faq.store import reload_faq_store
+
+    market = (request.form.get("market") or "se").strip().lower()
+    article_id = (request.form.get("article_id") or "").strip()
+    apply = (request.form.get("apply") or "").strip() in {"1", "true", "on"}
+    force = (request.form.get("force") or "").strip() in {"1", "true", "on"}
+    result = promote_article(
+        article_id,
+        market=market,
+        apply=apply,
+        force=force,
+        actor="oscar",
+    )
+    if result.ok and apply:
+        reload_faq_store()
     frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
     return redirect(url_for("oscar_faq", market=market) + f"?{frag}")
 
@@ -1381,14 +1444,24 @@ def oscar_gdpr_delete():
         conn.execute(f"DELETE FROM case_messages WHERE case_id IN ({placeholders})", case_ids)
         conn.execute(f"DELETE FROM cases WHERE id IN ({placeholders})", case_ids)
         conn.commit()
+        from ecom_ops.faq.retention import purge_dataset_case_ids
+
+        faq_rows = purge_dataset_case_ids(case_ids)
         log_action(
             actor=g.actor["name"],
             action="gdpr_delete",
             target="cases",
             target_id=email,
-            details={"deleted_count": len(case_ids)},
+            details={"deleted_count": len(case_ids), "faq_dataset_rows": faq_rows},
         )
-        return jsonify({"ok": True, "deleted": len(case_ids), "message": f"Deleted {len(case_ids)} cases for {email}"})
+        return jsonify(
+            {
+                "ok": True,
+                "deleted": len(case_ids),
+                "faq_dataset_rows": faq_rows,
+                "message": f"Deleted {len(case_ids)} cases for {email}",
+            }
+        )
     except Exception as exc:
         conn.rollback()
         return jsonify({"ok": False, "message": str(exc)[:200]}), 500

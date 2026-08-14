@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ article.title }} – FAQ – Azom{% endblock %}
+{% block page_subtitle %}FAQ / kunskapsbas (läs){% endblock %}
+{% block content %}
+<p class="az-muted text-sm mb-4">
+  <a class="underline" href="/faq?market={{ article.market }}">← Tillbaka</a>
+  · <code>{{ article.id }}</code>
+  · {{ article.market }} / {{ article.category }}
+  · safe={% if article.customer_safe %}ja{% else %}nej{% endif %}
+  {% if article.needs_review %} · needs_review{% endif %}
+</p>
+<section class="az-card">
+  <h1 class="text-xl font-semibold">{{ article.title }}</h1>
+  <div class="mt-4 whitespace-pre-wrap text-sm">{{ article.body }}</div>
+  {% if article.tags %}
+  <p class="az-muted text-xs mt-4">taggar: {{ article.tags|join(", ") }}</p>
+  {% endif %}
+</section>
+{% endblock %}

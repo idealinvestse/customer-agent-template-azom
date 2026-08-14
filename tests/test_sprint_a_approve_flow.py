@@ -399,6 +399,10 @@ def test_support_kpis_faq_hit_rate_per_category(tmp_path, monkeypatch):
         "hit_rate": 0.0,
     }
     assert "FAQ 3/5 hits" in k["message"]
+    assert k["faq_by_market"]["se"]["n_retrieve"] == 5
+    assert k["faq_by_market"]["se"]["n_hit"] == 3
+    ids = {row["id"] for row in k["faq_top_articles"]}
+    assert "se-shipping-1" in ids
 
 
 def test_support_kpis_faq_ignores_old_and_counts_errors(tmp_path, monkeypatch):

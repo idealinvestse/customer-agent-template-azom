@@ -135,6 +135,8 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/marketing` | J/O | Ads+GA4 digest + suggest HITL |
 | `/marketing/suggests/*` | POST J/O | Build / deny / approve suggests |
 | `/interact` | auth | Support draft playground |
+| `/faq`, `/faq/<id>` | J/O | FAQ browse/search + article detail (`FAQ_READ`) |
+| `/oscar/faq` | Oscar | Corpus, staging/promote HITL, WP sync-draft / publish |
 | `/oscar`, `/oscar/secrets`, `/oscar/escalations` | Oscar | Admin + resolve |
 | `/oscar/secrets/test` | Oscar | Connection probes (incl. ga4 / google_ads / merchant) |
 | `/oauth/gmail/start`, `/status` | auth | Gmail OAuth start / status |
@@ -190,7 +192,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `config/limits.yaml` | OpenRouter cap |
 | `config/cases_ai.yaml` | suggest-approve + auto-send rails |
 | `config/marketing.yaml` | Ads/GA4 allowlists, mutate defaults, kill env names |
-| `config/faq.yaml` + `config/faq/{market}/` | FAQ flags + YAML corpus |
+| `config/faq.yaml` + `config/faq_synonyms.yaml` + `config/faq/{market}/` | FAQ flags + synonym map + YAML corpus |
 | `config/integrations.yaml` | mail presets; Google flags are **non-gating reserved** |
 | `config/dashboard.yaml` | dashboard feature flags |
 | `config/customer.json` | customer metadata / KPIs |
@@ -250,6 +252,7 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 | `escalations.jsonl` | Escalation tickets |
 | `marketing_suggests.jsonl` | Marketing suggest ledger |
 | `faq_publish.db` | FAQ → WP page id map |
+| `faq_staging/`, `faq_dataset/` | FAQ ingest staging + Q&A export (retention + GDPR-delete) |
 | telemetry / KPI files | Cost + case KPIs + FAQ retrieve hits (`python -m ecom_ops kpis`) |
 | `last_case_poll.json` | Poll readiness (`partial` / errors / age → `/health`) |
 | `probe_last.json` | Last Oscar probe results |

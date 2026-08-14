@@ -60,6 +60,71 @@ def test_coverage_counts_seed_corpus():
     assert cov["total"] >= 5
     assert cov["markets"]["se"]["total"] >= 5
     assert cov["markets"]["se"]["categories"].get("shipping", 0) >= 1
+    assert "gaps_vs_se" in cov
+    assert cov["gaps_vs_se"]["no"]["missing_categories"] == []
+    assert cov["gaps_vs_se"]["dk"]["missing_categories"] == []
+    assert cov["gaps_vs_se"]["no"]["missing_suffixes"] == []
+    assert cov["gaps_vs_se"]["dk"]["missing_suffixes"] == []
+
+
+def test_needs_review_parsed_and_missing_customer_safe_warns(tmp_path, monkeypatch):
+    from ecom_ops.faq.store import load_faq_corpus
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    overlay = tmp_path / "faq" / "se"
+    overlay.mkdir(parents=True)
+    (overlay / "review.yaml").write_text(
+        yaml.dump(
+            [
+                {
+                    "id": "se-overlay-review",
+                    "market": "se",
+                    "language": "sv",
+                    "category": "shipping",
+                    "title": "Utkast som behöver granskning",
+                    "body": "Tillräckligt lång brödtext för en giltig artikel.",
+                    "needs_review": True,
+                    "customer_safe": False,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    report = load_faq_corpus()
+    art = next(a for a in report.articles if a.id == "se-overlay-review")
+    assert art.needs_review is True
+    assert art.customer_safe is False
+
+    (overlay / "omit-safe.yaml").write_text(
+        yaml.dump(
+            [
+                {
+                    "id": "se-overlay-omit-safe",
+                    "market": "se",
+                    "language": "sv",
+                    "category": "shipping",
+                    "title": "Saknar customer_safe-nyckel",
+                    "body": "Tillräckligt lång brödtext för en giltig artikel.",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    report2 = load_faq_corpus()
+    assert any(
+        i.level == "warning" and "customer_safe omitted" in i.message
+        for i in report2.issues
+        if i.article_id == "se-overlay-omit-safe"
+    )
+
+
+def test_unsafe_parity_articles_excluded_from_default_search():
+    from ecom_ops.faq.search import search_faq
+
+    clear_faq_store_cache()
+    hits = search_faq("faktura", market="no", category="billing")
+    assert all(h.article.customer_safe for h in hits)
+    assert all(h.article.id != "no-billing-invoice" for h in hits)
 
 
 def test_load_faq_corpus_reports_invalid_overlay(tmp_path, monkeypatch):

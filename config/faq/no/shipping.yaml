@@ -21,3 +21,16 @@
     Når ordren er sendt får du e-post med sporingslenke. Oppgi ordrenummer
     til support hvis du trenger hjelp med å spore pakken.
 
+- id: no-shipping-missing-package
+  market: no
+  language: nb
+  category: shipping
+  title: Savnet eller forsinket pakke
+  tags: [mangler, forsinket, pakke]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Hvis leveringstiden er passert og sporingen står stille, hjelper vi deg å
+    undersøke med transportøren. Ha ordrenummer klart. Vi kommer tilbake med
+    neste steg når undersøkelsen er ferdig — vi lover ikke erstatning på forhånd.
+

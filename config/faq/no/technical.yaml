@@ -1,0 +1,25 @@
+- id: no-technical-setup
+  market: no
+  language: nb
+  category: technical
+  title: Installasjon og igangsetting
+  tags: [installasjon, setup, montering, teknisk]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Følg monterings-/installasjonsveiledningen som følger med produktet eller
+    finnes på produktsiden. Mangler du veiledningen, send e-post til support med
+    ordrenummer og produktnavn så sender vi riktig dokumentasjon.
+
+- id: no-technical-defect
+  market: no
+  language: nb
+  category: technical
+  title: Mistanke om teknisk feil
+  tags: [feil, ødelagt, defekt, reklamasjon]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Ved mistanke om teknisk feil, beskriv symptomene og legg gjerne ved foto eller
+    kort video. Oppgi ordrenummer. Vi utreder etter forbrukerkjøpsloven og
+    lover ikke bytte eller erstatning før utredningen er ferdig.

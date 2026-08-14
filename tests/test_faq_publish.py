@@ -88,6 +88,20 @@ def test_publish_auto_syncs_before_status(tmp_path):
     assert row.content_hash
 
 
+def test_build_parent_html_groups_by_category():
+    from ecom_ops.faq.publish import build_parent_html
+    from ecom_ops.faq.store import FaqStore
+
+    clear_faq_store_cache()
+    html = build_parent_html(
+        FaqStore().list(market="se", customer_safe_only=True),
+        market="se",
+    )
+    assert 'lang="sv"' in html
+    assert 'id="cat-shipping"' in html
+    assert "<h3 id=" in html
+
+
 def test_sync_skips_unchanged(tmp_path):
     pmap = FaqPublishMap(path=tmp_path / "faq_publish.db")
     first = sync_draft("se", actor="oscar", use_mock=True, publish_map=pmap)

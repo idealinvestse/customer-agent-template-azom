@@ -51,19 +51,6 @@ class SiteIngestResult:
         }
 
 
-def _stub_candidate(title: str, text: str, *, url: str | None) -> dict[str, Any]:
-    summary = text[:280].strip()
-    if len(text) > 280:
-        summary += "…"
-    return {
-        "title": title,
-        "summary": summary,
-        "source_url": url,
-        "needs_review": True,
-        "customer_safe": False,
-    }
-
-
 def ingest_site(
     *,
     market: str = "se",
@@ -94,7 +81,6 @@ def ingest_site(
     out_dir = site_staging_dir(domain)
     written = 0
     skipped = 0
-    candidates: list[dict[str, Any]] = []
     fetched_at = _now()
 
     def _save(kind: str, item: Any) -> None:
@@ -136,7 +122,6 @@ def ingest_site(
             json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         written += 1
-        candidates.append(_stub_candidate(item.title, text, url=item.link))
 
     if do_pages:
         for page in wp.list_all_pages(
@@ -149,25 +134,11 @@ def ingest_site(
         ):
             _save("post", post)
 
-    cand_path = out_dir / "_candidates.json"
-    cand_path.write_text(
-        json.dumps(
-            {
-                "fetched_at": fetched_at,
-                "count": len(candidates),
-                "candidates": candidates,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
     return SiteIngestResult(
         ok=True,
         message=f"Site ingest {domain}: wrote {written}, skipped {skipped}",
         written=written,
         skipped=skipped,
-        candidates=len(candidates),
+        candidates=0,
         details={"dir": str(out_dir), "actor": actor_obj.name},
     )

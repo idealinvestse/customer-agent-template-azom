@@ -21,3 +21,30 @@
   body: |
     Når en ordre har status under behandling, plukkes og pakkes den.
     Du får e-post når den sendes. Oppgi gjerne ordrenummer så bekrefter vi status.
+
+- id: no-return-how-to
+  market: no
+  language: nb
+  category: return
+  title: Slik returnerer du
+  tags: [retur, instruksjon, frakt]
+  customer_safe: false
+  needs_review: true
+  body: |
+    1) Send e-post til support med ordrenummer og hvilke artikler som skal returneres.
+    2) Vent på returinstruksjon og adresse.
+    3) Pakk varen trygt med eventuell følgeseddel.
+    Returfrakt kan belaste deg etter gjeldende vilkår hvis feilen ikke er vår.
+
+- id: no-order-status-how-to-find
+  market: no
+  language: nb
+  category: order_status
+  title: Finn ordrenummeret ditt
+  tags: [ordrenummer, kvittering, bekreftelse]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Ordrenummeret står i ordrebekreftelsen du fikk på e-post etter kjøpet.
+    Det er vanligvis et numerisk id. Uten ordrenummer kan vi trenge å
+    søke via e-postadressen du brukte ved kjøpet.

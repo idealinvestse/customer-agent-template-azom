@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 
 def data_dir() -> Path:
@@ -82,3 +85,38 @@ def staging_counts(market: str | None = None) -> dict[str, int]:
         "article_drafts": articles,
         "dataset_files": datasets,
     }
+
+
+def list_article_drafts(market: str) -> list[dict[str, Any]]:
+    """Staging YAML drafts for Oscar HITL (id, title, source, preview)."""
+    out: list[dict[str, Any]] = []
+    d = articles_staging_dir(market)
+    paths = sorted(d.glob("*.yaml")) + sorted(d.glob("*.yml"))
+    for path in paths:
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(raw, list) and raw:
+            raw = raw[0]
+        if not isinstance(raw, dict):
+            continue
+        sources = raw.get("sources") or []
+        src_type = ""
+        if isinstance(sources, list) and sources and isinstance(sources[0], dict):
+            src_type = str(sources[0].get("type") or "")
+        body = str(raw.get("body") or "")
+        out.append(
+            {
+                "id": str(raw.get("id") or path.stem),
+                "title": str(raw.get("title") or path.stem),
+                "category": str(raw.get("category") or ""),
+                "source": src_type,
+                "path": str(path),
+                "customer_safe": bool(raw.get("customer_safe", False)),
+                "needs_review": bool(raw.get("needs_review", True)),
+                "body_preview": body[:240],
+                "body": body,
+            }
+        )
+    return out

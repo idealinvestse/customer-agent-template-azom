@@ -16,6 +16,14 @@ from ecom_ops.faq.models import FaqArticle
 _ID_RE = re.compile(r"^(se|no|dk)-[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
+def _id_suffix(article_id: str) -> str:
+    aid = (article_id or "").strip().lower()
+    for prefix in ("se-", "no-", "dk-"):
+        if aid.startswith(prefix):
+            return aid[len(prefix) :]
+    return aid
+
+
 @dataclass
 class FaqValidationIssue:
     level: str  # error | warning
@@ -123,6 +131,15 @@ def _parse_article(
                 article_id=aid,
             )
         )
+    if "customer_safe" not in raw:
+        issues.append(
+            FaqValidationIssue(
+                "warning",
+                "customer_safe omitted (default true)",
+                path=source_path,
+                article_id=aid,
+            )
+        )
     if issues and any(i.level == "error" for i in issues):
         return None, issues
     art = FaqArticle(
@@ -134,6 +151,7 @@ def _parse_article(
         body=body,
         tags=tags,
         customer_safe=bool(raw.get("customer_safe", True)),
+        needs_review=bool(raw.get("needs_review", False)),
         updated_at=str(raw.get("updated_at") or ""),
         source_path=source_path,
     )
@@ -264,8 +282,9 @@ class FaqStore:
         return self._by_id.get(article_id)
 
     def coverage(self) -> dict[str, Any]:
-        """Article counts per market/category for ops reporting."""
+        """Article counts per market/category plus SE parity gaps."""
         out: dict[str, Any] = {"markets": {}, "total": len(self._by_id)}
+        by_market: dict[str, list[FaqArticle]] = {}
         for art in self._by_id.values():
             m = out["markets"].setdefault(
                 art.market, {"total": 0, "categories": {}, "stubs": 0}
@@ -274,6 +293,20 @@ class FaqStore:
             m["categories"][art.category] = m["categories"].get(art.category, 0) + 1
             if "stub" in art.body.lower() or "stub" in art.title.lower():
                 m["stubs"] += 1
+            by_market.setdefault(art.market, []).append(art)
+        se_arts = by_market.get("se") or []
+        se_cats = {a.category for a in se_arts}
+        se_suffixes = {_id_suffix(a.id) for a in se_arts}
+        gaps: dict[str, Any] = {}
+        for mkt in ("no", "dk"):
+            arts = by_market.get(mkt) or []
+            m_cats = {a.category for a in arts}
+            m_suffixes = {_id_suffix(a.id) for a in arts}
+            gaps[mkt] = {
+                "missing_categories": sorted(se_cats - m_cats),
+                "missing_suffixes": sorted(se_suffixes - m_suffixes),
+            }
+        out["gaps_vs_se"] = gaps
         return out
 
 

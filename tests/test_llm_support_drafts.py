@@ -27,14 +27,16 @@ def test_support_draft_falls_back_to_template_without_api_key(monkeypatch, tel):
     assert "Azom Support" in result.reply or "Vänliga" in result.reply
 
 
-def test_draft_prompt_version_is_1_2():
+def test_draft_prompt_version_is_1_3():
     from ecom_ops.prompts import get_prompt, reload_prompts
 
     reload_prompts()
     system, version = get_prompt("draft")
-    assert version == "1.2"
+    assert version == "1.3"
     assert "return" in system.lower() or "billing" in system.lower()
     assert "repayment" in system.lower() or "refund" in system.lower()
+    assert "faq context" in system.lower()
+    assert "policy source of truth" in system.lower()
 
 
 @responses.activate

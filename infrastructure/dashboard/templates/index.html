@@ -39,6 +39,12 @@
       · mean edit: {{ support_kpis.mean_draft_edit_distance }}
       {% endif %}
     </p>
+    {% if support_kpis.n_faq_retrieve %}
+    <p class="az-muted mt-2 text-xs">
+      FAQ hit-rate: <strong class="text-mist-100">{{ support_kpis.faq_hit_rate }}</strong>
+      ({{ support_kpis.n_faq_hit }}/{{ support_kpis.n_faq_retrieve }})
+    </p>
+    {% endif %}
   </section>
   {% endif %}
 

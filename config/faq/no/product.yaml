@@ -9,3 +9,16 @@
     Produktbeskrivelsen og spesifikasjonene på produktsiden angir kompatibilitet.
     Er du usikker, send modell/årgang eller bilde til support så hjelper vi deg
     å vurdere — uten å garantere passform hvis underlaget mangler.
+
+- id: no-product-warranty
+  market: no
+  language: nb
+  category: product
+  title: Garanti og reklamasjon
+  tags: [garanti, reklamasjon, feil]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Ved mistanke om fabrikasjonsfeil, kontakt support med ordrenummer, beskrivelse
+    og gjerne foto. Vi utreder reklamasjonen etter forbrukerkjøpsloven.
+    Vi lover ikke bytte eller erstatning før utredningen er ferdig.

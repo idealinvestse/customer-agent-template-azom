@@ -1,0 +1,26 @@
+- id: no-billing-invoice
+  market: no
+  language: nb
+  category: billing
+  title: Faktura og betalingsbekreftelse
+  tags: [faktura, betaling, kvittering, invoice]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Ordrebekreftelse og kvittering sendes til e-postadressen som ble brukt ved kjøpet.
+    Trenger du en kopi, kontakt support med ordrenummer så hjelper vi deg.
+    Vi bekrefter ikke refusjon eller kredit før saken er utredet.
+
+- id: no-billing-payment-pending
+  market: no
+  language: nb
+  category: billing
+  title: Ventende betaling
+  tags: [betaling, pending, vipps, kort]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Hvis en ordre står som ventende betaling, har vi ikke registrert en fullført
+    betaling ennå. Kontroller at betalingen gikk gjennom hos banken/Vipps.
+    Send gjerne ordrenummer og tidspunkt så kan vi avstemme i systemet —
+    uten å love kreditering på forhånd.

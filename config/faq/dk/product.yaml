@@ -9,3 +9,16 @@
     Produktbeskrivelsen og specifikationen på produktsiden angiver kompatibilitet.
     Er du usikker, send model/årgang eller foto til support, så hjælper vi dig
     med at vurdere — uden at garantere pasform, hvis underlaget mangler.
+
+- id: dk-product-warranty
+  market: dk
+  language: da
+  category: product
+  title: Garanti og reklamation
+  tags: [garanti, reklamation, fejl]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Ved mistanke om fabrikationsfejl, kontakt support med ordrenummer, beskrivelse
+    og gerne foto. Vi undersøger reklamationen efter købeloven.
+    Vi lover ikke ombytning eller erstatning, før undersøgelsen er færdig.

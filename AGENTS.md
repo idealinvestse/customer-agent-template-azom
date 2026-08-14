@@ -90,7 +90,7 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 - **V2.2:** live `probe_mail`, mail env matrix, bulk close
 - **V2.3:** robustness (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak**
 - **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live APIs still stubbed
-- **FAQ/KB v1:** lexical corpus + draft enrichment + WP page draft/publish (Oscar) + HITL ingest (dataset/site/products → staging → promote) + `kpis` FAQ retrieve/hit per category — [`docs/FAQ_KB.md`](docs/FAQ_KB.md); live SE page is ops-gated. Lands with this branch until merge.
+- **FAQ/KB v1:** lexical corpus + `faq_synonyms.yaml` + draft prompt 1.3 + WP page HITL + ingest/promote + dashboard `/faq` + `kpis` hit-rate — [`docs/FAQ_KB.md`](docs/FAQ_KB.md); live SE page is ops-gated. Lands with this branch until merge.
 
 ## Cases quick CLI
 

@@ -56,11 +56,14 @@ def promote_article(
     *,
     market: str | None = None,
     apply: bool = False,
+    force: bool = False,
     actor: Actor | str | None = None,
 ) -> PromoteResult:
     """Copy staging draft to config/faq/{market}/ after validate.
 
     Without ``apply`` returns dry-run diff summary. Never auto-publishes to WP.
+    Ingest kill-switch does not block promote (Oscar may finish a reviewed draft).
+    Existing dest files require ``force=True`` (dry-run and apply).
     """
     try:
         actor_obj = require_faq_promote(actor)
@@ -115,12 +118,24 @@ def promote_article(
 
     dest_dir = _config_faq_dir(mkt)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    # Prefer category filename when present
-    cat = str(article.get("category") or "other")
-    dest = dest_dir / f"ingest_{cat}_{aid}.yaml"
+    dest = dest_dir / f"ingest_{aid}.yaml"
     existing = ""
     if dest.is_file():
         existing = dest.read_text(encoding="utf-8")
+    if existing and not force:
+        return PromoteResult(
+            ok=False,
+            message=(
+                f"Destination exists ({dest}); pass --force to overwrite. "
+                "Promote does not check the ingest kill-switch."
+            ),
+            dry_run=not apply,
+            dest=str(dest),
+            details={
+                "actor": actor_obj.name,
+                "overwrite_requires_force": True,
+            },
+        )
     new_body = yaml.safe_dump([article], allow_unicode=True, sort_keys=False)
     diff_note = (
         f"would write {dest} ({len(new_body)} bytes"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -16,6 +16,7 @@ class FaqArticle:
     body: str
     tags: tuple[str, ...] = ()
     customer_safe: bool = True
+    needs_review: bool = False
     updated_at: str = ""
     source_path: str = ""
 
@@ -29,6 +30,7 @@ class FaqArticle:
             "body": self.body,
             "tags": list(self.tags),
             "customer_safe": self.customer_safe,
+            "needs_review": self.needs_review,
             "updated_at": self.updated_at,
             "source_path": self.source_path,
         }

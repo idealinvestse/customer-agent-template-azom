@@ -1,0 +1,26 @@
+- id: dk-billing-invoice
+  market: dk
+  language: da
+  category: billing
+  title: Faktura og betalingsbekræftelse
+  tags: [faktura, betaling, kvittering, invoice]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Ordrebekræftelse og kvittering sendes til den e-mail, der blev brugt ved købet.
+    Har du brug for en kopi, kontakt support med ordrenummer, så hjælper vi dig.
+    Vi bekræfter ikke refundering eller kredit, før sagen er undersøgt.
+
+- id: dk-billing-payment-pending
+  market: dk
+  language: da
+  category: billing
+  title: Afventende betaling
+  tags: [betaling, pending, mobilepay, kort]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Hvis en ordre står som afventende betaling, har vi ikke registreret en gennemført
+    betaling endnu. Kontrollér, at betalingen gik igennem hos banken/MobilePay.
+    Send gerne ordrenummer og tidspunkt, så kan vi afstemme i systemet —
+    uden at love kreditering på forhånd.

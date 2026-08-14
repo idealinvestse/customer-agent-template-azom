@@ -1,0 +1,25 @@
+- id: dk-technical-setup
+  market: dk
+  language: da
+  category: technical
+  title: Installation og ibrugtagning
+  tags: [installation, setup, montering, teknisk]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Følg monterings-/installationsvejledningen, der følger med produktet eller
+    findes på produktsiden. Mangler du vejledningen, mail support med
+    ordrenummer og produktnavn, så sender vi den rigtige dokumentation.
+
+- id: dk-technical-defect
+  market: dk
+  language: da
+  category: technical
+  title: Mistanke om teknisk fejl
+  tags: [fejl, i stykker, defekt, reklamation]
+  customer_safe: false
+  needs_review: true
+  body: |
+    Ved mistanke om teknisk fejl, beskriv symptomerne og vedhæft gerne foto eller
+    en kort video. Angiv ordrenummer. Vi undersøger efter købeloven og
+    lover ikke ombytning eller erstatning, før undersøgelsen er færdig.

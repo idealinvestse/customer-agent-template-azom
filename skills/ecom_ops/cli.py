@@ -256,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--from",
         dest="source",
         default="products",
-        choices=["staging", "dataset", "products"],
+        choices=["staging", "dataset", "products", "guides"],
     )
     p_faq_sug_art.add_argument("--limit", type=int, default=50)
 
@@ -270,9 +270,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write to config/faq (default dry-run)",
     )
+    p_faq_prom.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing ingest_{id}.yaml",
+    )
 
-    faq_sub.add_parser(
+    p_faq_staging = faq_sub.add_parser(
         "staging", help="Show FAQ staging counts under AZOM_DATA_DIR"
+    )
+    faq_st_sub = p_faq_staging.add_subparsers(dest="faq_staging_command")
+    p_faq_st_purge = faq_st_sub.add_parser(
+        "purge", help="Purge old staging/dataset files (Oscar)"
+    )
+    p_faq_st_purge.add_argument("--days", type=int, default=90)
+    p_faq_st_purge.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete files (default dry-run)",
     )
 
     p_smoke = sub.add_parser(
@@ -705,6 +720,14 @@ def main(argv: list[str] | None = None) -> int:
                 cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
                 cases = store.list_cases(status="closed", limit=10000)
                 eligible = [c for c in cases if (c.updated_at or "") < cutoff]
+                from ecom_ops.faq.retention import purge_faq_after_cases_retention
+
+                faq = purge_faq_after_cases_retention(
+                    case_ids=[c.id for c in eligible],
+                    days=days,
+                    apply=False,
+                    actor=args.actor,
+                )
                 print(
                     json.dumps(
                         {
@@ -713,6 +736,7 @@ def main(argv: list[str] | None = None) -> int:
                             "eligible": len(eligible),
                             "retention_days": days,
                             "message": f"Dry run: {len(eligible)} cases eligible",
+                            "faq": faq,
                         },
                         ensure_ascii=False,
                         indent=2,
@@ -723,7 +747,19 @@ def main(argv: list[str] | None = None) -> int:
                 retention_days=args.days,
                 redact=args.redact,
             )
-            return _print(result)
+            payload = result.to_dict()
+            try:
+                from ecom_ops.faq.retention import purge_faq_after_cases_retention
+
+                payload["faq"] = purge_faq_after_cases_retention(
+                    case_ids=result.case_ids,
+                    days=int(args.days or 90),
+                    apply=True,
+                    actor=args.actor,
+                )
+            except Exception as exc:  # noqa: BLE001 — cases purge must still report
+                payload["faq"] = {"ok": False, "message": str(exc)[:200]}
+            return _print(payload)
         parser.error(f"Unknown cases command: {args.cases_command}")
         return 2
 
@@ -935,10 +971,22 @@ def main(argv: list[str] | None = None) -> int:
                     args.article_id,
                     market=args.market,
                     apply=bool(args.apply),
+                    force=bool(getattr(args, "force", False)),
                     actor=actor_obj,
                 )
             )
         if cmd == "staging":
+            st_cmd = getattr(args, "faq_staging_command", None)
+            if st_cmd == "purge":
+                from ecom_ops.faq.retention import purge_staging_older_than
+
+                return _print(
+                    purge_staging_older_than(
+                        days=int(getattr(args, "days", 90) or 90),
+                        apply=bool(getattr(args, "apply", False)),
+                        actor=actor_obj,
+                    )
+                )
             from ecom_ops.faq.staging import staging_counts
 
             counts = staging_counts()

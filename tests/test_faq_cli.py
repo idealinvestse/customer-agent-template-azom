@@ -44,6 +44,8 @@ def test_cli_faq_coverage_validate_reload(capsys):
     assert cov["coverage"]["total"] >= 5
     assert "se" in cov["coverage"]["markets"]
     assert "drift" in cov
+    assert "gaps_vs_se" in cov["coverage"]
+    assert cov["coverage"]["gaps_vs_se"]["no"]["missing_suffixes"] == []
 
     code = main(["--mock", "faq", "validate"])
     assert code == 0
@@ -127,6 +129,7 @@ def test_cli_faq_promote_dry_run_default(capsys):
     assert out["dry_run"] is True
     dest = Path(out["dest"] or "")
     assert not dest.exists()
+    assert dest.name == "ingest_se-cli-promote-demo.yaml"
 
 
 def test_cli_faq_dataset_export(capsys):
@@ -182,6 +185,24 @@ def test_cli_faq_jonatan_cannot_promote(capsys):
             "--id",
             "se-does-not-exist",
             "--apply",
+        ]
+    )
+    assert code == 1
+    out = _out(capsys)
+    assert out["ok"] is False
+
+
+def test_cli_faq_staging_purge_denies_jonatan(capsys):
+    code = main(
+        [
+            "--mock",
+            "--actor",
+            "jonatan",
+            "faq",
+            "staging",
+            "purge",
+            "--days",
+            "90",
         ]
     )
     assert code == 1
