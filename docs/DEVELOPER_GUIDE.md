@@ -53,7 +53,7 @@ export AZOM_DATA_DIR=./.azom-data
 # $env:AZOM_DATA_DIR="./.azom-data"
 
 python -m ecom_ops version
-# expect: package version string / JSON including 2.0.0
+# expect: package version string / JSON including 3.0.0
 
 python -m ecom_ops status
 # expect: mock flags and config paths; no network required
@@ -95,7 +95,7 @@ python -m ecom_ops.bot
 
 ```bash
 pytest
-# CI also runs Ruff and enforces coverage fail_under 65 (see pyproject.toml)
+# CI also runs Ruff and enforces coverage fail_under 70 (see pyproject.toml)
 
 bash tests/test_spinup.sh
 # optional spinup smoke
@@ -108,7 +108,7 @@ bash tests/test_spinup.sh
 - Read [`CURRENT_STATE.md`](CURRENT_STATE.md) and the living doc for the surface you touch before coding.
 - Prefer mock-mode tests; add fixtures under `tests/fixtures/` when classifying or drafting.
 - Keep human-approve invariants: no silent customer mail; no auto-send wire without Oscar written enable + FU9 gates.
-- Fix real build/test failures; keep coverage ≥ 65%.
+- Fix real build/test failures; keep coverage ≥ 70%.
 
 **Do not:**
 
@@ -123,14 +123,15 @@ bash tests/test_spinup.sh
 | Goal | Start here |
 |------|------------|
 | CLI commands | `skills/ecom_ops/cli.py` — also update [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |
-| Cases poll / approve | `skills/ecom_ops/cases/` |
+| Cases poll / approve | `skills/ecom_ops/cases/` — poll in `ingest.py`, drafts in `drafting.py`, send in `approve.py`; `service.py` is the facade |
+| Customer profile | `config/profile.yaml` + `skills/ecom_ops/profile.py` — [`TEMPLATE_GUIDE.md`](TEMPLATE_GUIDE.md) |
 | Null-send / shadow ledger | `skills/ecom_ops/runtime_profile.py`, `cases/shadow_report.py`, `cases/auto_send.py` |
 | Suggest / auto-send rails | `skills/ecom_ops/cases/suggest.py`, `auto_send.py`, `config/cases_ai.yaml` |
 | Marketing Ads+GA4 | `skills/ecom_ops/actions/marketing.py`, `skills/ecom_ops/marketing/`, `config/marketing.yaml` — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Telegram / Messenger brain | `skills/ecom_ops/bot/` |
 | Woo / WP clients | `skills/ecom_ops/integrations/woocommerce.py`, `wordpress.py`, `webhooks.py` |
 | Mail providers | `skills/ecom_ops/integrations/mail*` |
-| Dashboard routes / probes | `infrastructure/dashboard/` (probes are Oscar UI, not CLI) |
+| Dashboard routes / probes | `infrastructure/dashboard/` (`app.py` factory + `*_routes.py`; probes are Oscar UI, not CLI) |
 | RBAC | `config/rbac.yaml` + `skills/ecom_ops/rbac.py` (`limits.yaml` jonatan_role is display-only) |
 | Agent voice | `SOUL.md` + `skills/ecom_ops/bot/chat_agent.py` system prompt |
 

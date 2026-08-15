@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ecom_ops.actions.mail import MailService
@@ -45,7 +45,7 @@ def test_approve_records_time_to_approve_sec(tmp_path, monkeypatch):
         message_id="<kpi-approve@x>",
     )
     # Backdate created_at by 120 seconds via SQL
-    past = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+    past = (datetime.now(UTC) - timedelta(seconds=120)).isoformat()
     with store._conn() as conn:
         conn.execute(
             "UPDATE cases SET created_at = ? WHERE id = ?", (past, case.id)

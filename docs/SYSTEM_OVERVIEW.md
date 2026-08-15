@@ -42,7 +42,7 @@
 | Skill metadata | `skills/ecom-ops/SKILL.md` | Moss/agent skill card |
 | Config (ro in Docker) | `config/*.yaml`, `customer.json` | sites, rbac, mailboxes, limits, cases_ai |
 | Data (rw) | `AZOM_DATA_DIR` | cases.db, oauth, secrets.env, telemetry, probes |
-| Dashboard | `infrastructure/dashboard/` | Flask UI + CSRF + webhooks + Oscar probes |
+| Dashboard | `infrastructure/dashboard/` | Thin `app.py` factory + `auth.py` / `core_routes.py` / `cases_routes.py` / `oscar_routes.py` / `marketing_routes.py` / `oauth_routes.py` / `webhooks.py` / `health_routes.py` |
 | Deploy | `bin/install*.sh`, `infrastructure/systemd/`, Docker | One-shot + services |
 
 **Surface roles:**
@@ -169,7 +169,7 @@ python -m ecom_ops --mock [--null-send] cases poll|list|show|reply|draft|regener
 python -m ecom_ops --actor oscar cases shadow-report [--days 7]
 python -m ecom_ops --actor oscar cases retention-purge [--dry-run]
 python -m ecom_ops --mock marketing digest|health|suggests|…
-python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends
+python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends|soak-preflight
 python -m ecom_ops.bot
 ```
 
@@ -229,7 +229,7 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 
 | Artifact | Content |
 |----------|---------|
-| `cases.db` | Cases + messages + shadow decision columns |
+| `cases.db` | Cases + messages + shadow decision columns (SQLite WAL + busy_timeout) |
 | `oauth/gmail.json` | Gmail OAuth tokens (mode 0600) |
 | `oauth/google_marketing.json` | Google Ads/GA4 OAuth tokens (Oscar) |
 | `secrets.env` | Oscar-written secrets overlay |
@@ -257,7 +257,7 @@ Compliance retention and DPIA notes: [`COMPLIANCE.md`](COMPLIANCE.md).
 
 ```bash
 pytest
-# CI: ruff + pytest with coverage fail_under 65 (pyproject.toml)
+# CI: ruff + pytest with coverage fail_under 70 (pyproject.toml)
 bash tests/test_spinup.sh
 ```
 
@@ -280,7 +280,8 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 | Marketing Google (Ads+GA4) | Mock-first rails shipped; live APIs stubbed — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Oscar A1 live soak | **Ops next — human gate** |
 | FU9 auto-send wire | **Not wired** — see [`CASES.md`](CASES.md) |
-| V3 multi-tenant / FAQ / Meta ads | Deferred / parked |
+| V3.0.0 production maturity + template profile | Shipped (code) — soak/NO-DK/mutate still human-gated |
+| V3 multi-tenant SaaS / FAQ / Meta ads | Deferred / parked |
 
 ## Related living docs
 

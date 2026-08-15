@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ecom_ops.integrations.mail_providers.models import MailMessage
@@ -19,7 +19,7 @@ class InMemoryMailTransport:
                 body="Hej, var är min order 1001?",
                 from_addr="customer@example.com",
                 to_addrs=["support@azom.se"],
-                date=datetime.now(timezone.utc).isoformat(),
+                date=datetime.now(UTC).isoformat(),
                 uid="mock-1",
                 message_id="<mock-1@example.com>",
                 is_read=False,
@@ -29,7 +29,7 @@ class InMemoryMailTransport:
                 body="I want a refund for order 1002",
                 from_addr="buyer@example.com",
                 to_addrs=["support@azom.se"],
-                date=datetime.now(timezone.utc).isoformat(),
+                date=datetime.now(UTC).isoformat(),
                 uid="mock-2",
                 message_id="<mock-2@example.com>",
                 is_read=False,

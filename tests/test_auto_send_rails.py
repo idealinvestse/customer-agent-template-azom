@@ -121,11 +121,24 @@ def test_telemetry_action_name_reserved():
 
 def test_poll_source_does_not_call_auto_send():
     """Safety: poll must not wire auto-send (rails only until Oscar experiment)."""
+    from pathlib import Path
+
+    from ecom_ops.cases import ingest
+
     src = inspect.getsource(CaseService.poll)
+    src += Path(ingest.__file__).read_text(encoding="utf-8")
     assert "should_auto_send" not in src
     assert "evaluate_auto_send" not in src
     assert "case_auto_sent" not in src
     assert "AutoSendDayCounter" not in src
+    assert "approve_and_send" not in Path(ingest.__file__).read_text(encoding="utf-8")
+    assert "client.fetch" in Path(ingest.__file__).read_text(encoding="utf-8")
+    assert "create_case" in Path(ingest.__file__).read_text(encoding="utf-8")
+    from ecom_ops.cases import approve as approve_mod
+
+    approve_src = Path(approve_mod.__file__).read_text(encoding="utf-8")
+    assert "def approve_and_send" in approve_src
+    assert "should_auto_send" not in approve_src
 
 
 def test_service_checkpoint_denies_when_disabled():

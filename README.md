@@ -2,7 +2,7 @@
 
 **AzomOps-Agent** — dedikerad kundagent för Azom (WooCommerce SE/NO/DK) + grund för Agent-as-a-Service.
 
-**Package:** 2.0.0 · **Produktionstarget:** Ubuntu 26.x / 24.04 LTS på Hetzner VPS (CX22 / CPX21, 2 vCPU / 4 GB).
+**Package:** 3.0.0 · **Produktionstarget:** Ubuntu 26.x / 24.04 LTS på Hetzner VPS (CX22 / CPX21, 2 vCPU / 4 GB).
 
 | För dig som… | Börja här |
 |--------------|-----------|
@@ -72,7 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/idealinvestse/customer-agent-templa
 
 Docs: [`docs/AUTO_INSTALL.md`](docs/AUTO_INSTALL.md) · [`docs/DEPLOY_UBUNTU24_HETZNER.md`](docs/DEPLOY_UBUNTU24_HETZNER.md) · [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md)
 
-Docker (data dir `/app/.azom-data`, image `azom-agent:2.0`):
+Docker (data dir `/app/.azom-data`, image `azom-agent:3.0`):
 
 ```bash
 docker compose -f infrastructure/docker-compose.prod.yml up -d --build

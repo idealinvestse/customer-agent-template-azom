@@ -74,18 +74,26 @@ def _load_prompts() -> dict[str, Any]:
         return {}
 
 
-def get_prompt(name: str) -> tuple[str, str]:
+def get_prompt(name: str, *, language: str | None = None) -> tuple[str, str]:
     """Return (system_prompt, version) for the named prompt.
 
+    Optional ``language`` looks up ``{name}_{lang}`` first (e.g. draft_da).
     Falls back to built-in defaults if config is missing or key absent.
     """
     data = _load_prompts()
-    entry = data.get(name) if isinstance(data, dict) else None
-    if isinstance(entry, dict) and entry.get("system"):
-        return str(entry["system"]), str(entry.get("version", "unknown"))
-    builtin = _BUILTIN.get(name)
-    if builtin:
-        return builtin["system"], builtin["version"]
+    lang = (language or "").strip().lower()
+    if lang in {"no", "nb"}:
+        lang = "nb"
+    elif lang in {"da", "dk"}:
+        lang = "da"
+    keys = [f"{name}_{lang}", name] if lang else [name]
+    for key in keys:
+        entry = data.get(key) if isinstance(data, dict) else None
+        if isinstance(entry, dict) and entry.get("system"):
+            return str(entry["system"]), str(entry.get("version", "unknown"))
+        builtin = _BUILTIN.get(key)
+        if builtin:
+            return builtin["system"], builtin["version"]
     raise KeyError(f"Unknown prompt: {name}")
 
 

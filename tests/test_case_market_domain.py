@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from ecom_ops.cases.service import CaseService
 from ecom_ops.cases.store import CaseStore
-from ecom_ops.order_context import woo_domain_from_market, resolve_order_panel
+from ecom_ops.order_context import resolve_order_panel, woo_domain_from_market
 
 
 def test_woo_domain_from_market():
@@ -36,7 +34,7 @@ def test_regenerate_draft_passes_market_domain(tmp_path, monkeypatch):
         market="no",
     )
     svc = CaseService(store=store)
-    with patch("ecom_ops.cases.service.resolve_order_context") as mock_ctx:
+    with patch("ecom_ops.cases.drafting.resolve_order_context") as mock_ctx:
         mock_ctx.return_value = "[Order 1001]\nStatus: processing"
         result = svc.regenerate_draft(case.id, actor="agent", use_mock=True)
     assert result.ok

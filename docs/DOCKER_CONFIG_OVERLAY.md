@@ -24,7 +24,7 @@ Azom skiljer **read-only config** (YAML i image/host-mount) från **skrivbar run
 
 **Dev:** `infrastructure/docker-compose.yml` mountar data **utan** `:ro` så secrets/settings/cases.db kan skrivas.
 
-**Image-tag (prod):** `azom-agent:2.0` i `infrastructure/docker-compose.prod.yml`.
+**Image-tag (prod):** `azom-agent:3.0` i `infrastructure/docker-compose.prod.yml` (`2.0` kvar för rollback).
 
 ## Overlay-prioritet
 

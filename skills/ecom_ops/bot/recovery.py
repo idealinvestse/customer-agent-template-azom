@@ -6,7 +6,6 @@ from typing import Any
 
 from ecom_ops.bot.reply import BotReply, inline_keyboard
 
-
 # --- Standard footers -------------------------------------------------------
 
 FOOTER_EMPTY_QUEUE = (

@@ -14,6 +14,8 @@
 # 1. Kolla DB-integritet
 sudo -u azom sqlite3 /var/lib/azom/cases.db "PRAGMA integrity_check;"
 # Friskt: "ok" — annars felbeskrivning
+# WAL: checkpoint före file-copy backup/restore
+# sudo -u azom sqlite3 /var/lib/azom/cases.db "PRAGMA wal_checkpoint(TRUNCATE);"
 
 # 2. Kolla diskutrymme
 df -h /var/lib/azom

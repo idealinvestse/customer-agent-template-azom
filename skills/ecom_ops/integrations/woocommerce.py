@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Protocol
+from datetime import UTC
+from typing import Any, Protocol
 from urllib.parse import urljoin
 
 import requests
@@ -182,9 +184,9 @@ class RequestsTransport:
             try:
                 dt = parsedate_to_datetime(val)
                 if dt is not None:
-                    from datetime import datetime, timezone
+                    from datetime import datetime
 
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
                     wait = (dt - now).total_seconds()
                     return max(0.0, wait)
             except (TypeError, ValueError):

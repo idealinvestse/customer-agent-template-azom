@@ -9,7 +9,7 @@ experiment explicitly wires a sender.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -154,7 +154,7 @@ class AutoSendDayCounter:
             {
                 "date": today,
                 "count": count,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             }
         )
         return count

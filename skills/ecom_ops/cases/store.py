@@ -6,11 +6,14 @@ import os
 import re
 import sqlite3
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
+
+from ecom_ops.profile import DEFAULT_VIEWER, load_profile
 
 # Bump when adding breaking schema changes; _migrate() applies steps in order.
 SCHEMA_VERSION = 5
@@ -23,7 +26,7 @@ def _default_db_path() -> Path:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def normalize_subject(subject: str) -> str:
@@ -54,7 +57,7 @@ class Case:
     updated_at: str
     escalation_id: str | None = None
     priority: str = "normal"
-    assignee: str | None = "jonatan"
+    assignee: str | None = DEFAULT_VIEWER
     classify_confidence: float | None = None
     classify_method: str | None = None
     suggest_approve: bool = False
@@ -152,8 +155,10 @@ class CaseStore:
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(str(self.path))
+        conn = sqlite3.connect(str(self.path), timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             yield conn
             conn.commit()
@@ -162,6 +167,16 @@ class CaseStore:
             raise
         finally:
             conn.close()
+
+    def sqlite_posture(self) -> dict[str, Any]:
+        """Journal mode + busy timeout (ops/tests)."""
+        with self._conn() as conn:
+            journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            busy = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        return {
+            "journal_mode": str(journal).lower(),
+            "busy_timeout_ms": int(busy),
+        }
 
     def _init_schema(self) -> None:
         with self._conn() as conn:
@@ -518,14 +533,14 @@ class CaseStore:
         draft_reply: str | None,
         order_id: str | None,
         message_id: str | None,
-        site: str = "azom",
+        site: str | None = None,
         market: str | None = None,
         language: str = "sv",
         to_addr: str = "",
         status: str = "open",
         priority: str = "normal",
         escalation_id: str | None = None,
-        assignee: str | None = "jonatan",
+        assignee: str | None = None,
         in_reply_to: str | None = None,
         references_header: str | None = None,
         classify_confidence: float | None = None,
@@ -536,6 +551,10 @@ class CaseStore:
             existing = self.find_by_message_id(message_id)
             if existing:
                 return existing
+        prof = load_profile()
+        site = site or prof.customer
+        if assignee is None:
+            assignee = prof.viewer_actor
         case_id = str(uuid.uuid4())
         now = _now()
         case = Case(
@@ -897,7 +916,7 @@ class CaseStore:
             updated_at=row["updated_at"],
             escalation_id=row["escalation_id"] if "escalation_id" in keys else None,
             priority=(row["priority"] if "priority" in keys and row["priority"] else "normal"),
-            assignee=row["assignee"] if "assignee" in keys else "jonatan",
+            assignee=row["assignee"] if "assignee" in keys else DEFAULT_VIEWER,
             classify_confidence=conf,
             classify_method=method,
             suggest_approve=suggest,

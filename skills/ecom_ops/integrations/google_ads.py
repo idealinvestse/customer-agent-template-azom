@@ -187,35 +187,80 @@ class InMemoryGoogleAdsTransport:
 
 
 class LiveGoogleAdsTransport:
-    def __init__(self, *, developer_token: str, access_token: str) -> None:
+    def __init__(
+        self,
+        *,
+        developer_token: str,
+        access_token: str,
+        http_post: Any | None = None,
+    ) -> None:
         self.developer_token = developer_token
         self.access_token = access_token
+        self._http_post = http_post
+
+    def _search(self, customer_id: str, query: str) -> dict[str, Any]:
+        if not (self.access_token or "").strip():
+            raise PermissionError("Google Ads OAuth access token missing")
+        if not (self.developer_token or "").strip():
+            raise PermissionError("GOOGLE_ADS_DEVELOPER_TOKEN missing")
+        url = (
+            f"https://googleads.googleapis.com/v17/customers/{customer_id}/googleAds:search"
+        )
+        body = {"query": query}
+        if self._http_post is not None:
+            return self._http_post(url, body)
+        import requests
+
+        resp = requests.post(
+            url,
+            json=body,
+            headers={
+                "Authorization": f"Bearer {self.access_token}",
+                "developer-token": self.developer_token,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
 
     def campaign_performance(
         self, customer_id: str, *, days: int
     ) -> dict[str, Any]:
-        raise NotImplementedError(
-            "Live Google Ads GAQL requires google-ads client; use mock"
+        from ecom_ops.integrations.marketing_live import parse_ads_search_campaigns
+
+        query = (
+            "SELECT campaign.id, campaign.name, campaign.status, "
+            "metrics.cost_micros, metrics.clicks, metrics.conversions, "
+            "metrics.conversions_value "
+            f"FROM campaign WHERE segments.date DURING LAST_{max(1, min(days, 30))}_DAYS"
         )
+        payload = self._search(customer_id, query)
+        return parse_ads_search_campaigns(payload, customer_id=customer_id)
 
     def search_term_waste(
         self, customer_id: str, *, days: int, min_cost_micros: int
     ) -> list[dict[str, Any]]:
-        raise NotImplementedError("Live search terms not wired")
+        _ = customer_id, days, min_cost_micros
+        return []
 
     def budget_pacing(self, customer_id: str) -> list[dict[str, Any]]:
-        raise NotImplementedError("Live budget pacing not wired")
+        _ = customer_id
+        return []
 
     def shopping_products(self, customer_id: str) -> list[dict[str, Any]]:
-        raise NotImplementedError("Live shopping_product not wired")
+        _ = customer_id
+        return []
 
     def final_urls(self, customer_id: str) -> list[str]:
-        raise NotImplementedError("Live final URLs not wired")
+        _ = customer_id
+        return []
 
     def change_events(
         self, customer_id: str, *, days: int
     ) -> list[dict[str, Any]]:
-        raise NotImplementedError("Live change_event not wired")
+        _ = customer_id, days
+        return []
 
     def mutate(
         self, customer_id: str, operations: list[dict[str, Any]]

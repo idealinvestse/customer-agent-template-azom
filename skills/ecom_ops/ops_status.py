@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +33,7 @@ def write_last_case_poll(
         "errors": int(errors),
         "created": int(created),
         "polled_at": polled_at
-        or datetime.now(timezone.utc).isoformat(),
+        or datetime.now(UTC).isoformat(),
     }
     if extra:
         payload.update(extra)
@@ -101,8 +101,8 @@ def readiness_from_last_poll() -> dict[str, Any]:
         raw = polled_at.replace("Z", "+00:00")
         ts = datetime.fromisoformat(raw)
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        age = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+            ts = ts.replace(tzinfo=UTC)
+        age = max(0.0, (datetime.now(UTC) - ts).total_seconds())
     except Exception:
         age = None
 
@@ -130,4 +130,19 @@ def readiness_from_last_poll() -> dict[str, Any]:
         "created": marker.get("created"),
         "detail": detail,
         "failures": marker.get("failures"),
+    }
+
+
+def health_extras() -> dict[str, Any]:
+    """Additive /health fields: null-send, budget ratio, last poll errors."""
+    from ecom_ops.budget import budget_status
+    from ecom_ops.runtime_profile import null_send_label
+
+    readiness = readiness_from_last_poll()
+    budget = budget_status()
+    return {
+        "null_send": null_send_label(),
+        "budget_ratio": budget.get("used_ratio"),
+        "budget_pacing_warn": bool(budget.get("pacing_warn")),
+        "last_poll_errors": int(readiness.get("errors") or 0),
     }

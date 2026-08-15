@@ -61,9 +61,9 @@ def test_token_file_permissions_attempt(tmp_path, monkeypatch):
 
 
 def test_smtp_imap_refresh_persists_gmail_token(tmp_path, monkeypatch):
-    from ecom_ops.oauth.gmail import GmailOAuthStore, GmailTokenBundle
     from ecom_ops.integrations.mail_providers.models import MailConfig, MailProvider
     from ecom_ops.integrations.mail_providers.smtp_imap import SmtpImapTransport
+    from ecom_ops.oauth.gmail import GmailOAuthStore, GmailTokenBundle
 
     store = GmailOAuthStore(data_dir=tmp_path)
     store.save_tokens(
@@ -112,9 +112,9 @@ def test_smtp_imap_refresh_persists_gmail_token(tmp_path, monkeypatch):
 
 def test_smtp_imap_refreshes_when_cached_access_token_expired(tmp_path, monkeypatch):
     """Expired in-memory / config access token must not skip refresh."""
-    from ecom_ops.oauth.gmail import GmailOAuthStore, GmailTokenBundle
     from ecom_ops.integrations.mail_providers.models import MailConfig, MailProvider
     from ecom_ops.integrations.mail_providers.smtp_imap import SmtpImapTransport
+    from ecom_ops.oauth.gmail import GmailOAuthStore, GmailTokenBundle
 
     store = GmailOAuthStore(data_dir=tmp_path)
     store.save_tokens(

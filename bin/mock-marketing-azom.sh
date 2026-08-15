@@ -29,4 +29,5 @@ echo "=== mock marketing (AZOM_DATA_DIR=$AZOM_DATA_DIR) ==="
 "$PY" -m ecom_ops --mock --actor jonatan marketing suggests build
 "$PY" -m ecom_ops --mock marketing suggests list
 "$PY" -m ecom_ops --mock marketing snapshot
+"$PY" -c "from ecom_ops.integrations.marketing_live import parse_ga4_run_report; print(parse_ga4_run_report({'metricHeaders':[{'name':'ecommercePurchases'}],'rows':[{'metricValues':[{'value':'1'}]}]}, property_id='x')['ecommerce_purchases'])"
 echo "=== mock marketing complete (see docs/MARKETING_GOOGLE.md) ==="

@@ -102,7 +102,7 @@ def test_poll_passes_mailbox_env_prefix(case_store, monkeypatch):
         env_prefix="MAIL_SE_",
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.enabled_mailboxes",
+        "ecom_ops.cases.ingest.enabled_mailboxes",
         lambda path=None: [mb],
     )
 
@@ -120,7 +120,7 @@ def test_poll_passes_mailbox_env_prefix(case_store, monkeypatch):
         )
 
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", fake_client_from_env
+        "ecom_ops.cases.ingest.client_from_env", fake_client_from_env
     )
 
     svc = CaseService(store=case_store)

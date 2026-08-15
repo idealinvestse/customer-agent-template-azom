@@ -43,7 +43,7 @@ python -m ecom_ops [--site SITE] [--actor ACTOR] [--mock] [--null-send] <command
 
 ```bash
 python -m ecom_ops version
-# expect: version payload for package 2.0.0
+# expect: version payload for package 3.0.0
 ```
 
 ### `status`
@@ -105,7 +105,8 @@ python -m ecom_ops --mock ssh-health
 
 | Command | Flags | Purpose |
 |---------|-------|---------|
-| `kpis` | `--days` (default 7) | Case / approve KPI dump |
+| `kpis` | `--days` (default 7), `--baseline PATH` | Case / approve KPI dump; optional human baseline compare (deltas only) |
+| `soak-preflight` | (none) | Read-only A1 pre-flight checks; never marks soak complete |
 | `classify-eval` | `--fixtures DIR` (default `tests/fixtures/support_classify`) | Fixture accuracy check |
 | `draft-eval` | `--dir DIR` (default `tests/fixtures/draft_quality`) | Draft quality fixtures |
 | `drift-check` | `--days` (default 7) | Ops drift signals |
@@ -113,6 +114,8 @@ python -m ecom_ops --mock ssh-health
 
 ```bash
 python -m ecom_ops kpis --days 7
+python -m ecom_ops kpis --days 7 --baseline config/baseline.example.yaml
+python -m ecom_ops soak-preflight
 python -m ecom_ops classify-eval
 python -m ecom_ops draft-eval
 python -m ecom_ops drift-check --days 7
@@ -162,7 +165,13 @@ python -m ecom_ops --mock cases reply --id <uuid> [--body "..."]
 # under --null-send / AZOM_NULL_SEND=1 this refuses before claim (no customer mail)
 
 python -m ecom_ops --actor oscar cases shadow-report [--days 7]
-# Oscar ADMIN: latest-per-case FU9 shadow trail (eligible vs denied + reason breakdown)
+# Oscar ADMIN: latest-per-case FU9 shadow trail + suggest-vs-outcome cross-tab
+
+python -m ecom_ops --actor oscar cases calibration-export [--days 30]
+# Oscar ADMIN: redacted samples (no subject/body/from/draft)
+
+python -m ecom_ops --actor oscar cases calibration-report [--days 30]
+# Oscar ADMIN: classifier flags vs human outcomes; does not mark calibration complete
 
 python -m ecom_ops --mock cases close --id <uuid> [--reason "..."]
 # close without customer reply
@@ -172,7 +181,7 @@ python -m ecom_ops --actor oscar cases retention-purge [--days 90] [--redact] [-
 ```
 
 Global `--null-send` (or `AZOM_NULL_SEND=1`) activates the null-send profile. `status` always prints `null_send=on|off`.  
-`shadow-report` and `retention-purge` require `Permission.ADMIN` (use `--actor oscar`).
+`shadow-report`, `calibration-export`, `calibration-report`, and `retention-purge` require `Permission.ADMIN` (use `--actor oscar`).
 
 #### Cases Do / Do not
 

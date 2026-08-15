@@ -32,6 +32,7 @@ Language split: **Swedish** = ops/pilot/runbooks · **English** = agents/dev/arc
 | [`DOC_STYLE.md`](DOC_STYLE.md) | Authors / agents | How to write docs |
 | [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) | Everyone | Architecture map |
 | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) | Developers | Setup, mock, tests, contrib |
+| [`TEMPLATE_GUIDE.md`](TEMPLATE_GUIDE.md) | Developers | Instantiate this repo for a new single-tenant customer |
 | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) | Developers | Full CLI |
 | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) | Developers | Woo/WP V2.1 capabilities |
 | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) | Developers / Oscar | Google Ads + GA4 mock-first HITL |

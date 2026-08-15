@@ -2,29 +2,29 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
 from typing import Any
 
-from ecom_ops.actions.mail import NULL_SEND_REFUSED_MSG, MailService
-from ecom_ops.actions.support import SupportService, extract_order_id
-from ecom_ops.cases.mailboxes import MailboxConfig, enabled_mailboxes
+from ecom_ops.actions.mail import MailService
+from ecom_ops.actions.support import SupportService
+from ecom_ops.cases.results import ACTIVE_CASE_STATUSES, CaseActionResult, IngestResult
 from ecom_ops.cases.store import Case, CaseStore
 from ecom_ops.escalation import EscalationService, default_escalation
-from ecom_ops.integrations.mail import MailClient, MailMessage, client_from_env
+from ecom_ops.integrations.mail import MailClient, MailMessage
 from ecom_ops.integrations.mail_threading import assemble_outbound_thread_headers
 from ecom_ops.order_context import (
     draft_has_order_block,
     resolve_order_context,
-    woo_domain_from_market,
 )
+from ecom_ops.profile import load_profile
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.runtime_profile import null_send_active
-from ecom_ops.security import SecurityError, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
-_ACTIVE = ("open", "escalated")
+_ACTIVE = ACTIVE_CASE_STATUSES
 REGENERATE_COOLDOWN_SEC = 60
+_log = logging.getLogger("ecom_ops.cases")
 
 
 def _edit_distance_ratio(a: str, b: str) -> float:
@@ -56,54 +56,10 @@ def _seconds_since(iso: str | None) -> float | None:
         raw = str(iso).replace("Z", "+00:00")
         created = datetime.fromisoformat(raw)
         if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        return max(0.0, (datetime.now(timezone.utc) - created).total_seconds())
+            created = created.replace(tzinfo=UTC)
+        return max(0.0, (datetime.now(UTC) - created).total_seconds())
     except Exception:
         return None
-
-
-@dataclass(frozen=True)
-class IngestResult:
-    ok: bool
-    message: str
-    created: int = 0
-    skipped: int = 0
-    errors: int = 0
-    cases: list[dict[str, Any]] | None = None
-    escalated: bool = False
-    ticket_id: str | None = None
-    per_mailbox: list[dict[str, Any]] | None = None  # P3.6: per-mailbox status
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "message": self.message,
-            "created": self.created,
-            "skipped": self.skipped,
-            "errors": self.errors,
-            "cases": self.cases or [],
-            "escalated": self.escalated,
-            "ticket_id": self.ticket_id,
-            "per_mailbox": self.per_mailbox or [],
-        }
-
-
-@dataclass(frozen=True)
-class CaseActionResult:
-    ok: bool
-    message: str
-    case: dict[str, Any] | None = None
-    escalated: bool = False
-    ticket_id: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ok": self.ok,
-            "message": self.message,
-            "case": self.case,
-            "escalated": self.escalated,
-            "ticket_id": self.ticket_id,
-        }
 
 
 def _enrich_draft_with_order(
@@ -237,7 +193,7 @@ class CaseService:
         )
         self.telemetry.record(
             action="case_shadow_decision",
-            site=case.site or "azom",
+                site=case.site or load_profile().customer,
             case_id=case.id,
             meta={
                 "case_id": case.id,
@@ -255,350 +211,14 @@ class CaseService:
         actor: Actor | str | None = None,
         use_mock: bool | None = None,
     ) -> IngestResult:
-        actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
-        try:
-            require_permission(actor_obj, Permission.MAIL_READ)
-        except AccessDenied as exc:
-            ticket = self.escalation.escalate_critical(
-                f"Case poll denied for {actor_obj.name}",
-                details={"error": str(exc)},
-            )
-            return IngestResult(
-                ok=False,
-                message=str(exc),
-                escalated=True,
-                ticket_id=ticket.id,
-            )
+        from ecom_ops.cases.ingest import run_poll
 
-        mailboxes = enabled_mailboxes()
-        if not mailboxes:
-            if use_mock:
-                return IngestResult(ok=True, message="No enabled mailboxes", created=0)
-            ticket = self.escalation.escalate_critical(
-                "Case poll: no enabled mailboxes",
-                details={"detail": "no_enabled_mailboxes"},
-            )
-            try:
-                from ecom_ops.ops_status import write_last_case_poll
-
-                write_last_case_poll(
-                    ok=False,
-                    errors=1,
-                    created=0,
-                    extra={"detail": "no_enabled_mailboxes", "mailboxes": 0},
-                )
-            except Exception:
-                pass
-            return IngestResult(
-                ok=False,
-                message="No enabled mailboxes configured",
-                created=0,
-                errors=1,
-                escalated=True,
-                ticket_id=ticket.id,
-            )
-
-        created = 0
-        skipped = 0
-        errors = 0
-        created_cases: list[dict[str, Any]] = []
-        error_details: list[dict[str, str]] = []
-        per_mailbox: list[dict[str, Any]] = []
-
-        for mb in mailboxes:
-            if self._shutdown_requested:  # P6.6: graceful shutdown
-                break
-            client = self._injected_mail_client or client_from_env(
-                provider=mb.provider,
-                env_prefix=mb.env_prefix,
-                use_mock=use_mock,
-            )
-            mb_created = 0
-            mb_skipped = 0
-            try:
-                messages = client.fetch(
-                    folder="INBOX", unread_only=True, limit=limit_per_mailbox
-                )
-            except Exception as exc:
-                errors += 1
-                err_text = str(exc)[:200]
-                error_details.append({"mailbox_id": mb.id, "error": err_text})
-                per_mailbox.append({
-                    "mailbox_id": mb.id,
-                    "status": "error",
-                    "error": err_text,
-                    "created": 0,
-                    "skipped": 0,
-                })
-                self.telemetry.record(
-                    action="case_poll_error",
-                    site=mb.site,
-                    meta={"mailbox_id": mb.id, "error": err_text},
-                )
-                continue
-
-            for msg in messages:
-                result = self._ingest_message(
-                    mb, msg, actor=actor_obj, client=client, use_mock=use_mock
-                )
-                if result is None:
-                    skipped += 1
-                    mb_skipped += 1
-                else:
-                    created += 1
-                    mb_created += 1
-                    created_cases.append(result.to_dict())
-            per_mailbox.append({
-                "mailbox_id": mb.id,
-                "status": "ok",
-                "created": mb_created,
-                "skipped": mb_skipped,
-            })
-
-        # All mailboxes failed → not ok; partial still ok=True but flagged
-        all_failed = errors > 0 and errors == len(mailboxes)
-        partial = errors > 0 and not all_failed
-        self.telemetry.record(
-            action="case_poll",
-            site="azom",
-            meta={
-                "created": created,
-                "skipped": skipped,
-                "errors": errors,
-                "mailboxes": len(mailboxes),
-                "partial": partial,
-                "all_failed": all_failed,
-                "failed_mailboxes": [e.get("mailbox_id") for e in error_details],
-            },
-        )
-        escalated = False
-        ticket_id: str | None = None
-        if errors > 0:
-            summary = (
-                f"Case poll: ALL {errors} mailbox(es) failed"
-                if all_failed
-                else f"Case poll: PARTIAL — {errors}/{len(mailboxes)} mailbox(es) failed"
-            )
-            ticket = self.escalation.escalate_critical(
-                summary,
-                details={
-                    "errors": errors,
-                    "mailboxes": len(mailboxes),
-                    "partial": partial,
-                    "all_failed": all_failed,
-                    "failures": error_details,
-                },
-            )
-            escalated = True
-            ticket_id = ticket.id
-        try:
-            from ecom_ops.ops_status import write_last_case_poll
-
-            write_last_case_poll(
-                ok=not all_failed,
-                errors=errors,
-                created=created,
-                extra={
-                    "mailboxes": len(mailboxes),
-                    "skipped": skipped,
-                    "partial": partial,
-                    "failures": error_details[:10],
-                },
-            )
-        except Exception:
-            pass
-        if all_failed:
-            msg = f"Polled {len(mailboxes)} mailbox(es) — all failed"
-        elif partial:
-            failed_ids = ",".join(
-                str(e.get("mailbox_id") or "?") for e in error_details[:5]
-            )
-            msg = (
-                f"Polled {len(mailboxes)} mailbox(es) — PARTIAL "
-                f"({errors} failed: {failed_ids})"
-            )
-        else:
-            msg = f"Polled {len(mailboxes)} mailbox(es)"
-        return IngestResult(
-            ok=not all_failed,
-            message=msg,
-            created=created,
-            skipped=skipped,
-            errors=errors,
-            cases=created_cases,
-            escalated=escalated,
-            ticket_id=ticket_id,
-            per_mailbox=per_mailbox,
-        )
-
-    def _ingest_message(
-        self,
-        mb: MailboxConfig,
-        msg: MailMessage,
-        *,
-        actor: Actor,
-        client: MailClient,
-        use_mock: bool | None = None,
-    ) -> Case | None:
-        mid = (msg.message_id or msg.uid or "").strip() or None
-        if mid and self.store.find_by_message_id(mid):
-            self._best_effort_mark_read(client, msg)
-            return None
-
-        body = msg.body or ""
-        subject = msg.subject or "(no subject)"
-        from_addr = msg.from_addr or "unknown@unknown"
-        in_reply_to = getattr(msg, "in_reply_to", None)
-        references_header = getattr(msg, "references_header", None)
-
-        # Resolve Woo order once for LLM prompt + template prepend (avoid double-fetch).
-        preview_order_id = extract_order_id(f"{subject}\n\n{body}")
-        woo_domain = woo_domain_from_market(mb.market)
-        order_ctx = resolve_order_context(
-            preview_order_id, use_mock=use_mock, domain=woo_domain
-        )
-
-        support = self.support.handle(
-            f"{subject}\n\n{body}",
-            customer_email=from_addr if "@" in from_addr else None,
-            language=mb.language,
-            site=mb.site,
-            actor="agent",
+        return run_poll(
+            self,
+            limit_per_mailbox=limit_per_mailbox,
+            actor=actor,
             use_mock=use_mock,
-            order_context=order_ctx,
         )
-        draft = _enrich_draft_with_order(
-            support.reply,
-            support.order_id,
-            use_mock=use_mock,
-            order_context=order_ctx,
-            domain=woo_domain,
-        )
-
-        threaded = self.store.find_by_thread_headers(
-            in_reply_to=in_reply_to,
-            references_header=references_header,
-            from_addr=from_addr,
-            subject=subject,
-            mailbox_id=mb.id,
-        )
-
-        if threaded:
-            suggest = bool(getattr(support, "suggest_approve", False))
-            cat = getattr(support, "category", None)
-            cat_val = getattr(cat, "value", cat) if cat is not None else None
-            if (
-                threaded.status == "escalated"
-                or threaded.category == "abuse"
-                or cat_val == "abuse"
-            ):
-                suggest = False
-            thread_priority = None
-            if (
-                cat_val in {"return", "billing"}
-                and threaded.status != "escalated"
-                and cat_val != "abuse"
-                and threaded.category != "abuse"
-            ):
-                thread_priority = "high"
-            case = self.store.append_inbound(
-                threaded.id,
-                from_addr=from_addr,
-                to_addr=mb.address,
-                subject=subject,
-                body=body,
-                message_id=mid,
-                in_reply_to=in_reply_to,
-                references_header=references_header,
-                draft_reply=draft,
-                category=support.category.value,
-                order_id=support.order_id or threaded.order_id,
-                classify_confidence=getattr(support, "confidence", None),
-                classify_method=getattr(support, "classify_method", None),
-                suggest_approve=suggest,
-                priority=thread_priority,
-            )
-            if case is None:
-                return None
-            case = self._maybe_escalate(case, support)
-            if case.status == "escalated" or case.category == "abuse":
-                if getattr(case, "suggest_approve", False):
-                    case = self.store.set_suggest_approve(case.id, False) or case
-            self.telemetry.record(
-                action="case_threaded",
-                site=mb.site,
-                meta={
-                    "case_id": case.id,
-                    "mailbox_id": mb.id,
-                    "category": case.category,
-                    "actor": actor.name,
-                },
-            )
-            case = self._maybe_record_shadow(case)
-            self._best_effort_mark_read(client, msg)
-            return case
-
-        status = "open"
-        priority = "normal"
-        escalation_id = None
-        if support.escalated and support.ticket_id:
-            status = "escalated"
-            priority = "high"
-            escalation_id = support.ticket_id
-        elif support.escalated:
-            ticket = self.escalation.escalate_critical(
-                f"Case ingest escalated: {subject[:80]}",
-                details={
-                    "mailbox_id": mb.id,
-                    "from_addr": from_addr,
-                    "category": support.category.value,
-                },
-            )
-            status = "escalated"
-            priority = "high"
-            escalation_id = ticket.id
-        elif support.category.value in {"return", "billing"}:
-            # Path B2: elevate triage without Oscar escalation tickets
-            priority = "high"
-
-        case = self.store.create_case(
-            mailbox_id=mb.id,
-            subject=subject,
-            from_addr=from_addr,
-            body=body,
-            category=support.category.value,
-            draft_reply=draft,
-            order_id=support.order_id,
-            message_id=mid,
-            site=validate_site(mb.site),
-            market=mb.market,
-            language=mb.language,
-            to_addr=mb.address,
-            status=status,
-            priority=priority,
-            escalation_id=escalation_id,
-            in_reply_to=in_reply_to,
-            references_header=references_header,
-            classify_confidence=getattr(support, "confidence", None),
-            classify_method=getattr(support, "classify_method", None),
-            suggest_approve=bool(getattr(support, "suggest_approve", False))
-            and status != "escalated",
-        )
-        self.telemetry.record(
-            action="case_created",
-            site=mb.site,
-            case_id=case.id,
-            meta={
-                "case_id": case.id,
-                "mailbox_id": mb.id,
-                "category": case.category,
-                "status": case.status,
-                "actor": actor.name,
-            },
-        )
-        case = self._maybe_record_shadow(case)
-        self._best_effort_mark_read(client, msg)
-        return case
 
     def _maybe_escalate(self, case: Case, support: Any) -> Case:
         if not getattr(support, "escalated", False):
@@ -624,7 +244,7 @@ class CaseService:
         except Exception as exc:
             self.telemetry.record(
                 action="case_mark_read_error",
-                site="azom",
+                site=load_profile().customer,
                 meta={"uid": uid, "error": str(exc)[:200]},
             )
 
@@ -675,47 +295,9 @@ class CaseService:
         *,
         actor: Actor | str | None = None,
     ) -> CaseActionResult:
-        actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
-        try:
-            require_permission(actor_obj, Permission.CASE_REPLY)
-            case = self.store.get(case_id)
-            if not case:
-                return CaseActionResult(ok=False, message="Case not found")
-            if case.status not in _ACTIVE:
-                return CaseActionResult(
-                    ok=False,
-                    message=f"Case status is {case.status}, expected open/escalated",
-                    case=case.to_dict(),
-                )
-            previous = case.draft_reply or ""
-            updated = self.store.update_draft(case_id, body)
-            edit_dist = _edit_distance_ratio(previous, body)
-            self.telemetry.record(
-                action="case_draft_saved",
-                site=case.site,
-                meta={
-                    "case_id": case_id,
-                    "actor": actor_obj.name,
-                    "draft_edit_distance": round(edit_dist, 4),
-                    "time_to_first_edit_sec": _seconds_since(case.created_at),
-                },
-            )
-            return CaseActionResult(
-                ok=True,
-                message="Draft saved",
-                case=updated.to_dict() if updated else case.to_dict(),
-            )
-        except AccessDenied as exc:
-            ticket = self.escalation.escalate_critical(
-                f"Case draft save denied for {actor_obj.name}",
-                details={"error": str(exc), "case_id": case_id},
-            )
-            return CaseActionResult(
-                ok=False,
-                message=str(exc),
-                escalated=True,
-                ticket_id=ticket.id,
-            )
+        from ecom_ops.cases.drafting import save_draft as _save
+
+        return _save(self, case_id, body, actor=actor)
 
     def regenerate_draft(
         self,
@@ -724,146 +306,9 @@ class CaseService:
         actor: Actor | str | None = None,
         use_mock: bool | None = None,
     ) -> CaseActionResult:
-        """Re-run support draft + order context; never sends mail.
+        from ecom_ops.cases.drafting import regenerate_draft as _regen
 
-        Draft generation uses operator ``agent`` (SUPPORT_REPLY) while the
-        human caller needs CASE_REPLY (Jonatan may regenerate / approve).
-        """
-        try:
-            actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
-        except AccessDenied as exc:
-            ticket = self.escalation.escalate_critical(
-                f"Case draft regenerate denied: {exc}",
-                details={"error": str(exc), "case_id": case_id},
-            )
-            return CaseActionResult(
-                ok=False,
-                message=str(exc),
-                escalated=True,
-                ticket_id=ticket.id,
-            )
-        try:
-            require_permission(actor_obj, Permission.CASE_REPLY)
-            case = self.store.get(case_id)
-            if not case:
-                return CaseActionResult(ok=False, message="Case not found")
-            if case.status not in _ACTIVE:
-                return CaseActionResult(
-                    ok=False,
-                    message=f"Case status is {case.status}, expected open/escalated",
-                    case=case.to_dict(),
-                )
-
-            if case.draft_regenerated_at:
-                try:
-                    raw = str(case.draft_regenerated_at).replace("Z", "+00:00")
-                    ts = datetime.fromisoformat(raw)
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                    age = (datetime.now(timezone.utc) - ts).total_seconds()
-                    if age < REGENERATE_COOLDOWN_SEC:
-                        return CaseActionResult(
-                            ok=False,
-                            message=(
-                                "Vänta minst 60 sekunder innan du regenererar igen."
-                            ),
-                            case=case.to_dict(),
-                        )
-                except ValueError:
-                    pass
-
-            inbound_body, inbound_subject = self._inbound_text_for_regen(case)
-            text = f"{inbound_subject}\n\n{inbound_body}".strip()
-            order_id = case.order_id or extract_order_id(text)
-            woo_domain = woo_domain_from_market(case.market)
-            order_ctx = resolve_order_context(
-                order_id, use_mock=use_mock, domain=woo_domain
-            )
-
-            # Ingest path uses agent for SUPPORT_REPLY; keep same here.
-            support = self.support.handle(
-                text,
-                customer_email=case.from_addr if "@" in (case.from_addr or "") else None,
-                language=case.language or "sv",
-                site=case.site or "azom",
-                actor="agent",
-                use_mock=use_mock,
-                order_context=order_ctx,
-            )
-            draft = _enrich_draft_with_order(
-                support.reply,
-                support.order_id or order_id,
-                use_mock=use_mock,
-                order_context=order_ctx,
-                domain=woo_domain,
-            )
-            previous = case.draft_reply or ""
-            conf = getattr(support, "confidence", None)
-            method = getattr(support, "classify_method", None)
-            suggest = bool(getattr(support, "suggest_approve", False))
-            category = (
-                support.category.value
-                if hasattr(support.category, "value")
-                else str(support.category)
-            )
-            # Preserve abuse/escalated presentation — do not demote to routine
-            if case.status == "escalated" and case.category == "abuse":
-                category = "abuse"
-            if (
-                case.status == "escalated"
-                or getattr(support, "escalated", False)
-                or category == "abuse"
-            ):
-                suggest = False
-
-            patched = self._patch_case_after_regen(
-                case.id,
-                draft=draft or previous,
-                draft_before_regen=previous,
-                category=category,
-                order_id=support.order_id or order_id or case.order_id,
-                classify_confidence=conf if isinstance(conf, (int, float)) else None,
-                classify_method=method,
-                suggest_approve=suggest,
-            )
-            if getattr(support, "escalated", False) and patched and not patched.escalation_id:
-                patched = self._maybe_escalate(patched, support)
-
-            self.telemetry.record(
-                action="case_draft_regenerated",
-                site=case.site,
-                meta={
-                    "case_id": case_id,
-                    "actor": actor_obj.name,
-                    "category": category,
-                    "classify_method": method,
-                    "confidence": conf,
-                    "suggest_approve": suggest,
-                    "draft_edit_distance": round(
-                        _edit_distance_ratio(previous, draft or previous), 4
-                    ),
-                },
-            )
-            final = patched or self.store.get(case_id) or case
-            final = self._maybe_record_shadow(final)
-            return CaseActionResult(
-                ok=True,
-                message=f"Draft regenerated for {case_id[:8]}",
-                case=final.to_dict(),
-            )
-        except AccessDenied as exc:
-            ticket = self.escalation.escalate_critical(
-                f"Case draft regenerate denied for {actor_obj.name}",
-                details={"error": str(exc), "case_id": case_id},
-            )
-            return CaseActionResult(
-                ok=False,
-                message=str(exc),
-                escalated=True,
-                ticket_id=ticket.id,
-            )
-        except Exception as exc:
-            return CaseActionResult(ok=False, message=f"Regenerate failed: {exc}")
+        return _regen(self, case_id, actor=actor, use_mock=use_mock)
 
     def _inbound_text_for_regen(self, case: Case) -> tuple[str, str]:
         msgs = self.store.messages(case.id)
@@ -890,7 +335,7 @@ class CaseService:
         suggest_approve: bool,
     ) -> Case | None:
         """Update draft + AI fields without inserting phantom messages."""
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         with self.store._conn() as conn:
             conn.execute(
                 """
@@ -1021,143 +466,6 @@ class CaseService:
         actor: Actor | str | None = None,
         body_override: str | None = None,
     ) -> CaseActionResult:
-        actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
-        try:
-            require_permission(actor_obj, Permission.CASE_REPLY)
-            case = self.store.get(case_id)
-            if not case:
-                return CaseActionResult(ok=False, message="Case not found")
-            if case.status not in _ACTIVE:
-                return CaseActionResult(
-                    ok=False,
-                    message=f"Case status is {case.status}, expected open/escalated",
-                    case=case.to_dict(),
-                )
-            body = (body_override or case.draft_reply or "").strip()
-            if not body:
-                return CaseActionResult(ok=False, message="No draft to send", case=case.to_dict())
+        from ecom_ops.cases.approve import approve_and_send as _approve
 
-            if null_send_active():
-                self.telemetry.record(
-                    action="case_reply_blocked_null_send",
-                    site=case.site or "azom",
-                    case_id=case_id,
-                    meta={
-                        "case_id": case_id,
-                        "actor": actor_obj.name,
-                        "reason": "null_send",
-                    },
-                )
-                return CaseActionResult(
-                    ok=False,
-                    message=NULL_SEND_REFUSED_MSG,
-                    case=case.to_dict(),
-                )
-
-            prior_status = case.status
-            claimed = self.store.claim_for_send(case_id)
-            if not claimed:
-                fresh = self.store.get(case_id)
-                return CaseActionResult(
-                    ok=False,
-                    message=(
-                        f"Case status is {fresh.status if fresh else 'unknown'}, "
-                        "expected open/escalated (already claimed or replied)"
-                    ),
-                    case=fresh.to_dict() if fresh else case.to_dict(),
-                )
-
-            subject = case.subject
-            if not subject.lower().startswith("re:"):
-                subject = f"Re: {subject}"
-
-            in_reply_to, references_header = _outbound_thread_headers(case, self.store)
-
-            # Jonatan has CASE_REPLY but not MAIL_SEND — case approve is the
-            # intentional send path; pass the real approving actor for audit.
-            send = self.mail.send(
-                to=case.from_addr,
-                subject=subject,
-                body=body,
-                site=case.site,
-                actor=actor_obj,
-                required_permission=Permission.CASE_REPLY,
-                in_reply_to=in_reply_to,
-                references_header=references_header,
-            )
-            if not send.ok:
-                self.store.release_send_claim(case_id, status=prior_status)
-                restored = self.store.get(case_id) or case
-                return CaseActionResult(
-                    ok=False,
-                    message=send.message,
-                    case=restored.to_dict(),
-                    escalated=send.escalated,
-                    ticket_id=send.ticket_id,
-                )
-
-            updated = self.store.mark_replied(
-                case_id,
-                outbound_body=body,
-                to_addr=case.from_addr,
-                from_addr="",
-                subject=subject,
-                message_id=(
-                    (send.provider_status or {}).get("message_id")
-                    if isinstance(send.provider_status, dict)
-                    else None
-                ),
-            )
-            if not updated:
-                # Mail already sent — leave claim visible as sending for operator triage
-                return CaseActionResult(
-                    ok=False,
-                    message="Mail sent but case could not be marked replied",
-                    case=(self.store.get(case_id) or claimed).to_dict(),
-                )
-            self.telemetry.record(
-                action="case_replied",
-                site=case.site,
-                case_id=case_id,
-                meta={
-                    "case_id": case_id,
-                    "approved_by": actor_obj.name,
-                    "category": case.category,
-                    "suggest_approve": bool(getattr(case, "suggest_approve", False)),
-                    "time_to_approve_sec": _seconds_since(case.created_at),
-                    "draft_edit_distance": round(
-                        _edit_distance_ratio(case.draft_reply or "", body), 4
-                    ),
-                },
-            )
-            from ecom_ops.audit import log_action
-
-            log_action(
-                actor=actor_obj.name,
-                action="case_reply_send",
-                target="case",
-                target_id=case_id,
-                details={
-                    "to": case.from_addr,
-                    "category": case.category,
-                    "suggest_approve": bool(getattr(case, "suggest_approve", False)),
-                },
-            )
-            return CaseActionResult(
-                ok=True,
-                message="Reply sent and case marked replied",
-                case=updated.to_dict() if updated else case.to_dict(),
-            )
-        except AccessDenied as exc:
-            ticket = self.escalation.escalate_critical(
-                f"Case reply denied for {actor_obj.name}",
-                details={"error": str(exc), "case_id": case_id},
-            )
-            return CaseActionResult(
-                ok=False,
-                message=str(exc),
-                escalated=True,
-                ticket_id=ticket.id,
-            )
-        except SecurityError as exc:
-            return CaseActionResult(ok=False, message=str(exc))
+        return _approve(self, case_id, actor=actor, body_override=body_override)

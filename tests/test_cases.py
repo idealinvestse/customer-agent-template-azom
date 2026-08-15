@@ -91,7 +91,7 @@ def test_poll_creates_cases(case_store, mail_client, monkeypatch, tmp_path):
         return mail_client
 
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", fake_client_from_env
+        "ecom_ops.cases.ingest.client_from_env", fake_client_from_env
     )
     svc = CaseService(
         store=case_store,

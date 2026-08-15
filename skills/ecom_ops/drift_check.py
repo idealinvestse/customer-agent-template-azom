@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import statistics
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +30,7 @@ def _parse_ts(raw: str | None) -> datetime | None:
         text = str(raw).replace("Z", "+00:00")
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except Exception:
         return None
@@ -51,7 +51,7 @@ def drift_check(
     """
     tel = telemetry or Telemetry()
     path = Path(tel.path)
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=max(1, int(days)))
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=max(1, int(days)))
 
     confidences: list[float] = []
     categories: dict[str, int] = {}

@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import statistics
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +26,7 @@ def _parse_ts(raw: str | None) -> datetime | None:
         text = str(raw).replace("Z", "+00:00")
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except Exception:
         return None
@@ -45,7 +45,7 @@ def quality_trends(
     """Aggregate daily confidence + edit distance trends (P7.4)."""
     tel = telemetry or Telemetry()
     path = Path(tel.path)
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=max(1, int(days)))
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=max(1, int(days)))
 
     daily_conf: dict[str, list[float]] = defaultdict(list)
     daily_edit: dict[str, list[float]] = defaultdict(list)

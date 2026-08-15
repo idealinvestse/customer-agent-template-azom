@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from ecom_ops.cases.service import CaseService
 from ecom_ops.cases.store import CaseStore
@@ -213,7 +213,7 @@ def test_regenerate_allowed_after_cooldown(
     first = svc.regenerate_draft(case.id, actor="jonatan", use_mock=True)
     assert first.ok, first.message
     past = (
-        datetime.now(timezone.utc) - timedelta(seconds=61)
+        datetime.now(UTC) - timedelta(seconds=61)
     ).isoformat().replace("+00:00", "Z")
     with svc.store._conn() as conn:
         conn.execute(

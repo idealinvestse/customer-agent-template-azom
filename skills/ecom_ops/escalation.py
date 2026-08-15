@@ -6,11 +6,12 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ecom_ops.config import load_app_config
 from ecom_ops.security import redact_secrets
@@ -43,7 +44,7 @@ class EscalationTicket:
     summary: str
     details: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     status: str = "open"
 
@@ -136,8 +137,11 @@ class EscalationService:
             self.critical_assignee = cfg.rbac.escalation_critical
             self.code_edit_assignee = cfg.rbac.escalation_code_edit
         except Exception:  # pragma: no cover - config optional in unit tests
-            self.critical_assignee = "oscar"
-            self.code_edit_assignee = "oscar"
+            from ecom_ops.profile import load_profile
+
+            admin = load_profile().admin_actor
+            self.critical_assignee = admin
+            self.code_edit_assignee = admin
 
     def escalate(
         self,

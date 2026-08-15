@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import sys
 from pathlib import Path
 
@@ -24,7 +23,7 @@ from ecom_ops.bot.messenger_adapter import (
     verify_signature,
     verify_webhook_challenge,
 )
-from ecom_ops.bot.reply import ActionButton, ActionMarkup, approve_case_actions
+from ecom_ops.bot.reply import approve_case_actions
 from ecom_ops.bot.store import ConversationStore
 from ecom_ops.cases.store import CaseStore
 from ecom_ops.rbac import clear_rbac_cache

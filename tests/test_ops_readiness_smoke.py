@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,10 +46,10 @@ def test_poll_writes_last_case_poll_marker(tmp_path, monkeypatch):
         transport=InMemoryMailTransport(),
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+        "ecom_ops.cases.ingest.client_from_env", lambda **kw: client
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.enabled_mailboxes",
+        "ecom_ops.cases.ingest.enabled_mailboxes",
         lambda: [
             MailboxConfig(
                 id="support_default", label="Support", address="support@azom.se"
@@ -88,6 +88,9 @@ def test_health_includes_readiness_last_poll(tmp_path, monkeypatch):
     assert data["readiness"]["last_poll_ok"] is True
     assert data["readiness"]["last_poll_age_sec"] is not None
     assert data["readiness"]["last_poll_age_sec"] < 60
+    assert "null_send" in data
+    assert "budget_ratio" in data
+    assert "last_poll_errors" in data
 
 
 def test_health_marks_stale_poll_not_ready(tmp_path, monkeypatch):
@@ -101,12 +104,12 @@ def test_health_marks_stale_poll_not_ready(tmp_path, monkeypatch):
     from ecom_ops.ops_status import write_last_case_poll
 
     # Backdated poll
-    old = datetime.now(timezone.utc).timestamp() - 600
+    old = datetime.now(UTC).timestamp() - 600
     write_last_case_poll(
         ok=True,
         errors=0,
         created=0,
-        polled_at=datetime.fromtimestamp(old, tz=timezone.utc).isoformat(),
+        polled_at=datetime.fromtimestamp(old, tz=UTC).isoformat(),
     )
     mod = _load_dashboard()
     mod.app.config["TESTING"] = True

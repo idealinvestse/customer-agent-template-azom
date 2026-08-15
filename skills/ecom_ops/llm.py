@@ -224,7 +224,7 @@ def draft_support_with_llm(
     oid = order_id or "(okänt)"
     from ecom_ops.prompts import get_prompt
 
-    system, draft_prompt_version = get_prompt("draft")
+    system, draft_prompt_version = get_prompt("draft", language=lang)
     ctx = (order_context or "").strip()
     context_block = f"Order context:\n{ctx}\n" if ctx else "Order context: (none)\n"
     user = (

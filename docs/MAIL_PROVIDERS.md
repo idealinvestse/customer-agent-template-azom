@@ -99,6 +99,7 @@ mailboxes:
 ```
 
 NO/DK-rader ska vara `enabled: false` tills Oscar säger annars ([`CURRENT_STATE.md`](CURRENT_STATE.md)).
+Oscar mail-probe inkluderar en read-only mailbox-matris (`not_configured` / `disabled_ready`) — den flippar aldrig `enabled`.
 
 ## CLI (mock-säkert)
 

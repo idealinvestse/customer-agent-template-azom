@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 from urllib.request import Request, urlopen
 
 
@@ -22,7 +23,7 @@ class ProbeResult:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _result(pid: str, label: str, status: str, message: str) -> ProbeResult:
@@ -77,11 +78,16 @@ def probe_mail() -> ProbeResult:
         client = client_from_env(use_mock=use_mock)
         msgs = client.fetch(folder="INBOX", unread_only=True, limit=1)
         mode = "mock" if use_mock else "live"
+        from ecom_ops.cases.mailbox_probe import probe_mailbox_matrix
+
+        matrix = probe_mailbox_matrix()
+        disabled = sum(1 for r in matrix["mailboxes"] if not r["enabled"])
         return _result(
             "mail",
             label,
             "ok",
-            f"Client ok ({mode}) · fetch returned {len(msgs)} message(s)",
+            f"Client ok ({mode}) · fetch returned {len(msgs)} message(s) · "
+            f"{disabled} mailbox(es) disabled (not auto-enabled)",
         )
     except Exception as exc:
         return _result("mail", label, "error", str(exc)[:200])

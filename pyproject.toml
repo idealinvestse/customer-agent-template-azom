@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "azom-ecom-ops"
-version = "2.0.0"
-description = "Azom ecom-ops agent V2: WooCommerce ops, mail, SSH, dashboard onboarding/OAuth, Telegram bot"
+version = "3.0.0"
+description = "Azom ecom-ops agent V3: production-mature single-tenant ops, HITL cases, marketing reads"
 readme = "README.md"
 requires-python = ">=3.11"
 # Production target: Ubuntu 24.04 ships Python 3.12; local/CI may use 3.11+
@@ -25,6 +25,10 @@ dev = [
 ]
 dashboard = [
   "Flask>=3.0",
+]
+marketing-live = [
+  "google-analytics-data>=0.18",
+  "google-ads>=25.0",
 ]
 
 [project.scripts]
@@ -49,7 +53,7 @@ omit = [
 ]
 
 [tool.coverage.report]
-fail_under = 65
+fail_under = 70
 show_missing = true
 skip_covered = false
 
@@ -59,5 +63,8 @@ target-version = "py311"
 src = ["skills", "tests", "infrastructure/dashboard"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
-ignore = ["E501"]
+select = ["E", "F", "I", "W", "B", "UP"]
+ignore = ["E501", "UP038", "UP028", "B904", "B011"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402", "F841"]

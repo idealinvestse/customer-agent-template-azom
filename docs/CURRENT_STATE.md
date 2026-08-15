@@ -8,7 +8,7 @@
 
 | Term | Meaning |
 |------|---------|
-| **Package version** | Python package version in `pyproject.toml` — currently **2.0.0**. Capability labels V2.1–V2.3 are tracks, not package bumps. |
+| **Package version** | Python package version in `pyproject.toml` — currently **3.0.0**. |
 | **Path B** | Cases AI quality: suggest-approve badge + auto-send **rails** (default off, not wired to poll send). |
 | **Live soak (A1 / FU6)** | Human-run checklist on a real host before any auto-send discussion. |
 | **FU9** | Auto-send wire into poll. **Not done.** Rails and kill-switch exist only. |
@@ -25,8 +25,8 @@
 
 | Item | Value |
 |------|--------|
-| Package | **2.0.0** (`pyproject.toml` and `ecom_ops.__version__` — keep in sync; V2.1–V2.3 are capability tracks, not bumps) |
-| Docker image tag | `azom-agent:2.0` (`infrastructure/docker-compose.prod.yml`) |
+| Package | **3.0.0** (`pyproject.toml` and `ecom_ops.__version__` — keep in sync) |
+| Docker image tag | `azom-agent:3.0` (`infrastructure/docker-compose.prod.yml`; `2.0` tag retained for rollback) |
 | Primary OS | Ubuntu 26.x (24.04 LTS supported) |
 | Host sizing | Hetzner CX22 / CPX21 — 2 vCPU, 4 GB RAM |
 | Prod code (systemd) | `/opt/azom-agent` |
@@ -50,7 +50,10 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **V2.3 robustness** | Thread reopen, OAuth expiry harden, probe fail-closed; code DoD green |
 | **Path B2** | Richer return/billing drafts + priority/UI escalate hints; still never suggest-approve those categories |
 | **Shadow Live Ledger** | Null-send profile (`AZOM_NULL_SEND` / `--null-send`): refuse customer mail; poll records FU9 shadow decisions; dashboard badge + `cases shadow-report`. Soft-soak via `bin/mock-soak-azom.sh`. **Not** FU9 wire; **not** A1 soak complete |
-| **Marketing Google (Ads+GA4)** | Mock-first ledger + suggest/HITL rails shipped (`marketing` CLI, `/marketing`, probes, kill-switches). **Live Google Data/Ads API clients still stubbed** (`NotImplementedError`) until Oscar wires OAuth + developer token. See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md). |
+| **Marketing Google (Ads+GA4)** | Mock-first ledger + HITL rails. Live **read** clients (GA4 runReport + Ads GAQL) via REST + OAuth; optional `[marketing-live]` extra. Mutate / MP / Merchant writes still refused. Fail-closed allowlists unchanged. See [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md). |
+| **Pilot maturity toolkit** | Read-only `soak-preflight`, Oscar `cases calibration-export` / `calibration-report` (redacted), `kpis --baseline` deltas, shadow suggest-vs-outcome cross-tab. **Does not** mark A1 soak, baseline, or live calibration complete. |
+| **Ops hardening** | SQLite WAL + busy_timeout, budget pacing fields, structured poll/approve logs, `/health` extras (`null_send`, `budget_ratio`, `last_poll_errors`). Backup script checkpoints WAL before copy. |
+| **V3.0.0** | Pilot toolkit + ops hardening + NO/DK enable-ready (still disabled) + live marketing **reads** + dashboard health/webhook modules + cases approve/ingest/draft facades + `config/profile.yaml` + [`TEMPLATE_GUIDE.md`](TEMPLATE_GUIDE.md). **Not** multi-tenant SaaS. **Not** A1 soak complete. **Not** FU9 wire. |
 
 ## Ops next (human-owned — agents must not mark done)
 
@@ -105,6 +108,12 @@ Do not start these unless product ownership changes:
 
 Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, finish/release plans were absorbed into living docs (`CURRENT_STATE`, `CASES`, `PILOT_OPS`, `WOO_WORDPRESS`, `MAIL_PROVIDERS`, `SYSTEM_OVERVIEW`, `DEVELOPER_GUIDE`). Those historical paths no longer exist. Do not recreate them; update living docs instead.
 
+## Changelog / rollback (2.0 → 3.0)
+
+- **Upgrade:** `git pull` + `pip install -e .` (optional extra `[marketing-live]`). Additive SQLite ALTERs only. `config/profile.yaml` is optional — missing file keeps Azom defaults.
+- **Rollback:** keep Docker tag `azom-agent:2.0`; revert the 3.0 commit(s). WAL can be disabled by reverting the store pragma. No new default-on send or mutate flags.
+- **Do not** treat this bump as soak-complete, FU9 wire, or NO/DK enablement.
+
 ## Related living docs
 
 | Need | Doc |
@@ -120,4 +129,5 @@ Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, fini
 | Google Ads + GA4 | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Install / deploy | [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) |
 | Docker overlays | [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md) |
+| Template instantiate | [`TEMPLATE_GUIDE.md`](TEMPLATE_GUIDE.md) |
 | Index | [`README.md`](README.md) |

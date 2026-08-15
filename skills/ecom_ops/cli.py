@@ -1,10 +1,11 @@
-"""Unified CLI for Azom ecom-ops V2."""
+"""Unified CLI for Azom ecom-ops V3."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from datetime import UTC
 from typing import Any
 
 from ecom_ops import __version__
@@ -15,6 +16,7 @@ from ecom_ops.actions.ssh_ops import SSHOpsService
 from ecom_ops.actions.support import SupportService
 from ecom_ops.integrations.mail import client_from_env as mail_client_from_env
 from ecom_ops.integrations.woocommerce import client_from_env
+from ecom_ops.profile import load_profile
 
 
 def _print(result: Any) -> int:
@@ -29,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ecom-ops",
         description=(
-            "Azom ecom-ops V2: order-status, product-desc, support, SSH, mail "
+            "Azom ecom-ops V3: order-status, product-desc, support, SSH, mail "
             "(dashboard/OAuth/Telegram via separate entrypoints)"
         ),
     )
@@ -38,11 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"ecom-ops {__version__}",
     )
-    parser.add_argument("--site", default="azom", help="Customer/site id")
+    _prof = load_profile()
+    parser.add_argument("--site", default=_prof.customer, help="Customer/site id")
     parser.add_argument(
         "--actor",
-        default="agent",
-        help="Actor name (jonatan|oscar|agent)",
+        default=_prof.operator_actor,
+        help=(
+            f"Actor name ({_prof.viewer_actor}|{_prof.admin_actor}|{_prof.operator_actor})"
+        ),
     )
     parser.add_argument(
         "--mock",
@@ -92,6 +97,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=7,
         help="Lookback window in days (default 7)",
+    )
+    p_kpis.add_argument(
+        "--baseline",
+        default="",
+        help="Compare KPIs to a human-filled baseline YAML/JSON (deltas only)",
+    )
+    sub.add_parser(
+        "soak-preflight",
+        help="Read-only A1 soak pre-flight checks (never marks soak complete)",
     )
     p_eval = sub.add_parser(
         "classify-eval",
@@ -250,6 +264,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--days", type=int, default=7, help="Lookback window (default 7)"
     )
 
+    p_cal_export = cases_sub.add_parser(
+        "calibration-export",
+        help="Oscar: redacted classify samples (no subject/body/draft)",
+    )
+    p_cal_export.add_argument("--days", type=int, default=30)
+    p_cal_report = cases_sub.add_parser(
+        "calibration-report",
+        help="Oscar: classifier vs human-outcome cross-tab (read-only)",
+    )
+    p_cal_report.add_argument("--days", type=int, default=30)
+
     p_retention = cases_sub.add_parser(
         "retention-purge",
         help="GDPR: delete/redact closed cases older than N days (default 90)",
@@ -404,10 +429,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("ok", False) else 1
 
+    if args.command == "soak-preflight":
+        from ecom_ops.soak_preflight import run_soak_preflight
+
+        result = run_soak_preflight()
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("ok") else 1
+
     if args.command == "kpis":
-        from ecom_ops.kpis import support_kpis_last_days
+        from ecom_ops.kpis import compare_kpis_to_baseline, load_baseline, support_kpis_last_days
 
         result = support_kpis_last_days(days=int(getattr(args, "days", 7) or 7))
+        baseline_path = (getattr(args, "baseline", None) or "").strip()
+        if baseline_path:
+            result = compare_kpis_to_baseline(result, load_baseline(baseline_path))
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
@@ -562,6 +597,30 @@ def main(argv: list[str] | None = None) -> int:
             report = build_shadow_report(days=int(getattr(args, "days", 7) or 7))
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
+        if args.cases_command in {"calibration-export", "calibration-report"}:
+            from ecom_ops.cases.calibration import (
+                build_calibration_report,
+                export_calibration_samples,
+            )
+            from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
+
+            try:
+                require_permission(resolve_actor(args.actor), Permission.ADMIN)
+            except AccessDenied as exc:
+                return _print(
+                    {
+                        "ok": False,
+                        "error": "access_denied",
+                        "message": str(exc),
+                    }
+                )
+            days = int(getattr(args, "days", 30) or 30)
+            if args.cases_command == "calibration-export":
+                payload = export_calibration_samples(days=days)
+            else:
+                payload = build_calibration_report(days=days)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
         if args.cases_command == "retention-purge":
             from ecom_ops.cases.retention import purge_closed_cases
             from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
@@ -578,13 +637,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
             if args.dry_run:
-                from datetime import datetime, timedelta, timezone
+                from datetime import datetime, timedelta
 
                 from ecom_ops.cases.store import CaseStore
 
                 store = CaseStore()
                 days = int(args.days or 90)
-                cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+                cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
                 cases = store.list_cases(status="closed", limit=10000)
                 eligible = [c for c in cases if (c.updated_at or "") < cutoff]
                 print(

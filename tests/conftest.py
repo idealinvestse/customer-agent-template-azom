@@ -17,6 +17,7 @@ from ecom_ops.telemetry import Telemetry
 @pytest.fixture(autouse=True)
 def _isolate_env(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_NULL_SEND", "0")
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("AZOM_CONFIG_DIR", str(Path(__file__).resolve().parents[1] / "config"))
     clear_rbac_cache()

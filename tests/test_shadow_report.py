@@ -54,6 +54,8 @@ def test_mixed_latest_per_case_counts(tmp_path, monkeypatch):
     assert report["eligible"] == 1
     assert report["denied"] == 1
     assert report["deny_reasons"]["missing_order_id"] == 1
+    assert "suggest_outcome" in report
+    assert "cells" in report["suggest_outcome"]
 
 
 def test_cli_shadow_report(tmp_path, monkeypatch, capsys):

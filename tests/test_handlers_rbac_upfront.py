@@ -5,7 +5,7 @@ from __future__ import annotations
 from ecom_ops.bot.dialog_actions import PendingAction
 from ecom_ops.bot.handlers import BotHandler
 from ecom_ops.bot.store import ConversationStore
-from ecom_ops.rbac import Actor, Permission, clear_rbac_cache
+from ecom_ops.rbac import Actor, clear_rbac_cache
 
 
 def test_pending_allowed_for_viewer():

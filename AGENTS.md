@@ -37,7 +37,7 @@
 
 ## Runtime target
 
-- **Package version:** **2.0.0** (`pyproject.toml` + `ecom_ops.__version__` — keep in sync; capability tracks V2.1–V2.3 are not package bumps)
+- **Package version:** **3.0.0** (`pyproject.toml` + `ecom_ops.__version__` — keep in sync)
 - **OS:** Ubuntu 26.x (primary) / 24.04 LTS
 - **Host:** Hetzner Cloud — **CX22 / CPX21** (2 vCPU, 4 GB RAM)
 - **Auto-install:** `sudo bash bin/install.sh` or `bin/install-ubuntu26.sh`
@@ -100,6 +100,8 @@ python -m ecom_ops --mock cases draft --id <uuid> --body "..."
 python -m ecom_ops --mock cases reply --id <uuid>
 python -m ecom_ops --mock cases close --id <uuid>
 python -m ecom_ops --actor oscar cases shadow-report --days 7
+python -m ecom_ops soak-preflight
+python -m ecom_ops --actor oscar cases calibration-report --days 30
 ./bin/cases-poll.sh
 ```
 

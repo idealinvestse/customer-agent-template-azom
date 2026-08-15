@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ecom_ops.escalation import EscalationService, default_escalation
@@ -624,7 +624,7 @@ class MarketingService:
         from ecom_ops.integrations.woocommerce import client_from_env
 
         woo = client_from_env(use_mock=self._use_mock)
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         start = end - timedelta(days=max(1, int(days)))
         after = start.isoformat().replace("+00:00", "Z")
         before = end.isoformat().replace("+00:00", "Z")

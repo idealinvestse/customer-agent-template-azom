@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 from ecom_ops import __version__
-from ecom_ops.bot.reply import BotReply
 from ecom_ops.bot.recovery import (
     FOOTER_CASE_NOT_FOUND,
     approve_fail_reply,
@@ -15,12 +15,13 @@ from ecom_ops.bot.recovery import (
     empty_queue_text,
     with_recovery,
 )
+from ecom_ops.bot.reply import BotReply
 from ecom_ops.bot.store import ConversationStore, clamp_messages
 
 HandlerFn = Callable[["CommandContext"], str | BotReply]
 
 
-def _persist_case_session(ctx: "CommandContext", case: Any) -> None:
+def _persist_case_session(ctx: CommandContext, case: Any) -> None:
     """Sticky case id + market (+ order) for multi-market Woo lookups."""
     from ecom_ops.order_context import woo_domain_from_market
 
@@ -668,7 +669,7 @@ def _format_case_show(case: Any) -> str:
 
 def _case_show_reply(case: Any) -> BotReply:
     """Case show with explicit approve button (same path as /cases approve)."""
-    from ecom_ops.bot.reply import approve_case_actions, actions_to_telegram_markup
+    from ecom_ops.bot.reply import actions_to_telegram_markup, approve_case_actions
 
     text = _format_case_show(case)
     actions = approve_case_actions(case.id)

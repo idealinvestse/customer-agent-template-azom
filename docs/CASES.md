@@ -79,6 +79,8 @@ Credentials ligger i env / `secrets.env`. Se [`MAIL_PROVIDERS.md`](MAIL_PROVIDER
 
 **Enable-gate NO/DK:** Oscar lägger fungerande mail-creds → sätt `enabled: true` först då. Agents får inte aktivera själva.
 
+**NO/DK enable-ready (kod):** `nb`/`da` mallutkast + classify-fixtures finns. `probe_mailbox_matrix` / Oscar mail-probe listar disabled mailboxar som `not_configured` eller `disabled_ready` — **aldrig** auto-enable. Market `no`/`dk` mappar till Woo `domain=`. Repo-config förblir `enabled: false`.
+
 ---
 
 ## Config: cases AI rails (Path B)
@@ -248,8 +250,13 @@ När tillgängligt: `time_to_approve_sec`, `draft_edit_distance`, `time_to_first
 
 ```bash
 python -m ecom_ops kpis --days 7
+python -m ecom_ops kpis --days 7 --baseline config/baseline.example.yaml
 python -m ecom_ops classify-eval
+python -m ecom_ops --actor oscar cases calibration-export --days 30
+python -m ecom_ops --actor oscar cases calibration-report --days 30
 ```
+
+**Kalibrering (export → review → fixture):** Oscar kör `calibration-export` (redacted: ingen subject/body/from/draft). Efter mänsklig review med `text` + `expected_category` kan `ecom_ops.cases.calibration.write_fixture_from_reviewed` skriva en fixture under `tests/fixtures/support_classify/`. Sänk **inte** suggest-trösklar utan den reviewen. Agents får inte markera live-kalibrering som klar.
 
 ---
 

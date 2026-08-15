@@ -7,7 +7,7 @@ import importlib.util
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -279,7 +279,7 @@ def test_support_kpis_median(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     path = tmp_path / "telemetry.jsonl"
     tel = Telemetry(path=path)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for sec in (100.0, 200.0, 300.0):
         tel.record(
             action="case_replied",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 from ecom_ops.config import load_app_config
@@ -36,6 +37,13 @@ def budget_status(
     used_ratio = (used / openrouter_cap) if openrouter_cap > 0 else 0.0
     near_cap = used_ratio >= ratio
     at_cap = used_ratio >= 1.0
+    day_start = datetime.now(UTC).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    used_today = float(tel.sum_cost_usd_since(day_start.isoformat()))
+    # Project remaining days in a 30-day window from today's rate (alert only).
+    projected_30d = used_today * 30.0
+    pacing_warn = openrouter_cap > 0 and projected_30d >= (openrouter_cap * ratio)
     return {
         "used_usd": round(used, 6),
         "cap_usd": openrouter_cap,
@@ -44,13 +52,20 @@ def budget_status(
         "near_cap": near_cap,
         "at_cap": at_cap,
         "warn": near_cap,
+        "used_today_usd": round(used_today, 6),
+        "projected_30d_usd": round(projected_30d, 6),
+        "pacing_warn": pacing_warn,
         "message": (
             "OpenRouter budget at/over cap"
             if at_cap
             else (
                 f"OpenRouter budget near cap ({used_ratio:.0%} of ${openrouter_cap:g})"
                 if near_cap
-                else "OpenRouter budget OK"
+                else (
+                    f"OpenRouter pacing warn (today ${used_today:.2f} → ~${projected_30d:.0f}/30d)"
+                    if pacing_warn
+                    else "OpenRouter budget OK"
+                )
             )
         ),
     }

@@ -14,7 +14,7 @@ import json
 import os
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +50,7 @@ def log_action(
         "target_id": target_id,
         "success": success,
         "details": redact_secrets(details or {}),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
     }
     line = json.dumps(entry, ensure_ascii=False) + "\n"
     path = _audit_path()

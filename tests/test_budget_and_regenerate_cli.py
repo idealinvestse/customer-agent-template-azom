@@ -20,6 +20,17 @@ def test_budget_status_near_cap(tmp_path, monkeypatch):
     assert "near" in st["message"].lower() or "cap" in st["message"].lower()
 
 
+def test_budget_pacing_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    tel = Telemetry(path=tmp_path / "t.jsonl")
+    tel.record(action="llm", site="azom", cost_usd=4.0)
+    st = budget_status(telemetry=tel, cap=100.0, warn_ratio=0.8)
+    assert "used_today_usd" in st
+    assert "projected_30d_usd" in st
+    assert "pacing_warn" in st
+    assert st["used_today_usd"] >= 4.0
+
+
 def test_budget_status_ok_when_low(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     tel = Telemetry(path=tmp_path / "t.jsonl")

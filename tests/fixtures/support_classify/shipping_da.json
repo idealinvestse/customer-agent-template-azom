@@ -1,0 +1,8 @@
+{
+  "id": "shipping_da",
+  "text": "Kan jeg få sporingsnummer på levering for ordre 5502?",
+  "expected_category": "shipping",
+  "order_id_in_text": "5502",
+  "suggest_with_llm_confidence": 0.9,
+  "expect_suggest_approve": true
+}

@@ -1,0 +1,8 @@
+{
+  "id": "return_fortrydelse_da",
+  "text": "Jeg vil bruge fortrydelsesretten og returnere ordre 6603.",
+  "expected_category": "return",
+  "order_id_in_text": "6603",
+  "suggest_with_llm_confidence": 0.7,
+  "expect_suggest_approve": false
+}

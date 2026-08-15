@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
@@ -27,6 +26,12 @@ from ecom_ops.bot.dialog_actions import (
     execute_product_desc,
 )
 from ecom_ops.bot.openclaw_commands import dispatch_openclaw_command
+from ecom_ops.bot.recovery import (
+    FOOTER_UNKNOWN_CALLBACK,
+    deny_actor_reply,
+    deny_allowlist_reply,
+    with_recovery,
+)
 from ecom_ops.bot.reply import (
     BotReply,
     approve_case_actions,
@@ -36,12 +41,6 @@ from ecom_ops.bot.reply import (
     product_desc_confirm_actions,
     triage_cases_actions,
     yes_no_actions,
-)
-from ecom_ops.bot.recovery import (
-    FOOTER_UNKNOWN_CALLBACK,
-    deny_actor_reply,
-    deny_allowlist_reply,
-    with_recovery,
 )
 from ecom_ops.bot.store import ConversationStore, clamp_messages
 from ecom_ops.escalation import EscalationService, default_escalation

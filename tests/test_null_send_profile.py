@@ -25,6 +25,7 @@ def test_null_send_env_and_label(monkeypatch):
     enable_null_send()
     assert null_send_active() is True
     assert null_send_label() == "on"
+    monkeypatch.delenv("AZOM_NULL_SEND", raising=False)
     monkeypatch.setenv("AZOM_NULL_SEND", "0")
     assert null_send_active() is False
 
@@ -38,6 +39,7 @@ def test_cli_null_send_flag_sets_env(monkeypatch):
     code = main(["--null-send", "version"])
     assert code == 0
     assert null_send_active() is True
+    monkeypatch.delenv("AZOM_NULL_SEND", raising=False)
 
 
 def test_status_always_includes_null_send(monkeypatch, capsys):

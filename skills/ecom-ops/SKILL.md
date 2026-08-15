@@ -6,7 +6,7 @@ description: >
   Cases 2.0 + Path B suggest-approve rails. Google Ads + GA4 marketing ledger
   (read → suggest → HITL mutate). Critical/code edits escalate to Oscar.
   Never silent customer mail or silent Ads mutate — human approve required.
-version: "2.0.0"
+version: "3.0.0"
 ---
 
 # ecom-ops (V2 + Path B)

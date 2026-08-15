@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +52,7 @@ class UsageEvent:
     schema_version: int = TELEMETRY_SCHEMA_VERSION
     actor: str | None = None
     created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,12 +127,36 @@ class Telemetry:
     def within_budget(self, cap_usd: float) -> bool:
         return self.sum_cost_usd() < cap_usd
 
+    def sum_cost_usd_since(self, since_iso: str) -> float:
+        """Sum cost_usd for events with created_at >= since_iso."""
+        if not self.path.is_file():
+            return 0.0
+        total = 0.0
+        cutoff = since_iso
+        with self.path.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = str(ev.get("created_at") or "")
+                if ts and ts < cutoff:
+                    continue
+                try:
+                    total += float(ev.get("cost_usd", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+        return total
+
     def purge_old_events(self, *, retention_days: int | None = None) -> int:
         """Remove events older than retention_days. Returns count removed (P7.2)."""
         days = int(retention_days if retention_days is not None else DEFAULT_RETENTION_DAYS)
         if days < 1 or not self.path.is_file():
             return 0
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         kept: list[str] = []
         removed = 0
         with self.path.open(encoding="utf-8") as fh:

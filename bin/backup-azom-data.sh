@@ -47,8 +47,9 @@ mkdir -p "$STAMP_DIR"
 # --- 1) Online SQLite backup of cases.db (safe under concurrent writes) ---
 CASES_DB="${DATA_DIR}/cases.db"
 if [[ -f "$CASES_DB" ]]; then
-  log "Backing up cases.db (online .backup)"
+  log "Backing up cases.db (WAL checkpoint + online .backup)"
   if command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 "$CASES_DB" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null || true
     sqlite3 "$CASES_DB" ".backup '${STAMP_DIR}/cases.db'"
   else
     warn "sqlite3 not installed — falling back to cp (may be inconsistent under writes)"

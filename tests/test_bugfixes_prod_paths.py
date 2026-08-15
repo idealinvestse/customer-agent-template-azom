@@ -102,11 +102,11 @@ def test_poll_all_mailbox_failures_returns_not_ok(case_store_path, monkeypatch):
             raise RuntimeError("mailbox down")
 
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env",
+        "ecom_ops.cases.ingest.client_from_env",
         lambda **kw: BoomClient(),
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.enabled_mailboxes",
+        "ecom_ops.cases.ingest.enabled_mailboxes",
         lambda: [
             MailboxConfig(
                 id="support_default",
@@ -128,7 +128,7 @@ def test_cli_version_without_woo_credentials(monkeypatch, capsys):
     code = main(["version"])
     assert code == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["version"] == "2.0.0"
+    assert out["version"] == "3.0.0"
 
 
 def test_telegram_rejects_unknown_chat_when_allowlist_set(monkeypatch, tmp_path):
@@ -209,11 +209,11 @@ def test_poll_mailbox_failure_escalates(case_store_path, monkeypatch, tmp_path):
             raise RuntimeError("imap timeout")
 
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env",
+        "ecom_ops.cases.ingest.client_from_env",
         lambda **kw: BoomClient(),
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.enabled_mailboxes",
+        "ecom_ops.cases.ingest.enabled_mailboxes",
         lambda: [
             MailboxConfig(
                 id="support_default",

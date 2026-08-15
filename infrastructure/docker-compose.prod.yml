@@ -6,7 +6,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: azom-agent:2.0
+    image: azom-agent:3.0
     restart: unless-stopped
     env_file:
       - ../.env
@@ -45,7 +45,7 @@ services:
         max-file: "3"
 
   bot:
-    image: azom-agent:2.0
+    image: azom-agent:3.0
     build:
       context: ..
       dockerfile: Dockerfile

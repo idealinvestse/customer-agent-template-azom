@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
-from ecom_ops.bot.reply import ActionMarkup, BotReply, as_reply
+from ecom_ops.bot.reply import ActionButton, ActionMarkup, BotReply, as_reply
 
 log = logging.getLogger(__name__)
 
@@ -245,7 +245,8 @@ def send_bot_reply(
     dry_run: bool = False,
 ) -> list[dict[str, Any]]:
     """Send all message parts for a BotReply."""
-    from ecom_ops.bot.reply import BotReply as BR, as_reply
+    from ecom_ops.bot.reply import BotReply as BR
+    from ecom_ops.bot.reply import as_reply
 
     br = as_reply(reply)
     if dry_run:
@@ -282,8 +283,8 @@ def mid_already_seen(data_dir: str | os.PathLike[str], mid: str | None, *, ttl_s
     """
     if not mid:
         return False
-    from pathlib import Path
     import time
+    from pathlib import Path
 
     path = Path(data_dir) / "messenger_mids.json"
     now = time.time()

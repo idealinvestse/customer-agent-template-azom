@@ -16,7 +16,7 @@ Wired via CLI: ``python -m ecom_ops --actor oscar cases retention-purge``
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ecom_ops.cases.store import CaseStore
@@ -62,7 +62,7 @@ def purge_closed_cases(
     if days < 1:
         return RetentionResult(ok=False, message="retention_days must be >= 1")
     cs = store or CaseStore()
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=days)
     cutoff_iso = cutoff.isoformat()
 
     import sqlite3

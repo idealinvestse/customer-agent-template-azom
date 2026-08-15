@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from ecom_ops.config import _config_dir
+from ecom_ops.profile import DEFAULT_CUSTOMER, load_profile
 
 
 @dataclass(frozen=True)
@@ -16,7 +17,7 @@ class MailboxConfig:
     id: str
     label: str
     address: str
-    site: str = "azom"
+    site: str = DEFAULT_CUSTOMER
     market: str | None = None
     language: str = "sv"
     enabled: bool = True
@@ -56,7 +57,7 @@ def load_mailboxes(path: Path | None = None) -> list[MailboxConfig]:
                 id=mid,
                 label=str(item.get("label") or mid),
                 address=str(item.get("address") or ""),
-                site=str(item.get("site") or "azom"),
+                site=str(item.get("site") or load_profile().customer),
                 market=str(item["market"]) if item.get("market") else None,
                 language=str(item.get("language") or "sv"),
                 enabled=bool(item.get("enabled", True)),

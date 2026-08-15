@@ -1,0 +1,10 @@
+# Single-tenant customer profile (Azom defaults).
+# Safety rails (never-suggest, fail-closed, kill-switch names) are NOT overridable here.
+customer: azom
+brand: Azom
+markets: [se, no, dk]
+languages: [sv, nb, da]
+actors:
+  viewer: jonatan
+  admin: oscar
+  operator: agent

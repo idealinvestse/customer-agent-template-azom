@@ -27,6 +27,8 @@ Never invent metrics. Always cite source + date range. Do not collapse Ads+GA+Wo
 - Env: `GOOGLE_OAUTH_CLIENT_ID/SECRET`, `GOOGLE_ADS_DEVELOPER_TOKEN`, optional `GOOGLE_ADS_LOGIN_CUSTOMER_ID`
 - Fail-closed in live (`AZOM_USE_MOCK=0`): empty `AZOM_GA4_PROPERTY_IDS` or `AZOM_GADS_CUSTOMER_IDS` → deny
 - Mock: `AZOM_USE_MOCK=1` uses in-memory fixtures (no network)
+- Live **reads** (GA4 `runReport`, Ads GAQL search) use REST (`requests`) + OAuth token when `AZOM_USE_MOCK=0` and allowlists are set. The optional extra `pip install 'azom-ecom-ops[marketing-live]'` is **not required** for those reads (official Google client libs; reserved). Mutate / Measurement Protocol remain **not wired**.
+- Oscar owns OAuth + developer token. Agents must not enable mutate flags.
 
 ## RBAC
 

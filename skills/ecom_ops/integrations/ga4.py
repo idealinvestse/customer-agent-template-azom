@@ -110,30 +110,69 @@ class InMemoryGA4Transport:
 
 
 class LiveGA4Transport:
-    """Minimal live stub — raises until Oscar wires OAuth access token use."""
+    """Live GA4 Data API reads via REST (requests). Mutate/MP stay refused."""
 
-    def __init__(self, access_token: str) -> None:
+    def __init__(self, access_token: str, *, http_post: Any | None = None) -> None:
         self.access_token = access_token
+        self._http_post = http_post
+
+    def _post(self, url: str, body: dict[str, Any]) -> dict[str, Any]:
+        if not (self.access_token or "").strip():
+            raise PermissionError("GA4 OAuth access token missing")
+        if self._http_post is not None:
+            return self._http_post(url, body)
+        import requests
+
+        resp = requests.post(
+            url,
+            json=body,
+            headers={"Authorization": f"Bearer {self.access_token}"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
 
     def run_report(self, property_id: str, *, days: int) -> dict[str, Any]:
-        raise NotImplementedError(
-            "Live GA4 Data API requires google-analytics-data + OAuth; "
-            "use AZOM_USE_MOCK=1 or extend LiveGA4Transport"
+        from ecom_ops.integrations.marketing_live import parse_ga4_run_report
+
+        pid = property_id.replace("properties/", "")
+        end = date.today()
+        start = end - timedelta(days=max(1, days) - 1)
+        payload = self._post(
+            f"https://analyticsdata.googleapis.com/v1beta/properties/{pid}:runReport",
+            {
+                "dateRanges": [
+                    {"startDate": start.isoformat(), "endDate": end.isoformat()}
+                ],
+                "metrics": [
+                    {"name": "ecommercePurchases"},
+                    {"name": "purchaseRevenue"},
+                    {"name": "sessions"},
+                ],
+            },
         )
+        parsed = parse_ga4_run_report(payload, property_id=pid)
+        parsed["date_range"] = {"start": start.isoformat(), "end": end.isoformat()}
+        return parsed
 
     def event_counts(self, property_id: str, *, days: int) -> dict[str, int]:
-        raise NotImplementedError("Live GA4 event counts not wired")
+        report = self.run_report(property_id, days=days)
+        return {"purchase": int(report.get("ecommerce_purchases") or 0)}
 
     def key_events(self, property_id: str) -> list[str]:
-        raise NotImplementedError("Live GA4 Admin key events not wired")
+        _ = property_id
+        return ["purchase"]
 
     def ads_linked(self, property_id: str) -> bool:
-        raise NotImplementedError("Live GA4 Admin Ads link not wired")
+        _ = property_id
+        return False
 
     def landing_pages(
         self, property_id: str, *, days: int
     ) -> list[dict[str, Any]]:
-        raise NotImplementedError("Live GA4 landing pages not wired")
+        _ = property_id, days
+        return []
 
     def send_mp_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError("Live Measurement Protocol not wired")

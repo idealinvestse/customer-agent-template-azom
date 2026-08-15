@@ -7,7 +7,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -70,7 +70,7 @@ class GoogleMarketingTokenBundle:
             "token_type": self.token_type,
             "scope": self.scope,
             "email": self.email,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
 
     @classmethod

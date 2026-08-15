@@ -67,7 +67,7 @@ def test_mark_read_after_poll(case_store, monkeypatch, tmp_path):
         ]
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+        "ecom_ops.cases.ingest.client_from_env", lambda **kw: client
     )
     svc = CaseService(store=case_store, mail=MailService(client=client))
     result = svc.poll(actor="agent", use_mock=True)
@@ -103,7 +103,7 @@ def test_threading_in_reply_to(case_store, monkeypatch, tmp_path):
         ]
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+        "ecom_ops.cases.ingest.client_from_env", lambda **kw: client
     )
     svc = CaseService(store=case_store, mail=MailService(client=client))
     result = svc.poll(actor="agent", use_mock=True)
@@ -153,7 +153,7 @@ def test_poll_threads_into_replied_case_and_reopens(case_store, monkeypatch, tmp
         ]
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+        "ecom_ops.cases.ingest.client_from_env", lambda **kw: client
     )
     svc = CaseService(store=case_store, mail=MailService(client=client))
     result = svc.poll(actor="agent", use_mock=True)
@@ -171,7 +171,7 @@ def test_poll_no_enabled_mailboxes_fails_in_prod(case_store, monkeypatch, tmp_pa
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AZOM_USE_MOCK", "0")
     monkeypatch.setattr(
-        "ecom_ops.cases.service.enabled_mailboxes",
+        "ecom_ops.cases.ingest.enabled_mailboxes",
         lambda: [],
     )
     from ecom_ops.escalation import EscalationService
@@ -199,7 +199,7 @@ def test_abuse_sets_escalated(case_store, monkeypatch, tmp_path):
         ]
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+        "ecom_ops.cases.ingest.client_from_env", lambda **kw: client
     )
     svc = CaseService(store=case_store, mail=MailService(client=client))
     result = svc.poll(actor="agent", use_mock=True)
@@ -235,7 +235,7 @@ def test_poll_return_billing_priority_high_not_escalated(case_store, monkeypatch
         ]
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+        "ecom_ops.cases.ingest.client_from_env", lambda **kw: client
     )
     svc = CaseService(store=case_store, mail=MailService(client=client))
     result = svc.poll(actor="agent", use_mock=True)
@@ -280,7 +280,7 @@ def test_threaded_return_elevates_priority(case_store, monkeypatch, tmp_path):
         ]
     )
     monkeypatch.setattr(
-        "ecom_ops.cases.service.client_from_env", lambda **kw: client
+        "ecom_ops.cases.ingest.client_from_env", lambda **kw: client
     )
     svc = CaseService(store=case_store, mail=MailService(client=client))
     result = svc.poll(actor="agent", use_mock=True)

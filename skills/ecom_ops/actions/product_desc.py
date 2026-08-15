@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.integrations.woocommerce import WooCommerceClient, client_from_env

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ecom_ops.cases.store import CaseStore
@@ -18,7 +18,7 @@ def build_shadow_report(
 ) -> dict[str, Any]:
     """Latest-per-case shadow trail from case columns (not raw telemetry history)."""
     days = max(1, int(days or 7))
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     st = store or CaseStore()
     cases = st.list_shadow_observed(since_iso=since, limit=limit)
 
@@ -57,6 +57,8 @@ def build_shadow_report(
             f"({len(cases)} ärenden, {days}d, null_send={null_send_label()})."
         )
 
+    precision = _suggest_outcome_crosstab(cases)
+
     return {
         "ok": True,
         "null_send": null_send_label(),
@@ -65,7 +67,25 @@ def build_shadow_report(
         "eligible": eligible_n,
         "denied": denied_n,
         "deny_reasons": dict(reasons.most_common()),
+        "suggest_outcome": precision,
         "sample": sample,
         "warnings": warnings,
         "message": message,
+    }
+
+
+def _suggest_outcome_crosstab(cases: list[Any]) -> dict[str, Any]:
+    """Suggest-approve vs human outcome (replied/closed/escalated)."""
+    cells: Counter[str] = Counter()
+    starred = 0
+    for c in cases:
+        star = bool(getattr(c, "suggest_approve", False))
+        status = str(getattr(c, "status", "") or "")
+        if star:
+            starred += 1
+        key = f"{'star' if star else 'no_star'}:{status or 'unknown'}"
+        cells[key] += 1
+    return {
+        "starred": starred,
+        "cells": dict(cells),
     }

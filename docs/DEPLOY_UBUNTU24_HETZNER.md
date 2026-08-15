@@ -103,7 +103,7 @@ docker compose -f infrastructure/docker-compose.prod.yml up -d --build
 ```
 
 - Port **127.0.0.1:8080** only
-- Image tag: `azom-agent:2.0`
+- Image tag: `azom-agent:3.0`
 - Resource limits: dashboard 256 MB, bot 128 MB
 - Data volume: `azom-data` → container path **`/app/.azom-data`** (inte `/var/lib/azom`)
 - Detaljer: [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md)

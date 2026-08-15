@@ -1,0 +1,10 @@
+# Human-owned support-time baseline. Agents must not invent numbers.
+# Copy to AZOM_DATA_DIR/baseline.yaml after Oscar + Jonatan fill values.
+# Compare: python -m ecom_ops kpis --days 7 --baseline path/to/baseline.yaml
+
+start_date: ""                    # ISO date when measurement starts
+hours_per_week_or_proxy: ""       # Jonatan support hours/week or TTA×volume proxy
+source: ""                        # where the number comes from
+notes: ""                         # blockers, exception weeks
+# Optional numeric compare (seconds) if you already have a TTA baseline:
+# median_time_to_approve_sec: 600

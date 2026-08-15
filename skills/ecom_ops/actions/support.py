@@ -168,6 +168,7 @@ def classify_message(text: str) -> SupportCategory:
             "reklamasjon",
             "angrerett",
             "ångerrätt",
+            "fortrydelsesret",
             "forbrukerkjøp",
             "forbrukerkjøpsloven",
         )
@@ -179,11 +180,13 @@ def classify_message(text: str) -> SupportCategory:
             "ship",
             "leverans",
             "leveranse",
+            "levering",
             "frakt",
             "tracking",
             "spårning",
             "sporing",
             "sporings",
+            "sporingsnummer",
         )
     ):
         return SupportCategory.SHIPPING

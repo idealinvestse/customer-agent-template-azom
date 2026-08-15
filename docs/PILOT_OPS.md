@@ -92,6 +92,8 @@ Dashboard visar en **null-send**-banner/badge när `AZOM_NULL_SEND=1` (kundmail 
 
 ## Backup
 
+`/health` (publik) inkluderar additivt: `null_send`, `budget_ratio`, `budget_pacing_warn`, `last_poll_errors` (utöver readiness).
+
 Känd backup-väg ska finnas för:
 
 - `$AZOM_DATA_DIR/cases.db`
@@ -107,6 +109,14 @@ Vid korrupt DB: [`runbooks/cases-db-corrupt.md`](runbooks/cases-db-corrupt.md).
 **Syfte:** Verifiera suggest-approve, approve&nästa, poll och KPI på riktig (eller staging) host innan auto-send-diskussion.
 
 ### Pre-flight
+
+Read-only automation (never writes this outcome log):
+
+```bash
+# cwd: /opt/azom-agent (prod) or repo root (mock)
+python -m ecom_ops soak-preflight
+# expect: JSON with ok true/false and soak_complete: false
+```
 
 ```text
 [ ] AZOM_USE_MOCK=0 på prod-host

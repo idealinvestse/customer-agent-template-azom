@@ -4,11 +4,68 @@ from __future__ import annotations
 
 import json
 import statistics
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from ecom_ops.telemetry import Telemetry
+
+BASELINE_SCHEMA_KEYS = (
+    "start_date",
+    "hours_per_week_or_proxy",
+    "source",
+    "notes",
+)
+
+
+def load_baseline(path: Path | str) -> dict[str, Any]:
+    """Load a human-filled baseline YAML/JSON. Agents must not invent numbers."""
+    p = Path(path)
+    raw = p.read_text(encoding="utf-8")
+    data: Any
+    if p.suffix.lower() in {".yaml", ".yml"}:
+        import yaml
+
+        data = yaml.safe_load(raw) or {}
+    else:
+        data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("baseline file must be a mapping")
+    return data
+
+
+def compare_kpis_to_baseline(
+    kpis: dict[str, Any],
+    baseline: dict[str, Any],
+) -> dict[str, Any]:
+    """Compute deltas only. Never fills missing human baseline fields."""
+    hours = baseline.get("hours_per_week_or_proxy")
+    tta_base = baseline.get("median_time_to_approve_sec")
+    tta_now = kpis.get("median_time_to_approve_sec")
+    deltas: dict[str, Any] = {}
+    if tta_base is not None and tta_now is not None:
+        try:
+            base_f = float(tta_base)
+            now_f = float(tta_now)
+            deltas["median_time_to_approve_sec"] = round(now_f - base_f, 2)
+            if base_f:
+                deltas["median_time_to_approve_ratio"] = round(now_f / base_f, 4)
+        except (TypeError, ValueError):
+            pass
+    missing = [k for k in BASELINE_SCHEMA_KEYS if not str(baseline.get(k) or "").strip()]
+    return {
+        "ok": True,
+        "baseline_present": bool(baseline),
+        "baseline_hours_per_week_or_proxy": hours,
+        "baseline_source": baseline.get("source"),
+        "kpis": kpis,
+        "deltas": deltas,
+        "missing_human_fields": missing,
+        "baseline_complete": False,
+        "message": (
+            "KPI vs baseline (human-owned numbers; agents do not mark 50% goal done)."
+        ),
+    }
 
 
 def _parse_ts(raw: str | None) -> datetime | None:
@@ -18,7 +75,7 @@ def _parse_ts(raw: str | None) -> datetime | None:
         text = str(raw).replace("Z", "+00:00")
         dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except Exception:
         return None
@@ -50,7 +107,7 @@ def support_kpis_last_days(
     # Fresh Telemetry() so AZOM_DATA_DIR / AZOM_TELEMETRY_PATH apply (tests + CLI).
     tel = telemetry or Telemetry()
     path = Path(tel.path)
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=max(1, int(days)))
+    cutoff = (now or datetime.now(UTC)) - timedelta(days=max(1, int(days)))
     tta: list[float] = []
     edit_on_reply: list[float] = []
     edit_on_save: list[float] = []
