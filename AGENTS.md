@@ -70,12 +70,12 @@
 - Recreate deleted history folders (`docs/superpowers/`, `docs/solutions/`, `docs/ideation/`).
 - Default-on `AZOM_NULL_SEND` in systemd (Oscar sets it in `.env` for soft-soak only).
 
-## V1 core (still in v2)
+## V1 core (still in 3.x)
 
 - order-status, product-desc, support, SSH, mail via `skills/ecom_ops`
 - Mail providers: gmail, outlook, exchange_graph, generic_imap, generic_pop3
 - CLI: `python -m ecom_ops` · `./bin/ecom-automation.sh`
-- Tests: `pytest` (CI: ruff + cov ≥ 65%)
+- Tests: `pytest` (CI: ruff + cov ≥ 70%)
 
 ## Shipped capability tracks (summary)
 
@@ -88,7 +88,7 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 - **V2.1:** Woo/WP capacity — [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
 - **V2.2:** live `probe_mail`, mail env matrix, bulk close
 - **V2.3:** robustness (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak**
-- **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live APIs still stubbed
+- **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live **reads** shipped (GA4 runReport + Ads GAQL); mutate/MP still refused
 
 ## Cases quick CLI
 
@@ -153,7 +153,7 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 - **Mock soft-soak:** `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
 - **FU9 auto-send:** rails only — see [`docs/CASES.md`](docs/CASES.md) (**do not wire** without Oscar written enable + soak preconditions)
 - **NO/DK mailboxes:** remain `enabled: false` until Oscar + credentials
-- **Out of scope:** V3 multi-tenant, FAQ/KB, default-on auto-send, Meta/TikTok ads, default-on Ads mutate
+- **Out of scope:** multi-tenant SaaS, FAQ/KB, default-on auto-send, Meta/TikTok ads, default-on Ads mutate
 
 ## V2.1 Woo/WordPress (pointer)
 

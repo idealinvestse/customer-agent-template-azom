@@ -35,10 +35,6 @@ def register_cases_routes(app: Flask) -> None:
             suggest_approve=True if suggest_only else None,
             limit=100,
         )
-        rows.sort(key=lambda c: c.created_at or "", reverse=True)
-        rows.sort(key=lambda c: 0 if getattr(c, "suggest_approve", False) else 1)
-        rows.sort(key=lambda c: 0 if (c.priority or "") == "high" else 1)
-        rows.sort(key=lambda c: 0 if c.status == "escalated" else 1)
         return render_template(
             "cases.html",
             **_dashboard_context(

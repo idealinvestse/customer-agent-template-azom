@@ -49,7 +49,7 @@ CASES_DB="${DATA_DIR}/cases.db"
 if [[ -f "$CASES_DB" ]]; then
   log "Backing up cases.db (WAL checkpoint + online .backup)"
   if command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "$CASES_DB" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null || true
+    sqlite3 "$CASES_DB" "PRAGMA wal_checkpoint(PASSIVE);" >/dev/null || true
     sqlite3 "$CASES_DB" ".backup '${STAMP_DIR}/cases.db'"
   else
     warn "sqlite3 not installed — falling back to cp (may be inconsistent under writes)"
@@ -79,7 +79,7 @@ if [[ -n "$DEST" ]]; then
   fi
 fi
 
-# --- 4) Retention: keep last N backup dirs ---
+# --- 4) Retention: drop backup dirs older than KEEP days ---
 log "Pruning backups older than ${KEEP} days"
 find "$BACKUP_DIR" -maxdepth 1 -type d -name '20*' -mtime +${KEEP} -exec rm -rf {} + 2>/dev/null || true
 

@@ -276,10 +276,6 @@ class CaseService:
             suggest_approve=True if suggest_only else None,
             limit=limit,
         )
-        rows.sort(key=lambda c: c.created_at or "", reverse=True)
-        rows.sort(key=lambda c: 0 if getattr(c, "suggest_approve", False) else 1)
-        rows.sort(key=lambda c: 0 if (c.priority or "") == "high" else 1)
-        rows.sort(key=lambda c: 0 if c.status == "escalated" else 1)
         found = False
         for c in rows:
             if found:
@@ -335,36 +331,16 @@ class CaseService:
         suggest_approve: bool,
     ) -> Case | None:
         """Update draft + AI fields without inserting phantom messages."""
-        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        with self.store._conn() as conn:
-            conn.execute(
-                """
-                UPDATE cases SET
-                    draft_reply = ?,
-                    draft_before_regen = ?,
-                    draft_regenerated_at = ?,
-                    category = ?,
-                    order_id = COALESCE(?, order_id),
-                    classify_confidence = ?,
-                    classify_method = ?,
-                    suggest_approve = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    draft,
-                    draft_before_regen,
-                    now,
-                    category,
-                    order_id,
-                    classify_confidence,
-                    classify_method,
-                    1 if suggest_approve else 0,
-                    now,
-                    case_id,
-                ),
-            )
-        return self.store.get(case_id)
+        return self.store.patch_after_regen(
+            case_id,
+            draft=draft,
+            draft_before_regen=draft_before_regen,
+            category=category,
+            order_id=order_id,
+            classify_confidence=classify_confidence,
+            classify_method=classify_method,
+            suggest_approve=suggest_approve,
+        )
 
     def close(
         self,
@@ -383,7 +359,23 @@ class CaseService:
                 return CaseActionResult(
                     ok=True, message="Already closed", case=case.to_dict()
                 )
+            if case.status == "sending":
+                return CaseActionResult(
+                    ok=False,
+                    message="Cannot close a case that is sending",
+                    case=case.to_dict(),
+                )
             updated = self.store.close(case_id)
+            if updated is None:
+                fresh = self.store.get(case_id) or case
+                return CaseActionResult(
+                    ok=False,
+                    message=(
+                        f"Cannot close case in status {fresh.status} "
+                        "(expected open/escalated)"
+                    ),
+                    case=fresh.to_dict(),
+                )
             self.telemetry.record(
                 action="case_closed",
                 site=case.site,

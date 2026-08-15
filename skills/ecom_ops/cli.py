@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC
 from typing import Any
 
 from ecom_ops import __version__
@@ -277,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_retention = cases_sub.add_parser(
         "retention-purge",
-        help="GDPR: delete/redact closed cases older than N days (default 90)",
+        help="GDPR: delete/redact closed+replied cases older than N days (default 90)",
     )
     p_retention.add_argument(
         "--days", type=int, default=None, help="Retention window (default 90)"
@@ -293,6 +292,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from ecom_ops.runtime_env import bootstrap_runtime
+
+    bootstrap_runtime()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -637,23 +639,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
             if args.dry_run:
-                from datetime import datetime, timedelta
+                from ecom_ops.cases.retention import count_eligible_cases
 
-                from ecom_ops.cases.store import CaseStore
-
-                store = CaseStore()
                 days = int(args.days or 90)
-                cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-                cases = store.list_cases(status="closed", limit=10000)
-                eligible = [c for c in cases if (c.updated_at or "") < cutoff]
+                eligible_n = count_eligible_cases(retention_days=days)
                 print(
                     json.dumps(
                         {
                             "ok": True,
                             "dry_run": True,
-                            "eligible": len(eligible),
+                            "eligible": eligible_n,
                             "retention_days": days,
-                            "message": f"Dry run: {len(eligible)} cases eligible",
+                            "message": f"Dry run: {eligible_n} cases eligible",
                         },
                         ensure_ascii=False,
                         indent=2,

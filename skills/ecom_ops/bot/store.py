@@ -61,10 +61,10 @@ class ConversationStore:
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps(self._data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        payload = json.dumps(self._data, indent=2, ensure_ascii=False)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, self.path)
 
     def get(self, chat_id: str | int) -> dict[str, Any] | None:
         key = str(chat_id)

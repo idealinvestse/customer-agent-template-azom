@@ -1,10 +1,5 @@
-# Runtime
+# Runtime (prod image + install)
 PyYAML>=6.0
 requests>=2.31
 Flask>=3.0
-
-# Dev / test
-pytest>=8.0
-pytest-cov>=5.0
-responses>=0.25
-ruff>=0.8
+waitress>=3.0

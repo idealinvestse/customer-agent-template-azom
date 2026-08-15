@@ -149,7 +149,7 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/data/telemetry`, `/data/escalations` | auth | JSON data views |
 | `/logs`, `/telemetry`, `/escalations`, `/manage` | auth | Ops pages |
 
-Auth: Basic Auth usernames are hardcoded as `jonatan` / `oscar` (password or Werkzeug hash via `DASHBOARD_PASSWORD*` / `DASHBOARD_OSCAR_PASSWORD*`). `DASHBOARD_USER` in `.env` is documentation-only — code does not read it. CSRF on browser POSTs (`DASHBOARD_SECRET_KEY`).
+Auth: Basic Auth usernames come from `config/profile.yaml` actors (Azom defaults `jonatan` / `oscar`). Passwords or Werkzeug hashes via `DASHBOARD_PASSWORD*` / `DASHBOARD_OSCAR_PASSWORD*`. `DASHBOARD_USER` in `.env` is documentation-only — code does not read it. CSRF on browser POSTs (`DASHBOARD_SECRET_KEY`). `/metrics` is **token-only** (`METRICS_SCRAPE_TOKEN` Bearer). `/live` is liveness; `/ready` is 503 when cases poll is stale.
 
 Operator procedures: [`PILOT_OPS.md`](PILOT_OPS.md) (Swedish).
 
@@ -188,7 +188,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `config/cases_ai.yaml` | suggest-approve + auto-send rails |
 | `config/marketing.yaml` | Ads/GA4 allowlists, mutate defaults, kill env names |
 | `config/integrations.yaml` | mail presets; Google flags are **non-gating reserved** |
-| `config/dashboard.yaml` | dashboard feature flags |
+| `config/dashboard.yaml` | reserved UI flags — **not loaded** by Python |
 | `config/customer.json` | customer metadata / KPIs |
 | `.env` / `.env.example` | secrets + runtime paths |
 
@@ -207,6 +207,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `AZOM_GA4_PROPERTY_IDS` / `AZOM_GADS_CUSTOMER_IDS` | Marketing fail-closed allowlists |
 | `AZOM_ADS_MUTATE_KILL` / `AZOM_GA_MUTATE_KILL` / `AZOM_MP_KILL` | Marketing mutate kills (`GA` reserved until admin mutate exists) |
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
+| `METRICS_SCRAPE_TOKEN` | Required Bearer for `/metrics` (empty = 403) |
 | `WOO_WEBHOOK_SECRET` | Inbound Woo webhook HMAC |
 
 Prod paths (systemd): code `/opt/azom-agent`, data `/var/lib/azom`, logs `/var/log/azom`.  
@@ -277,11 +278,11 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 | V2.3 robustness harden | Shipped (code) |
 | Path B2 return/billing drafts | Shipped (never ★) |
 | Shadow Live Ledger (null-send) | Shipped — soft-soak; not A1; not FU9 wire |
-| Marketing Google (Ads+GA4) | Mock-first rails shipped; live APIs stubbed — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
+| Marketing Google (Ads+GA4) | Mock-first rails shipped; live **reads** (GA4/Ads REST) — mutate/MP still refused — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Oscar A1 live soak | **Ops next — human gate** |
 | FU9 auto-send wire | **Not wired** — see [`CASES.md`](CASES.md) |
 | V3.0.0 production maturity + template profile | Shipped (code) — soak/NO-DK/mutate still human-gated |
-| V3 multi-tenant SaaS / FAQ / Meta ads | Deferred / parked |
+| Multi-tenant SaaS / FAQ / Meta ads | Deferred / parked |
 
 ## Related living docs
 

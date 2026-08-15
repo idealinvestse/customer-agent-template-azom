@@ -89,6 +89,9 @@ def _handle_update(token: str, handler: BotHandler, update: dict) -> None:
 
 
 def main() -> int:
+    from ecom_ops.runtime_env import bootstrap_runtime
+
+    bootstrap_runtime()
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         print("TELEGRAM_BOT_TOKEN missing; dry-run exit.")

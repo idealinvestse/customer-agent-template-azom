@@ -17,6 +17,7 @@ from ecom_ops.bot.recovery import (
 )
 from ecom_ops.bot.reply import BotReply
 from ecom_ops.bot.store import ConversationStore, clamp_messages
+from ecom_ops.security import mask_email
 
 HandlerFn = Callable[["CommandContext"], str | BotReply]
 
@@ -646,7 +647,7 @@ def _format_case_show(case: Any) -> str:
     draft = (case.draft_reply or "")[:400]
     lines = [
         f"Case {case.id[:8]} ({case.status})",
-        f"Från: {case.from_addr}",
+        f"Från: {mask_email(getattr(case, 'from_addr', '') or '')}",
         f"Ämne: {case.subject}",
         f"Kategori: {case.category} · prio: {case.priority or 'normal'}",
     ]

@@ -75,6 +75,9 @@ SECRET_ENV_KEYS = (
     "DASHBOARD_OSCAR_PASSWORD",
     "DASHBOARD_OSCAR_PASSWORD_HASH",
     "DASHBOARD_SECRET_KEY",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "GA4_MEASUREMENT_API_SECRET",
+    "METRICS_SCRAPE_TOKEN",
 )
 
 _ORDER_ID_RE = re.compile(r"^\d{1,12}$")
@@ -128,6 +131,17 @@ def validate_email(email: str) -> str:
     if not _EMAIL_RE.match(e) or len(e) > 254:
         raise SecurityError(f"Invalid email: {email!r}")
     return e
+
+
+def mask_email(addr: str) -> str:
+    """Mask a local-part for chat/audit (j***@domain)."""
+    raw = (addr or "").strip()
+    if "@" not in raw:
+        return raw
+    local, domain = raw.rsplit("@", 1)
+    if not local:
+        return f"***@{domain}"
+    return f"{local[0]}***@{domain}"
 
 
 def sanitize_text(text: str, *, max_len: int = 8000) -> str:

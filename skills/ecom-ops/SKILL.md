@@ -9,7 +9,7 @@ description: >
 version: "3.0.0"
 ---
 
-# ecom-ops (V2 + Path B)
+# ecom-ops (3.0 + Path B)
 
 **Purpose:** Skill card for agent hosts (Moss / OpenClaw-style) describing what this package can do.  
 **Audience:** Coding agents and skill hosts.  
@@ -50,6 +50,7 @@ version: "3.0.0"
 | Messenger webhook | Dashboard `GET\|POST /webhooks/messenger` |
 | Telegram bot | `python -m ecom_ops.bot` or `./bin/dedicated-bot.sh` |
 | Cases timer | `./bin/cases-poll.sh` / `azom-cases-poll.timer` |
+| Pilot toolkit | `python -m ecom_ops soak-preflight` · `cases calibration-report` |
 | Woo webhook | `POST /webhooks/woo` (HMAC) |
 
 ## Messenger / Telegram (OpenClaw hybrid)
@@ -76,7 +77,7 @@ See `docs/WOO_WORDPRESS.md` — shipment trackings, multi-site `domain=`, WordPr
 
 ## Marketing Google
 
-See `docs/MARKETING_GOOGLE.md` — mock-first Ads+GA4; live clients stubbed; HITL mutate + kill-switches.
+See `docs/MARKETING_GOOGLE.md` — mock-first Ads+GA4; live **reads** shipped; HITL mutate + kill-switches (mutate still refused).
 
 ## RBAC
 

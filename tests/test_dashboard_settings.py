@@ -144,7 +144,7 @@ def test_settings_page_and_save(dash_client, config_dir):
     )
     assert resp.status_code == 302
     sites = yaml.safe_load((config_dir / "sites.yaml").read_text(encoding="utf-8"))
-    assert sites["budget_cap_llm"] == 75.0
+    assert sites["budget_cap_llm"] == 90.0
     limits = yaml.safe_load((config_dir / "limits.yaml").read_text(encoding="utf-8"))
     assert limits["openrouter_cap"] == 90.0
 

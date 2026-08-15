@@ -39,7 +39,7 @@
 
 ```bash
 # cwd: repository root
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 python -m pip install -e .
 
 # Linux/macOS
@@ -116,7 +116,7 @@ bash tests/test_spinup.sh
 - Commit `.env`, OAuth tokens, or `secrets.env`.
 - Enable NO/DK mailboxes or `auto_send_enabled` without Oscar authorization.
 - Invent Woo/WP/dashboard capabilities that are not in code.
-- Expand into parked scope (V3, FAQ/KB, Meta ads, default-on auto-send / Ads mutate).
+- Expand into parked scope (multi-tenant SaaS, FAQ/KB, Meta ads, default-on auto-send / Ads mutate).
 
 ## Where to change what
 

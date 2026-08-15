@@ -53,5 +53,5 @@ def register_health_routes(app: Flask) -> None:
         from ecom_ops.ops_status import readiness_from_last_poll
 
         rd = readiness_from_last_poll()
-        ok = bool(rd.get("ready", True))
+        ok = bool(rd.get("ok", False))
         return jsonify({"ok": ok, "readiness": rd}), (200 if ok else 503)

@@ -106,7 +106,7 @@ Primary modules (names may grow; re-run `pytest` for counts):
 - `tests/test_woo_webhooks.py`
 - `tests/test_order_context_v21.py`
 
-CI: Ruff + coverage ≥ 65% overall.
+CI: Ruff + coverage ≥ 70% overall.
 
 ## Related
 

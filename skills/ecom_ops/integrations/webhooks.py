@@ -61,16 +61,28 @@ def verify_webhook_signature(
     """Verify WooCommerce webhook HMAC-SHA256 signature.
 
     Woo computes ``hmac_sha256(raw_body, secret)`` and sends it as
-    ``X-WC-Webhook-Signature`` (hex lowercase).
+    ``X-WC-Webhook-Signature``. WooCommerce typically sends **base64**;
+    this helper also accepts hex (tests / some proxies).
     """
     if not secret or not signature:
         return False
-    expected = hmac.new(
+    digest = hmac.new(
         key=secret.encode("utf-8"),
         msg=raw_body,
         digestmod=hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, signature.strip().lower())
+    ).digest()
+    expected_hex = digest.hex()
+    import base64
+
+    expected_b64 = base64.b64encode(digest).decode("ascii")
+    got = signature.strip()
+    if len(got) == len(expected_hex) and hmac.compare_digest(
+        got.lower(), expected_hex
+    ):
+        return True
+    if len(got) == len(expected_b64) and hmac.compare_digest(got, expected_b64):
+        return True
+    return False
 
 
 def parse_webhook_topic(topic: str) -> tuple[str, str] | None:

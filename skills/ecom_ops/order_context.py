@@ -133,7 +133,11 @@ def format_order_context_block(order: Any) -> str:
         lines.append(f"Spårning: {tracking_link}")
     elif panel.get("order_id"):
         # Convention: Azom order tracking page
-        lines.append(f"Se orderstatus: https://azom.se/order-status/?order_id={panel['order_id']}")
+        from ecom_ops.profile import load_profile
+
+        lines.append(
+            f"Se orderstatus: {load_profile().order_status_url(str(panel['order_id']))}"
+        )
     return "\n".join(lines)
 
 

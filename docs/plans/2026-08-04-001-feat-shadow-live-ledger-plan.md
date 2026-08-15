@@ -1,4 +1,5 @@
 ---
+status: historical-do-not-execute
 title: Shadow Live Ledger - Plan
 date: 2026-08-04
 deepened: 2026-08-04

@@ -104,7 +104,8 @@ class MailService:
             require_permission(
                 actor_obj, required_permission or Permission.MAIL_SEND
             )
-            # Retry transient mail errors (P3.5): 1 retry with 2s backoff
+            # Retry only network-ish errors — never after an uncertain accept
+            # (SMTP timeout after the server may have taken the message).
             status = None
             last_exc = None
             for attempt in range(2):
@@ -121,7 +122,7 @@ class MailService:
                     break
                 except SecurityError:
                     raise  # validation errors are not transient
-                except Exception as exc:
+                except (TimeoutError, ConnectionError, OSError) as exc:
                     last_exc = exc
                     if attempt == 0:
                         import time

@@ -152,11 +152,9 @@ def test_messenger_webhook_skips_duplicate_mid(messenger_client, tmp_path, monke
     assert second.get_json()["skipped"] == 1
 
 
-def test_metrics_requires_localhost_or_token(messenger_client, monkeypatch):
+def test_metrics_requires_token(messenger_client, monkeypatch):
     monkeypatch.delenv("METRICS_SCRAPE_TOKEN", raising=False)
-    # Flask test client uses 127.0.0.1 by default — allowed
-    ok = messenger_client.get("/metrics")
-    assert ok.status_code == 200
+    assert messenger_client.get("/metrics").status_code == 403
     monkeypatch.setenv("METRICS_SCRAPE_TOKEN", "secret-metrics")
     denied = messenger_client.get(
         "/metrics",

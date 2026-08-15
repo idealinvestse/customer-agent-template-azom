@@ -4,4 +4,5 @@ domains:
   - se
   - dk
   - fi
-budget_cap_llm: 80
+# Display alias of limits.yaml openrouter_cap (LLM spend uses one cap).
+budget_cap_llm: 100

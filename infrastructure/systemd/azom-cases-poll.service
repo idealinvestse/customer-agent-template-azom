@@ -14,3 +14,8 @@ Environment=AZOM_DATA_DIR=/var/lib/azom
 Environment=AZOM_USE_MOCK=0
 ExecStart=/opt/azom-agent/bin/cases-poll.sh
 Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/azom /var/log/azom /opt/azom-agent/.azom-data

@@ -72,6 +72,11 @@ def run_poll(
             ticket_id=ticket.id,
         )
 
+    try:
+        svc.store.release_stale_send_claims()
+    except Exception:
+        pass
+
     created = 0
     skipped = 0
     errors = 0
@@ -112,9 +117,19 @@ def run_poll(
             continue
 
         for msg in messages:
-            result = ingest_message(
-                svc, mb, msg, actor=actor_obj, client=client, use_mock=use_mock
-            )
+            try:
+                result = ingest_message(
+                    svc, mb, msg, actor=actor_obj, client=client, use_mock=use_mock
+                )
+            except Exception as exc:
+                errors += 1
+                err_text = str(exc)[:200]
+                error_details.append({"mailbox_id": mb.id, "error": err_text})
+                _log.warning(
+                    "cases_ingest_error",
+                    extra={"mailbox_id": mb.id, "error": err_text},
+                )
+                continue
             if result is None:
                 skipped += 1
                 mb_skipped += 1

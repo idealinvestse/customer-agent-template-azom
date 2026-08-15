@@ -26,7 +26,7 @@ python -m ecom_ops [--site SITE] [--actor ACTOR] [--mock] [--null-send] <command
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--site` | `azom` | Customer / site id |
-| `--actor` | `agent` | RBAC actor: `jonatan` \| `oscar` \| `agent` |
+| `--actor` | profile `operator` (Azom: `agent`) | Must exist in `config/rbac.yaml`. Azom: `jonatan` \| `oscar` \| `agent` |
 | `--mock` | off | Sets `AZOM_USE_MOCK=1` for this process (no external network) |
 | `--null-send` | off | Null-send profile (refuse customer mail; shadow FU9) |
 | `--version` | — | Print version and exit (argparse version action) |

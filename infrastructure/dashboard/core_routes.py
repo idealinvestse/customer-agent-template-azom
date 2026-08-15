@@ -19,17 +19,22 @@ from support import (
 def register_core_routes(app: Flask) -> None:
     @app.route("/metrics")
     def prometheus_metrics():
+        import hmac
         import os
         import sqlite3
 
         from flask import abort
 
         token = (os.environ.get("METRICS_SCRAPE_TOKEN") or "").strip()
-        remote = (request.remote_addr or "").strip()
-        localhost = remote in {"127.0.0.1", "::1", "localhost"}
         auth = (request.headers.get("Authorization") or "").strip()
-        bearer_ok = bool(token) and auth == f"Bearer {token}"
-        if not localhost and not bearer_ok:
+        provided = ""
+        if auth.lower().startswith("bearer "):
+            provided = auth[7:].strip()
+        if (
+            not token
+            or len(provided) != len(token)
+            or not hmac.compare_digest(provided, token)
+        ):
             abort(403)
 
         from ecom_ops.budget import budget_status

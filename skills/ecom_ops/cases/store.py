@@ -159,6 +159,7 @@ class CaseStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
             conn.commit()
@@ -488,7 +489,13 @@ class CaseStore:
         if suggest_approve is not None:
             sql += " AND suggest_approve = ?"
             params.append(1 if suggest_approve else 0)
-        sql += " ORDER BY created_at DESC LIMIT ?"
+        sql += (
+            " ORDER BY"
+            " CASE WHEN status = 'escalated' THEN 0 ELSE 1 END,"
+            " CASE WHEN priority = 'high' THEN 0 ELSE 1 END,"
+            " CASE WHEN COALESCE(suggest_approve, 0) = 1 THEN 0 ELSE 1 END,"
+            " created_at DESC LIMIT ?"
+        )
         params.append(limit)
         with self._conn() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -580,6 +587,29 @@ class CaseStore:
             suggest_approve=bool(suggest_approve),
         )
         msg_id = str(uuid.uuid4())
+        try:
+            return self._insert_case(case, msg_id, from_addr, to_addr, subject, body,
+                                    message_id, in_reply_to, references_header, now)
+        except sqlite3.IntegrityError:
+            if message_id:
+                existing = self.find_by_message_id(message_id)
+                if existing:
+                    return existing
+            raise
+
+    def _insert_case(
+        self,
+        case: Case,
+        msg_id: str,
+        from_addr: str,
+        to_addr: str,
+        subject: str,
+        body: str,
+        message_id: str | None,
+        in_reply_to: str | None,
+        references_header: str | None,
+        now: str,
+    ) -> Case:
         with self._conn() as conn:
             conn.execute(
                 """
@@ -845,7 +875,7 @@ class CaseStore:
             cur = conn.execute(
                 """
                 UPDATE cases SET status = 'replied', updated_at = ?
-                WHERE id = ? AND status IN ('sending', 'open', 'escalated')
+                WHERE id = ? AND status = 'sending'
                 """,
                 (now, case_id),
             )
@@ -872,10 +902,89 @@ class CaseStore:
         return self.get(case_id)
 
     def close(self, case_id: str) -> Case | None:
+        """Close only open/escalated cases. Refuses sending/replied."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE cases SET status = 'closed', updated_at = ?
+                WHERE id = ? AND status IN ('open', 'escalated')
+                """,
+                (_now(), case_id),
+            )
+            if cur.rowcount != 1:
+                return None
+        return self.get(case_id)
+
+    def release_stale_send_claims(self, *, max_age_seconds: int = 600) -> int:
+        """Revert ``sending`` claims older than ``max_age_seconds`` back to open."""
+        cutoff = datetime.now(UTC).timestamp() - max(60, int(max_age_seconds))
+        released = 0
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT id, updated_at FROM cases WHERE status = 'sending'"
+            ).fetchall()
+            now = _now()
+            for row in rows:
+                raw = str(row["updated_at"] or "")
+                try:
+                    ts = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=UTC)
+                    if ts.timestamp() >= cutoff:
+                        continue
+                except ValueError:
+                    continue
+                cur = conn.execute(
+                    """
+                    UPDATE cases SET status = 'open', updated_at = ?
+                    WHERE id = ? AND status = 'sending'
+                    """,
+                    (now, row["id"]),
+                )
+                released += int(cur.rowcount)
+        return released
+
+    def patch_after_regen(
+        self,
+        case_id: str,
+        *,
+        draft: str,
+        draft_before_regen: str,
+        category: str,
+        order_id: str | None,
+        classify_confidence: float | None,
+        classify_method: str | None,
+        suggest_approve: bool,
+    ) -> Case | None:
+        """Update draft + AI fields without inserting phantom messages."""
+        now = _now()
         with self._conn() as conn:
             conn.execute(
-                "UPDATE cases SET status = 'closed', updated_at = ? WHERE id = ?",
-                (_now(), case_id),
+                """
+                UPDATE cases SET
+                    draft_reply = ?,
+                    draft_before_regen = ?,
+                    draft_regenerated_at = ?,
+                    category = ?,
+                    order_id = COALESCE(?, order_id),
+                    classify_confidence = ?,
+                    classify_method = ?,
+                    suggest_approve = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    draft,
+                    draft_before_regen,
+                    now,
+                    category,
+                    order_id,
+                    classify_confidence,
+                    classify_method,
+                    1 if suggest_approve else 0,
+                    now,
+                    case_id,
+                ),
             )
         return self.get(case_id)
 

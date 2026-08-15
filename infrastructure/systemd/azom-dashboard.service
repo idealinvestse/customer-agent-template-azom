@@ -15,6 +15,7 @@ Environment=AZOM_DATA_DIR=/var/lib/azom
 Environment=DASHBOARD_HOST=127.0.0.1
 Environment=DASHBOARD_PORT=8080
 Environment=AZOM_USE_MOCK=0
+# waitress production server (falls back to Flask if waitress missing)
 ExecStart=/opt/azom-agent/.venv/bin/python infrastructure/dashboard/app.py
 Restart=on-failure
 RestartSec=5

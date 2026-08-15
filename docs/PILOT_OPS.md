@@ -70,7 +70,7 @@ Mock-lösen `jonatan`/`oscar` gäller **bara** när `AZOM_USE_MOCK=1`.
 | `azom-retention-purge.timer` | GDPR retention |
 
 Sökvägar: kod `/opt/azom-agent`, data `/var/lib/azom`, loggar `/var/log/azom`, env `/opt/azom-agent/.env`.  
-Basic Auth-användarnamn är alltid `jonatan` / `oscar` (lösen via env) — se [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
+Basic Auth-användarnamn kommer från `config/profile.yaml` (Azom-default `jonatan` / `oscar`; lösen via env) — se [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md). `/metrics` kräver `METRICS_SCRAPE_TOKEN` (nginx nekar `/metrics` mot internet).
 
 ## Daglig hälsokoll
 

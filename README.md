@@ -22,7 +22,7 @@ Dokumentationsstil: [`docs/DOC_STYLE.md`](docs/DOC_STYLE.md) · Index: [`docs/RE
 | **support** | Klassificera ärende + draft-svar (LLM + mall-fallback) | Abuse/legal/critical → Oscar |
 | **cases** | Mail → ärende, trådning, order-berikad draft, suggest-approve | Skicka kräver human approve |
 | **Shadow Live Ledger** | Null-send profil + FU9 skuggspår (`cases shadow-report`) | Default av; Oscar ADMIN för rapport |
-| **marketing** | Google Ads + GA4 digest / suggest / HITL mutate | Mock-first; live API stubbade |
+| **marketing** | Google Ads + GA4 digest / suggest / HITL mutate | Mock-first; live **reads** shipped; mutate/MP refused |
 | **SSH** | Allowlistad health/ops | Osäker/kodredigering → Oscar |
 | **mail** | Gmail / Outlook / Exchange Graph / IMAP / POP3 / SMTP | Auth-fel → Oscar |
 | **dashboard** | Onboarding, settings, cases-triage, marketing, Oscar admin | Secrets only Oscar |
@@ -124,7 +124,7 @@ python -m ecom_ops smoke --live                     # opt-in; se docs
 
 ```bash
 pytest
-# CI: ruff + coverage ≥ 65%
+# CI: ruff + coverage ≥ 70%
 bash tests/test_spinup.sh
 ```
 
@@ -144,6 +144,7 @@ Full table + coverage matrix: [`docs/README.md`](docs/README.md)
 | [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md) | Messenger (SV) |
 | [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md) | Telegram (SV) |
 | [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) | Woo/WP (EN) |
+| [`docs/TEMPLATE_GUIDE.md`](docs/TEMPLATE_GUIDE.md) | Fork / instantiate checklist (EN) |
 | [`docs/runbooks/`](docs/runbooks/) | Incident-runbooks (SV) |
 | [`SOUL.md`](SOUL.md) | Agent personality & hard constraints |
 | [`AGENTS.md`](AGENTS.md) | Agent operating notes (EN) |
@@ -154,4 +155,4 @@ Full table + coverage matrix: [`docs/README.md`](docs/README.md)
 1. **V1–V2.3 code** — shipped on `main` (see [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md))  
 2. **Ops next** — Oscar A1 live soak + baseline (human)  
 3. **FU9 auto-send** — rails only until Oscar written enable  
-4. **V3** — SaaS multi-tenant (deferred)
+4. **Multi-tenant SaaS** — deferred (package is already 3.0.0)

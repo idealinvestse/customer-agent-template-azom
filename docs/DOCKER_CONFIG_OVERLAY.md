@@ -28,11 +28,11 @@ Azom skiljer **read-only config** (YAML i image/host-mount) från **skrivbar run
 
 ## Overlay-prioritet
 
-1. Process environment / `.env`
-2. `AZOM_DATA_DIR/runtime.env` (mock-toggle, `MAIL_PROVIDER`, …)
-3. `AZOM_DATA_DIR/secrets.env` (Oscar UI-secrets; chmod 600)
+1. Process environment / `.env` / systemd (wins for posture keys)
+2. `AZOM_DATA_DIR/runtime.env` + `secrets.env` — allowlisted integration secrets only
 
-Laddas via `settings_store.apply_env_overlays()`.
+Laddas via `ecom_ops.runtime_env.bootstrap_runtime()` (CLI, poll, bot, dashboard).  
+**Aldrig** från overlay: `AZOM_USE_MOCK`, allowlists, actor maps, kill-switches, `DASHBOARD_SECRET_KEY`.
 
 ## Settings UI vs Docker
 

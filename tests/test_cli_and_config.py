@@ -13,6 +13,7 @@ def test_load_app_config():
     assert cfg.rbac.roles["oscar"] == "full_admin"
     assert cfg.rbac.escalation_critical == "oscar"
     assert cfg.limits.openrouter_cap == 100
+    assert cfg.customer.budget_cap_llm == 100
 
 
 def test_cli_order_status(capsys):

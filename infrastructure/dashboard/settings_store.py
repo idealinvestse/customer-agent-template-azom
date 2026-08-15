@@ -110,20 +110,10 @@ def _data_dir() -> Path:
 
 
 def apply_env_overlays() -> None:
-    """Load runtime.env + secrets.env into os.environ (secrets win)."""
-    for name in ("runtime.env", "secrets.env"):
-        path = _data_dir() / name
-        if not path.is_file():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            key = key.strip()
-            val = val.strip().strip('"').strip("'")
-            if key:
-                os.environ[key] = val
+    """Load allowlisted overlay keys. Delegates to ecom_ops.runtime_env."""
+    from ecom_ops.runtime_env import apply_overlays
+
+    apply_overlays(data_dir=_data_dir())
 
 
 def _load_yaml(name: str) -> dict[str, Any]:
@@ -184,12 +174,15 @@ def load_settings_view() -> dict[str, Any]:
         domains_str = ", ".join(str(d) for d in domains)
     else:
         domains_str = str(domains)
-    mock = os.environ.get("AZOM_USE_MOCK", "1").lower() in {"1", "true", "yes"}
+    from ecom_ops.runtime_env import env_flag
+
+    mock = env_flag("AZOM_USE_MOCK", default=True)
+    cap = float(limits.get("openrouter_cap", 100))
     return {
         "customer": str(sites.get("customer", "azom")),
         "domains": domains_str,
-        "budget_cap_llm": float(sites.get("budget_cap_llm", 80)),
-        "openrouter_cap": float(limits.get("openrouter_cap", 100)),
+        "budget_cap_llm": cap,
+        "openrouter_cap": cap,
         "jonatan_role": str(limits.get("jonatan_role", "read_only")),
         "mail_provider": os.environ.get("MAIL_PROVIDER")
         or str(email.get("default_provider", "generic_imap")),
@@ -242,11 +235,11 @@ def save_settings(form: dict[str, Any]) -> dict[str, Any]:
         # Quote "no" for YAML boolean safety
         sites["domains"] = domains
 
-    if "budget_cap_llm" in form:
-        sites["budget_cap_llm"] = float(form["budget_cap_llm"])
-
-    if "openrouter_cap" in form:
-        limits["openrouter_cap"] = float(form["openrouter_cap"])
+    cap_raw = form.get("openrouter_cap", form.get("budget_cap_llm"))
+    if cap_raw is not None:
+        cap = float(cap_raw)
+        limits["openrouter_cap"] = cap
+        sites["budget_cap_llm"] = cap
 
     if "mail_provider" in form:
         prov = str(form["mail_provider"]).strip().lower()
@@ -279,13 +272,12 @@ def save_settings(form: dict[str, Any]) -> dict[str, Any]:
             integrations[flag] = _as_bool(form[flag])
 
     if "mock_mode" in form:
-        mock_val = "1" if _as_bool(form["mock_mode"]) else "0"
-        _write_env_file(
-            _data_dir() / "runtime.env",
-            {"AZOM_USE_MOCK": mock_val},
-            allow_keys=frozenset({"MAIL_PROVIDER", "AZOM_USE_MOCK"}),
-        )
-        os.environ["AZOM_USE_MOCK"] = mock_val
+        from ecom_ops.runtime_env import env_flag
+
+        # Live process: never flip mock (webhook fail-closed). Overlay never
+        # stores AZOM_USE_MOCK — process/systemd env is the only source.
+        if env_flag("AZOM_USE_MOCK", default=True):
+            os.environ["AZOM_USE_MOCK"] = "1" if _as_bool(form["mock_mode"]) else "0"
 
     _save_yaml("sites.yaml", sites)
     _save_yaml("limits.yaml", limits)

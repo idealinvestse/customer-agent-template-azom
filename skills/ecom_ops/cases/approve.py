@@ -119,6 +119,22 @@ def approve_and_send(
             ),
         )
         if not updated:
+            # Mail already left — do not release claim (would allow a second send).
+            # Retry mark_replied once; leave sending for the stale-claim sweeper
+            # only if still not persisted.
+            updated = svc.store.mark_replied(
+                case_id,
+                outbound_body=body,
+                to_addr=case.from_addr,
+                from_addr="",
+                subject=subject,
+                message_id=(
+                    (send.provider_status or {}).get("message_id")
+                    if isinstance(send.provider_status, dict)
+                    else None
+                ),
+            )
+        if not updated:
             return CaseActionResult(
                 ok=False,
                 message="Mail sent but case could not be marked replied",
@@ -140,6 +156,7 @@ def approve_and_send(
             },
         )
         from ecom_ops.audit import log_action
+        from ecom_ops.security import mask_email
 
         log_action(
             actor=actor_obj.name,
@@ -147,7 +164,7 @@ def approve_and_send(
             target="case",
             target_id=case_id,
             details={
-                "to": case.from_addr,
+                "to": mask_email(case.from_addr),
                 "category": case.category,
                 "suggest_approve": bool(getattr(case, "suggest_approve", False)),
             },

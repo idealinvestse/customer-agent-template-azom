@@ -28,8 +28,9 @@ def init_auth(app: Flask) -> None:
 
 
 def _is_mock() -> bool:
-    apply_env_overlays()
-    return os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    from ecom_ops.runtime_env import env_flag
+
+    return env_flag("AZOM_USE_MOCK", default=False)
 
 
 def configure_secret_key(app: Flask | None = None) -> None:

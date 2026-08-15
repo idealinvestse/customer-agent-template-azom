@@ -63,9 +63,9 @@ python -m ecom_ops --mock marketing suggests list
 
 | Phase | Capability | Live API |
 |-------|------------|----------|
-| P0 | Mock transports, probes, OAuth (Oscar-only start), status | OAuth exchange live; reports mock/stub |
-| P1 | Digest, conversion/event health, waste report, pacing alerts | Mock fixtures; Live* transport stub |
-| P2 | Woo↔GA↔Ads consistency (date-window Woo), landing/shopping read, MER | Woo live when not mock; GA/Ads stub |
+| P0 | Mock transports, probes, OAuth (Oscar-only start), status | OAuth exchange live; reports mock unless allowlists + live mode |
+| P1 | Digest, conversion/event health, waste report, pacing alerts | Live GA4 `runReport` + Ads GAQL via REST when not mock |
+| P2 | Woo↔GA↔Ads consistency (date-window Woo), landing/shopping read, MER | Woo + GA/Ads live reads when not mock |
 | P3 | Suggest queue (approve/deny, deduped rebuild) | N/A |
 | P4 | HITL Ads mutate + kill-switch + result gating | Mock mutate only until Live wired |
 | P5 | HITL Measurement Protocol + Merchant write | Mock only until Live wired |

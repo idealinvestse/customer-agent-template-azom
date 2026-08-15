@@ -91,10 +91,12 @@ def load_app_config() -> AppConfig:
     except FileNotFoundError:
         customer_meta = {}
 
+    openrouter_cap = float(limits_raw.get("openrouter_cap", 100))
     customer = SiteConfig(
         customer=validate_site(str(sites.get("customer", "azom"))),
         domains=[str(d) for d in sites.get("domains", [])],
-        budget_cap_llm=float(sites.get("budget_cap_llm", 80)),
+        # Alias of limits.openrouter_cap — LLM spend uses one cap.
+        budget_cap_llm=openrouter_cap,
     )
     escalation = rbac_raw.get("escalation") or {}
     rbac = RbacConfig(
@@ -106,7 +108,7 @@ def load_app_config() -> AppConfig:
     if warn_ratio <= 0 or warn_ratio > 1:
         warn_ratio = 0.8
     limits = LimitsConfig(
-        openrouter_cap=float(limits_raw.get("openrouter_cap", 100)),
+        openrouter_cap=openrouter_cap,
         jonatan_role=str(limits_raw.get("jonatan_role", "read_only")),
         openrouter_warn_ratio=warn_ratio,
     )

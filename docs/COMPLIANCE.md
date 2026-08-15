@@ -4,19 +4,20 @@
 **Audience:** Oscar (ansvarig). Coding agents ska inte “stänga” DPIA.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`PILOT_OPS.md`](PILOT_OPS.md), [`CASES.md`](CASES.md).
 
-**Senast uppdaterad:** 2026-08-01 · **Ansvarig:** Oscar (full_admin)  
+**Senast uppdaterad:** 2026-08-15 · **Ansvarig:** Oscar (full_admin)  
 **Obs:** Full DPIA vid pilotstart är fortfarande ett mänskligt ägarskap — markera inte som klar i kod-PRs.
 
 ## Behandlingsregister (Art 30)
 
 | Behandling | Syfte | Rättslig grund | Lagringstid | Plats |
 |------------|-------|----------------|-------------|-------|
-| Kundmail (inbound) | Support-ärendehantering | Legitimt intresse (Art 6(1)(f)) | 90 dagar efter close | `/var/lib/azom/cases.db` (Hetzner EU) |
-| Kundmail-utkast (LLM) | Draft-generering | Legitimt intresse | 90 dagar efter close | Som ovan |
+| Kundmail (inbound) | Support-ärendehantering | Legitimt intresse (Art 6(1)(f)) | 90 dagar efter close **eller** replied | `/var/lib/azom/cases.db` (Hetzner EU) |
+| Kundmail-utkast (LLM) | Draft-generering | Legitimt intresse | 90 dagar efter close **eller** replied | Som ovan |
 | Order-data (Woo API) | Order-sanning i svar | Legitimt intresse | Ephemeral (ej lagrat) | Woo-host (kundens infra) |
 | Telemetry (användning) | Budget/KPI-mätning | Legitimt intresse | 90 dagar raw, 12 mån aggr | `/var/lib/azom/telemetry.jsonl` |
 | Audit-log | Spårbarhet | Legitimt intresse | 12 mån | `/var/lib/azom/audit.jsonl` |
 | OAuth-tokens (Gmail) | Mail-anslutning | Samtycke (användare) | Tills revoke | `/var/lib/azom/oauth/gmail.json` |
+| OAuth-tokens (Google marketing) | Ads/GA4-läsningar | Samtycke (Oscar) | Tills revoke | `/var/lib/azom/oauth/google_marketing.json` |
 
 ## Dataresidency & tredjepartsöverföring (P8.4)
 

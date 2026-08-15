@@ -16,6 +16,8 @@ if str(_ROOT / "skills") not in sys.path:
 if str(_DASH_DIR) not in sys.path:
     sys.path.insert(0, str(_DASH_DIR))
 
+from werkzeug.middleware.proxy_fix import ProxyFix  # noqa: E402
+
 from auth import (  # noqa: E402, F401
     _authenticate,
     _configure_secret_key,
@@ -57,8 +59,16 @@ def _case_age(iso: str | None) -> str:
 
 
 def create_app() -> Flask:
+    apply_env_overlays()
     application = Flask(__name__)
+    application.wsgi_app = ProxyFix(application.wsgi_app, x_for=1, x_proto=1)
     application.jinja_env.globals["case_age"] = _case_age
+    live = os.environ.get("AZOM_USE_MOCK", "1").lower() not in {"1", "true", "yes", "on"}
+    application.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=live,
+    )
     init_auth(application)
     register_health_routes(application)
     register_webhook_routes(application)
@@ -67,10 +77,6 @@ def create_app() -> Flask:
     register_oscar_routes(application)
     register_marketing_routes(application)
     register_oauth_routes(application)
-
-    @application.before_request
-    def _load_overlays():
-        apply_env_overlays()
 
     @application.context_processor
     def _inject_csrf() -> dict[str, str]:
@@ -122,4 +128,10 @@ app = create_app()
 if __name__ == "__main__":
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
     port = int(os.environ.get("DASHBOARD_PORT", "8080"))
-    app.run(host=host, port=port, debug=False)
+    threads = int(os.environ.get("DASHBOARD_THREADS", "4"))
+    try:
+        from waitress import serve
+
+        serve(app, host=host, port=port, threads=max(2, threads))
+    except ImportError:
+        app.run(host=host, port=port, debug=False)

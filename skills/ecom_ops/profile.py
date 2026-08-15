@@ -23,9 +23,16 @@ class CustomerProfile:
     viewer_actor: str = DEFAULT_VIEWER
     admin_actor: str = DEFAULT_ADMIN
     operator_actor: str = "agent"
+    order_status_url_template: str = "https://azom.se/order-status/?order_id={order_id}"
 
     def actor_usernames(self) -> tuple[str, str]:
         return (self.viewer_actor, self.admin_actor)
+
+    def order_status_url(self, order_id: str) -> str:
+        tmpl = self.order_status_url_template or (
+            "https://azom.se/order-status/?order_id={order_id}"
+        )
+        return tmpl.format(order_id=order_id)
 
 
 def _default_profile() -> CustomerProfile:
@@ -53,6 +60,10 @@ def load_profile(path: Path | None = None) -> CustomerProfile:
         viewer_actor=str(actors.get("viewer") or DEFAULT_VIEWER),
         admin_actor=str(actors.get("admin") or DEFAULT_ADMIN),
         operator_actor=str(actors.get("operator") or "agent"),
+        order_status_url_template=str(
+            raw.get("order_status_url_template")
+            or "https://azom.se/order-status/?order_id={order_id}"
+        ),
     )
 
 

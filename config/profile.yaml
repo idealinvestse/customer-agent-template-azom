@@ -8,3 +8,5 @@ actors:
   viewer: jonatan
   admin: oscar
   operator: agent
+# Used in customer drafts when Woo has no tracking_link.
+order_status_url_template: "https://azom.se/order-status/?order_id={order_id}"

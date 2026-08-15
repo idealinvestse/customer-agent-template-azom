@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
-
 from flask import Flask, g, jsonify, redirect, render_template, request, url_for
 
 from auth import _oscar_required
@@ -136,42 +134,23 @@ def register_oscar_routes(app: Flask) -> None:
         email = (request.form.get("email") or "").strip()
         if not email:
             return jsonify({"ok": False, "message": "email required"}), 400
-        from ecom_ops.security import validate_email
-
-        try:
-            validate_email(email)
-        except Exception as exc:
-            return jsonify({"ok": False, "message": str(exc)}), 400
         from ecom_ops.audit import log_action
+        from ecom_ops.cases.retention import gdpr_delete
 
-        db_path = _data_dir() / "cases.db"
-        if not db_path.is_file():
-            return jsonify({"ok": False, "message": "cases.db not found"}), 404
-        conn = sqlite3.connect(str(db_path))
-        try:
-            rows = conn.execute(
-                "SELECT id FROM cases WHERE from_addr = ?", (email,)
-            ).fetchall()
-            case_ids = [r[0] for r in rows]
-            if not case_ids:
-                return jsonify({"ok": True, "deleted": 0, "message": "No cases found for this email"})
-            placeholders = ",".join("?" * len(case_ids))
-            conn.execute(f"DELETE FROM case_messages WHERE case_id IN ({placeholders})", case_ids)
-            conn.execute(f"DELETE FROM cases WHERE id IN ({placeholders})", case_ids)
-            conn.commit()
-            log_action(
-                actor=g.actor["name"],
-                action="gdpr_delete",
-                target="cases",
-                target_id=email,
-                details={"deleted_count": len(case_ids)},
-            )
-            return jsonify({"ok": True, "deleted": len(case_ids), "message": f"Deleted {len(case_ids)} cases for {email}"})
-        except Exception as exc:
-            conn.rollback()
-            return jsonify({"ok": False, "message": str(exc)[:200]}), 500
-        finally:
-            conn.close()
+        result = gdpr_delete(email=email, db_path=_data_dir() / "cases.db")
+        if not result.get("ok"):
+            status = 400 if "Invalid email" in str(result.get("message") or "") else 404
+            if "not found" in str(result.get("message") or ""):
+                status = 404
+            return jsonify(result), status
+        log_action(
+            actor=g.actor["name"],
+            action="gdpr_delete",
+            target="cases",
+            target_id=email,
+            details={"deleted_count": result.get("deleted", 0)},
+        )
+        return jsonify(result)
 
     @app.route("/oscar/gdpr/export", methods=["GET"])
     @_oscar_required
@@ -179,31 +158,18 @@ def register_oscar_routes(app: Flask) -> None:
         email = (request.args.get("email") or "").strip()
         if not email:
             return jsonify({"ok": False, "message": "email required"}), 400
-        db_path = _data_dir() / "cases.db"
-        if not db_path.is_file():
-            return jsonify({"ok": False, "message": "cases.db not found"}), 404
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        try:
-            cases = [dict(r) for r in conn.execute(
-                "SELECT * FROM cases WHERE from_addr = ?", (email,)
-            ).fetchall()]
-            if not cases:
-                return jsonify({"ok": True, "email": email, "cases": [], "messages": [], "message": "No data found"})
-            case_ids = [c["id"] for c in cases]
-            placeholders = ",".join("?" * len(case_ids))
-            messages = [dict(r) for r in conn.execute(
-                f"SELECT * FROM case_messages WHERE case_id IN ({placeholders})", case_ids
-            ).fetchall()]
-            from ecom_ops.audit import log_action
+        from ecom_ops.audit import log_action
+        from ecom_ops.cases.retention import gdpr_export
 
-            log_action(
-                actor=g.actor["name"],
-                action="gdpr_export",
-                target="cases",
-                target_id=email,
-                details={"case_count": len(cases)},
-            )
-            return jsonify({"ok": True, "email": email, "cases": cases, "messages": messages})
-        finally:
-            conn.close()
+        result = gdpr_export(email=email, db_path=_data_dir() / "cases.db")
+        if not result.get("ok"):
+            status = 400 if "Invalid email" in str(result.get("message") or "") else 404
+            return jsonify(result), status
+        log_action(
+            actor=g.actor["name"],
+            action="gdpr_export",
+            target="cases",
+            target_id=email,
+            details={"case_count": len(result.get("cases") or [])},
+        )
+        return jsonify(result)

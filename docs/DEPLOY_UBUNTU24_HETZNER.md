@@ -76,10 +76,15 @@ server {
   listen 443 ssl;
   server_name agent.azom.se;
   # ssl_certificate ...;
+  location /metrics {
+    deny all;
+  }
   location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
   }
   # Meta Messenger webhook (same dashboard process)
   location /webhooks/messenger {
