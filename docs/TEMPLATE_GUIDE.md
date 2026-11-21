@@ -43,7 +43,7 @@ This repository ships as the **Azom** pilot (package 3.0.0). Fork it, then walk 
 |----------|---------|----------|
 | Order-status link in drafts | `order_status_url_template` in profile | Set the template |
 | Woo base URL | `WOO_BASE_URL` / `WOO_BASE_URL_<DOMAIN>` | Env; else `https://azom.{domain}` |
-| LLM Referer | `https://azom.se` in `llm.py` | Acceptable for OpenRouter; change if you care |
+| LLM Referer | `https://azom.se` in `skills/ecom_ops/model_router/openrouter.py` | OpenRouter fallback only |
 | Install default remote | `idealinvestse/customer-agent-template-azom` | Pass your fork to install scripts |
 
 ## Verify

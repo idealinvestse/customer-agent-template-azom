@@ -1,0 +1,137 @@
+"""Direct xAI API route using an operator-managed API key.
+
+This route does not use OAuth. Direct app-owned xAI refresh is not implemented.
+See ``docs/MODEL_ROUTER.md``.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import requests
+
+from ecom_ops.model_router.base import ModelRequest, ModelResult
+from ecom_ops.model_router.errors import (
+    ModelAuthError,
+    ModelConfigError,
+    ModelRateLimitError,
+    ModelUnavailableError,
+)
+from ecom_ops.telemetry import Telemetry, default_telemetry
+
+XAI_CHAT_URL = "https://api.x.ai/v1/chat/completions"
+DEFAULT_XAI_MODEL = "grok-4"
+
+
+class XaiApiKeyRoute:
+    provider = "xai"
+    route_id = "xai_api_key"
+
+    def _model(self) -> str:
+        return (os.environ.get("XAI_MODEL") or DEFAULT_XAI_MODEL).strip()
+
+    def is_configured(self) -> bool:
+        return bool((os.environ.get("XAI_API_KEY") or "").strip())
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "route_id": self.route_id,
+            "configured": self.is_configured(),
+            "connected": self.is_configured(),
+            "refresh_owner": "operator",
+            "app_owned_refresh": False,
+            "model": self._model(),
+            "cost_kind": "unmetered",
+        }
+
+    def complete(
+        self,
+        request: ModelRequest,
+        *,
+        telemetry: Telemetry | None = None,
+    ) -> ModelResult:
+        tel = telemetry or default_telemetry
+        api_key = (os.environ.get("XAI_API_KEY") or "").strip()
+        if not api_key:
+            raise ModelConfigError("XAI_API_KEY is not configured")
+
+        model = request.model or self._model()
+        payload = {
+            "model": model,
+            "messages": request.messages,
+            "max_tokens": request.max_output_tokens,
+            "temperature": request.temperature,
+            "stream": False,
+        }
+        try:
+            response = requests.post(
+                XAI_CHAT_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=request.timeout,
+            )
+        except requests.RequestException as exc:
+            raise ModelUnavailableError("xAI API endpoint unreachable") from exc
+
+        if response.status_code == 401:
+            raise ModelAuthError("xAI API key was rejected")
+        if response.status_code == 429:
+            raise ModelRateLimitError("xAI API rate limit reached")
+        if response.status_code >= 400:
+            raise ModelUnavailableError(f"xAI API request rejected ({response.status_code})")
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ModelUnavailableError("xAI API response was not JSON") from exc
+        if not isinstance(data, dict):
+            raise ModelUnavailableError("xAI API response was invalid")
+
+        choices = data.get("choices") or []
+        if not choices:
+            raise ModelUnavailableError("xAI API response missing choices")
+        content = str((choices[0].get("message") or {}).get("content") or "").strip()
+        if not content:
+            raise ModelUnavailableError("xAI API returned no content")
+
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+        tel.record(
+            action="model_xai_api",
+            site=request.site,
+            units=total_tokens or 1,
+            unit_type="tokens" if usage else "api_calls",
+            cost_usd=0.0,
+            case_id=request.case_id,
+            actor=request.actor,
+            meta={
+                "provider": self.provider,
+                "route_id": self.route_id,
+                "model": model,
+                "usage_known": bool(usage),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "cost_kind": "unmetered",
+                "refresh_owner": "operator",
+            },
+        )
+        return ModelResult(
+            content=content,
+            provider=self.provider,
+            route_id=self.route_id,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost_usd=0.0,
+            usage_known=bool(usage),
+            raw_usage=dict(usage) if usage else None,
+        )

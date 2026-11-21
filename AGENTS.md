@@ -17,6 +17,7 @@
    - Mail: [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md)
    - Woo/WP: [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
    - Marketing Google (Ads+GA4): [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md)
+   - Model router: [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md)
    - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
    - Telegram: [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)
 5. Skill card: [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md)
@@ -89,6 +90,7 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 - **V2.2:** live `probe_mail`, mail env matrix, bulk close
 - **V2.3:** robustness (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak**
 - **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live **reads** shipped (GA4 runReport + Ads GAQL); mutate/MP still refused
+- **Model router:** ChatGPT OAuth (Azom-owned refresh) + opt-in xAI Grok Build + xAI API key + OpenRouter fallback — [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md). Direct xAI OAuth is not implemented. Live SIWC connect is Oscar-owned.
 
 ## Cases quick CLI
 

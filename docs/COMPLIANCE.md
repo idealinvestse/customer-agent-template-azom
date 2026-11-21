@@ -18,6 +18,9 @@
 | Audit-log | Spårbarhet | Legitimt intresse | 12 mån | `/var/lib/azom/audit.jsonl` |
 | OAuth-tokens (Gmail) | Mail-anslutning | Samtycke (användare) | Tills revoke | `/var/lib/azom/oauth/gmail.json` |
 | OAuth-tokens (Google marketing) | Ads/GA4-läsningar | Samtycke (Oscar) | Tills revoke | `/var/lib/azom/oauth/google_marketing.json` |
+| OAuth-tokens (ChatGPT) | Modellutkast via användarens ChatGPT-plan | Samtycke (Oscar som kontoägare) | Tills disconnect | `/var/lib/azom/model_oauth/` (0600, **undantagen vanlig backup**) |
+| xAI API-nyckel | Modellfallback | Berättigat intresse | I `.env`, inte i SQLite | Processmiljö |
+| OpenRouter API-nyckel | Modellfallback | Berättigat intresse | I `.env`, inte i SQLite | Processmiljö |
 
 ## Dataresidency & tredjepartsöverföring (P8.4)
 
@@ -29,6 +32,17 @@
 - **Risk:** Schrems II — överföring till US kräver SCC (Standard Contractual Clauses)
 - **Rekommendation:** Teckna DPA med OpenRouter; överväg EU-resident model-provider (t.ex. Mistral EU) för framtida pilot
 - **Mitigering:** Kundmeddelande trunkeras till 4000 tecken; inga personuppgifter i system-prompt; telemetry redacts secrets
+
+### OpenAI ChatGPT (Sign in with ChatGPT)
+- **Mottagare:** OpenAI (US)
+- **Data:** Modellpromptar (klassificering, utkast, produkttext, chatt). Responses-anrop sätter `store=false`.
+- **Tokens:** Refresh-token ägs av Azom och ligger bara i `model_oauth/`. Ingår inte i vanlig backup, telemetry, UI eller export.
+- **Kvar:** ID-token-signatur verifieras inte i koden. Oscar måste bekräfta aktuellt SIWC-kontrakt innan live-anslutning.
+
+### xAI
+- **Grok Build:** Azom anropar lokal `grok`-CLI. Grok Build äger sin OAuth-session. Azom läser inte `auth.json`.
+- **API-nyckel:** Anrop till `https://api.x.ai/v1/chat/completions`. Nyckeln loggas inte.
+- **Direkt xAI OAuth:** inte implementerat.
 
 ### Telegram (bot-notiser)
 - **Mottagare:** Telegram (Dubai-baserad)

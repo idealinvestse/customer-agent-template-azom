@@ -75,14 +75,14 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | Capability | Module / entry | Notes |
 |------------|----------------|-------|
 | **order-status** | `actions/order_status` | Woo status update; validate order id/status |
-| **product-desc** | `actions/product_desc` | Template default; optional OpenRouter |
+| **product-desc** | `actions/product_desc` | Template default; optional model router |
 | **support** | `actions/support` | Classify + draft; abuse → escalate |
 | **mail** | `actions/mail` + `integrations/mail*` | See [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
 | **SSH** | `actions/ssh_ops` | Allowlist only; else Oscar ticket |
 | **cases** | `cases/*` | Poll → draft → suggest-approve → human send — [`CASES.md`](CASES.md) |
 | **Shadow Live Ledger** | `cases/shadow_report.py`, `runtime_profile.py` | Null-send refuse + FU9 shadow trail — not FU9 wire |
 | **marketing** | `actions/marketing`, `marketing/*` | Google Ads + GA4 mock-first HITL — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
-| **LLM** | `llm.py` | OpenRouter + cost telemetry + cap |
+| **LLM** | `llm.py` + `model_router/` | Route order, ChatGPT OAuth, xAI, OpenRouter fallback — [`MODEL_ROUTER.md`](MODEL_ROUTER.md) |
 | **OAuth Gmail** | `oauth/gmail` | Browser consent → `oauth/gmail.json` |
 | **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |
 | **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text + `/marketing` read |
@@ -197,7 +197,11 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `AZOM_USE_MOCK` | Mock all integrations |
 | `AZOM_CONFIG_DIR` / `AZOM_DATA_DIR` | Paths |
 | `WOO_*`, `WP_*`, `MAIL_*`, `GRAPH_*`, `SSH_*` | Integrations |
-| `OPENROUTER_API_KEY` | LLM |
+| `AZOM_MODEL_ROUTE_ORDER` | Model route order (default chatgpt, Grok Build, xAI key, OpenRouter) |
+| `OPENAI_SIWC_*` / `OPENAI_MODEL` | ChatGPT OAuth (Azom-owned refresh). Endpoints are env, not hardcoded |
+| `AZOM_XAI_GROK_BUILD` / `XAI_GROK_BIN` / `XAI_MODEL` | Delegated Grok Build route (opt-in) |
+| `XAI_API_KEY` | xAI API-key fallback |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | OpenRouter fallback. Dollar cap applies here only |
 | `TELEGRAM_*` | Bot allowlist + actor map |
 | `MESSENGER_*` | Page token, HMAC secret, PSID allowlist/map |
 | `AZOM_DASHBOARD_PUBLIC_URL` | Deep links from Messenger |

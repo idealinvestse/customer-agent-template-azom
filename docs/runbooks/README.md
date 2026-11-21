@@ -9,7 +9,8 @@ Varje runbook följer samma form: trigger → diagnoskommandon → fix → verif
 | Runbook | Scenario |
 |---------|----------|
 | [woo-webhook-disabled.md](woo-webhook-disabled.md) | Woo stänger av webhook efter upprepade misslyckade leveranser |
-| [openrouter-budget-exhausted.md](openrouter-budget-exhausted.md) | OpenRouter-budget slut — LLM-anrop skippas |
+| [openrouter-budget-exhausted.md](openrouter-budget-exhausted.md) | OpenRouter-budget slut — OpenRouter-anrop skippas |
+| [model-oauth.md](model-oauth.md) | Modellroute, ChatGPT OAuth, xAI, backup av refresh-token |
 | [mail-poll-stuck.md](mail-poll-stuck.md) | Cases-poll fastnar (credentials / IMAP) |
 | [gmail-oauth-revoked.md](gmail-oauth-revoked.md) | Gmail OAuth refresh-token revoked |
 | [cases-db-corrupt.md](cases-db-corrupt.md) | cases.db korrupt / SQLite disk-I/O |

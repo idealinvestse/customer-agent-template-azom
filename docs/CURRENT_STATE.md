@@ -54,6 +54,7 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **Pilot maturity toolkit** | Read-only `soak-preflight`, Oscar `cases calibration-export` / `calibration-report` (redacted), `kpis --baseline` deltas, shadow suggest-vs-outcome cross-tab. **Does not** mark A1 soak, baseline, or live calibration complete. |
 | **Ops hardening** | SQLite WAL + busy_timeout, budget pacing fields, structured poll/approve logs, `/health` extras (`null_send`, `budget_ratio`, `last_poll_errors`). Shared allowlisted runtime overlays (CLI/poll/bot/dashboard). `/metrics` token-only. Waitress in prod. Case send/close state machine + replied retention. Backup script checkpoints WAL before copy. |
 | **V3.0.0** | Pilot toolkit + ops hardening + NO/DK enable-ready (still disabled) + live marketing **reads** + dashboard health/webhook modules + cases approve/ingest/draft facades + `config/profile.yaml` + [`TEMPLATE_GUIDE.md`](TEMPLATE_GUIDE.md). **Not** multi-tenant SaaS. **Not** A1 soak complete. **Not** FU9 wire. |
+| **Model router** | `skills/ecom_ops/model_router/` + `llm.py` facade. Order: ChatGPT OAuth (Azom-owned refresh), opt-in xAI Grok Build (delegated), xAI API key, OpenRouter fallback. Dollar cap applies to estimated OpenRouter cost only. Oscar `/oscar` model test has **no fallback**. Direct app-owned xAI OAuth is **not** implemented. ChatGPT `id_token` signature is **not** verified. Live SIWC connect is an Oscar step, not done. See [`MODEL_ROUTER.md`](MODEL_ROUTER.md). |
 
 ## Ops next (human-owned — agents must not mark done)
 
@@ -93,8 +94,9 @@ Do not start these unless product ownership changes:
 
 ## OpenRouter budget
 
-- Cap: **USD 100** via `config/limits.yaml`.
-- On budget/key miss: still serve order/cases/status via tools; skip LLM phrasing/drafts when needed.
+- Cap: **USD 100** via `config/limits.yaml`, counted from estimated **OpenRouter** cost only.
+- ChatGPT OAuth and xAI routes record `cost_usd=0` and can still run when that cap is exhausted.
+- When no non-OpenRouter route is configured and the cap is exhausted: skip LLM phrasing/drafts; still serve order/cases/status via tools.
 
 ## Roles (quick)
 
@@ -127,6 +129,7 @@ Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, fini
 | Mail setup | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
 | Gmail OAuth | [`V2_OAUTH_GMAIL.md`](V2_OAUTH_GMAIL.md) |
 | Woo/WP API surface | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
+| Model router | [`MODEL_ROUTER.md`](MODEL_ROUTER.md) · operator [`runbooks/model-oauth.md`](runbooks/model-oauth.md) |
 | Google Ads + GA4 | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Install / deploy | [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) |
 | Docker overlays | [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md) |

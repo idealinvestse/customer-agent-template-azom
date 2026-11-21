@@ -19,10 +19,12 @@ Azom skiljer **read-only config** (YAML i image/host-mount) från **skrivbar run
 | Path | Compose | Syfte |
 |------|---------|--------|
 | `/app/config` | `:ro` i prod & dev | `sites.yaml`, `rbac.yaml`, `mailboxes.yaml`, `cases_ai.yaml`, … |
-| `/app/.azom-data` | **read-write** | `secrets.env`, `runtime.env`, `cases.db`, OAuth-tokens, telemetry, poll-marker |
+| `/app/.azom-data` | **read-write** | `secrets.env`, `runtime.env`, `cases.db`, Gmail/marketing OAuth, `model_oauth/` (ChatGPT refresh), telemetry, poll-marker |
 | `/app/logs` | rw (prod) | Valfri logg-mount |
 
 **Dev:** `infrastructure/docker-compose.yml` mountar data **utan** `:ro` så secrets/settings/cases.db kan skrivas.
+
+`model_oauth/` ligger redan i data-volymen (`/app/.azom-data` eller systemd `/var/lib/azom`). Ingen ny volume krävs. `bin/backup-azom-data.sh` exkluderar `model_oauth`. Grok Build-binären ingår inte i imagen. Sätt `XAI_GROK_BIN` bara om binären finns på hosten, och aktivera inte routen i compose förrän den är installerad.
 
 **Image-tag (prod):** `azom-agent:3.0` i `infrastructure/docker-compose.prod.yml` (`2.0` kvar för rollback).
 

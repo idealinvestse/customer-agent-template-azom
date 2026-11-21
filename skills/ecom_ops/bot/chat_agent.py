@@ -19,6 +19,8 @@ from ecom_ops.bot.dialog_actions import (
 )
 from ecom_ops.bot.store import clamp_messages
 from ecom_ops.llm import DEFAULT_MODEL, chat_completion, openrouter_cap_usd
+from ecom_ops.model_router import get_model_router
+from ecom_ops.model_router.errors import ModelRouteError
 from ecom_ops.order_context import format_order_context_block
 from ecom_ops.security import validate_order_id
 from ecom_ops.telemetry import Telemetry, default_telemetry
@@ -94,7 +96,7 @@ SYSTEM_PROMPT = (
 )
 
 FALLBACK_NO_KEY = (
-    "LLM är inte kopplad just nu (saknar OPENROUTER_API_KEY), men jag kan "
+    "LLM är inte kopplad just nu (ingen modellroute är konfigurerad), men jag kan "
     "fortfarande hämta order, ärenden och status — fråga fritt, eller /help."
 )
 FALLBACK_BUDGET = (
@@ -635,7 +637,7 @@ def run_chat(
             **extra,
         }
 
-    api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+    router = get_model_router()
     sticky_for_cont = pref.sticky_order_id or sticky_order_id
     sticky_case_for_cont = pref.sticky_case_id8 or sticky_case_id8 or case_id8
 
@@ -663,12 +665,12 @@ def run_chat(
             return FALLBACK_ERROR
         return FALLBACK_NO_KEY
 
-    if not api_key:
+    if not router.any_configured():
         text = _no_llm_text("no_key")
         return ChatResult(text=text, messages=_with_turn(text), **_base())
 
     cap = openrouter_cap_usd()
-    if not tel.within_budget(cap):
+    if not tel.within_budget(cap) and not router.has_route_outside_openrouter_budget():
         tel.record(
             action="llm_budget_skip",
             site=site,
@@ -709,20 +711,28 @@ def run_chat(
         messages.append({"role": "system", "content": tool_block})
     messages.append({"role": "user", "content": user_message})
 
-    model = _session_model(session) or os.environ.get("OPENROUTER_MODEL") or DEFAULT_MODEL
+    # OpenRouter slugs must not be sent to ChatGPT or xAI. Those routes
+    # pick OPENAI_MODEL / XAI_MODEL when model is omitted. A session pin
+    # applies only when OpenRouter is the first configured route.
+    if router.preferred_route_id() == "openrouter":
+        model = _session_model(session) or os.environ.get("OPENROUTER_MODEL") or DEFAULT_MODEL
+    else:
+        model = None
     try:
         content, cost = chat_completion(
             messages,
             model=model,
             max_tokens=_max_tokens(session),
             temperature=_think_temperature(session),
+            telemetry=tel,
+            site=site,
         )
-    except Exception as exc:
+    except ModelRouteError as exc:
         tel.record(
             action="llm_telegram_chat_error",
             site=site,
             cost_usd=0.0,
-            meta={"error": str(exc)[:200]},
+            meta={"error": type(exc).__name__, "error_code": exc.code},
         )
         text = _no_llm_text(
             "error",

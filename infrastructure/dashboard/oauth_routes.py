@@ -9,6 +9,47 @@ from support import _is_mock
 
 
 def register_oauth_routes(app: Flask) -> None:
+    @app.route("/oauth/openai/start")
+    @_oscar_required
+    def oauth_openai_start():
+        from ecom_ops.model_router.errors import ModelConfigError
+        from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
+
+        route = OpenAIChatGPTOAuthRoute()
+        try:
+            url, _state = route.start_authorization()
+        except ModelConfigError:
+            return redirect(url_for("oscar_home") + "?err=ChatGPT+OAuth+saknar+konfiguration")
+        return redirect(url)
+
+    @app.route("/oauth/openai/callback")
+    def oauth_openai_callback():
+        import re
+
+        from ecom_ops.model_router.errors import ModelAuthError, ModelRouteError
+        from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
+
+        err = (request.args.get("error") or "").strip()
+        if err:
+            safe = err if re.fullmatch(r"[A-Za-z0-9_]{1,40}", err) else "oauth_error"
+            return redirect(url_for("oscar_home") + f"?err=ChatGPT+{safe}")
+        code = request.args.get("code", "").strip()
+        state = request.args.get("state", "").strip()
+        issued_client_id = request.args.get("client_id", "").strip()
+        if not code or not state:
+            return redirect(url_for("oscar_home") + "?err=ChatGPT+OAuth+saknar+code")
+        try:
+            OpenAIChatGPTOAuthRoute().exchange_authorization_code(
+                code=code,
+                state=state,
+                issued_client_id=issued_client_id or None,
+            )
+        except ModelAuthError:
+            return redirect(url_for("oscar_home") + "?err=ChatGPT+OAuth+avvisades")
+        except ModelRouteError:
+            return redirect(url_for("oscar_home") + "?err=ChatGPT+OAuth+misslyckades")
+        return redirect(url_for("oscar_home") + "?msg=ChatGPT+kopplad")
+
     @app.route("/oauth/google/start")
     @_oscar_required
     def oauth_google_marketing_start():

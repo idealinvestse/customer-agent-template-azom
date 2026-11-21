@@ -62,10 +62,14 @@ fi
 # --- 2) Tar the full data dir (excluding backups/ itself + caches) ---
 log "Creating tarball of ${DATA_DIR}"
 TARBALL="${STAMP_DIR}/azom-data.tar.gz"
+# model_oauth holds ChatGPT refresh tokens. Keep it out of the ordinary tarball.
+# Take a separate encrypted copy if Oscar needs an off-box restore of that session.
 tar -czf "$TARBALL" \
   --exclude="${BACKUP_DIR}" \
   --exclude="*/__pycache__" \
   --exclude="*/.pytest_cache" \
+  --exclude="*/model_oauth" \
+  --exclude="*/model_oauth/*" \
   -C "$(dirname "$DATA_DIR")" \
   "$(basename "$DATA_DIR")"
 

@@ -36,6 +36,76 @@
   </section>
 
   <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
+    <h2 class="az-section-title text-oscar-400/80">Modellrouter</h2>
+    <p class="az-muted">Aktiv route: <strong>{{ model_preferred or "ingen" }}</strong>. Test kör en route utan fallback.</p>
+    {% if model_last_test %}
+    <p class="mt-2">
+      Senaste test:
+      {% if model_last_test.get("ok") %}
+      <span class="az-present">ok</span>
+      {% else %}
+      <span class="az-missing">misslyckades</span>
+      {% endif %}
+      {{ model_last_test.get("route_id", "") }}
+      {{ model_last_test.get("error_class", "") }}
+      {{ model_last_test.get("error_code", "") }}
+    </p>
+    <p class="az-muted">Ett misslyckat test är ett riktigt fel. OpenRouter körs inte som ersättning.</p>
+    {% endif %}
+    <div class="overflow-x-auto mt-3">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th>Route</th>
+            <th>Konfigurerad</th>
+            <th>Refresh</th>
+            <th>needs_reauth</th>
+            <th>Generation</th>
+            <th>Expires</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for route_id in model_order %}
+          {% set row = model_routes.get(route_id, {}) %}
+          <tr>
+            <td>{{ route_id }}{% if route_id == model_preferred %} · aktiv{% endif %}</td>
+            <td>{% if row.get("configured") %}ja{% else %}nej{% endif %}</td>
+            <td>{{ row.get("refresh_owner", "") }}</td>
+            <td>{% if row.get("needs_reauth") %}<span class="az-missing">ja</span>{% else %}nej{% endif %}</td>
+            <td>{{ row.get("generation", "") }}</td>
+            <td>{{ row.get("expires_at", "") }}</td>
+            <td>
+              <form method="post" action="/oscar/models/test" class="inline">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                <input type="hidden" name="route_id" value="{{ route_id }}" />
+                <button class="az-btn-secondary" type="submit">Testa modell</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="mt-4 flex flex-wrap gap-2">
+      <a class="az-btn-oscar" href="/oauth/openai/start">Anslut ChatGPT</a>
+      <a class="az-btn-secondary" href="/oauth/openai/start">Återanslut</a>
+      <form method="post" action="/oscar/models/chatgpt/disconnect">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button class="az-btn-secondary" type="submit">Koppla från</button>
+      </form>
+    </div>
+    {% set chatgpt = model_routes.get("chatgpt_oauth", {}) %}
+    <p class="az-muted mt-2">
+      ChatGPT-refresh ägs av Azom.
+      Host-id: {{ chatgpt.get("ext_agent_host_id") or "saknas" }}.
+      Plananvändning: {% if chatgpt.get("plan_usage") %}beviljad{% else %}inte bekräftad{% endif %}.
+      ID-token signatur: inte verifierad.
+      xAI Grok Build äger sin egen session. Direkt xAI OAuth är inte implementerat.
+    </p>
+  </section>
+
+  <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
     <h2 class="az-section-title text-oscar-400/80">Snabblänkar</h2>
     <div class="flex flex-wrap gap-2">
       <a class="az-btn-secondary" href="/settings">Inställningar</a>

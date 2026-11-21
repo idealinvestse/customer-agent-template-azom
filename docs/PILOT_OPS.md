@@ -241,6 +241,7 @@ Null-send är **default av**. Systemd sätter den **inte**. För live-read skugg
 |----------|---------|
 | Woo webhook avstängd | [`runbooks/woo-webhook-disabled.md`](runbooks/woo-webhook-disabled.md) |
 | OpenRouter-budget slut | [`runbooks/openrouter-budget-exhausted.md`](runbooks/openrouter-budget-exhausted.md) |
+| Modellroute / ChatGPT OAuth | [`runbooks/model-oauth.md`](runbooks/model-oauth.md) |
 | Mail-poll fastnar | [`runbooks/mail-poll-stuck.md`](runbooks/mail-poll-stuck.md) |
 | Gmail OAuth revoked | [`runbooks/gmail-oauth-revoked.md`](runbooks/gmail-oauth-revoked.md) |
 | cases.db korrupt | [`runbooks/cases-db-corrupt.md`](runbooks/cases-db-corrupt.md) |

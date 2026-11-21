@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -85,7 +84,7 @@ class ProductDescService:
         escalation: EscalationService | None = None,
     ) -> None:
         self.woo = woo or client_from_env(use_mock=None)
-        self.generator = generator  # None → LLM when key set, else template
+        self.generator = generator  # None → model router, else template fallback
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
 
@@ -94,22 +93,21 @@ class ProductDescService:
     ) -> tuple[str, str]:
         if self.generator is not None:
             return self.generator(name, features, language)
-        if os.environ.get("OPENROUTER_API_KEY"):
-            from ecom_ops.llm import generate_product_desc_with_llm
+        from ecom_ops.llm import generate_product_desc_with_llm
 
-            llm = generate_product_desc_with_llm(
-                name=name,
-                features=features,
-                language=language,
-                telemetry=self.telemetry,
-                site=site,
+        llm = generate_product_desc_with_llm(
+            name=name,
+            features=features,
+            language=language,
+            telemetry=self.telemetry,
+            site=site,
+        )
+        if llm is not None:
+            short, long_desc = llm
+            return (
+                sanitize_text(short, max_len=500),
+                sanitize_text(long_desc, max_len=8000),
             )
-            if llm is not None:
-                short, long_desc = llm
-                return (
-                    sanitize_text(short, max_len=500),
-                    sanitize_text(long_desc, max_len=8000),
-                )
         return _template_generator(name, features, language)
 
     def generate(

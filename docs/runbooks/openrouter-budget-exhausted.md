@@ -5,9 +5,10 @@
 **Read this first:** [`../PILOT_OPS.md`](../PILOT_OPS.md), [`../CURRENT_STATE.md`](../CURRENT_STATE.md).
 
 ## Symptom
-- LLM-drafts/classify skippas (telemetry: `llm_budget_skip`)
-- Telegram-bot svarar med "OpenRouter-budgeten är slut just nu"
+- Bara OpenRouter är konfigurerad: LLM-drafts/classify skippas (telemetry: `llm_budget_skip`)
+- Telegram-bot svarar med "OpenRouter-budgeten är slut just nu" när ingen annan route är konfigurerad
 - Dashboard visar budget near/at cap
+- ChatGPT OAuth eller xAI kan fortfarande svara. Deras `cost_usd` är 0 och räknas inte mot capen. Se [`model-oauth.md`](model-oauth.md).
 
 ## Diagnos
 ```bash

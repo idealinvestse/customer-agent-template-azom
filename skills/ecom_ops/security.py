@@ -166,7 +166,19 @@ def redact_secrets(payload: Any) -> Any:
         out = {}
         for k, v in payload.items():
             key_upper = str(k).upper()
-            if any(s in key_upper for s in ("SECRET", "PASSWORD", "TOKEN", "API_KEY", "PRIVATE_KEY")):
+            if any(
+                s in key_upper
+                for s in (
+                    "SECRET",
+                    "PASSWORD",
+                    "TOKEN",
+                    "API_KEY",
+                    "PRIVATE_KEY",
+                    "CODE_VERIFIER",
+                    "AUTHORIZATION_CODE",
+                    "OAUTH_STATE",
+                )
+            ):
                 out[k] = "***REDACTED***"
             elif str(k) in SECRET_ENV_KEYS:
                 out[k] = "***REDACTED***"

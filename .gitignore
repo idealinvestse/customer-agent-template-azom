@@ -53,6 +53,9 @@ cases.db
 *.sqlite3
 # Accidental token dump at repo root only — package code is skills/ecom_ops/oauth/
 /oauth/
+# Model-provider OAuth sessions (refresh tokens). Also excluded from azom-backup.
+model_oauth/
+**/model_oauth/
 telegram_state.json
 last_case_poll.json
 probe_last.json

@@ -113,7 +113,7 @@ bash tests/test_spinup.sh
 **Do not:**
 
 - Weaken or delete tests to make CI green.
-- Commit `.env`, OAuth tokens, or `secrets.env`.
+- Commit `.env`, OAuth tokens, `AZOM_DATA_DIR/model_oauth/`, or `secrets.env`.
 - Enable NO/DK mailboxes or `auto_send_enabled` without Oscar authorization.
 - Invent Woo/WP/dashboard capabilities that are not in code.
 - Expand into parked scope (multi-tenant SaaS, FAQ/KB, Meta ads, default-on auto-send / Ads mutate).
@@ -127,6 +127,7 @@ bash tests/test_spinup.sh
 | Customer profile | `config/profile.yaml` + `skills/ecom_ops/profile.py` — [`TEMPLATE_GUIDE.md`](TEMPLATE_GUIDE.md) |
 | Null-send / shadow ledger | `skills/ecom_ops/runtime_profile.py`, `cases/shadow_report.py`, `cases/auto_send.py` |
 | Suggest / auto-send rails | `skills/ecom_ops/cases/suggest.py`, `auto_send.py`, `config/cases_ai.yaml` |
+| Model router / ChatGPT OAuth | `skills/ecom_ops/model_router/`, facade `skills/ecom_ops/llm.py` — [`MODEL_ROUTER.md`](MODEL_ROUTER.md) |
 | Marketing Ads+GA4 | `skills/ecom_ops/actions/marketing.py`, `skills/ecom_ops/marketing/`, `config/marketing.yaml` — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Telegram / Messenger brain | `skills/ecom_ops/bot/` |
 | Woo / WP clients | `skills/ecom_ops/integrations/woocommerce.py`, `wordpress.py`, `webhooks.py` |

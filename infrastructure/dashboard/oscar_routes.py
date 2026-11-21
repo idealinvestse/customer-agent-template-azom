@@ -24,6 +24,18 @@ from support import (
 )
 
 
+def _model_panel() -> dict:
+    from ecom_ops.model_router.router import get_model_router, load_last_test
+
+    router = get_model_router()
+    return {
+        "model_routes": router.routes(),
+        "model_order": router.ordered_route_ids(),
+        "model_preferred": router.preferred_route_id(),
+        "model_last_test": load_last_test(),
+    }
+
+
 def register_oscar_routes(app: Flask) -> None:
     @app.route("/oscar")
     @_oscar_required
@@ -45,8 +57,78 @@ def register_oscar_routes(app: Flask) -> None:
                 secrets_missing=missing,
                 gmail_connected=store.has_tokens(),
                 settings=load_settings_view(),
+                **_model_panel(),
             ),
         )
+
+    @app.route("/oscar/models/test", methods=["POST"])
+    @_oscar_required
+    def oscar_model_test():
+        from ecom_ops.model_router.base import ModelRequest
+        from ecom_ops.model_router.errors import ModelRouteError
+        from ecom_ops.model_router.router import (
+            ROUTE_IDS,
+            TEST_PROMPT,
+            get_model_router,
+            save_last_test,
+        )
+
+        route_id = (request.form.get("route_id") or "").strip()
+        if route_id not in ROUTE_IDS:
+            return redirect(url_for("oscar_home") + "?err=Okand+modellroute")
+        router = get_model_router()
+        try:
+            result = router.complete_route(
+                route_id,
+                ModelRequest(
+                    messages=[{"role": "user", "content": TEST_PROMPT}],
+                    max_output_tokens=512,
+                    temperature=0.0,
+                    timeout=30,
+                    actor="oscar",
+                ),
+            )
+        except ModelRouteError as exc:
+            save_last_test(
+                route_id=route_id,
+                ok=False,
+                error_class=type(exc).__name__,
+                error_code=exc.code,
+                model="",
+                provider="",
+            )
+            return redirect(url_for("oscar_home") + "?err=Modelltest+misslyckades")
+        save_last_test(
+            route_id=route_id,
+            ok=True,
+            error_class="",
+            error_code="",
+            model=result.model,
+            provider=result.provider,
+        )
+        if result.cost_usd:
+            from ecom_ops.telemetry import default_telemetry
+
+            default_telemetry().record(
+                action="llm_model_test",
+                cost_usd=float(result.cost_usd),
+                actor="oscar",
+                meta={
+                    "route_id": result.route_id,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "cost_kind": "estimated",
+                },
+            )
+        return redirect(url_for("oscar_home") + "?msg=Modelltest+ok+utan+fallback")
+
+    @app.route("/oscar/models/chatgpt/disconnect", methods=["POST"])
+    @_oscar_required
+    def oscar_chatgpt_disconnect():
+        from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
+
+        OpenAIChatGPTOAuthRoute().disconnect()
+        return redirect(url_for("oscar_home") + "?msg=ChatGPT+fran+kopplad")
 
     @app.route("/oscar/secrets", methods=["GET", "POST"])
     @_oscar_required

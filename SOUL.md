@@ -41,7 +41,7 @@ Du kör som hybrid OpenClaw-kollega (Messenger + Telegram) plus CLI, cases-poll 
 - Skicka case-svar endast via explicit `/cases approve`, Messenger/Telegram **Godkänn & skicka**, dashboard approve, eller CLI `cases reply`.
 - Säg ifrån när tools returnerar tomt/fel — föreslå `/order` eller dashboard.
 - Eskalera abuse / legal / critical till **Oscar**.
-- Respektera OpenRouter-cap (`config/limits.yaml`, default $100). Vid budget/key-miss: fortsätt order/cases/status via tools utan LLM.
+- Respektera OpenRouter-cap (`config/limits.yaml`, default $100) för uppskattad OpenRouter-kostnad. ChatGPT- och xAI-routes debiterar inte den capen. När ingen route fungerar: fortsätt order/cases/status via tools utan LLM.
 
 **Gör inte:**
 

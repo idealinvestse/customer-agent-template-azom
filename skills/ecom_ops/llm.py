@@ -1,37 +1,77 @@
-"""OpenRouter chat helper with budget awareness."""
+"""LLM helpers backed by the Azom model router.
+
+Public functions stay compatible with existing callers. OpenRouter is one
+route, not a hard requirement. Availability is decided by the router.
+"""
 
 from __future__ import annotations
 
-import os
+import contextvars
+import json
 import re
-from typing import Any
 
-import requests
-
-from ecom_ops.config import load_app_config
+from ecom_ops.model_router import get_model_router
+from ecom_ops.model_router.base import ModelRequest
+from ecom_ops.model_router.errors import ModelRouteError
+from ecom_ops.model_router.openrouter import (
+    DEFAULT_MODEL,
+    OPENROUTER_URL,
+    estimate_cost_usd,
+    openrouter_cap_usd,
+)
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-4o-mini"
-# Rough USD estimate when API omits cost (~$0.15/1M in + $0.60/1M out for mini).
-_COST_PER_PROMPT_TOKEN = 0.15 / 1_000_000
-_COST_PER_COMPLETION_TOKEN = 0.60 / 1_000_000
-_MIN_COST_USD = 0.0001
+__all__ = [
+    "DEFAULT_MODEL",
+    "OPENROUTER_URL",
+    "chat_completion",
+    "classify_support_with_llm",
+    "draft_support_with_llm",
+    "estimate_cost_usd",
+    "generate_product_desc_with_llm",
+    "openrouter_cap_usd",
+]
 
 
-def openrouter_cap_usd() -> float:
-    try:
-        return float(load_app_config().limits.openrouter_cap)
-    except Exception:
-        return float(os.environ.get("OPENROUTER_CAP_USD", "100") or 100)
+_served_model: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "azom_llm_served_model",
+    default="",
+)
 
 
-def estimate_cost_usd(prompt_tokens: int, completion_tokens: int) -> float:
-    raw = (
-        prompt_tokens * _COST_PER_PROMPT_TOKEN
-        + completion_tokens * _COST_PER_COMPLETION_TOKEN
+def _safe_error(exc: BaseException) -> str:
+    code = getattr(exc, "code", "") or ""
+    if code:
+        return f"{type(exc).__name__}:{code}"[:80]
+    return type(exc).__name__
+
+
+def _complete_request(
+    messages: list[dict[str, str]],
+    *,
+    model: str | None = None,
+    max_tokens: int = 400,
+    temperature: float = 0.3,
+    timeout: int = 30,
+    telemetry: Telemetry | None = None,
+    site: str = "azom",
+    case_id: str | None = None,
+    actor: str | None = None,
+):
+    """Run one router completion and return the full result, including model."""
+    return get_model_router().complete(
+        ModelRequest(
+            messages=messages,
+            model=model,
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+            site=site,
+            case_id=case_id,
+            actor=actor,
+        ),
+        telemetry=telemetry,
     )
-    return max(_MIN_COST_USD, raw)
 
 
 def chat_completion(
@@ -41,42 +81,29 @@ def chat_completion(
     max_tokens: int = 400,
     temperature: float = 0.3,
     timeout: int = 30,
+    telemetry: Telemetry | None = None,
+    site: str = "azom",
+    case_id: str | None = None,
+    actor: str | None = None,
 ) -> tuple[str, float]:
-    """Call OpenRouter chat completions. Returns (content, cost_usd)."""
-    api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not set")
-    payload: dict[str, Any] = {
-        "model": model or os.environ.get("OPENROUTER_MODEL") or DEFAULT_MODEL,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }
-    resp = requests.post(
-        OPENROUTER_URL,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://azom.se",
-            "X-Title": "AzomOps-Agent",
-        },
-        json=payload,
+    """Run a chat completion through the configured model router.
+
+    Returns ``(content, cost_usd)``. Only the OpenRouter route estimates a
+    dollar cost. Subscription routes return ``0.0``.
+    """
+    result = _complete_request(
+        messages,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
         timeout=timeout,
+        telemetry=telemetry,
+        site=site,
+        case_id=case_id,
+        actor=actor,
     )
-    if resp.status_code >= 400:
-        raise RuntimeError(f"OpenRouter HTTP {resp.status_code}: {resp.text[:200]}")
-    data = resp.json()
-    choices = data.get("choices") or []
-    if not choices:
-        raise RuntimeError("OpenRouter response missing choices")
-    content = str((choices[0].get("message") or {}).get("content") or "").strip()
-    if not content:
-        raise RuntimeError("OpenRouter empty content")
-    usage = data.get("usage") or {}
-    prompt_tokens = int(usage.get("prompt_tokens") or 0)
-    completion_tokens = int(usage.get("completion_tokens") or 0)
-    cost = estimate_cost_usd(prompt_tokens, completion_tokens)
-    return content, cost
+    _served_model.set(result.model or "")
+    return result.content, float(result.cost_usd or 0.0)
 
 
 def classify_support_with_llm(
@@ -86,16 +113,11 @@ def classify_support_with_llm(
     telemetry: Telemetry | None = None,
     site: str = "azom",
 ) -> tuple[str, float] | None:
-    """
-    Classify a support message via OpenRouter.
-    Returns (category_value, confidence) or None to use keyword fallback.
-    """
-    api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-    if not api_key:
-        return None
+    """Classify a support message. Returns None so the caller can use keywords."""
     tel = telemetry or default_telemetry
     cap = openrouter_cap_usd()
-    if not tel.within_budget(cap):
+    router = get_model_router()
+    if not tel.within_budget(cap) and not router.has_route_outside_openrouter_budget():
         tel.record(
             action="llm_budget_skip",
             site=site,
@@ -111,31 +133,35 @@ def classify_support_with_llm(
         f"Language hint: {(language or 'sv').lower()}\n"
         f"Customer message:\n{customer_message[:4000]}"
     )
+    _served_model.set("")
     try:
         content, cost = chat_completion(
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            max_tokens=80,
+            max_tokens=512,
             temperature=0.0,
+            telemetry=tel,
+            site=site,
         )
-    except Exception as exc:
+    except ModelRouteError as exc:
         tel.record(
             action="llm_classify_error",
             site=site,
             cost_usd=0.0,
-            meta={"error": str(exc)[:200]},
+            meta={"error": _safe_error(exc)},
         )
         return None
 
+    model = _served_model.get()
     parsed = _parse_classify_json(content)
     if not parsed:
         tel.record(
             action="llm_classify_error",
             site=site,
-            cost_usd=0.0,
-            meta={"error": "unparseable classify", "excerpt": content[:120]},
+            cost_usd=cost,
+            meta={"error": "unparseable_classify", "model": model},
         )
         return None
 
@@ -146,7 +172,12 @@ def classify_support_with_llm(
         unit_type="tokens",
         units=1.0,
         cost_usd=cost,
-        meta={"category": category, "confidence": confidence, "model": DEFAULT_MODEL, "prompt_version": prompt_version},
+        meta={
+            "category": category,
+            "confidence": confidence,
+            "model": model,
+            "prompt_version": prompt_version,
+        },
     )
     return category, confidence
 
@@ -155,19 +186,13 @@ def _parse_classify_json(content: str) -> tuple[str, float] | None:
     text = (content or "").strip()
     if not text:
         return None
-    # Strip optional fences
     fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.I | re.S)
     if fence:
         text = fence.group(1).strip()
     try:
-        import json
-
         data = json.loads(text)
     except Exception:
-        # Best-effort extract
-        cat_m = re.search(
-            r'"category"\s*:\s*"([a-z_]+)"', text, re.I
-        )
+        cat_m = re.search(r'"category"\s*:\s*"([a-z_]+)"', text, re.I)
         conf_m = re.search(r'"confidence"\s*:\s*([0-9]*\.?[0-9]+)', text, re.I)
         if not cat_m or not conf_m:
             return None
@@ -197,20 +222,11 @@ def draft_support_with_llm(
     telemetry: Telemetry | None = None,
     site: str = "azom",
 ) -> str | None:
-    """
-    Generate a support draft via OpenRouter when key + budget allow.
-    Returns None to signal caller should use the template fallback.
-
-    When ``order_context`` is provided (Woo status/total/currency), include it
-    in the prompt so the model can reference real order data — never invent
-    tracking numbers.
-    """
-    api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-    if not api_key:
-        return None
+    """Generate a support draft. Returns None so the caller uses the template."""
     tel = telemetry or default_telemetry
     cap = openrouter_cap_usd()
-    if not tel.within_budget(cap):
+    router = get_model_router()
+    if not tel.within_budget(cap) and not router.has_route_outside_openrouter_budget():
         tel.record(
             action="llm_budget_skip",
             site=site,
@@ -235,19 +251,22 @@ def draft_support_with_llm(
         f"{context_block}"
         f"Customer message:\n{customer_message[:4000]}"
     )
+    _served_model.set("")
     try:
         content, cost = chat_completion(
             [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
-            ]
+            ],
+            telemetry=tel,
+            site=site,
         )
-    except Exception as exc:
+    except ModelRouteError as exc:
         tel.record(
             action="llm_draft_error",
             site=site,
             cost_usd=0.0,
-            meta={"error": str(exc)[:200], "category": category},
+            meta={"error": _safe_error(exc), "category": category},
         )
         return None
 
@@ -257,9 +276,13 @@ def draft_support_with_llm(
         unit_type="tokens",
         units=1.0,
         cost_usd=cost,
-        meta={"category": category, "order_id": order_id, "model": DEFAULT_MODEL, "prompt_version": draft_prompt_version},
+        meta={
+            "category": category,
+            "order_id": order_id,
+            "model": _served_model.get(),
+            "prompt_version": draft_prompt_version,
+        },
     )
-    # P4.6: output guardrail — block PII/abuse patterns in draft
     flagged = _guardrail_check(content)
     if flagged:
         tel.record(
@@ -268,28 +291,35 @@ def draft_support_with_llm(
             cost_usd=0.0,
             meta={"category": category, "flags": flagged, "order_id": order_id},
         )
-        # Return a safe fallback instead of the flagged draft
         return None
     return content
 
 
-# P4.6: output guardrail patterns
 _GUARDRAIL_PATTERNS = [
-    # Refund/compensation promises the LLM shouldn't make unsolicited
-    ("refund_promise", ["jag kommer att återbetala", "vi återbetalar hela", "full refund guaranteed", "i will refund you"]),
-    # Legal threats or admissions
-    ("legal_admission", ["vi medger fel", "we admit liability", "det är vårt fel i alla fall"]),
-    # PII leakage (SSN-like patterns)
+    (
+        "refund_promise",
+        [
+            "jag kommer att återbetala",
+            "vi återbetalar hela",
+            "full refund guaranteed",
+            "i will refund you",
+        ],
+    ),
+    (
+        "legal_admission",
+        [
+            "vi medger fel",
+            "we admit liability",
+            "det är vårt fel i alla fall",
+        ],
+    ),
     ("ssn_pattern", ["19\\d{10}", "\\d{12}"]),
-    # Abuse/profanity (basic)
     ("profanity", ["fuck you", "du är en idiot", "screw you"]),
 ]
 
 
 def _guardrail_check(text: str) -> list[str]:
-    """Check draft for guardrail violations (P4.6). Returns list of flag names."""
-    import re
-
+    """Check draft for guardrail violations. Returns flag names."""
     flags: list[str] = []
     lower = (text or "").lower()
     for flag, patterns in _GUARDRAIL_PATTERNS:
@@ -338,16 +368,11 @@ def generate_product_desc_with_llm(
     telemetry: Telemetry | None = None,
     site: str = "azom",
 ) -> tuple[str, str] | None:
-    """
-    Generate short+long product copy via OpenRouter when key + budget allow.
-    Returns None so the caller can fall back to the template generator.
-    """
-    api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
-    if not api_key:
-        return None
+    """Generate short and long product copy. None means use the template."""
     tel = telemetry or default_telemetry
     cap = openrouter_cap_usd()
-    if not tel.within_budget(cap):
+    router = get_model_router()
+    if not tel.within_budget(cap) and not router.has_route_outside_openrouter_budget():
         tel.record(
             action="llm_budget_skip",
             site=site,
@@ -369,6 +394,7 @@ def generate_product_desc_with_llm(
         f"Product name: {name}\n"
         f"Features: {features or 'premium quality'}"
     )
+    _served_model.set("")
     try:
         content, cost = chat_completion(
             [
@@ -376,23 +402,30 @@ def generate_product_desc_with_llm(
                 {"role": "user", "content": user},
             ],
             max_tokens=600,
+            telemetry=tel,
+            site=site,
         )
-    except Exception as exc:
+    except ModelRouteError as exc:
         tel.record(
             action="llm_draft_error",
             site=site,
             cost_usd=0.0,
-            meta={"error": str(exc)[:200], "kind": "product_desc"},
+            meta={"error": _safe_error(exc), "kind": "product_desc"},
         )
         return None
 
+    model = _served_model.get()
     parsed = _parse_short_long(content)
     if not parsed:
         tel.record(
             action="llm_draft_error",
             site=site,
-            cost_usd=0.0,
-            meta={"error": "unparseable product desc", "kind": "product_desc"},
+            cost_usd=cost,
+            meta={
+                "error": "unparseable_product_desc",
+                "kind": "product_desc",
+                "model": model,
+            },
         )
         return None
 
@@ -402,6 +435,6 @@ def generate_product_desc_with_llm(
         unit_type="tokens",
         units=1.0,
         cost_usd=cost,
-        meta={"product_name": name[:80], "model": DEFAULT_MODEL},
+        meta={"product_name": name[:80], "model": model},
     )
     return parsed

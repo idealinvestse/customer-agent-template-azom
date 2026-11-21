@@ -21,7 +21,8 @@ version: "3.0.0"
 **Telegram (backup):** `docs/TELEGRAM_OPENCLAW.md`  
 **Cases:** `docs/CASES.md`  
 **CLI:** `docs/CLI_REFERENCE.md`  
-**Dev setup:** `docs/DEVELOPER_GUIDE.md`
+**Dev setup:** `docs/DEVELOPER_GUIDE.md`  
+**Model router:** `docs/MODEL_ROUTER.md`
 
 ## Prioritized actions
 
@@ -44,6 +45,7 @@ version: "3.0.0"
 | Surface | Entry |
 |---------|--------|
 | Dashboard | `./bin/start-dashboard.sh` → `/onboarding`, `/settings`, `/cases`, `/marketing`, `/oscar` |
+| Model router | `ecom_ops.llm` facade over `ecom_ops.model_router`. Oscar: `/oscar` test, `/oauth/openai/start` |
 | Gmail OAuth | `/oauth/gmail/start` → tokens in `AZOM_DATA_DIR/oauth/gmail.json` |
 | Google marketing OAuth | `/oauth/google/start` → `AZOM_DATA_DIR/oauth/google_marketing.json` |
 | Marketing dashboard | `/marketing` (Jonatan read + suggest HITL) |

@@ -157,8 +157,8 @@ Samma modell som Messenger (`skills/ecom_ops/bot/actors.py`).
 
 | Condition | Behavior |
 |-----------|----------|
-| Ingen `OPENROUTER_API_KEY` | Tools körs; annars prior_digest/sticky eller fast svensk hjälp |
-| Budget at cap | Samma — tools utan LLM-phrasing |
+| Ingen modellroute konfigurerad | Tools körs; annars prior_digest/sticky eller fast svensk hjälp |
+| OpenRouter-budget at cap och ingen annan route | Samma — tools utan LLM-phrasing |
 | Inte i allowlist | Denial + hint (Oscar + `TELEGRAM_ALLOWED_CHAT_IDS`) |
 | Approve fail | Svenskt fel + Regenerera / Visa / Lista |
 | Tom case-kö | Hint: nästa poll (~5 min) eller dashboard `/cases` |
