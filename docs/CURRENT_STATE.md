@@ -119,6 +119,7 @@ Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, fini
 | Need | Doc |
 |------|-----|
 | Architecture map | [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) |
+| Code vs ops maturity scores | [`MATURITY.md`](MATURITY.md) |
 | Dev setup / tests | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) |
 | CLI details | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |
 | Cases + FU9 | [`CASES.md`](CASES.md) |

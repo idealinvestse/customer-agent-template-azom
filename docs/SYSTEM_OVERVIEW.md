@@ -266,7 +266,7 @@ Developer workflow: [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md).
 
 ## 13. Status snapshot
 
-Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
+Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md). Per-surface code and ops scores: [`MATURITY.md`](MATURITY.md).
 
 | Track | Status |
 |-------|--------|
@@ -288,6 +288,7 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md).
 
 | Topic | Doc |
 |-------|-----|
+| Maturity scores (EN) | [`MATURITY.md`](MATURITY.md) |
 | Pilot ops (SV) | [`PILOT_OPS.md`](PILOT_OPS.md) |
 | Cases (SV) | [`CASES.md`](CASES.md) |
 | Mail (SV) | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |

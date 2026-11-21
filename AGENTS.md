@@ -150,6 +150,7 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 
 - **Shipped:** Path B + Path B2 + Sprint A/B/C + SB5 + V2.1 + V2.2 + V2.3 + Shadow Live Ledger + Marketing Google (mock-first)
 - **Ops next:** Oscar A1 live soak — [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) (agents must not mark done)
+- **Maturity scores:** [`docs/MATURITY.md`](docs/MATURITY.md) — code vs ops snapshot. [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) wins if they disagree. Do not load this before every edit.
 - **Mock soft-soak:** `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
 - **FU9 auto-send:** rails only — see [`docs/CASES.md`](docs/CASES.md) (**do not wire** without Oscar written enable + soak preconditions)
 - **NO/DK mailboxes:** remain `enabled: false` until Oscar + credentials

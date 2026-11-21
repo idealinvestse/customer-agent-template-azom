@@ -29,6 +29,7 @@ Language split: **Swedish** = ops/pilot/runbooks · **English** = agents/dev/arc
 | [`../AGENTS.md`](../AGENTS.md) | Coding agents | Always-read operating notes |
 | [`../SOUL.md`](../SOUL.md) | OpenClaw / LLM | Voice + hard constraints (Swedish prose) |
 | [`CURRENT_STATE.md`](CURRENT_STATE.md) | Agents / eng | Version, shipped, blockers |
+| [`MATURITY.md`](MATURITY.md) | Agents / eng | Code vs ops maturity scores (snapshot; not a soak sign-off) |
 | [`DOC_STYLE.md`](DOC_STYLE.md) | Authors / agents | How to write docs |
 | [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) | Everyone | Architecture map |
 | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) | Developers | Setup, mock, tests, contrib |
@@ -46,6 +47,7 @@ Each major surface has one **primary** living doc:
 | Surface | Primary doc |
 |---------|-------------|
 | Current status / blockers | [`CURRENT_STATE.md`](CURRENT_STATE.md) |
+| Maturity scores (code vs ops) | [`MATURITY.md`](MATURITY.md) |
 | Architecture / RBAC / security | [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) |
 | Local dev / CI | [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) |
 | CLI | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |

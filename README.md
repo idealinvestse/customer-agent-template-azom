@@ -135,6 +135,7 @@ Full table + coverage matrix: [`docs/README.md`](docs/README.md)
 | Doc | Innehåll |
 |-----|----------|
 | [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) | Version, shipped, blockers (EN) |
+| [`docs/MATURITY.md`](docs/MATURITY.md) | Code vs ops maturity scores (EN) |
 | [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Arkitektur (EN) |
 | [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) | Setup, mock, tests (EN) |
 | [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md) | CLI (EN) |
