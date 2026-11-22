@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from ecom_ops import __version__
@@ -16,6 +17,39 @@ from ecom_ops.actions.support import SupportService
 from ecom_ops.integrations.mail import client_from_env as mail_client_from_env
 from ecom_ops.integrations.woocommerce import client_from_env
 from ecom_ops.profile import load_profile
+
+
+class _WpCliError:
+    def __init__(self, error_class: str, message: str) -> None:
+        self.message = message
+        self._error_class = error_class
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "message": self.message,
+            "data": {
+                "error_class": self._error_class,
+                "executed": False,
+                "live_calls": False,
+            },
+        }
+
+
+def _load_edit_source(path: str) -> tuple[str | None, str | None]:
+    """Read one local edit file. Errors do not include the file body."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None, "FileMissing"
+    if b"\x00" in data:
+        return None, "NotText"
+    if len(data) > 65536:
+        return None, "FileTooLarge"
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, "NotText"
 
 
 def _print(result: Any) -> int:
@@ -288,7 +322,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Report counts without modifying"
     )
 
-    p_wp = sub.add_parser("wp", help="WordPress site operations (mock health and local backup metadata)")
+    p_wp = sub.add_parser(
+        "wp",
+        help="WordPress site operations (mock health, local backup metadata, typed file edits)",
+    )
     wp_sub = p_wp.add_subparsers(dest="wp_command", required=True)
     wp_sub.add_parser("sites", help="List registered sites")
     p_wp_show = wp_sub.add_parser("show", help="Show one site and its latest checks")
@@ -308,6 +345,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_wp_drill = wp_sub.add_parser("restore-drill", help="Record a staging restore drill")
     p_wp_drill.add_argument("--backup", required=True, dest="backup_id")
     p_wp_drill.add_argument("--target", required=True, dest="target_site_id")
+    p_wp_files = wp_sub.add_parser("files", help="List themes, plugins, or files in one component")
+    p_wp_files.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_files.add_argument("--kind", required=True, choices=("theme", "plugin"))
+    p_wp_files.add_argument("--slug", default="")
+    p_wp_propose = wp_sub.add_parser(
+        "file-propose",
+        help="Propose a typed edit of one existing theme or plugin file",
+    )
+    p_wp_propose.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_propose.add_argument("--kind", required=True, choices=("theme", "plugin"))
+    p_wp_propose.add_argument("--slug", required=True)
+    p_wp_propose.add_argument("--path", required=True, dest="relative_path")
+    p_wp_propose.add_argument("--from", required=True, dest="from_file")
+    p_wp_apply = wp_sub.add_parser(
+        "file-apply",
+        help="Apply a pending typed edit when the file text still matches",
+    )
+    p_wp_apply.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_apply.add_argument("--plan", required=True, dest="plan_id")
+    p_wp_apply.add_argument("--from", required=True, dest="from_file")
 
     return parser
 
@@ -807,6 +864,30 @@ def main(argv: list[str] | None = None) -> int:
             return _print(
                 wp.restore_drill(args.backup_id, target_site_id=args.target_site_id, actor=args.actor)
             )
+        if cmd == "files":
+            if args.slug:
+                return _print(
+                    wp.list_files(args.wp_site_id, args.kind, args.slug, actor=args.actor)
+                )
+            return _print(wp.list_components(args.wp_site_id, args.kind, actor=args.actor))
+        if cmd in {"file-propose", "file-apply"}:
+            text, error_class = _load_edit_source(args.from_file)
+            if text is None:
+                return _print(
+                    _WpCliError(error_class or "NotText", "Edit source is unreadable.")
+                )
+            if cmd == "file-propose":
+                return _print(
+                    wp.propose_file(
+                        args.wp_site_id,
+                        args.kind,
+                        args.slug,
+                        args.relative_path,
+                        text,
+                        actor=args.actor,
+                    )
+                )
+            return _print(wp.apply_file(args.wp_site_id, args.plan_id, text, actor=args.actor))
         parser.error(f"Unknown wp command: {cmd}")
         return 2
 

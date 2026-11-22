@@ -1,4 +1,10 @@
-"""WordPress site health and local mock backups. No live HTTP or production restore."""
+"""WordPress site health, local mock backups, and typed theme or plugin edits.
+
+There is no live HTTP client and no production restore. A file edit is not a
+shell: the editor computes one path and a transport lists, reads, or replaces
+that file. Live SSH stays off unless mock mode is off and the owner sets
+``AZOM_WP_FILES_SSH=1``.
+"""
 
 from __future__ import annotations
 
@@ -57,7 +63,8 @@ class WpOpsService:
 
     Production updates and restores are not implemented. ``restore`` refuses
     even for an actor who holds ``WP_OPS_RESTORE``. A staging drill records a
-    local manifest check and does not copy site files.
+    local manifest check and does not copy site files. Theme and plugin edits
+    use a typed path inside the site files root. They are not Phase 4 updates.
     """
 
     def __init__(
@@ -69,9 +76,12 @@ class WpOpsService:
         rest: RestConnector | None = None,
         backup: MockBackup | None = None,
         clock: Callable[[], datetime] | None = None,
+        files_factory: Callable[[Site], Any] | None = None,
     ) -> None:
         self.registry_path = registry_path
         base = data_dir or Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+        self.data_dir = base
+        self.files_factory = files_factory
         self.store = WpOpsStore(base / "wp_ops_state.json")
         self.uptime = uptime or MockUptime()
         self.rest = rest or MockRest()
@@ -125,6 +135,47 @@ class WpOpsService:
                 "live_calls": False,
             },
         )
+
+    def list_components(self, site_id: str, kind: str, *, actor: str) -> WpOpsResult:
+        return self._file_editor().list_components(site_id, kind, actor=actor)
+
+    def list_files(self, site_id: str, kind: str, slug: str, *, actor: str) -> WpOpsResult:
+        return self._file_editor().list_files(site_id, kind, slug, actor=actor)
+
+    def read_file(
+        self,
+        site_id: str,
+        kind: str,
+        slug: str,
+        relative: str,
+        *,
+        actor: str,
+    ) -> WpOpsResult:
+        return self._file_editor().read_file(site_id, kind, slug, relative, actor=actor)
+
+    def propose_file(
+        self,
+        site_id: str,
+        kind: str,
+        slug: str,
+        relative: str,
+        new_text: str,
+        *,
+        actor: str,
+    ) -> WpOpsResult:
+        return self._file_editor().propose(
+            site_id, kind, slug, relative, new_text, actor=actor
+        )
+
+    def apply_file(
+        self,
+        site_id: str,
+        plan_id: str,
+        new_text: str,
+        *,
+        actor: str,
+    ) -> WpOpsResult:
+        return self._file_editor().apply(site_id, plan_id, new_text, actor=actor)
 
     def run_checks(self, site_id: str, *, actor: str, scheduled: bool = False) -> WpOpsResult:
         try:
@@ -1009,6 +1060,26 @@ class WpOpsService:
                 message="Check state is unreadable",
                 data={"error_class": "StateUnreadable", "live_calls": False},
             )
+
+    def _file_editor(self):
+        from ecom_ops.wp_ops.files import FileEditor
+
+        def factory(site: Site):
+            if self.files_factory is not None:
+                return self.files_factory(site)
+            from ecom_ops.integrations.wp_files_ssh import build_file_transport
+
+            return build_file_transport(site, self.data_dir)
+
+        return FileEditor(
+            registry_path=self.registry_path,
+            store=self.store,
+            clock=self.clock,
+            factory=factory,
+            audit=self._audit_raw,
+            need=self._need,
+            lock=_site_lock,
+        )
 
     def _need(
         self,

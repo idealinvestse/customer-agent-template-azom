@@ -18,6 +18,8 @@ sites:
       - https://mock-shop.example.test/checkout
     maintenance_window: "not agreed"
     secret_ref: WP_SECRET_MOCK_SHOP
+    files_root: /var/www/mock-shop
+    ssh_host: mock-shop.example.test
     alert_owner: unassigned
     alert_confirmations: 2
     check_interval_seconds: 300
@@ -44,6 +46,8 @@ sites:
       - https://mock-staging.example.test/
     maintenance_window: "not agreed"
     secret_ref: WP_SECRET_MOCK_STAGING
+    files_root: /var/www/mock-staging
+    ssh_host: mock-staging.example.test
     alert_owner: unassigned
     alert_confirmations: 2
     check_interval_seconds: 300

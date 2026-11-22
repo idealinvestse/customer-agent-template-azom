@@ -232,9 +232,14 @@ python -m ecom_ops --mock --actor oscar wp check --due
 python -m ecom_ops --mock --actor oscar wp backup --id mock-shop
 python -m ecom_ops --mock --actor jonatan wp backups --id mock-shop
 python -m ecom_ops --mock --actor agent wp restore-drill --backup <backup-id> --target mock-staging
+python -m ecom_ops --mock --actor jonatan wp files --id mock-staging --kind theme [--slug twentytwentyfive]
+python -m ecom_ops --mock --actor agent wp file-propose --id mock-staging --kind theme --slug twentytwentyfive --path style.css --from ./edit.css
+python -m ecom_ops --mock --actor agent wp file-apply --id mock-staging --plan fe-aaaaaaaaaaaa --from ./edit.css
 ```
 
 Staging checks, staging backups, and staging drills need `WP_OPS_OPERATE`. Production checks and production mock backups need `WP_OPS_ADMIN`. `wp restore` is not a command. A verified manifest stays `green: false` with `encryption: unconfigured` and `offsite: false`.
+
+`wp files` lists themes, plugins, or the editable files in one component. `file-propose` and `file-apply` read the new text from `--from`. There is no `--body`. A staging edit needs `WP_OPS_OPERATE`. A production edit needs `WP_OPS_ADMIN` and `CODE_EDIT`. The JSON does not include the file body. `AZOM_USE_MOCK=1` keeps the edit on the local mock tree even if `AZOM_WP_FILES_SSH=1`.
 
 #### WordPress ops Do / Do not
 
@@ -245,7 +250,8 @@ Staging checks, staging backups, and staging drills need `WP_OPS_OPERATE`. Produ
 
 **Do not:**
 
-- Point `wp check` at a customer site. The package has no live HTTP client.
+- Point `wp check` at a customer site. The health package has no live HTTP client.
+- Pass a shell command to `wp file-propose`. The edit path is site, kind, slug, and one relative file.
 - Treat an unknown backup, a verified local mock manifest, or a single failed probe as a green, healthy site.
 
 `status` includes `ga4=on|off` and `ads=on|off`. Soft path: `bash bin/mock-marketing-azom.sh`.

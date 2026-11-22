@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Filer – {{ site.display_name if site else 'Webbplats' }} – Azom{% endblock %}
+{% block page_subtitle %}WordPress-filer{% endblock %}
+{% block content %}
+<div class="space-y-5" data-live-calls="false" data-ssh="{{ 'true' if ssh else 'false' }}">
+  <section class="az-card">
+    {% if site %}
+    <p class="text-sm"><a class="text-steel-300" href="{{ url_for('wp_site_detail', site_id=site.id) }}">{{ site.display_name }}</a></p>
+    <h2 class="az-page-title mt-2">Tema- och pluginfiler</h2>
+    <p class="az-muted mt-2 text-sm">
+      Ingen shell. En befintlig fil inne i ett tema eller en plugin.
+      Produktion kräver Oscar. SSH används bara när AZOM_WP_FILES_SSH=1 och mock är av.
+      En skriven fil får en kopia bredvid med suffixet .azom-bak. Den kopian är inte off-site.
+    </p>
+    {% endif %}
+    {% if error %}
+    <p class="mt-3 text-warn">{{ error }}</p>
+    {% endif %}
+    {% if file_error %}
+    <p class="mt-3 text-warn">{{ file_error }}</p>
+    {% endif %}
+    {% if notice == 'proposed' %}
+    <p class="az-badge mt-3 bg-ink-700 text-mist-200" data-edit="proposed" data-tone="attention">Förslag {{ plan }}. Filen är inte skriven.</p>
+    {% elif notice == 'applied' %}
+    <p class="az-badge mt-3 bg-ink-700 text-mist-200" data-edit="applied" data-tone="attention">Filen är skriven. Kopian är inte off-site.</p>
+    {% endif %}
+  </section>
+
+  {% if site %}
+  <section class="az-card">
+    <h2 class="az-section-title">Välj</h2>
+    <p class="mt-3 text-sm">
+      <a href="{{ url_for('wp_files', site_id=site.id, kind='theme') }}">Teman</a>
+      ·
+      <a href="{{ url_for('wp_files', site_id=site.id, kind='plugin') }}">Plugin</a>
+    </p>
+    {% if slugs %}
+    <ul class="mt-3 space-y-2 text-sm">
+      {% for name in slugs %}
+      <li><a href="{{ url_for('wp_files', site_id=site.id, kind=kind, slug=name) }}">{{ name }}</a></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if files %}
+    <ul class="mt-3 space-y-2 text-sm">
+      {% for name in files %}
+      <li><a href="{{ url_for('wp_files', site_id=site.id, kind=kind, slug=slug, path=name) }}">{{ name }}</a></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  {% if relative_path %}
+  <section class="az-card">
+    <h2 class="az-section-title">{{ kind }} / {{ slug }} / {{ relative_path }}</h2>
+    {% if can_edit and content is not none %}
+    <form class="mt-3 space-y-3" method="post" action="{{ url_for('wp_file_propose', site_id=site.id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="kind" value="{{ kind }}" />
+      <input type="hidden" name="slug" value="{{ slug }}" />
+      <input type="hidden" name="path" value="{{ relative_path }}" />
+      <label class="block text-sm">
+        Innehåll
+        <textarea class="mt-1 w-full" name="content" rows="16">{{ content }}</textarea>
+      </label>
+      <button class="az-btn-primary" type="submit" data-file-action="propose">Föreslå ändring</button>
+    </form>
+    {% if plan %}
+    <form class="mt-4 space-y-3" method="post" action="{{ url_for('wp_file_apply', site_id=site.id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="kind" value="{{ kind }}" />
+      <input type="hidden" name="slug" value="{{ slug }}" />
+      <input type="hidden" name="path" value="{{ relative_path }}" />
+      <input type="hidden" name="plan_id" value="{{ plan }}" />
+      <label class="block text-sm">
+        Samma text som i förslaget
+        <textarea class="mt-1 w-full" name="content" rows="16">{{ content }}</textarea>
+      </label>
+      <button class="az-btn-primary" type="submit" data-file-action="apply">Skriv filen</button>
+    </form>
+    {% endif %}
+    {% elif content is not none %}
+    <pre class="mt-3 whitespace-pre-wrap text-sm">{{ content }}</pre>
+    {% else %}
+    <p class="az-muted mt-3 text-sm">Filen kan inte visas.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

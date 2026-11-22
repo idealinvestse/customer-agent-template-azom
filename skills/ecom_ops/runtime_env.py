@@ -27,6 +27,7 @@ PROTECTED_OVERLAY_KEYS = frozenset(
         "MESSENGER_ALLOWED_PSIDS",
         "MESSENGER_ACTOR_MAP",
         "DASHBOARD_SECRET_KEY",
+        "AZOM_WP_FILES_SSH",
     }
 )
 

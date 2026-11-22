@@ -19,5 +19,6 @@ Varje runbook följer samma form: trigger → diagnoskommandon → fix → verif
 | [cases-db-corrupt.md](cases-db-corrupt.md) | cases.db korrupt / SQLite disk-I/O |
 | [dashboard-rate-limited.md](dashboard-rate-limited.md) | Dashboard login rate-limited (429) |
 | [wp-ops-backup.md](wp-ops-backup.md) | Lokal mock-backup och staging-drill. Ingen produktionsåterställning |
+| [wp-ops-files.md](wp-ops-files.md) | Typad redigering av en befintlig tema- eller pluginfil. Inget fritt skal |
 
 **Gör inte:** Markera live soak eller FU9 som klart från en runbook-fix — det ägs av Oscar + Jonatan via [`PILOT_OPS.md`](../PILOT_OPS.md) / [`CASES.md`](../CASES.md).

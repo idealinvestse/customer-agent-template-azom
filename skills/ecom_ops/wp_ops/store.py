@@ -19,6 +19,7 @@ def empty_state() -> dict[str, Any]:
         "on_demand": {},
         "backups": [],
         "drills": [],
+        "file_edits": [],
     }
 
 

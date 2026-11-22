@@ -30,7 +30,7 @@
 - OpenRouter budget: **USD 100** (`config/limits.yaml`)
 - **Jonatan:** `viewer` (+ mail/SSH read, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**, **WP_OPS_READ**)
 - **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags + **MARKETING_MUTATE** + `shadow-report` / `retention-purge` + **WP_OPS_ADMIN**; **WP_OPS_RESTORE** still refuses)
-- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**, **WP_OPS_OPERATE** for staging health, mock backup, and staging drill only)
+- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**, **WP_OPS_OPERATE** for staging health, mock backup, staging drill, and a staging theme/plugin file edit)
 
 ## Goals
 
@@ -211,4 +211,4 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 
 See [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) for shipment trackings, multi-site `domain=`, WordPress client, retries, webhooks, pagination, probes.
 
-WordPress site operations (Phase 1 mock health, Phase 2 local mock backup and staging drill): [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md). Production restore stays refused. Do not contact customer sites or enable updates from that surface.
+WordPress site operations (Phase 1 mock health, Phase 2 local mock backup and staging drill, typed theme/plugin file edit): [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md). The file edit is not a general shell. Live SSH stays off unless mock mode is off and `AZOM_WP_FILES_SSH=1`. Production restore stays refused. Do not contact customer sites or enable updates from that surface.

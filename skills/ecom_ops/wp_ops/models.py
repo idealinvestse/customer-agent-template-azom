@@ -27,6 +27,8 @@ _CAPABILITIES = (
 _CAP_VALUES = frozenset({"available", "unavailable", "unknown"})
 _ENVIRONMENTS = frozenset({"production", "staging"})
 _QUERY_SECRET = ("password", "token", "secret", "key")
+_FILES_ROOT = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_./-]{0,180}$")
+_SSH_HOST = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
 
 
 def clean_error_class(value: str | None) -> str | None:
@@ -90,6 +92,8 @@ class Site:
     dedupe_window_seconds: int
     retention_days: int
     alert_owner: str
+    files_root: str
+    ssh_host: str
 
     def capability_map(self) -> dict[str, str]:
         return dict(self.capabilities)
@@ -125,6 +129,8 @@ class Site:
             "dedupe_window_seconds": self.dedupe_window_seconds,
             "retention_days": self.retention_days,
             "alert_owner": self.alert_owner,
+            "files_root": self.files_root,
+            "ssh_host": self.ssh_host,
             "pending_updates": None,
         }
 
@@ -208,7 +214,27 @@ def parse_site(raw: Any) -> Site:
         dedupe_window_seconds=window,
         retention_days=retention,
         alert_owner=_short_text(raw.get("alert_owner") or "unassigned", field=f"{site_id} alert_owner", limit=80),
+        files_root=_files_root(raw.get("files_root"), site_id=site_id),
+        ssh_host=_ssh_host(raw.get("ssh_host"), site_id=site_id),
     )
+
+
+def _files_root(value: Any, *, site_id: str) -> str:
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return ""
+    if not _FILES_ROOT.fullmatch(text) or ".." in text.split("/"):
+        raise ValueError(f"{site_id}: files_root must be an absolute path without '..'")
+    return text
+
+
+def _ssh_host(value: Any, *, site_id: str) -> str:
+    text = str(value or "").strip().lower().rstrip(".")
+    if not text:
+        return ""
+    if not _SSH_HOST.fullmatch(text):
+        raise ValueError(f"{site_id}: ssh_host must be a hostname")
+    return text
 
 
 def _short_text(value: Any, *, field: str, limit: int, allow_empty: bool = False) -> str:

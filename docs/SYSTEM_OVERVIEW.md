@@ -87,7 +87,7 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |
 | **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text + `/marketing` read |
 | **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | Content and store API — [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
-| **WordPress site ops** | `wp_ops/` | Phase 1–2 mock health and local backup manifests — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
+| **WordPress site ops** | `wp_ops/` | Phase 1–2 mock health, local backup manifests, and a typed theme/plugin file edit — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
 | **smoke / readiness** | `smoke.py`, `ops_status.py` | Opt-in live smoke; `/health` poll age |
 
 ## 4. Cases 2.0 + Path B (AI)

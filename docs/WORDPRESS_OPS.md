@@ -4,7 +4,7 @@
 **Audience:** Coding agents and developers. Operators can use the CLI and dashboard sections.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
 
-**Document status:** Phase 1 mock health and Phase 2 local mock backup manifests are in the repository. Phases 0 and 3–5 are not implemented. Production restore is not available. This is not managed WordPress hosting.
+**Document status:** Phase 1 mock health and Phase 2 local mock backup manifests are in the repository. A typed edit of one existing theme or plugin file is also in the repository. It is off for live SSH unless mock mode is off and `AZOM_WP_FILES_SSH=1`. Phases 0 and 3–5 are not implemented. Production restore is not available. This is not managed WordPress hosting.
 
 ## Glossary
 
@@ -16,6 +16,7 @@
 | **Mock backup** | A metadata manifest in `wp_ops_state.json`. `provider` is `mock`, `offsite` is false, `encryption` is `unconfigured`, and `bytes_copied` is false. The SHA-256 digest covers that metadata. It is not encryption and not a copy of site files or a database. |
 | **Confirmation** | How many consecutive failed probes open one incident. The minimum is 2. One failure is not “site down”. |
 | **Content client** | `skills/ecom_ops/integrations/wordpress.py`. Posts, pages, and settings. It is not this operations surface and it still uses shared `WP_USERNAME` / `WP_APP_PASSWORD`. |
+| **Typed file edit** | One existing `.php`, `.css`, `.js`, `.json`, `.txt`, or `.html` file inside one theme or plugin directory. The caller supplies the site, kind, slug, relative path, and new text. Azom computes the path. There is no command field. |
 
 ## Phase map
 
@@ -25,7 +26,7 @@
 | 1 | Per-site registry, secret refs, read-only health, mock uptime, alert dedupe, audit, CLI, dashboard. | Files below. | Mock only. No live site calls. |
 | 2 | Local mock backup manifest, integrity of that manifest, staging drill, measured drill duration. | `wp_ops/backup.py`, state keys `backups` and `drills`, runbook below. | Mock only. No off-site copy. No production restore. |
 | 3 | Core and plugin checksums, coverage labels, one scanner adapter. | Not created. | Not implemented. |
-| 4 | Update plan, approval binding, staging execution, allowlisted adapter. Production writes stay manual. | Permission `WP_OPS_ADMIN` is reserved. No plan store. | Not implemented. |
+| 4 | Update plan, approval binding, staging execution, allowlisted adapter. Production writes stay manual. | Permission `WP_OPS_ADMIN` is reserved. No plan store. | Not implemented. A typed file edit is not this phase. |
 | 5 | One staging site, then one production site, owner sign-off of runbooks and support hours. | Human soak. Agents must not mark it done. | Not started. |
 
 ## Phase 1 behavior
@@ -63,9 +64,9 @@ Permissions are on roles. Code does not special-case a person’s name.
 
 | Permission | Who has it in the default map | Phase 1 use |
 |------------|-------------------------------|-------------|
-| `WP_OPS_READ` | `viewer`, `read_only`, `operator`, `full_admin` | List and show sites. |
-| `WP_OPS_OPERATE` | `operator`, `full_admin` | Run checks, create a mock backup, and record a staging drill on `staging`. |
-| `WP_OPS_ADMIN` | `full_admin` | Run checks and create a mock backup on `production`. Reserved for later update approval. |
+| `WP_OPS_READ` | `viewer`, `read_only`, `operator`, `full_admin` | List and show sites. List and read one theme or plugin file. |
+| `WP_OPS_OPERATE` | `operator`, `full_admin` | Run checks, create a mock backup, and record a staging drill on `staging`. Propose and apply a file edit on `staging`. |
+| `WP_OPS_ADMIN` | `full_admin` | Run checks and create a mock backup on `production`. A production file edit also needs `CODE_EDIT`. |
 | `WP_OPS_RESTORE` | `full_admin` | `WpOpsService.restore` still returns `RestoreNotInMvp` and executes nothing. There is no `wp restore` command and no production restore control. |
 
 Jonatan is `viewer`. The agent automation actor is `operator`. Oscar is `full_admin`. A content role cannot run a production check, update code, or restore a database.
@@ -84,7 +85,10 @@ python -m ecom_ops --mock --actor oscar wp check --due
 python -m ecom_ops --mock --actor oscar wp backup --id mock-shop
 python -m ecom_ops --mock --actor jonatan wp backups --id mock-shop
 python -m ecom_ops --mock --actor agent wp restore-drill --backup <backup-id> --target mock-staging
-# expect: JSON with ok true or false. live_calls is false.
+python -m ecom_ops --mock --actor jonatan wp files --id mock-staging --kind theme
+python -m ecom_ops --mock --actor agent wp file-propose --id mock-staging --kind theme --slug twentytwentyfive --path style.css --from ./edit.css
+python -m ecom_ops --mock --actor agent wp file-apply --id mock-staging --plan fe-aaaaaaaaaaaa --from ./edit.css
+# expect: JSON with ok true or false. live_calls is false. The file body is not in the JSON.
 # expect: a verified backup has green false, offsite false, encryption unconfigured, bytes_copied false.
 ```
 
@@ -100,6 +104,18 @@ A backup is one id for the labels `files` and `database`. Success requires the m
 
 The overview badge for a verified mock set says “verifierad, inte off-site”. It is not green. `healthy` stays false while checksum is unknown.
 
+## Typed file edits
+
+This is not Phase 4 and not a plugin or theme update. The model cannot compose a shell command. `sed`, `vim`, and `tee` stay off the general SSH allowlist. The file transport builds only `ls -1`, `cat`, `cp -p`, and `tee` for one path it computed itself.
+
+The path has to stay inside `{files_root}/wp-content/themes|plugins/{slug}/`. `..`, a new file, a delete, and a `.azom-bak` file are refused. The text must be UTF-8 and at most 65536 bytes.
+
+`propose` stores a plan id and two SHA-256 digests. It does not store the file body. `apply` sends the same text again. The current file must still match the earlier digest, and the read-back must match the new digest. The write copies the old bytes to a sibling `.azom-bak` on that machine. That copy is not an off-site backup. `restore()` is unchanged.
+
+Mock mode uses a directory under `AZOM_DATA_DIR/wp_files_mock/`. `AZOM_USE_MOCK=1` forces that directory even if `AZOM_WP_FILES_SSH=1`. Live SSH runs only when mock mode is off and `AZOM_WP_FILES_SSH=1`. A host ending in `.example.test` is refused before any connection. The dashboard cannot turn the flag on through an env overlay. `live_calls` stays false. The separate `ssh` field says whether the live transport was selected.
+
+A staging edit needs `WP_OPS_OPERATE`. A production edit needs `WP_OPS_ADMIN` and `CODE_EDIT`. The same site lock used by health checks returns `SiteBusy` when it is held. Audit records the path, byte length, digest, and plan id. It does not record the file body.
+
 ### Dashboard
 
 Routes sit behind the existing login:
@@ -111,8 +127,11 @@ Routes sit behind the existing login:
 | `POST /wp/<site_id>/check` | staging: `WP_OPS_OPERATE`; production: `WP_OPS_ADMIN` | Mock read-only check. CSRF required. |
 | `POST /wp/<site_id>/backup` | same as check | Create one local mock manifest. CSRF required. |
 | `POST /wp/<site_id>/restore-drill` | `WP_OPS_OPERATE` | Staging drill. The form lists staging targets only. CSRF required. |
+| `GET /wp/<site_id>/files` | `WP_OPS_READ` | List or read one theme or plugin file. Opening the site page does not read files. |
+| `POST /wp/<site_id>/files/propose` | staging: `WP_OPS_OPERATE`; production: `WP_OPS_ADMIN` and `CODE_EDIT` | Store a plan. The file is not written. CSRF required. |
+| `POST /wp/<site_id>/files/apply` | same as propose | Write the file when the text and the current digest match. CSRF required. |
 
-Operator steps: [`runbooks/wp-ops-backup.md`](runbooks/wp-ops-backup.md).
+Operator steps: [`runbooks/wp-ops-backup.md`](runbooks/wp-ops-backup.md), [`runbooks/wp-ops-files.md`](runbooks/wp-ops-files.md).
 
 ## Code
 
@@ -124,9 +143,11 @@ Operator steps: [`runbooks/wp-ops-backup.md`](runbooks/wp-ops-backup.md).
 | Mock backup manifest | `skills/ecom_ops/wp_ops/backup.py` |
 | State | `skills/ecom_ops/wp_ops/store.py` |
 | Service | `skills/ecom_ops/wp_ops/service.py` |
+| Typed file editor | `skills/ecom_ops/wp_ops/files.py` |
+| Live file SSH, off unless enabled | `skills/ecom_ops/integrations/wp_files_ssh.py` |
 | CLI | `wp` in `skills/ecom_ops/cli.py` |
 | Dashboard | `infrastructure/dashboard/wp_routes.py` |
-| Tests | `tests/test_wp_ops.py`, `tests/test_wp_dashboard.py` |
+| Tests | `tests/test_wp_ops.py`, `tests/test_wp_files.py`, `tests/test_wp_dashboard.py` |
 
 ## Do / Do not
 
@@ -140,7 +161,7 @@ Operator steps: [`runbooks/wp-ops-backup.md`](runbooks/wp-ops-backup.md).
 **Do not:**
 
 - Call a customer site, use a real application password, or turn on automatic updates from this phase.
-- Add a general shell, SSH, or PHP execution tool for these operations.
+- Add a general shell or let a caller compose an SSH command. The typed file transport is the only file write, and live SSH stays off until `AZOM_WP_FILES_SSH=1` with mock mode off.
 - Send backups to a third party, invent a storage vendor, or generate an encryption key in this phase.
 - Treat `WpOpsService.restore` or a production drill target as an allowed restore.
 - Market this as managed hosting, a malware scanner, or an availability SLA.

@@ -81,7 +81,7 @@ Details: `docs/MAIL_PROVIDERS.md`.
 
 See `docs/WOO_WORDPRESS.md` — shipment trackings, multi-site `domain=`, WordPress Application Passwords, webhook HMAC, retries.
 
-Site operations are separate: `docs/WORDPRESS_OPS.md`. Phase 1 is mock health. Phase 2 is a local mock backup manifest and a staging drill. Do not update plugins, restore a database, or run a shell from this card. Production checks and production mock backups need `WP_OPS_ADMIN`. `restore` refuses. A verified mock backup is not off-site and not green.
+Site operations are separate: `docs/WORDPRESS_OPS.md`. Phase 1 is mock health. Phase 2 is a local mock backup manifest and a staging drill. A typed edit can replace one existing theme or plugin file. That path is not a general shell, not a plugin update, and not a restore. Live SSH stays off unless mock mode is off and `AZOM_WP_FILES_SSH=1`. Production checks and production mock backups need `WP_OPS_ADMIN`. A production file edit also needs `CODE_EDIT`. `restore` refuses. A verified mock backup is not off-site and not green.
 
 ## Marketing Google
 
