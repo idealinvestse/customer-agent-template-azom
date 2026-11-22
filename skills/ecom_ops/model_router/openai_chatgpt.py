@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlencode
 
@@ -41,6 +42,8 @@ DEFAULT_SCOPE = (
 )
 DEFAULT_RESOURCE = "https://api.openai.com/v1"
 DEFAULT_AGENT_NAME = "Azom"
+DEFAULT_AUTHORIZATION_URL = "https://auth.openai.com/api/accounts/authorize"
+DEFAULT_TOKEN_URL = "https://auth.openai.com/api/accounts/oauth/token"
 _REQUIRED_ENV = (
     "OPENAI_SIWC_CLIENT_ID",
     "OPENAI_SIWC_REDIRECT_URI",
@@ -52,6 +55,53 @@ _REQUIRED_ENV = (
 
 def _env(name: str) -> str:
     return (os.environ.get(name) or "").strip()
+
+
+def _explicit_siwc_set() -> bool:
+    """True when the operator set any SIWC endpoint. Partial config does not use defaults."""
+    return any(_env(name) for name in _REQUIRED_ENV)
+
+
+def _default_host_id() -> str:
+    path = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data")) / "openai_siwc_host_id"
+    try:
+        if path.is_file():
+            existing = path.read_text(encoding="utf-8").strip()
+            if existing and len(existing) <= 128 and existing.replace("-", "").replace("_", "").isalnum():
+                return existing
+    except OSError:
+        pass
+    generated = secrets.token_hex(16)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(generated + "\n", encoding="utf-8")
+        os.chmod(path, 0o600)
+    except OSError:
+        return generated
+    return generated
+
+
+def _siwc(name: str) -> str:
+    """SIWC setting. Env wins. Documented defaults apply only when none of the five are set."""
+    explicit = _env(name)
+    if explicit:
+        return explicit
+    if _explicit_siwc_set():
+        return ""
+    if name == "OPENAI_SIWC_CLIENT_ID":
+        return DYNAMIC_CLIENT_ID
+    if name == "OPENAI_SIWC_AUTHORIZATION_URL":
+        return DEFAULT_AUTHORIZATION_URL
+    if name == "OPENAI_SIWC_TOKEN_URL":
+        return DEFAULT_TOKEN_URL
+    if name == "OPENAI_SIWC_REDIRECT_URI":
+        port = _env("DASHBOARD_PORT") or "8080"
+        if not port.isdigit():
+            port = "8080"
+        return f"http://127.0.0.1:{port}/oauth/openai/callback"
+    if name == "OPENAI_SIWC_HOST_ID":
+        return _default_host_id()
+    return ""
 
 
 def _scope() -> str:
@@ -164,7 +214,7 @@ class OpenAIChatGPTOAuthRoute:
         return ModelSessionStore(f"{self.provider}_state", self.account_id)
 
     def is_configured(self) -> bool:
-        return all(_env(name) for name in _REQUIRED_ENV)
+        return all(_siwc(name) for name in _REQUIRED_ENV)
 
     def status(self) -> dict[str, Any]:
         session = self.store.load()
@@ -182,7 +232,7 @@ class OpenAIChatGPTOAuthRoute:
             "cost_kind": "subscription",
             "plan_usage": False,
             "id_token_verified": False,
-            "ext_agent_host_id": _env("OPENAI_SIWC_HOST_ID"),
+            "ext_agent_host_id": _siwc("OPENAI_SIWC_HOST_ID"),
         }
         if not session:
             return base
@@ -211,7 +261,7 @@ class OpenAIChatGPTOAuthRoute:
         saved = (existing.client_id if existing else "").strip()
         if saved and saved != DYNAMIC_CLIENT_ID:
             return saved, False
-        configured = _env("OPENAI_SIWC_CLIENT_ID")
+        configured = _siwc("OPENAI_SIWC_CLIENT_ID")
         return configured, configured == DYNAMIC_CLIENT_ID
 
     def start_authorization(self) -> tuple[str, str]:
@@ -228,7 +278,7 @@ class OpenAIChatGPTOAuthRoute:
             .decode("ascii")
         )
         client_id, initial_registration = self._authorize_client_id()
-        host_id = _env("OPENAI_SIWC_HOST_ID")
+        host_id = _siwc("OPENAI_SIWC_HOST_ID")
         scope = _scope()
         self._state_store().save(
             ModelSession(
@@ -247,7 +297,7 @@ class OpenAIChatGPTOAuthRoute:
         params = {
             "response_type": "code",
             "client_id": client_id,
-            "redirect_uri": _env("OPENAI_SIWC_REDIRECT_URI"),
+            "redirect_uri": _siwc("OPENAI_SIWC_REDIRECT_URI"),
             "scope": scope,
             "resource": _resource(),
             "state": state,
@@ -258,7 +308,7 @@ class OpenAIChatGPTOAuthRoute:
         }
         if initial_registration:
             params["agent_name_hint"] = _agent_name()
-        return f"{_env('OPENAI_SIWC_AUTHORIZATION_URL')}?{urlencode(params)}", state
+        return f"{_siwc('OPENAI_SIWC_AUTHORIZATION_URL')}?{urlencode(params)}", state
 
     def exchange_authorization_code(
         self,
@@ -297,14 +347,14 @@ class OpenAIChatGPTOAuthRoute:
                 code="client_mismatch",
             )
         else:
-            client_id = requested or _env("OPENAI_SIWC_CLIENT_ID")
+            client_id = requested or _siwc("OPENAI_SIWC_CLIENT_ID")
 
         data = self._token_request(
             {
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": client_id,
-                "redirect_uri": _env("OPENAI_SIWC_REDIRECT_URI"),
+                "redirect_uri": _siwc("OPENAI_SIWC_REDIRECT_URI"),
                 "code_verifier": pending.code_verifier,
                 "resource": _resource(),
             }
@@ -315,7 +365,7 @@ class OpenAIChatGPTOAuthRoute:
             generation=1,
             previous=None,
             client_id=client_id,
-            host_id=pending.ext_agent_host_id or _env("OPENAI_SIWC_HOST_ID"),
+            host_id=pending.ext_agent_host_id or _siwc("OPENAI_SIWC_HOST_ID"),
         )
         if not session.access_token or not session.refresh_token:
             raise ModelAuthError("ChatGPT OAuth response missing required tokens")
@@ -360,12 +410,12 @@ class OpenAIChatGPTOAuthRoute:
             client_id=(
                 client_id
                 or (previous.client_id if previous else "")
-                or _env("OPENAI_SIWC_CLIENT_ID")
+                or _siwc("OPENAI_SIWC_CLIENT_ID")
             ),
             ext_agent_host_id=(
                 host_id
                 or (previous.ext_agent_host_id if previous else "")
-                or _env("OPENAI_SIWC_HOST_ID")
+                or _siwc("OPENAI_SIWC_HOST_ID")
             ),
             access_token=str(data.get("access_token") or ""),
             refresh_token=refresh,
@@ -381,7 +431,7 @@ class OpenAIChatGPTOAuthRoute:
     def _token_request(self, form: dict[str, str]) -> dict[str, Any]:
         try:
             response = requests.post(
-                _env("OPENAI_SIWC_TOKEN_URL"),
+                _siwc("OPENAI_SIWC_TOKEN_URL"),
                 data=form,
                 timeout=30,
                 headers={"Accept": "application/json"},
@@ -453,10 +503,10 @@ class OpenAIChatGPTOAuthRoute:
                 data = self._token_request(
                     {
                         "grant_type": "refresh_token",
-                        "client_id": current.client_id or _env("OPENAI_SIWC_CLIENT_ID"),
+                        "client_id": current.client_id or _siwc("OPENAI_SIWC_CLIENT_ID"),
                         "refresh_token": current.refresh_token,
                         "resource": _resource(),
-                        "ext_agent_host_id": current.ext_agent_host_id or _env("OPENAI_SIWC_HOST_ID"),
+                        "ext_agent_host_id": current.ext_agent_host_id or _siwc("OPENAI_SIWC_HOST_ID"),
                     }
                 )
             except ModelAuthError as exc:
@@ -521,7 +571,11 @@ class OpenAIChatGPTOAuthRoute:
         except requests.RequestException as exc:
             raise ModelUnavailableError("ChatGPT Responses endpoint unreachable") from exc
 
-    def _read_sse(self, response: requests.Response) -> tuple[str, dict[str, Any]]:
+    def _read_sse(
+        self,
+        response: requests.Response,
+        on_text_delta=None,
+    ) -> tuple[str, dict[str, Any]]:
         parts: list[str] = []
         done_text = ""
         completed_text = ""
@@ -544,6 +598,11 @@ class OpenAIChatGPTOAuthRoute:
                     delta = event.get("delta")
                     if isinstance(delta, str):
                         parts.append(delta)
+                        if on_text_delta:
+                            try:
+                                on_text_delta(delta)
+                            except Exception:
+                                pass
                 elif event_type == "response.output_text.done":
                     text = event.get("text")
                     if isinstance(text, str):
@@ -591,7 +650,7 @@ class OpenAIChatGPTOAuthRoute:
             response.close()
             raise ModelUnavailableError(f"ChatGPT Responses request rejected ({status})")
 
-        content, usage = self._read_sse(response)
+        content, usage = self._read_sse(response, request.on_text_delta)
         if not content:
             raise ModelUnavailableError("ChatGPT Responses returned no content")
         prompt_tokens, completion_tokens, total_tokens = _usage_ints(usage)

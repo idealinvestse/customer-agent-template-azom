@@ -28,13 +28,31 @@ from support import (
 
 def _model_panel() -> dict:
     from ecom_ops.model_router.router import get_model_router, load_last_test
+    from ecom_ops.model_router.xai_device_login import device_login_status
 
     router = get_model_router()
+    query = (request.args.get("model_q") or "").strip()[:80]
+    catalog_provider = (request.args.get("catalog") or "openrouter").strip().lower()
+    catalog_rows: list[dict[str, str]] = []
+    catalog_error = ""
+    if query:
+        from ecom_ops.model_router.catalog import search_models
+
+        found = search_models(catalog_provider, query)
+        catalog_rows = list(found.get("models") or [])
+        catalog_error = str(found.get("error") or "")
     return {
         "model_routes": router.routes(),
         "model_order": router.ordered_route_ids(),
         "model_preferred": router.preferred_route_id(),
         "model_last_test": load_last_test(),
+        "xai_login": device_login_status(),
+        "model_query": query,
+        "model_catalog": catalog_rows,
+        "model_catalog_error": catalog_error,
+        "model_catalog_provider": (
+            catalog_provider if catalog_provider in {"openrouter", "xai"} else "openrouter"
+        ),
     }
 
 
@@ -124,6 +142,31 @@ def register_oscar_routes(app: Flask) -> None:
             )
         return redirect(url_for("oscar_home") + "?msg=Modelltest+ok+utan+fallback")
 
+    @app.route("/oscar/models/xai/login", methods=["POST"])
+    @_oscar_required
+    def oscar_xai_login():
+        from ecom_ops.model_router.xai_device_login import start_device_login
+
+        start_device_login()
+        return redirect(url_for("oscar_home") + "#xai-login")
+
+    @app.route("/oscar/models/xai/login/status", methods=["GET"])
+    @_oscar_required
+    def oscar_xai_login_status():
+        from ecom_ops.model_router.xai_device_login import device_login_status
+        from ecom_ops.runtime_env import env_flag
+
+        status = device_login_status()
+        return jsonify(
+            {
+                "status": status["status"],
+                "verification_uri": status["verification_uri"],
+                "user_code": status["user_code"],
+                "detail": status["detail"],
+                "enabled": env_flag("AZOM_XAI_GROK_BUILD"),
+            }
+        )
+
     @app.route("/oscar/models/chatgpt/disconnect", methods=["POST"])
     @_oscar_required
     def oscar_chatgpt_disconnect():
@@ -165,6 +208,7 @@ def register_oscar_routes(app: Flask) -> None:
                         "chat": request.form.get("chat", ""),
                         "classify": request.form.get("classify", ""),
                         "draft": request.form.get("draft", ""),
+                        "product_desc": request.form.get("product_desc", ""),
                     }
                 )
             except ValueError as exc:
@@ -180,7 +224,7 @@ def register_oscar_routes(app: Flask) -> None:
                 msg = "Beteende sparat" if changed else "Inga ändringar"
                 return redirect(url_for("oscar_behavior", msg=msg))
         prompts = {}
-        for name in ("chat", "classify", "draft"):
+        for name in ("chat", "classify", "draft", "product_desc"):
             system, version = get_prompt(name)
             prompts[name] = {"system": system, "version": version}
         return render_template(

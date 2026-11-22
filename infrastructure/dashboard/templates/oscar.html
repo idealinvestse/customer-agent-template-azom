@@ -117,21 +117,127 @@
       </label>
       <button class="az-btn-oscar" type="submit">Spara modellval</button>
     </form>
+    <form method="get" action="/oscar" class="mt-4 flex flex-wrap items-end gap-2">
+      <div>
+        <label class="az-label" for="model_q">Sök modell</label>
+        <input class="az-input" id="model_q" name="model_q" value="{{ model_query or '' }}" placeholder="deepseek flash" />
+      </div>
+      <div>
+        <label class="az-label" for="catalog">Katalog</label>
+        <select class="az-input" id="catalog" name="catalog">
+          <option value="openrouter" {% if model_catalog_provider != 'xai' %}selected{% endif %}>OpenRouter</option>
+          <option value="xai" {% if model_catalog_provider == 'xai' %}selected{% endif %}>xAI</option>
+        </select>
+      </div>
+      <button class="az-btn-secondary" type="submit">Sök</button>
+    </form>
+    {% if model_catalog_error %}
+    <p class="az-missing mt-2">{{ model_catalog_error }}</p>
+    {% endif %}
+    {% if model_catalog %}
+    <ul class="mt-2 space-y-1">
+      {% for row in model_catalog %}
+      <li>
+        <button class="az-btn-secondary" type="button" data-model-id="{{ row.id }}" data-model-target="{{ 'XAI_MODEL' if model_catalog_provider == 'xai' else 'OPENROUTER_MODEL' }}">{{ row.name }}</button>
+        <code class="az-code">{{ row.id }}</code>
+      </li>
+      {% endfor %}
+    </ul>
+    <script>
+      document.querySelectorAll("[data-model-id]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var field = document.getElementById(button.getAttribute("data-model-target"));
+          if (field) field.value = button.getAttribute("data-model-id");
+        });
+      });
+    </script>
+    {% endif %}
+    <p class="az-muted mt-2">OpenRouter utan eget modell-id använder deepseek/deepseek-v4.1-flash-1017. Ett klick fyller fältet. Spara modellval skriver valet.</p>
     <div class="mt-4 flex flex-wrap gap-2">
       <a class="az-btn-oscar" href="/oauth/openai/start">Anslut ChatGPT</a>
       <a class="az-btn-secondary" href="/oauth/openai/start">Återanslut</a>
       <form method="post" action="/oscar/models/chatgpt/disconnect">
         <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-        <button class="az-btn-secondary" type="submit">Koppla från</button>
+        <button class="az-btn-secondary" type="submit">Koppla från ChatGPT</button>
+      </form>
+      <form id="xai-login" method="post" action="/oscar/models/xai/login">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button class="az-btn-oscar" type="submit">Logga in med xAI</button>
       </form>
     </div>
+    {% set xai = xai_login or {} %}
+    {% if xai.get("verification_uri") or xai.get("user_code") or xai.get("detail") or xai.get("status") not in [None, "", "idle"] %}
+    <p id="xai-login-status" class="mt-2" data-status="{{ xai.get('status', '') }}">
+      xAI: <span id="xai-login-state">{{ xai.get("status", "") }}</span>
+      <strong id="xai-login-code">{{ xai.get("user_code", "") }}</strong>
+      <a id="xai-login-link" class="text-oscar-400 hover:underline" {% if xai.get("verification_uri") %}href="{{ xai.get('verification_uri') }}"{% else %}hidden{% endif %}>Öppna inloggningen</a>
+      <span id="xai-login-detail" class="az-muted">{% if xai.get("status") == "finished" %}Inloggningen är klar. Grok Build är aktiverat.{% elif xai.get("status") == "pending" %}Väntar på godkännande i webbläsaren. {{ xai.get("detail", "") }}{% else %}{{ xai.get("detail", "") }}{% endif %}</span>
+    </p>
+    {% if xai.get("status") == "pending" %}
+    <script>
+      (function () {
+        var box = document.getElementById("xai-login-status");
+        if (!box || box.getAttribute("data-status") !== "pending") return;
+        var tries = 0;
+        function text(id, value) {
+          var node = document.getElementById(id);
+          if (node) node.textContent = value || "";
+        }
+        function allowUri(uri) {
+          return uri.indexOf("https://accounts.x.ai/") === 0 || uri.indexOf("https://auth.x.ai/") === 0;
+        }
+        function tick() {
+          tries += 1;
+          fetch("/oscar/models/xai/login/status", {
+            credentials: "same-origin",
+            headers: {Accept: "application/json"}
+          }).then(function (res) {
+            if (!res.ok) throw new Error("status");
+            return res.json();
+          }).then(function (body) {
+            var status = String(body.status || "");
+            box.setAttribute("data-status", status);
+            text("xai-login-state", status);
+            text("xai-login-code", body.user_code || "");
+            var link = document.getElementById("xai-login-link");
+            var uri = String(body.verification_uri || "");
+            if (link) {
+              if (allowUri(uri)) {
+                link.href = uri;
+                link.hidden = false;
+              } else {
+                link.hidden = true;
+                link.removeAttribute("href");
+              }
+            }
+            if (status === "finished") {
+              text("xai-login-detail", "Inloggningen är klar. Grok Build är aktiverat.");
+              return;
+            }
+            if (status === "failed") {
+              text("xai-login-detail", body.detail || "Inloggningen misslyckades.");
+              return;
+            }
+            text("xai-login-detail", "Väntar på godkännande i webbläsaren. " + (body.detail || ""));
+            if (tries < 150) window.setTimeout(tick, 2000);
+            else text("xai-login-detail", "Sidan slutade vänta. Ladda om för att se läget.");
+          }).catch(function () {
+            if (tries < 150) window.setTimeout(tick, 2000);
+          });
+        }
+        window.setTimeout(tick, 2000);
+      })();
+    </script>
+    {% endif %}
+    {% endif %}
     {% set chatgpt = model_routes.get("chatgpt_oauth", {}) %}
     <p class="az-muted mt-2">
-      ChatGPT-refresh ägs av Azom.
+      ChatGPT-refresh ägs av Azom. Anslut öppnar OpenAI när inga SIWC-variabler är satta.
       Host-id: {{ chatgpt.get("ext_agent_host_id") or "saknas" }}.
       Plananvändning: {% if chatgpt.get("plan_usage") %}beviljad{% else %}inte bekräftad{% endif %}.
       ID-token signatur: inte verifierad.
-      xAI Grok Build äger sin egen session och refresh. Direkt xAI OAuth är inte tillgänglig: xAI har inte publicerat ett klientkontrakt som Azom kan använda. API-nyckeln sätts under Oscar secrets och visas inte igen.
+      xAI-knappen kör grok login --device-auth. Grok Build sparar sessionen. Azom läser inte auth.json och lagrar ingen xAI-token.
+      API-nyckeln sätts under Oscar secrets och visas inte igen.
     </p>
   </section>
 

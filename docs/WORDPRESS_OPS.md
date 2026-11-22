@@ -4,7 +4,7 @@
 **Audience:** Coding agents and developers. Operators can use the CLI and dashboard sections.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
 
-**Document status:** Phase 1 mock health and Phase 2 local mock backup manifests are in the repository. A typed edit of one existing theme or plugin file is also in the repository. It is off for live SSH unless mock mode is off and `AZOM_WP_FILES_SSH=1`. Phases 0 and 3–5 are not implemented. Production restore is not available. This is not managed WordPress hosting.
+**Document status:** Phase 1 mock health, Phase 2 local mock backup manifests, a bounded read-only bot tool loop, and preview-only update/restore plans are in the repository. A typed edit of one existing theme or plugin file is also available. It is off for live SSH unless mock mode is off and `AZOM_WP_FILES_SSH=1`. Oscar can set each site's document root and SSH login from the dashboard. Security scanning and update discovery/execution are not implemented. Production restore is not available. This is not managed WordPress hosting.
 
 ## Glossary
 
@@ -15,8 +15,9 @@
 | **Tone** | `ok` only when a check result is `ok`. `fail`, `unknown`, and a verified local mock backup use tone `attention` and must not be shown as green. |
 | **Mock backup** | A metadata manifest in `wp_ops_state.json`. `provider` is `mock`, `offsite` is false, `encryption` is `unconfigured`, and `bytes_copied` is false. The SHA-256 digest covers that metadata. It is not encryption and not a copy of site files or a database. |
 | **Confirmation** | How many consecutive failed probes open one incident. The minimum is 2. One failure is not “site down”. |
-| **Content client** | `skills/ecom_ops/integrations/wordpress.py`. Posts, pages, and settings. It is not this operations surface and it still uses shared `WP_USERNAME` / `WP_APP_PASSWORD`. |
+| **Content client** | `skills/ecom_ops/integrations/wordpress.py`. Posts, pages, settings, a theme list, and a plugin list plus active/inactive. It does not install, update, delete, or switch themes. It is not this operations surface and it still uses shared `WP_USERNAME` / `WP_APP_PASSWORD`. |
 | **Typed file edit** | One existing `.php`, `.css`, `.js`, `.json`, `.txt`, or `.html` file inside one theme or plugin directory. The caller supplies the site, kind, slug, relative path, and new text. Azom computes the path. There is no command field. |
+| **SSH settings** | Per-site document root, host, explicit non-root user, port, and login key. The registry stays the default. Overrides and the private key live under `AZOM_DATA_DIR`, not in git. |
 
 ## Phase map
 
@@ -26,8 +27,22 @@
 | 1 | Per-site registry, secret refs, read-only health, mock uptime, alert dedupe, audit, CLI, dashboard. | Files below. | Mock only. No live site calls. |
 | 2 | Local mock backup manifest, integrity of that manifest, staging drill, measured drill duration. | `wp_ops/backup.py`, state keys `backups` and `drills`, runbook below. | Mock only. No off-site copy. No production restore. |
 | 3 | Core and plugin checksums, coverage labels, one scanner adapter. | Not created. | Not implemented. |
-| 4 | Update plan, approval binding, staging execution, allowlisted adapter. Production writes stay manual. | Permission `WP_OPS_ADMIN` is reserved. No plan store. | Not implemented. A typed file edit is not this phase. |
+| 4 | Update plan, approval binding, staging execution, allowlisted adapter. Production writes stay manual. | Bot read tools and locked preview-only plan records. | Preview only. Update discovery, approval callbacks, execution, and production restore adapters are unavailable. A typed file edit is not this phase. |
 | 5 | One staging site, then one production site, owner sign-off of runbooks and support hours. | Human soak. Agents must not mark it done. | Not started. |
+
+## Telegram WordPress agent
+
+The bot can select among `wp_list_sites`, `wp_site_status`, `wp_backup_status`, `wp_security_findings`, `wp_prepare_update_plan`, `wp_prepare_restore_plan`, and `wp_list_open_operations`. Every call validates its JSON arguments, registered `site_id`, and actor permission inside the server-side tool dispatcher. A site id is the only accepted site locator; tools do not accept URLs, hosts, paths, credentials, shell, PHP, or WP-CLI commands.
+
+The follow-up loop executes at most 3 WordPress tool calls per turn, spends at most 30 seconds in tools, caps one result at 4 KB and combined tool results at 10 KB. Only the final answer is added to conversation history; model tool protocol and tool transcripts are not persisted. Tool reads and plan previews are audited.
+
+`wp_prepare_update_plan` and `wp_prepare_restore_plan` create immutable, SHA-256-digested previews under `AZOM_DATA_DIR/wp_ops_plans.json`; previews expire after 12 hours. They are explicitly `unsupported`, `executable: false`, and `approval_available: false` while update discovery and restore adapters are missing. No callback can approve them, and no bot tool can execute them. Target versions remain empty until a provider verifies them. Restore still returns `RestoreNotInMvp`.
+
+The current site's continuity record is stored with the existing conversation under `AZOM_DATA_DIR`. It contains only actor, channel, conversation, site id, bounded operation ids, and a 12-hour timestamp. Actor or channel changes clear the context; every subsequent site read is re-authorized and re-resolved against the registry. In Telegram or Messenger, use `/wp sites`, `/wp use <site-id>`, or `/wp clear` to select or clear context.
+
+There is no scanner adapter. `wp_security_findings` returns `unknown`, `coverage: not_configured`, and `findings: null`; this must not be described as a clean scan. Backup status reflects local mock manifest metadata only and does not imply that site files or database bytes were copied.
+
+Shop content on the live WordPress host is a different path. Telegram reads posts, the site title, the tagline, themes, and plugins through `WordPressClient` and returns before this tool loop. One post field, the site title or tagline, and turning one existing plugin on or off wait for Ja. Plugin on/off needs `WP_OPS_ADMIN`. That path does not install, update, delete, switch themes, or edit theme or plugin files, and it does not register the shop in `wp_sites.yaml`.
 
 ## Phase 1 behavior
 
@@ -116,6 +131,18 @@ Mock mode uses a directory under `AZOM_DATA_DIR/wp_files_mock/`. `AZOM_USE_MOCK=
 
 A staging edit needs `WP_OPS_OPERATE`. A production edit needs `WP_OPS_ADMIN` and `CODE_EDIT`. The same site lock used by health checks returns `SiteBusy` when it is held. Audit records the path, byte length, digest, and plan id. It does not record the file body.
 
+## SSH settings
+
+`config/wp_sites.yaml` remains the default for `files_root` and `ssh_host`. Oscar can override those, plus the SSH user, port, a local identity path, and one public host key, at `GET|POST /wp/<site_id>/ssh`. Submitting the registry root or host again does not pin it. An empty root or host inherits the registry only. An empty user, port, or identity path inherits `SSH_USER`, `SSH_PORT`, and `SSH_IDENTITY_FILE`. Those three names are written to `AZOM_DATA_DIR/runtime.env` when the field is non-empty. A row in `secrets.env` still wins. `SSH_HOST` belongs to the other SSH client and is not the file-transport host.
+
+A saved root must be an absolute path of at least three segments. It must not sit under `/etc`, `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/proc`, `/sys`, `/dev`, `/root`, `/boot`, `/tmp`, `/run`, `/var/log`, `/var/lib`, `/var/run`, or `/var/spool`. The same check runs when an overlay row is applied and before a file is listed or written. `/var/www/mock-shop` and `/var/www/mock-staging` stay valid.
+
+The private key is pasted once and written to `AZOM_DATA_DIR/ssh-keys/<site_id>` with mode `0600`. That directory is mode `0700` where the operating system allows it. The key is written to a temporary file, the overlay is written next, and only then is the temporary file renamed onto the key. A passphrase-protected key is refused. A later empty paste leaves the file. The clear checkbox removes it. The stored key is used before an external identity path. The key bytes are not returned, logged, or written into `wp_ssh.json`, `runtime.env`, audit, `public_dict`, or the page. `wp show` and `wp sites` do not include the identity path. `bin/backup-azom-data.sh` excludes `ssh-keys/` the same way it excludes `model_oauth/`.
+
+Login for the file transport requires an explicit, validated non-root user, the port, and the key. There is no implicit `root` fallback; a missing or root user is refused before the subprocess starts. Its argv sets `BatchMode=yes`, `IdentitiesOnly=yes`, and `StrictHostKeyChecking=yes`. It does not send `SSH_PASSWORD` and it does not use `accept-new`. Live SSH also requires the pinned public host key (`ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-nistp256`, or `sk-ssh-ed25519@openssh.com`). Oscar sees its SHA256 fingerprint. Jonatan sees only whether it is set. On a real connect the transport writes that line into a known_hosts file under the data directory and then runs ssh. Saving the form does not open a connection, does not scan keys, and does not change `AZOM_WP_FILES_SSH`. A host ending in `.example.test` is refused before any socket. A missing public host key is refused before any socket.
+
+One invalid site row in `wp_ssh.json` is skipped. That site keeps the registry values, and the settings page says the row was skipped. Other sites still load. A file that cannot be parsed still fails closed with `wp_ssh.json kan inte läsas.` Saves are serialized with a process lock and a file lock. Jonatan can read the root, host, user, port, and whether a key or host key is present. Jonatan has no form and does not see the identity path. `POST` needs `WP_OPS_ADMIN` on both staging and production.
+
 ### Dashboard
 
 Routes sit behind the existing login:
@@ -127,6 +154,8 @@ Routes sit behind the existing login:
 | `POST /wp/<site_id>/check` | staging: `WP_OPS_OPERATE`; production: `WP_OPS_ADMIN` | Mock read-only check. CSRF required. |
 | `POST /wp/<site_id>/backup` | same as check | Create one local mock manifest. CSRF required. |
 | `POST /wp/<site_id>/restore-drill` | `WP_OPS_OPERATE` | Staging drill. The form lists staging targets only. CSRF required. |
+| `GET /wp/<site_id>/ssh` | `WP_OPS_READ` | Effective root, host, user, port, and whether a key or host key is stored. No key material. A viewer does not see the identity path. |
+| `POST /wp/<site_id>/ssh` | `WP_OPS_ADMIN` | Save per-site SSH settings, a public host key, and optional global user, port, and identity path. CSRF required. Does not open SSH and does not enable `AZOM_WP_FILES_SSH`. |
 | `GET /wp/<site_id>/files` | `WP_OPS_READ` | List or read one theme or plugin file. Opening the site page does not read files. |
 | `POST /wp/<site_id>/files/propose` | staging: `WP_OPS_OPERATE`; production: `WP_OPS_ADMIN` and `CODE_EDIT` | Store a plan. The file is not written. CSRF required. |
 | `POST /wp/<site_id>/files/apply` | same as propose | Write the file when the text and the current digest match. CSRF required. |
@@ -144,10 +173,11 @@ Operator steps: [`runbooks/wp-ops-backup.md`](runbooks/wp-ops-backup.md), [`runb
 | State | `skills/ecom_ops/wp_ops/store.py` |
 | Service | `skills/ecom_ops/wp_ops/service.py` |
 | Typed file editor | `skills/ecom_ops/wp_ops/files.py` |
+| SSH settings overlay | `skills/ecom_ops/wp_ops/ssh_settings.py` |
 | Live file SSH, off unless enabled | `skills/ecom_ops/integrations/wp_files_ssh.py` |
 | CLI | `wp` in `skills/ecom_ops/cli.py` |
 | Dashboard | `infrastructure/dashboard/wp_routes.py` |
-| Tests | `tests/test_wp_ops.py`, `tests/test_wp_files.py`, `tests/test_wp_dashboard.py` |
+| Tests | `tests/test_wp_ops.py`, `tests/test_wp_files.py`, `tests/test_wp_ssh.py`, `tests/test_wp_dashboard.py` |
 
 ## Do / Do not
 
@@ -162,6 +192,7 @@ Operator steps: [`runbooks/wp-ops-backup.md`](runbooks/wp-ops-backup.md), [`runb
 
 - Call a customer site, use a real application password, or turn on automatic updates from this phase.
 - Add a general shell or let a caller compose an SSH command. The typed file transport is the only file write, and live SSH stays off until `AZOM_WP_FILES_SSH=1` with mock mode off.
+- Put a private key, or a customer host, in `wp_sites.yaml`. The dashboard overlay and the key file stay in the data directory.
 - Send backups to a third party, invent a storage vendor, or generate an encryption key in this phase.
 - Treat `WpOpsService.restore` or a production drill target as an allowed restore.
 - Market this as managed hosting, a malware scanner, or an availability SLA.

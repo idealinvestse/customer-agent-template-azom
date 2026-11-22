@@ -89,6 +89,20 @@ def test_get_page(wp):
     assert page.type == "page"
 
 
+def test_update_page_title_and_content(wp):
+    updated = wp.update_page(2, title="Om Azom", content="<p>Hej</p>")
+    assert updated.title == "Om Azom"
+    assert updated.raw["content"] == "<p>Hej</p>"
+    again = wp.get_page(2)
+    assert again.title == "Om Azom"
+    assert again.raw["content"] == "<p>Hej</p>"
+
+
+def test_update_page_rejects_trash(wp):
+    with pytest.raises(SecurityError, match="Invalid page status"):
+        wp.update_page(2, status="trash")
+
+
 # --------------------------------------------------------------------------- #
 # Media / Users / Comments / Settings
 # --------------------------------------------------------------------------- #
@@ -122,6 +136,45 @@ def test_update_settings(wp):
     assert result["description"] == "Updated description"
     # Verify persistence
     assert wp.get_settings()["description"] == "Updated description"
+
+
+def test_update_post_rejects_trash(wp):
+    with pytest.raises(SecurityError, match="Invalid post status"):
+        wp.update_post(1, status="trash")
+
+
+def test_update_site_identity_keeps_other_settings(wp):
+    updated = wp.update_site_identity(title="Azom Norge", description="Butik")
+    assert updated["title"] == "Azom Norge"
+    assert updated["description"] == "Butik"
+    assert updated["language"] == "nb"
+    with pytest.raises(SecurityError, match="No site fields"):
+        wp.update_site_identity()
+
+
+def test_list_themes_marks_the_active_one(wp):
+    rows = wp.list_themes()
+    active = [row for row in rows if row["status"] == "active"]
+    assert len(active) == 1
+    assert active[0]["stylesheet"] == "twentytwentyfive"
+    with pytest.raises(SecurityError, match="themes"):
+        wp.transport.request("POST", "https://mock.local/wp-json/wp/v2/themes", json={})
+
+
+def test_set_plugin_status_encodes_and_refuses_install(wp):
+    updated = wp.set_plugin_status("akismet/akismet", "active")
+    assert updated["status"] == "active"
+    method, url, body = wp.transport.calls[-1]
+    assert method == "POST"
+    assert url.endswith("/wp-json/wp/v2/plugins/akismet%2Fakismet")
+    assert body == {"status": "active"}
+    assert "version" not in body
+    with pytest.raises(SecurityError, match="Invalid plugin id"):
+        wp.set_plugin_status("../akismet", "inactive")
+    with pytest.raises(SecurityError, match="Invalid plugin status"):
+        wp.set_plugin_status("akismet/akismet", "network-active")
+    with pytest.raises(SecurityError, match="plugins"):
+        wp.transport.request("DELETE", "https://mock.local/wp-json/wp/v2/plugins/akismet%2Fakismet")
 
 
 # --------------------------------------------------------------------------- #

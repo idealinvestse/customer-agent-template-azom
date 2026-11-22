@@ -185,6 +185,26 @@ def test_chat_with_mock_llm(handler, store, monkeypatch):
     assert state["messages"][1]["role"] == "assistant"
 
 
+def test_telegram_chat_uses_grok_47(handler, monkeypatch):
+    monkeypatch.setenv("AZOM_TELEGRAM_MODEL_ROUTE", "xai_grok_build")
+    monkeypatch.setenv("XAI_MODEL", "grok-4.7")
+    monkeypatch.setenv("AZOM_XAI_GROK_BUILD", "1")
+    seen: dict = {}
+
+    def fake_chat(messages, **kwargs):
+        seen["route_id"] = kwargs.get("route_id")
+        seen["model"] = kwargs.get("model")
+        return "Hej från Grok.", 0.0
+
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.chat_completion", fake_chat)
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.Telemetry.within_budget", lambda self, cap: True)
+    handler.handle(77, "/model openai/gpt-test-pin")
+    reply = handler.handle(77, "Hej där")
+    assert seen["route_id"] == "xai_grok_build"
+    assert seen["model"] == "grok-4.7"
+    assert "Grok" in reply.text
+
+
 def test_chat_uses_session_model(handler, store, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     seen: dict = {}

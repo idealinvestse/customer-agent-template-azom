@@ -24,7 +24,7 @@ Azom skiljer **read-only config** (YAML i image/host-mount) från **skrivbar run
 
 **Dev:** `infrastructure/docker-compose.yml` mountar data **utan** `:ro` så secrets/settings/cases.db kan skrivas.
 
-`model_oauth/` ligger redan i data-volymen (`/app/.azom-data` eller systemd `/var/lib/azom`). Ingen ny volume krävs. `bin/backup-azom-data.sh` exkluderar `model_oauth`. Grok Build-binären ingår inte i imagen. Sätt `XAI_GROK_BIN` bara om binären finns på hosten, och aktivera inte routen i compose förrän den är installerad.
+`model_oauth/` ligger redan i data-volymen (`/app/.azom-data` eller systemd `/var/lib/azom`). Ingen ny volume krävs. `bin/backup-azom-data.sh` exkluderar `model_oauth` och `ssh-keys`. Grok Build-binären ingår inte i imagen. Sätt `XAI_GROK_BIN` bara om binären finns på hosten, och aktivera inte routen i compose förrän den är installerad.
 
 **Image-tag (prod):** `azom-agent:3.0` i `infrastructure/docker-compose.prod.yml` (`2.0` kvar för rollback).
 

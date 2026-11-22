@@ -2,8 +2,9 @@
 # =============================================================================
 # Azom Ops Agent — backup /var/lib/azom (cases.db + telemetry + oauth + escalations)
 #
-# Creates a timestamped SQLite .backup of cases.db (safe, online) plus a tar
-# of the full data dir, then optionally rsyncs to an off-box destination.
+# Creates timestamped online SQLite backups of cases.db and the Telegram job
+# ledger plus an agent-state tar without runtime databases or installed libraries.
+# Optionally rsyncs the resulting backup directory to an off-box destination.
 #
 # Usage (as root or the azom user):
 #   bash bin/backup-azom-data.sh
@@ -16,6 +17,7 @@
 #   AZOM_BACKUP_DEST (rsync destination; empty = local only)
 # =============================================================================
 set -euo pipefail
+umask 077
 
 DATA_DIR="${AZOM_DATA_DIR:-/var/lib/azom}"
 BACKUP_DIR="${AZOM_BACKUP_DIR:-${DATA_DIR}/backups}"
@@ -44,32 +46,74 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 STAMP_DIR="${BACKUP_DIR}/${TS}"
 mkdir -p "$STAMP_DIR"
 
-# --- 1) Online SQLite backup of cases.db (safe under concurrent writes) ---
-CASES_DB="${DATA_DIR}/cases.db"
-if [[ -f "$CASES_DB" ]]; then
-  log "Backing up cases.db (WAL checkpoint + online .backup)"
-  if command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "$CASES_DB" "PRAGMA wal_checkpoint(PASSIVE);" >/dev/null || true
-    sqlite3 "$CASES_DB" ".backup '${STAMP_DIR}/cases.db'"
-  else
-    warn "sqlite3 not installed — falling back to cp (may be inconsistent under writes)"
-    cp "$CASES_DB" "${STAMP_DIR}/cases.db"
-  fi
-else
-  warn "cases.db not found — skipping"
-fi
+backup_sqlite() {
+  local source="$1" target="$2"
+  python3 - "$source" "$target" <<'PY'
+import sqlite3
+import sys
 
-# --- 2) Tar the full data dir (excluding backups/ itself + caches) ---
-log "Creating tarball of ${DATA_DIR}"
+source = sqlite3.connect(sys.argv[1], timeout=10)
+target = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(target, pages=256, sleep=0.1)
+finally:
+    target.close()
+    source.close()
+PY
+}
+
+# SQLite's online backup API keeps each live database consistent under WAL writes.
+for database in cases telegram_jobs; do
+  if [[ "$database" == "cases" ]]; then
+    SOURCE_DB="${DATA_DIR}/cases.db"
+    TARGET_DB="${STAMP_DIR}/cases.db"
+  else
+    SOURCE_DB="${DATA_DIR}/telegram_jobs.sqlite3"
+    TARGET_DB="${STAMP_DIR}/telegram_jobs.sqlite3"
+  fi
+  if [[ -f "$SOURCE_DB" ]]; then
+    log "Creating online SQLite backup of ${database}"
+    backup_sqlite "$SOURCE_DB" "$TARGET_DB"
+  fi
+done
+
+# --- 2) Tar agent state only; omit runtime databases copied above and libraries ---
+log "Creating tarball of Azom agent state under ${DATA_DIR}"
 TARBALL="${STAMP_DIR}/azom-data.tar.gz"
-# model_oauth holds ChatGPT refresh tokens. Keep it out of the ordinary tarball.
-# Take a separate encrypted copy if Oscar needs an off-box restore of that session.
+# model_oauth holds ChatGPT refresh tokens.
+# ssh-keys holds per-site private keys for the WordPress file transport.
+# Keep both out of the ordinary tarball.
+# Take a separate encrypted copy if Oscar needs an off-box restore.
 tar -czf "$TARBALL" \
   --exclude="${BACKUP_DIR}" \
+  --exclude="$(basename "$BACKUP_DIR")" \
+  --exclude="*/$(basename "$BACKUP_DIR")" \
+  --exclude="*/$(basename "$BACKUP_DIR")/*" \
   --exclude="*/__pycache__" \
   --exclude="*/.pytest_cache" \
+  --exclude="*/.mypy_cache" \
+  --exclude="*/.ruff_cache" \
+  --exclude="*/.cache" \
+  --exclude="*/.cache/*" \
+  --exclude="*/node_modules" \
+  --exclude="*/node_modules/*" \
+  --exclude="*/.venv" \
+  --exclude="*/.venv/*" \
+  --exclude="*/venv" \
+  --exclude="*/venv/*" \
+  --exclude="*/site-packages" \
+  --exclude="*/site-packages/*" \
+  --exclude="*/cases.db" \
+  --exclude="*/cases.db-wal" \
+  --exclude="*/cases.db-shm" \
+  --exclude="*/telegram_jobs.sqlite3" \
+  --exclude="*/telegram_jobs.sqlite3-wal" \
+  --exclude="*/telegram_jobs.sqlite3-shm" \
   --exclude="*/model_oauth" \
   --exclude="*/model_oauth/*" \
+  --exclude="*/ssh-keys" \
+  --exclude="*/ssh-keys/*" \
+  --exclude="*/wp_ssh.lock" \
   -C "$(dirname "$DATA_DIR")" \
   "$(basename "$DATA_DIR")"
 
@@ -93,6 +137,7 @@ find "$BACKUP_DIR" -maxdepth 1 -type d -name '20*' -mtime +${KEEP} -exec rm -rf 
   echo "data_dir=${DATA_DIR}"
   echo "backup_dir=${STAMP_DIR}"
   echo "cases_db_bytes=$(stat -c%s "${STAMP_DIR}/cases.db" 2>/dev/null || echo 0)"
+  echo "telegram_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/telegram_jobs.sqlite3" 2>/dev/null || echo 0)"
   echo "tarball_bytes=$(stat -c%s "$TARBALL" 2>/dev/null || echo 0)"
   echo "dest=${DEST:-local}"
 } > "${STAMP_DIR}/manifest.txt"

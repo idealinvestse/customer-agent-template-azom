@@ -18,7 +18,12 @@ def config_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "config"
 
 
-def load_sites(path: Path | None = None) -> tuple[Site, ...]:
+def load_sites(
+    path: Path | None = None,
+    *,
+    data_dir: Path | None = None,
+    apply_overlay: bool = True,
+) -> tuple[Site, ...]:
     file_path = path or (config_dir() / "wp_sites.yaml")
     if not file_path.is_file():
         return ()
@@ -40,7 +45,11 @@ def load_sites(path: Path | None = None) -> tuple[Site, ...]:
             raise ValueError(f"duplicate secret_ref: {site.secret_ref}")
         seen.add(site.id)
         refs.add(site.secret_ref)
-    return sites
+    if not apply_overlay:
+        return sites
+    from ecom_ops.wp_ops.ssh_settings import apply_ssh_overlay
+
+    return apply_ssh_overlay(sites, data_dir)
 
 
 def site_by_id(sites: tuple[Site, ...], site_id: str) -> Site | None:

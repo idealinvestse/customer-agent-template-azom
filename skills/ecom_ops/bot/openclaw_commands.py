@@ -95,6 +95,7 @@ def cmd_help(ctx: CommandContext) -> str:
         "Kundmail: /cases approve eller knappen — aldrig silent send.\n\n"
         "Vanliga:\n"
         "/status · /whoami · /new · /reset · /stop\n"
+        "Telegram har också /jobs, /cancel [job-id] och Oscars /reconcile.\n"
         "/tools · /tasks · /usage · /model · /context\n"
         "/order · /cases · /health · /brief · /marketing · /commands"
     )
@@ -102,6 +103,11 @@ def cmd_help(ctx: CommandContext) -> str:
 
 def cmd_commands(ctx: CommandContext) -> str:
     lines = ["Kommandokatalog (OpenClaw-kompatibel + Azom):"]
+    if ctx.channel == "telegram":
+        lines.append(
+            "Telegram: /jobs, /cancel [job-id] och Oscars "
+            "/reconcile <job-id> done|not_applied."
+        )
     for spec in COMMANDS:
         alias = f" (alias: {', '.join('/' + a for a in spec.aliases)})" if spec.aliases else ""
         lines.append(f"/{spec.name} — {spec.description}{alias}")
@@ -247,31 +253,45 @@ def cmd_stop(ctx: CommandContext) -> str:
 def cmd_tools(ctx: CommandContext) -> str:
     verbose = "verbose" in ctx.args.lower()
     chat_tools = [
-        ("lookup_order", "Orderstatus (read-only + sticky follow-up)"),
+        ("lookup_order", "Orderfakta från WooCommerce (read-only)"),
+        ("list_recent_orders", "Senaste ordrar (read-only)"),
         ("list_cases / show_case", "Ärenden (read-only)"),
-        ("ops_snapshot", "Status/budget/cases-count/readiness"),
-        ("propose_order_status", "Sajändring: orderstatus (kräver bekräftelse)"),
-        ("propose_product_desc", "Produktbeskrivning (kräver bekräftelse)"),
-        ("propose_regenerate", "Regenerera case-draft (kräver bekräftelse)"),
+        ("ops_snapshot", "Status, budget och readiness"),
+        ("propose_order_status", "Orderstatusförslag med bekräftelseknapp"),
+        ("list_products / show_product", "Produktdata (read-only)"),
+        ("propose_product_desc / propose_product_update", "Produkttext eller produktfält med bekräftelse"),
+        ("list_pages / show_page / list_posts / show_post", "WordPress-innehåll (read-only)"),
+        ("propose_page_update / propose_post_update", "Sid- eller inläggsfält med bekräftelse"),
+        ("show_site / propose_site_update", "Sajttitel/tagline; ändring kräver bekräftelse"),
+        ("list_themes / list_plugins", "Tema- och pluginstatus (read-only)"),
+        ("propose_plugin_status", "Plugin på/av; Oscar och bekräftelse krävs"),
+        ("propose_regenerate", "Nytt ärendeutkast med bekräftelse; skickar inte"),
+        ("wp_list_sites / wp_site_status", "Registrerade WordPress-sajter och status"),
+        ("wp_backup_status / wp_security_findings", "WordPress backupstatus och kända säkerhetsfynd"),
+        ("wp_prepare_update_plan / wp_prepare_restore_plan", "Låsta planförhandsgranskningar; kan inte godkännas eller köras"),
+        ("wp_list_open_operations", "Öppna WordPress-driftärenden"),
     ]
     slash_tools = [
-        ("order-status", "Uppdatera Woo orderstatus (operator/CLI)"),
+        ("/wp sites | /wp use <site-id> | /wp clear", "Välj eller rensa sajt för WordPress-driftverktygen"),
+        ("order-status", "Uppdatera Woo-orderstatus (operator/CLI)"),
         ("product-desc", "Generera produktbeskrivning"),
-        ("support", "Klassificera + draft-svar"),
-        ("mail", "Send/fetch/reply (RBAC)"),
-        ("cases", "Mail→ärende poll + approve/send/regenerate"),
-        ("ssh", "Allowlistad SSH health"),
-        ("escalation", "Ticket till Oscar"),
+        ("support", "Klassificera och skapa kundutkast"),
+        ("mail", "Skicka/hämta/svara enligt RBAC och approve-flöde"),
+        ("cases", "Hämta, granska, godkänna eller stänga ärenden"),
+        ("ssh", "Allowlistad SSH-health"),
+        ("escalation", "Skapa ärende till Oscar"),
     ]
-    lines = ["Chat-verktyg (fritext, read-only):"]
+    lines = ["Chat-verktyg (läsning och förslag med bekräftelse):"]
     for name, desc in chat_tools:
         lines.append(f"• {name} — {desc}" if verbose else f"• {name}")
     lines.append("Slash / CLI:")
     for name, desc in slash_tools:
         lines.append(f"• {name} — {desc}" if verbose else f"• {name}")
+    lines.append("WP-driftverktygen är site-bundna och behörighetskontrolleras på servern.")
+    lines.append("De gör högst 3 anrop / 30 sekunder; update- och restoreplaner är endast förhandsgranskningar.")
+    lines.append("Kundmail kräver explicit /cases approve eller Godkänn & skicka.")
     if not verbose:
         lines.append("(/tools verbose för beskrivningar)")
-    lines.append("Utskick kräver /cases approve (eller knappen).")
     return "\n".join(lines)
 
 
@@ -332,10 +352,21 @@ def cmd_usage(ctx: CommandContext) -> str:
 def cmd_model(ctx: CommandContext) -> str:
     arg = ctx.args.strip()
     if not arg or arg in {"status", "list"}:
+        import os
+
+        route = (os.environ.get("AZOM_TELEGRAM_MODEL_ROUTE") or "").strip()
+        if route == "xai_grok_build":
+            model = (os.environ.get("XAI_MODEL") or "grok-4").strip()
+            return (
+                f"Model\n"
+                f"Session: {ctx.session.get('model', 'default')}\n"
+                f"Telegram: {route} · {model} (LLM-chat på fritext)\n"
+                "Session-pin används bara när Telegram-routen är OpenRouter."
+            )
         return (
             f"Model\n"
             f"Session: {ctx.session.get('model', 'default')}\n"
-            f"Default: OPENROUTER_MODEL / gpt-4o-mini (LLM-chat på fritext)\n"
+            f"Default: OPENROUTER_MODEL / deepseek/deepseek-v4.1-flash-1017 (LLM-chat på fritext)\n"
             f"Sätt: /model <name> · /model default"
         )
     if arg == "default":
@@ -366,7 +397,9 @@ def cmd_skill(ctx: CommandContext) -> str:
     if name in {"ecom-ops", "ecom_ops", "list"}:
         return (
             "Skill: ecom-ops\n"
-            "Actions: order-status, product-desc, support, mail, ssh, cases\n"
+            "Actions: order-status, product-desc, product-data, pages, posts, "
+            "site-text, themes, plugins, WordPress ops reads/previews, support, mail, ssh, cases\n"
+            "WP context: /wp sites, /wp use <site-id>, /wp clear; plans are preview-only\n"
             "CLI: python -m ecom_ops --help\n"
             "Docs: skills/ecom-ops/SKILL.md"
         )
@@ -389,6 +422,9 @@ def cmd_context(ctx: CommandContext) -> str:
         f"model: {model}\n"
         f"last_order_id: {sticky_order}\n"
         f"last_case_id8: {sticky_case}\n"
+        f"last_product_id: {ctx.session.get('last_product_id') or '(none)'}\n"
+        f"last_page_id: {ctx.session.get('last_page_id') or '(none)'}\n"
+        f"last_post_id: {ctx.session.get('last_post_id') or '(none)'}\n"
         f"tool_digest: {digest_line}\n"
         f"session keys: {', '.join(sorted(ctx.session.keys())) or '(none)'}\n"
         f"/new rensar historik · /reset soft behåller settings"

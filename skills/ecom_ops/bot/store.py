@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -106,3 +108,131 @@ class ConversationStore:
         if removed:
             self._save()
         return removed
+
+
+class TelegramConversationStore:
+    """Transactional Telegram conversation state stored beside durable jobs."""
+
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        legacy_path: Path | None = None,
+        ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    ) -> None:
+        self.path = Path(database_path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.legacy_path = legacy_path or self.path.with_name("telegram_state.json")
+        self.ttl_seconds = ttl_seconds
+        self._migrate_legacy_once()
+        self.cleanup_expired()
+
+    @contextmanager
+    def _connection(self):
+        conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=10000")
+        try:
+            yield conn
+        finally:
+            conn.close()
+            for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+                try:
+                    if candidate.exists():
+                        os.chmod(candidate, 0o600)
+                except OSError:
+                    pass
+
+    def _migrate_legacy_once(self) -> None:
+        with self._connection() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS telegram_conversations ("
+                "chat_id TEXT PRIMARY KEY,state_json TEXT NOT NULL,updated_at REAL NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS bot_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)"
+            )
+            conn.execute("BEGIN IMMEDIATE")
+            migrated = conn.execute(
+                "SELECT value FROM bot_meta WHERE key='telegram_state_json_migrated'"
+            ).fetchone()
+            if migrated:
+                conn.commit()
+                return
+            raw: Any = {}
+            if self.legacy_path.is_file():
+                try:
+                    raw = json.loads(self.legacy_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raw = {}
+            if isinstance(raw, dict):
+                for chat_id, state in raw.items():
+                    if not isinstance(state, dict):
+                        continue
+                    updated_at = state.get("updated_at", 0)
+                    try:
+                        updated_at = float(updated_at)
+                    except (TypeError, ValueError):
+                        updated_at = 0.0
+                    if "messages" in state:
+                        state = dict(state)
+                        state["messages"] = clamp_messages(state.get("messages"))
+                    conn.execute(
+                        "INSERT OR IGNORE INTO telegram_conversations "
+                        "(chat_id,state_json,updated_at) VALUES(?,?,?)",
+                        (str(chat_id), json.dumps(state, ensure_ascii=False), updated_at),
+                    )
+            conn.execute(
+                "INSERT INTO bot_meta(key,value) VALUES('telegram_state_json_migrated','1')"
+            )
+            conn.commit()
+
+    def get(self, chat_id: str | int) -> dict[str, Any] | None:
+        key = str(chat_id)
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT state_json,updated_at FROM telegram_conversations WHERE chat_id=?",
+                (key,),
+            ).fetchone()
+            if row is None:
+                return None
+            if time.time() - float(row["updated_at"] or 0) > self.ttl_seconds:
+                conn.execute("DELETE FROM telegram_conversations WHERE chat_id=?", (key,))
+                return None
+        try:
+            state = json.loads(row["state_json"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(state, dict):
+            return None
+        state = dict(state)
+        state["updated_at"] = float(row["updated_at"])
+        if "messages" in state:
+            state["messages"] = clamp_messages(state.get("messages"))
+        return state
+
+    def set(self, chat_id: str | int, state: dict[str, Any]) -> None:
+        value = dict(state)
+        if "messages" in value:
+            value["messages"] = clamp_messages(value.get("messages"))
+        updated_at = time.time()
+        value["updated_at"] = updated_at
+        with self._connection() as conn:
+            conn.execute(
+                "INSERT INTO telegram_conversations(chat_id,state_json,updated_at) "
+                "VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET "
+                "state_json=excluded.state_json,updated_at=excluded.updated_at",
+                (str(chat_id), json.dumps(value, ensure_ascii=False), updated_at),
+            )
+
+    def clear(self, chat_id: str | int) -> None:
+        with self._connection() as conn:
+            conn.execute("DELETE FROM telegram_conversations WHERE chat_id=?", (str(chat_id),))
+
+    def cleanup_expired(self) -> int:
+        cutoff = time.time() - self.ttl_seconds
+        with self._connection() as conn:
+            result = conn.execute(
+                "DELETE FROM telegram_conversations WHERE updated_at<?", (cutoff,)
+            )
+            return int(result.rowcount)

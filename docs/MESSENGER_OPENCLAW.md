@@ -108,6 +108,8 @@ Utan `MESSENGER_PAGE_ACCESS_TOKEN`:
 
 Slash/flows speglar Telegram-katalogen: `/help` `/cases` `/order` `/brief` `/status` `/marketing` …
 `/marketing` är **read-only** snapshot — Ads-mutates endast via dashboard/CLI approve.
+WordPress-drift använder namngivna verktyg för en vald sajt; servern kontrollerar aktör och behörighet vid varje anrop. En tur begränsas till 3 anrop / 30 sekunder och sajtminnet gäller 12 timmar för samma aktör, kanal och konversation. Update- och restoreplaner är låsta förhandsgranskningar utan exekveringsväg. Livehälsokontroller, skanning, versionsupptäckt, uppdatering och produktions-restore är inte implementerade.
+
 Se [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) för full kommando-tabell och free-text prefetch.  
 Marketing: [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md).
 

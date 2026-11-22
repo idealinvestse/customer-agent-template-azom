@@ -134,7 +134,7 @@ bash tests/test_spinup.sh
 | Mail providers | `skills/ecom_ops/integrations/mail*` |
 | Dashboard routes / probes | `infrastructure/dashboard/` (`app.py` factory + `*_routes.py`; probes are Oscar UI, not CLI) |
 | RBAC | `config/rbac.yaml` + `skills/ecom_ops/rbac.py` (`limits.yaml` jonatan_role is display-only) |
-| Agent voice | `SOUL.md` + `skills/ecom_ops/bot/chat_agent.py` system prompt |
+| Agent voice and chat prompt | `SOUL.md` + versioned `config/prompts.yaml` (`chat`) + fixed runtime policy and `WP_TOOL_GUIDE` in `skills/ecom_ops/bot/chat_agent.py`; Oscar edits the registry at `/oscar/behavior`. |
 
 ## Production target (context only)
 

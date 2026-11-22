@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -18,6 +19,8 @@ class ModelRequest:
     site: str = "azom"
     case_id: str | None = None
     actor: str | None = None
+    on_text_delta: Callable[[str], None] | None = None
+    on_text_reset: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True)

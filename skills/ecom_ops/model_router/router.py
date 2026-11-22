@@ -151,6 +151,7 @@ class ModelRouter:
             try:
                 result = route.complete(request, telemetry=tel)
             except ModelRateLimitError as exc:
+                self._reset_partial_stream(request)
                 errors.append(f"{route_id}: ModelRateLimitError")
                 tel.record(
                     action="model_route_rate_limited",
@@ -166,6 +167,7 @@ class ModelRouter:
                 )
                 continue
             except (ModelAuthError, ModelConfigError, ModelUnavailableError) as exc:
+                self._reset_partial_stream(request)
                 errors.append(f"{route_id}: {type(exc).__name__}")
                 tel.record(
                     action="model_route_error",
@@ -201,6 +203,14 @@ class ModelRouter:
             )
             return result
         raise ModelRouteError("No configured model route succeeded: " + "; ".join(errors))
+
+    @staticmethod
+    def _reset_partial_stream(request: ModelRequest) -> None:
+        if request.on_text_reset:
+            try:
+                request.on_text_reset()
+            except Exception:
+                pass
 
 
 _router: ModelRouter | None = None

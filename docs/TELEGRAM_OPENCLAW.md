@@ -12,6 +12,8 @@
 | **Fail-closed** | Tom `TELEGRAM_ALLOWED_CHAT_IDS` eller tom `TELEGRAM_ACTOR_MAP` i live (`AZOM_USE_MOCK=0`) nekar. Icke-tom map nekar unmapped chat_id. |
 | **Confirm UX only** | NL “godkänn …” visar bekräftelse — skickar **inte** mail. |
 | **tool_digest** | Kort sammanfattning av senast körda read-only tools för följdfrågor. |
+| **Statusutkast** | Redigerbart Telegram-meddelande med senaste arbetssteg och verktygsstatus. |
+| **Svarutkast** | Assistentens text medan den kommer in; ersätts med det slutliga svaret när turen är klar. |
 
 **Kod:** `skills/ecom_ops/bot/`  
 **Identitet:** [`SOUL.md`](../SOUL.md)  
@@ -31,14 +33,43 @@ Incoming update
     ├─ mid-flow multi-step (order_lookup …)
     └─ free text → chat_agent.run_chat
                      intent heuristics
-                     read-only tool prefetch (order / cases / ops)
-                     model-router phrasing (optional; OpenRouter is fallback only)
+                     read tools + confirm-only write proposals
+                     bounded named WordPress ops tool loop (site-bound, RBAC checked)
+                     model-router phrasing (optional; AZOM_TELEGRAM_MODEL_ROUTE pins one route)
                      BotReply + optional approve / triage keyboards
 ```
 
 **Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI.
 
+### Live-status och strömmande svar
+
+Längre textturer visar två separata Telegram-meddelanden:
+
+1. Om turen tar mer än ungefär tre sekunder visas ett kort statusutkast. Vid första aktivitet uppdateras det med säkra steg som `WordPress-status pågår…`, `Backupstatus: resultat mottaget` eller `Formulerar svar…`.
+2. När modelltext kommer in skapas ett separat svarutkast. Botten redigerar det med begränsad takt i stället för att skicka ett nytt meddelande för varje textbit.
+3. När turen är klar ersätts svarutkastet med den slutliga texten och eventuella knappar. Statusutkastet behåller de senaste verktygsstegen och avslutas med `Svar klart`.
+
+Det här följer samma användbara mönster som Datalasse/OpenClaw: synligt arbete, verktygsstatus och redigerat svar. Azom använder sin egen Telegram Bot API-handler (`sendMessage` + `editMessageText`), inte OpenClaws inbyggda streamingläge. Statusen visar bara vilket steg eller namngivet verktyg som körs; den visar inte intern kedja-av-tankar, argument, kunddata eller credentials. Verktygsstatus är avsiktligt neutral: `resultat mottaget` säger inte att sajten är frisk.
+
+Modellens textström kommer från ChatGPT OAuth, OpenRouter, xAI API key eller Grok Build när respektive route stöder strömning. Om en route fallerar och routern provar en annan tas det partiella svarutkastet bort och börjar om. Om strömning eller Telegram-redigering inte fungerar skickas det slutliga svaret på normalt sätt.
+
+Snabba svar som blir klara före statusfördröjningen skickar bara slutsvaret. Messenger använder fortsatt den delade `BotHandler` utan dessa Telegram-callbacks; detta ändrar inte Messenger-webhookens svarsbeteende.
+
+**Modell:** när `AZOM_TELEGRAM_MODEL_ROUTE` är `xai_grok_build` använder fritext den routen och `XAI_MODEL`. Ett fel faller inte vidare till nästa route. Om Grok fortfarande resonerar eller skriver svaret nollställs vilotiden på 30 sekunder. `AZOM_XAI_GROK_HARD_TIMEOUT` stoppar anropet ändå, normalt efter 180 sekunder. `/model` sparar en session-pin, men pin skickas bara när Telegram-routen är `openrouter`. Övriga anrop följer `AZOM_MODEL_ROUTE_ORDER`.
+
 ---
+
+### Bakgrundsjobb och fortsatt dialog
+
+Telegram tar emot uppdateringar oberoende av modell- och verktygsjobb. En SQLite-inbox sparar varje `update_id` innan poll-cursorn flyttas. Två arbetare kör som standard (`AZOM_TELEGRAM_WORKERS`, tillåtet 1–4); en databaslease hindrar en andra process från att poll:a samma bot. Jobb körs i ordning per chatt, medan olika chattar kan köras parallellt.
+
+- Vanlig text under ett läsjobb blir en följdfråga. Den läggs i en mailbox och vägs in vid nästa säkra kontrollpunkt; högst tre följdfrågor tas in per jobb. Ett modell- eller verktygsanrop avbryts inte mitt i ett nätverksanrop.
+- Text och knappar under en godkänd åtgärd köas som nästa tur. De kan inte ändra den redan godkända åtgärden. Godkända åtgärder serialiseras; WordPress-ändringar låses per vald sajt.
+- `/status` visar aktivt jobb och senaste steg. `/jobs` visar väntande jobb. `/stop` eller `/cancel [job-id]` begär kooperativ avbrytning; en åtgärd kan inte avbrytas när sidoeffekten har startat.
+- Ett läsjobb kan köas om efter processomstart. En godkänd åtgärd som kan ha startat får `needs_reconciliation` och körs inte om. Endast Oscar kan stämma av den med `/reconcile <job-id> done|not_applied` efter kontroll av externa system. Kommandot utför ingen åtgärd.
+- Slutliga svar och Telegram-meddelande-id sparas för leveransförsök. Leverans är minst en gång; vid fel kan ett svar komma dubbelt.
+
+Inbox, jobb, leveransmetadata och Telegram-samtalshistorik ligger i `AZOM_DATA_DIR/telegram_jobs.sqlite3`. Vid första start migreras `telegram_state.json` en gång och den gamla filen lämnas kvar. Databasfilerna har begränsade filrättigheter; avslutade jobb behålls i sju dagar och olösta avstämningar tills de löses. Backup-jobbet tar en onlinekopia av jobbkön och utesluter Node/Python-bibliotek från tarballen. Messenger fortsätter använda sin befintliga synkrona lagring.
 
 ## Environment
 
@@ -78,11 +109,13 @@ Token byts under `/oscar/secrets`. Allowlist och actor map sätts i processmilj�
 |----------|-------------|
 | `/help` | Kort intro (även `/start`) |
 | `/commands` | Full katalog |
-| `/status` | Version, mock/live, customer, OpenRouter spend, Gmail, session |
+| `/status` | Aktivt bakgrundsjobb och senaste steg, annars runtime-status |
+| `/jobs` | Köade och avstämningskrävande jobb i chatten |
 | `/whoami` (`/id`) | chat_id + resolved actor |
 | `/new [model]` | Rensa dialog; valfri model pin |
 | `/reset` · `/reset soft` | Full reset eller behåll session settings |
-| `/stop` (`/cancel`) | Avbryt pågående flow; behåll historik soft |
+| `/stop` (`/cancel [job-id]`) | Begär avbrytning vid säker punkt; utan jobb avbryts sparat flow |
+| `/reconcile <job-id> done|not_applied` | Oscar-only: registrera manuellt kontrollerat utfall; kör inte jobbet igen |
 | `/tools` · `/tools verbose` | Chat tools vs slash/CLI tools |
 | `/tasks` | Open cases + open escalations count |
 | `/usage` · `/usage cost\|off` | Cost / footer mode |
@@ -94,6 +127,9 @@ Token byts under `/oscar/secrets`. Allowlist och actor map sätts i processmilj�
 | `/brief` | Customer + cost brief |
 | `/order [id]` | Order status read-only; multi-step om bart |
 | `/cases` | list · show · approve · regenerate · close · help |
+| `/wp sites` | Lista registrerade sajter för WordPress driftuppslag |
+| `/wp use <site-id>` | Välj sajt i aktuell chattkontext |
+| `/wp clear` | Rensa vald WordPress-sajt |
 
 ### `/cases` subcommands
 
@@ -112,11 +148,11 @@ Suggest-approve rader visar `★föreslå` (+ confidence när den finns).
 
 ## Hybrid free-text
 
-Thread state under `AZOM_DATA_DIR/telegram_state.json`:
+Telegram inbox, jobb och samtalshistorik ligger i `AZOM_DATA_DIR/telegram_jobs.sqlite3`. `telegram_state.json` migreras automatiskt en gång vid uppgradering:
 
 - **TTL:** 24h idle (refreshas vid aktivitet)
 - **History:** senaste ~40 turns
-- **Sticky:** `session.last_order_id`, `session.last_case_id8`
+- **Sticky:** order/case/market/content context plus `session.wp_ops_context` for a WordPress site and operation ids. WP-kontexten är knuten till aktör, kanal och konversation och går ut efter 12 timmar.
 - **tool_digest** för följdfrågor (“och frakten?”, “samma order”)
 
 Prefetch (`chat_agent.gather_tool_results`):
@@ -124,13 +160,39 @@ Prefetch (`chat_agent.gather_tool_results`):
 | Tool | När |
 |------|-----|
 | `lookup_order` | Order-id eller sticky follow-up |
+| `list_recent_orders` | «senaste ordrarna», «kontrollera integrationen», «kolla nu», enbart «azom.no», «fler ordrar» eller «nästa 20». Fortsättning hoppar över de redan visade. Rå `<tool_call>` visas inte. |
 | `list_cases` / `show_case` | Ärende / triage / id8 / sticky case |
 | suggest filter | “föreslagna”, ★ |
 | `ops_snapshot` / capabilities | status / budget / “vad kan du” |
 | approve **confirm-only** | NL “godkänn id8” → UX, no send |
 | `propose_order_status` | → **confirm button** (inte silent) |
+| `list_products` / `show_product` | «visa produkter», «produkt 501», «produktdata». Id, namn, sku, pris, lager, kort utdrag |
+| `propose_product_update` | «ändra produkt 501 namn/pris/lager/text till …» → **confirm button**. Inget sparas före Ja |
+| `list_pages` / `show_page` | «visa sidor», «visa sidan Om oss», «sidan 2» |
+| `propose_page_update` | «ändra sidan 2 titel/text till …» → **confirm button**. Temfilar rörs inte |
+| `list_posts` / `show_post` | «visa inlägg», «inlägg 1» |
+| `propose_post_update` | «ändra inlägg 1 titel/text/status till …» → **confirm button** |
+| `show_site` | «sajttitel», «tagline», «vad heter sajten» |
+| `propose_site_update` | «ändra sajttitel till …» eller «ändra tagline till …» → **confirm button** |
+| `list_themes` | «visa teman», «vilket tema är aktivt». Inget temabyte |
+| `list_plugins` | «visa plugins». Aktiv eller inaktiv |
+| `propose_plugin_status` | «aktivera plugin …» eller «stäng av plugin …» → **confirm button**. Bara Oscar |
 | `propose_product_desc` | → **confirm button** |
 | `propose_regenerate` | → **confirm button** (skickar aldrig) |
+
+WordPress driftverktygen är separata från WordPress-innehållets `list_pages`/`show_page`-verktyg:
+
+| Namngivet verktyg | Användning |
+|-------------------|------------|
+| `wp_list_sites` | Läs registrerade sajter |
+| `wp_site_status` | Läs status för en behörig sajt |
+| `wp_backup_status` | Läs backupstatus och kända manifest |
+| `wp_security_findings` | Läs tillgängliga säkerhetsfynd; detta kör ingen skanning |
+| `wp_prepare_update_plan` | Skapa låst preview; den kan inte godkännas eller köras |
+| `wp_prepare_restore_plan` | Skapa låst restore-preview; restore kan inte köras |
+| `wp_list_open_operations` | Läs öppna driftärenden för sajt/konversation |
+
+Servern begränsar WordPress-loopens tur till 3 anrop, 30 sekunder, 4 KiB per resultat och 10 KiB totalt. Användaren måste välja en registrerad sajt; servern gör RBAC-kontroll vid varje verktygskörning. Driftstatus kan vara mock eller okänd. Livehälsokontroller, säkerhetsskanning, versionsupptäckt, uppdatering och produktions-restore är inte implementerade. Planer är förhandsgranskningar utan godkännande- eller exekveringsväg.
 
 ### Site write rails
 
@@ -138,6 +200,11 @@ Prefetch (`chat_agent.gather_tool_results`):
 |--------|----------|------|
 | Order status | `order:set:{id}:{status}` | `ORDER_STATUS_UPDATE` (operator/Oscar) |
 | Product desc | `product:desc:{id}:{0\|1}` | `PRODUCT_DESC_WRITE` |
+| Product data | `action:yes` / `action:no` | `PRODUCT_DESC_WRITE` (texten ligger i sessionen, inte i knappen) |
+| Page content | `action:yes` / `action:no` | `WP_OPS_OPERATE` |
+| Post field | `action:yes` / `action:no` | `WP_OPS_OPERATE` |
+| Site title or tagline | `action:yes` / `action:no` | `WP_OPS_OPERATE` |
+| Plugin on/off | `action:yes` / `action:no` | `WP_OPS_ADMIN` (Oscar) |
 | Regen draft | `cases:regen:{id8}` | `CASE_REPLY` (Jonatan OK) |
 
 Jonatan kan approve:a cases men **inte** skriva Woo order/product om hen inte är mappad till `agent`/`oscar`.

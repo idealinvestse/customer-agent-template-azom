@@ -108,11 +108,87 @@ def test_oscar_saves_model_ids_without_provider_call(tmp_path, monkeypatch):
     text = page.get_data(as_text=True)
     assert "gpt-test" in text
     assert "deepseek/deepseek-v4-flash" in text
-    assert "Direkt xAI OAuth är inte tillgänglig" in text
+    assert "Logga in med xAI" in text
+    assert "auth.json" in text
     runtime = (tmp_path / "data" / "runtime.env").read_text(encoding="utf-8")
     assert "OPENAI_MODEL=gpt-test" in runtime
     assert "AZOM_XAI_GROK_BUILD=1" in runtime
     assert "sk-" not in runtime
+
+    from ecom_ops.model_router import catalog as model_catalog
+
+    monkeypatch.setattr(
+        model_catalog,
+        "search_models",
+        lambda provider, query, limit=25: {
+            "provider": provider,
+            "models": [
+                {
+                    "id": "deepseek/deepseek-v4.1-flash-1017",
+                    "name": "DeepSeek Flash",
+                }
+            ],
+            "error": "",
+        },
+    )
+    catalog = client.get("/oscar?model_q=flash&catalog=openrouter", headers=_auth())
+    assert catalog.status_code == 200
+    assert b"deepseek/deepseek-v4.1-flash-1017" in catalog.data
+
+    start = client.get("/oauth/openai/start", headers=_auth(), follow_redirects=False)
+    assert start.status_code == 302
+    assert start.headers["Location"].startswith("https://auth.openai.com/api/accounts/authorize?")
+
+
+def test_xai_login_status_updates_without_reload(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.chdir(DASH_DIR)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "xai_device_login.json").write_text(
+        '{"status":"pending","verification_uri":"https://accounts.x.ai/oauth2/device",'
+        '"user_code":"ABCD-EFGH","detail":"väntar på kod"}',
+        encoding="utf-8",
+    )
+    app = _load_dashboard_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    denied = client.get(
+        "/oscar/models/xai/login/status",
+        headers=_auth("jonatan", "jonatan"),
+    )
+    assert denied.status_code == 403
+
+    pending = client.get("/oscar/models/xai/login/status", headers=_auth())
+    assert pending.status_code == 200
+    assert pending.is_json
+    body = pending.get_json()
+    assert body["status"] == "pending"
+    assert body["user_code"] == "ABCD-EFGH"
+    assert body["verification_uri"].startswith("https://accounts.x.ai/")
+    assert "access_token" not in body
+    assert "refresh_token" not in body
+
+    page = client.get("/oscar", headers=_auth())
+    html = page.get_data(as_text=True)
+    assert 'data-status="pending"' in html
+    assert "/oscar/models/xai/login/status" in html
+    assert "ABCD-EFGH" in html
+
+    (data / "xai_device_login.json").write_text(
+        '{"status":"finished","verification_uri":"https://accounts.x.ai/oauth2/device",'
+        '"user_code":"","detail":"Grok Build avslutade inloggningen"}',
+        encoding="utf-8",
+    )
+    done = client.get("/oscar/models/xai/login/status", headers=_auth())
+    assert done.get_json()["status"] == "finished"
+    assert done.get_json()["user_code"] == ""
+    finished = client.get("/oscar", headers=_auth())
+    assert "Inloggningen är klar" in finished.get_data(as_text=True)
 
     bad = client.post(
         "/oscar/models/settings",

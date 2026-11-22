@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 from ecom_ops.rbac import Permission
 from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
-from ecom_ops.wp_ops.models import Site
+from ecom_ops.wp_ops.models import Site, files_root_narrow
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.service import WpOpsResult
 from ecom_ops.wp_ops.store import WpOpsStore
@@ -46,9 +46,19 @@ class TransportError(Exception):
         self.error_class = error_class
 
 
+def transport_message(error_class: str) -> str:
+    if error_class == "SshIdentityRejected":
+        return "The SSH identity path was rejected."
+    if error_class == "SshHostKeyMissing":
+        return "A public host key is required before SSH."
+    return "File transport failed."
+
+
 def components_parent(root: str, kind: str) -> str:
     if kind not in _KINDS:
         raise PathRejected("kind")
+    if not files_root_narrow(root):
+        raise PathRejected("root")
     folder = "themes" if kind == "theme" else "plugins"
     return f"{root}/wp-content/{folder}"
 
@@ -172,7 +182,7 @@ class FileEditor:
         except PathRejected:
             return self._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return self._fail(exc.error_class, "File transport failed.", site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
         slugs = [name for name in names if _SLUG.fullmatch(name)]
         return WpOpsResult(
             ok=True,
@@ -194,7 +204,7 @@ class FileEditor:
         except PathRejected:
             return self._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return self._fail(exc.error_class, "File transport failed.", site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
         files = []
         for name in names:
             try:
@@ -234,7 +244,7 @@ class FileEditor:
         except PathRejected:
             return self._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return self._fail(exc.error_class, "File transport failed.", site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
         encoded = body.encode()
         self._audit_file(
             actor,
@@ -321,7 +331,7 @@ class FileEditor:
         except PathRejected:
             return self._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return self._fail(exc.error_class, "File transport failed.", site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
         before = _digest(current.encode())
         after = _digest(proposed.encode())
         if before == after:
@@ -377,7 +387,7 @@ class FileEditor:
         try:
             proposed = self._validate_text(new_text)
         except TransportError as exc:
-            return self._fail(exc.error_class, "File transport failed.")
+            return self._fail(exc.error_class, transport_message(exc.error_class))
         if _digest(proposed.encode()) != plan.get("after_digest"):
             return self._fail("DigestMismatch", "The text does not match the approved plan.")
         stored = str(plan.get("path") or "")
@@ -395,7 +405,7 @@ class FileEditor:
         try:
             current = self._read_text(site, resolved)
         except TransportError as exc:
-            return self._fail(exc.error_class, "File transport failed.", site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
         if _digest(current.encode()) != plan.get("before_digest"):
             return self._fail("StaleFile", "The file changed after the plan was created.")
         try:
@@ -404,7 +414,7 @@ class FileEditor:
             written = self._read_text(site, resolved)
         except (PathRejected, TransportError) as exc:
             error = exc.error_class if isinstance(exc, TransportError) else "PathRejected"
-            return self._fail(error, "File transport failed.", site=site, executed=False)
+            return self._fail(error, transport_message(error), site=site, executed=False)
         if _digest(written.encode()) != plan.get("after_digest"):
             return self._fail("DigestMismatch", "The written file does not match the plan.", executed=False)
         applied_at = self.clock().isoformat()
@@ -443,7 +453,7 @@ class FileEditor:
 
     def _site(self, site_id: str, actor: str, *, write: bool) -> tuple[Site | None, WpOpsResult | None]:
         try:
-            sites = load_sites(self.registry_path)
+            sites = load_sites(self.registry_path, data_dir=self.store.path.parent)
         except ValueError as exc:
             return None, WpOpsResult(ok=False, message=str(exc), data={"error_class": "ConfigInvalid", "live_calls": False})
         site = site_by_id(sites, site_id)
@@ -463,6 +473,8 @@ class FileEditor:
                 return None, denied
         if not site.files_root:
             return None, self._fail("FileRootUnconfigured", "The site has no files root.")
+        if not files_root_narrow(site.files_root):
+            return None, self._fail("PathRejected", "The files root is too broad.")
         return site, None
 
     def _transport(self, site: Site) -> FileTransport:

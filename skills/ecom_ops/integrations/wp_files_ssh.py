@@ -15,12 +15,18 @@ from typing import Protocol
 
 from ecom_ops.wp_ops.files import LocalTree, PathRejected, TransportError
 from ecom_ops.wp_ops.models import Site
+from ecom_ops.wp_ops.ssh_settings import (
+    effective_identity,
+    host_key_ok,
+    identity_ok,
+    known_hosts_path,
+    user_ok,
+)
 
 _HOST = re.compile(
     r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"
 )
 _REMOTE = re.compile(r"^/[A-Za-z0-9_./-]{1,220}$")
-_USER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
 _LIST = re.compile(r"^ls -1 -- '(/[A-Za-z0-9_./-]{1,220})'$")
 _READ = re.compile(r"^cat -- '(/[A-Za-z0-9_./-]{1,220})'$")
 _COPY = re.compile(
@@ -112,8 +118,22 @@ def _subprocess_execute(argv: list[str], stdin: bytes | None, timeout: int) -> t
 class OpenSshRunner:
     """Run one already-checked remote command. This does not open a shell locally."""
 
-    def __init__(self, execute: Execute | None = None) -> None:
+    def __init__(
+        self,
+        execute: Execute | None = None,
+        *,
+        user: str | None = None,
+        port: str | None = None,
+        identity: str | None = None,
+        host_public_key: str | None = None,
+        known_hosts: Path | None = None,
+    ) -> None:
         self._execute = execute or _subprocess_execute
+        self._user = user or None
+        self._port = port or None
+        self._identity = identity or None
+        self._host_public_key = host_public_key or None
+        self._known_hosts = known_hosts
 
     def run(
         self,
@@ -123,34 +143,84 @@ class OpenSshRunner:
         stdin: bytes | None = None,
         timeout: int = 30,
     ) -> tuple[int, bytes]:
+        key = self._identity or os.environ.get("SSH_IDENTITY_FILE") or ""
+        if key and not identity_ok(key, limit=1024):
+            raise TransportError("SshIdentityRejected")
         argv = self.argv(host, command, stdin=stdin)
         if argv is None:
             return 126, b""
+        if not host_key_ok(self._host_public_key or ""):
+            raise TransportError("SshHostKeyMissing")
+        self._write_known_hosts(host)
         return self._execute(argv, stdin, timeout)
 
     def argv(self, host: str, command: str, *, stdin: bytes | None) -> list[str] | None:
         if not host_allowed(host) or not command_allowed(command, stdin):
             return None
-        user = os.environ.get("SSH_USER", "root")
-        port = os.environ.get("SSH_PORT", "22")
-        key = os.environ.get("SSH_IDENTITY_FILE") or ""
-        if _USER.fullmatch(user) is None or not port.isdigit() or not 1 <= int(port) <= 65535:
+        user = self._user or os.environ.get("SSH_USER") or ""
+        port = self._port or os.environ.get("SSH_PORT") or "22"
+        key = self._identity or os.environ.get("SSH_IDENTITY_FILE") or ""
+        if (
+            not user_ok(user)
+            or user.casefold() == "root"
+            or not port.isdigit()
+            or not 1 <= int(port) <= 65535
+        ):
             return None
-        if key and ("\x00" in key or "\n" in key):
+        if key and not identity_ok(key, limit=1024):
             return None
         argv = [
             "ssh",
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=accept-new",
+            "IdentitiesOnly=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
             "-p",
             port,
         ]
+        if self._known_hosts is not None:
+            argv.extend(["-o", f"UserKnownHostsFile={self._known_hosts}"])
         if key:
             argv.extend(["-i", key])
         argv.extend([f"{user}@{host}", command])
         return argv
+
+    def _write_known_hosts(self, host: str) -> None:
+        path = self._known_hosts
+        pinned = (self._host_public_key or "").strip()
+        if path is None or not host_key_ok(pinned) or not host_allowed(host):
+            raise TransportError("SshHostKeyMissing")
+        data = f"{host} {pinned}\n".encode()
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(path.parent, 0o700)
+            except OSError:
+                pass
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError("short write")
+                    view = view[written:]
+            finally:
+                os.close(fd)
+            tmp.replace(path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        except OSError as exc:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise TransportError("SshFailed") from exc
 
 
 class SshFileTransport:
@@ -196,6 +266,8 @@ class SshFileTransport:
     def _exec(self, command: str, *, stdin: bytes | None) -> bytes:
         if not host_allowed(self.site.ssh_host):
             raise TransportError("SshHostRefused")
+        if not host_key_ok(self.site.host_public_key):
+            raise TransportError("SshHostKeyMissing")
         if not command_allowed(command, stdin):
             raise TransportError("SshFailed")
         code, out = self.runner.run(self.site.ssh_host, command, stdin=stdin, timeout=30)
@@ -212,6 +284,13 @@ def build_file_transport(
     from ecom_ops.runtime_env import env_flag
 
     if env_flag("AZOM_WP_FILES_SSH") and not env_flag("AZOM_USE_MOCK"):
-        return SshFileTransport(site, runner or OpenSshRunner())
+        chosen = runner or OpenSshRunner(
+            user=site.ssh_user or None,
+            port=str(site.ssh_port) if site.ssh_port else None,
+            identity=effective_identity(site, data_dir),
+            host_public_key=site.host_public_key,
+            known_hosts=known_hosts_path(data_dir, site.id),
+        )
+        return SshFileTransport(site, chosen)
     root = site.files_root or "/var/www/unconfigured"
     return LocalTree(root, Path(data_dir) / "wp_files_mock" / site.id)

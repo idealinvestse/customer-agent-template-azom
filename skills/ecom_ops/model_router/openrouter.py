@@ -20,10 +20,11 @@ from ecom_ops.model_router.errors import (
     ModelRateLimitError,
     ModelUnavailableError,
 )
+from ecom_ops.model_router.streaming import read_chat_completion_sse
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-4o-mini"
+DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 _COST_PER_PROMPT_TOKEN = 0.15 / 1_000_000
 _COST_PER_COMPLETION_TOKEN = 0.60 / 1_000_000
 _MIN_COST_USD = 0.0001
@@ -92,6 +93,9 @@ class OpenRouterRoute:
             "max_tokens": request.max_output_tokens,
             "temperature": request.temperature,
         }
+        streaming = request.on_text_delta is not None
+        if streaming:
+            payload["stream"] = True
         try:
             response = requests.post(
                 OPENROUTER_URL,
@@ -102,35 +106,47 @@ class OpenRouterRoute:
                     "X-Title": "AzomOps-Agent",
                 },
                 json=payload,
+                stream=streaming,
                 timeout=request.timeout,
             )
         except requests.RequestException as exc:
             raise ModelUnavailableError("OpenRouter endpoint unreachable") from exc
 
         if response.status_code == 401:
+            response.close()
             raise ModelAuthError("OpenRouter API key was rejected")
         if response.status_code == 429:
+            response.close()
             raise ModelRateLimitError("OpenRouter rate limit reached")
         if response.status_code >= 400:
+            status = response.status_code
+            response.close()
             raise ModelUnavailableError(
-                f"OpenRouter request rejected ({response.status_code})"
+                f"OpenRouter request rejected ({status})"
             )
 
         try:
-            data = response.json()
+            if streaming:
+                content, usage = read_chat_completion_sse(
+                    response.iter_lines(decode_unicode=True),
+                    on_text_delta=request.on_text_delta,
+                )
+            else:
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise ModelUnavailableError("OpenRouter response was invalid")
+                choices = data.get("choices") or []
+                if not choices:
+                    raise ModelUnavailableError("OpenRouter response missing choices")
+                content = str((choices[0].get("message") or {}).get("content") or "").strip()
+                usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         except ValueError as exc:
             raise ModelUnavailableError("OpenRouter response was not JSON") from exc
-        if not isinstance(data, dict):
-            raise ModelUnavailableError("OpenRouter response was invalid")
-
-        choices = data.get("choices") or []
-        if not choices:
-            raise ModelUnavailableError("OpenRouter response missing choices")
-        content = str((choices[0].get("message") or {}).get("content") or "").strip()
+        finally:
+            response.close()
         if not content:
             raise ModelUnavailableError("OpenRouter returned no content")
 
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         prompt_tokens = int(usage.get("prompt_tokens") or 0)
         completion_tokens = int(usage.get("completion_tokens") or 0)
         total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))

@@ -93,7 +93,7 @@ class WpOpsService:
         if denied is not None:
             return denied
         try:
-            sites = load_sites(self.registry_path)
+            sites = load_sites(self.registry_path, data_dir=self.data_dir)
         except ValueError as exc:
             return self._config_error(str(exc))
         state = self._safe_state()
@@ -107,7 +107,7 @@ class WpOpsService:
         if denied is not None:
             return denied
         try:
-            sites = load_sites(self.registry_path)
+            sites = load_sites(self.registry_path, data_dir=self.data_dir)
         except ValueError as exc:
             return self._config_error(str(exc))
         site = site_by_id(sites, site_id)
@@ -177,9 +177,97 @@ class WpOpsService:
     ) -> WpOpsResult:
         return self._file_editor().apply(site_id, plan_id, new_text, actor=actor)
 
+    def ssh_settings(self, site_id: str, *, actor: str) -> WpOpsResult:
+        denied = self._need(actor, Permission.WP_OPS_READ, action="wp_ops_ssh_settings")
+        if denied is not None:
+            return denied
+        registry_site, site, failed = self._ssh_site(site_id)
+        if failed is not None:
+            return failed
+        assert registry_site is not None and site is not None
+        from ecom_ops.wp_ops.ssh_settings import describe_ssh
+
+        try:
+            view = describe_ssh(
+                site,
+                registry_site,
+                self.data_dir,
+                include_paths=self._ssh_admin(actor),
+            )
+        except ValueError as exc:
+            return self._config_error(str(exc))
+        return WpOpsResult(ok=True, message="ssh settings", data={"ssh": view, "live_calls": False})
+
+    def save_ssh_settings(
+        self,
+        site_id: str,
+        *,
+        actor: str,
+        files_root: str,
+        ssh_host: str,
+        ssh_user: str,
+        ssh_port: str,
+        ssh_identity_file: str,
+        private_key: str,
+        clear_key: bool,
+        global_user: str,
+        global_port: str,
+        global_identity_file: str,
+        host_public_key: str = "",
+    ) -> WpOpsResult:
+        denied = self._need(actor, Permission.WP_OPS_ADMIN, action="wp_ops_ssh_settings")
+        if denied is not None:
+            return denied
+        registry_site, _site, failed = self._ssh_site(site_id)
+        if failed is not None:
+            return failed
+        assert registry_site is not None
+        from ecom_ops.wp_ops.ssh_settings import SettingsRejected, save_ssh
+
+        try:
+            saved = save_ssh(
+                self.data_dir,
+                registry_site,
+                files_root=files_root,
+                ssh_host=ssh_host,
+                ssh_user=ssh_user,
+                ssh_port=ssh_port,
+                ssh_identity_file=ssh_identity_file,
+                private_key=private_key,
+                clear_key=clear_key,
+                global_user=global_user,
+                global_port=global_port,
+                global_identity_file=global_identity_file,
+                host_public_key=host_public_key,
+            )
+        except SettingsRejected as exc:
+            self._audit_ssh(actor, site_id, success=False, changed=[], identity_present=False)
+            return WpOpsResult(
+                ok=False,
+                message=str(exc),
+                data={"error_class": "ConfigInvalid", "live_calls": False},
+            )
+        except ValueError as exc:
+            return self._config_error(str(exc))
+        self._audit_ssh(
+            actor,
+            site_id,
+            success=True,
+            changed=list(saved["changed"]),
+            identity_present=bool(saved["identity_present"]),
+        )
+        message = "SSH-inställningar sparade"
+        if saved.get("global_notice"):
+            message = f"{message}. {saved['global_notice']}"
+        return WpOpsResult(
+            ok=True,
+            message=message,
+            data={"changed": list(saved["changed"]), "live_calls": False},
+        )
+
     def run_checks(self, site_id: str, *, actor: str, scheduled: bool = False) -> WpOpsResult:
         try:
-            sites = load_sites(self.registry_path)
+            sites = load_sites(self.registry_path, data_dir=self.data_dir)
         except ValueError as exc:
             return self._config_error(str(exc))
         site = site_by_id(sites, site_id)
@@ -210,7 +298,7 @@ class WpOpsService:
 
     def run_due(self, *, actor: str) -> WpOpsResult:
         try:
-            sites = load_sites(self.registry_path)
+            sites = load_sites(self.registry_path, data_dir=self.data_dir)
         except ValueError as exc:
             return self._config_error(str(exc))
         state = self._safe_state()
@@ -295,7 +383,7 @@ class WpOpsService:
         if denied is not None:
             return denied
         try:
-            sites = load_sites(self.registry_path)
+            sites = load_sites(self.registry_path, data_dir=self.data_dir)
         except ValueError as exc:
             return self._config_error(str(exc))
         site = site_by_id(sites, site_id)
@@ -322,7 +410,7 @@ class WpOpsService:
         if not valid_backup_id(str(backup_id or "")):
             return self._drill_refused("UnknownBackup", "Unknown backup")
         try:
-            sites = load_sites(self.registry_path)
+            sites = load_sites(self.registry_path, data_dir=self.data_dir)
         except ValueError as exc:
             return self._config_error(str(exc))
         target = site_by_id(sites, target_site_id)
@@ -371,7 +459,7 @@ class WpOpsService:
         self, site_id: str, *, actor: str, action: str
     ) -> tuple[Site | WpOpsResult, WpOpsResult | None]:
         try:
-            sites = load_sites(self.registry_path)
+            sites = load_sites(self.registry_path, data_dir=self.data_dir)
         except ValueError as exc:
             return self._config_error(str(exc)), None
         site = site_by_id(sites, site_id)
@@ -1060,6 +1148,51 @@ class WpOpsService:
                 message="Check state is unreadable",
                 data={"error_class": "StateUnreadable", "live_calls": False},
             )
+
+    def _ssh_site(self, site_id: str) -> tuple[Site | None, Site | None, WpOpsResult | None]:
+        try:
+            registry_sites = load_sites(
+                self.registry_path, data_dir=self.data_dir, apply_overlay=False
+            )
+            sites = load_sites(self.registry_path, data_dir=self.data_dir)
+        except ValueError as exc:
+            return None, None, self._config_error(str(exc))
+        registry_site = site_by_id(registry_sites, site_id)
+        site = site_by_id(sites, site_id)
+        if registry_site is None or site is None:
+            return None, None, WpOpsResult(
+                ok=False,
+                message="Unknown site",
+                data={"error_class": "UnknownSite", "site_id": site_id, "live_calls": False},
+            )
+        return registry_site, site, None
+
+    def _ssh_admin(self, actor: str) -> bool:
+        try:
+            return resolve_actor(actor).has(Permission.WP_OPS_ADMIN)
+        except AccessDenied:
+            return False
+
+    def _audit_ssh(
+        self,
+        actor: str,
+        site_id: str,
+        *,
+        success: bool,
+        changed: list[str],
+        identity_present: bool,
+    ) -> None:
+        self._audit_raw(
+            actor,
+            action="wp_ops_ssh_settings",
+            target_id=site_id,
+            success=success,
+            details={
+                "changed": changed,
+                "identity_present": identity_present,
+                "live_calls": False,
+            },
+        )
 
     def _file_editor(self):
         from ecom_ops.wp_ops.files import FileEditor

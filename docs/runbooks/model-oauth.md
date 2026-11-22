@@ -59,8 +59,8 @@
 ## 3. xAI Grok Build
 
 1. Installera Grok Build på hosten. Imagen innehåller inte binären.
-2. Kör `grok login --device-auth` som den användare som kör tjänsten.
-3. Sätt `AZOM_XAI_GROK_BUILD=1` eller `XAI_GROK_BIN=/full/path/grok`. Sätt `XAI_MODEL` vid behov. Azom anropar `grok` en turn med `--prompt-file`, utan `--single` och utan `--permission-mode plan`. Prompten ligger i en temporär fil, inte på argv och inte på stdin. Tom `--tools` betyder inga inbyggda verktyg. Status visar inte ansluten bara för att flaggan är satt. En session-pin från `/model` skickas bara när OpenRouter är första konfigurerade route.
+2. Kör `grok login --device-auth` som den användare som kör tjänsten, eller använd knappen på `/oscar`. Sidan frågar om status tills inloggningen är klar eller har misslyckats.
+3. Sätt `AZOM_XAI_GROK_BUILD=1` eller `XAI_GROK_BIN=/full/path/grok`. Sätt `XAI_MODEL` vid behov. Azom anropar `grok` en turn med `--prompt-file`, utan `--single` och utan `--permission-mode plan`. Prompten ligger i en temporär fil, inte på argv och inte på stdin. Tom `--tools` betyder inga inbyggda verktyg. Vilotiden nollställs medan sessionen har fasen `streaming_reasoning` eller `streaming_text`. `AZOM_XAI_GROK_HARD_TIMEOUT` är taket, normalt 180 sekunder. Status visar inte ansluten bara för att flaggan är satt. För Telegram fritext: sätt `AZOM_TELEGRAM_MODEL_ROUTE=xai_grok_build`. Det anropet använder `XAI_MODEL` och faller inte vidare. En session-pin från `/model` skickas bara när Telegram-routen, eller första konfigurerade route, är OpenRouter.
 4. Starta om `azom-dashboard`, `azom-bot` och cases-poll.
 5. Testa raden `xai_grok_build` på `/oscar` utan fallback.
 
@@ -93,7 +93,7 @@ Kontrollera vald route i telemetry: action `model_route_selected` med `route_id`
 
 ## 7. Backup
 
-`bin/backup-azom-data.sh` tar inte med `model_oauth/`. En vanlig tarball kan inte återställa ChatGPT-sessionen.
+`bin/backup-azom-data.sh` tar inte med `model_oauth/` eller `ssh-keys/`. En vanlig tarball kan inte återställa ChatGPT-sessionen eller de privata SSH-nycklarna.
 
 1. Om off-box-kopia behövs: kopiera katalogen till en krypterad plats som bara Oscar når.
 2. Lägg den inte i samma backup som `cases.db`.

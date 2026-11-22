@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from ecom_ops.bot.actors import (
@@ -12,6 +13,7 @@ from ecom_ops.bot.actors import (
     messenger_mutations_allowed,
     resolve_channel_actor,
 )
+from ecom_ops.bot.catalog import execute_page_update, execute_product_update
 from ecom_ops.bot.chat_agent import (
     SOFT_ESCALATE_NUDGE,
     run_chat,
@@ -42,10 +44,16 @@ from ecom_ops.bot.reply import (
     triage_cases_actions,
     yes_no_actions,
 )
+from ecom_ops.bot.site_content import (
+    execute_plugin_status,
+    execute_post_update,
+    execute_site_update,
+)
 from ecom_ops.bot.store import ConversationStore, clamp_messages
 from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.rbac import Actor, Permission, resolve_actor
 from ecom_ops.security import validate_order_id
+from ecom_ops.wp_ops.agent_tools import WpAgentTools, context_for_storage, context_matches
 
 ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
 
@@ -106,8 +114,14 @@ class BotHandler:
     def _pending_allowed(self, actor: Actor, pending: PendingAction) -> bool:
         if pending.kind == "order_status":
             return actor.has(Permission.ORDER_STATUS_UPDATE)
-        if pending.kind == "product_desc":
+        if pending.kind in {"product_desc", "product_update"}:
             return actor.has(Permission.PRODUCT_DESC_WRITE)
+        if pending.kind == "page_update":
+            return actor.has(Permission.WP_OPS_OPERATE)
+        if pending.kind in {"post_update", "site_update"}:
+            return actor.has(Permission.WP_OPS_OPERATE)
+        if pending.kind == "plugin_status":
+            return actor.has(Permission.WP_OPS_ADMIN)
         if pending.kind == "case_regenerate":
             return actor.has(Permission.CASE_REPLY)
         return True
@@ -118,11 +132,28 @@ class BotHandler:
                 "Orderstatus-ändring kräver operator eller Oscar "
                 "(Jonatan har CASE_REPLY men inte order write)."
             )
-        if pending.kind == "product_desc":
+        if pending.kind in {"product_desc", "product_update"}:
             return (
-                "Produktbeskrivning kräver operator eller Oscar "
+                "Produktändring kräver operator eller Oscar "
                 "(Jonatan har inte PRODUCT_DESC_WRITE)."
             )
+        if pending.kind == "page_update":
+            return (
+                "Sidändring kräver operator eller Oscar "
+                "(Jonatan har inte WP_OPS_OPERATE)."
+            )
+        if pending.kind == "post_update":
+            return (
+                "Inläggsändring kräver operator eller Oscar "
+                "(Jonatan har inte WP_OPS_OPERATE)."
+            )
+        if pending.kind == "site_update":
+            return (
+                "Sajttitel och tagline kräver operator eller Oscar "
+                "(Jonatan har inte WP_OPS_OPERATE)."
+            )
+        if pending.kind == "plugin_status":
+            return "Plugin på eller av kräver Oscar (WP_OPS_ADMIN)."
         return "Du saknar behörighet för den här åtgärden."
 
     def _merge_state(self, chat_id: str | int, **updates: Any) -> None:
@@ -156,16 +187,30 @@ class BotHandler:
             return
         self.store.set(chat_id, state)
 
-    def handle(self, chat_id: str | int, text: str) -> BotReply:
+    def handle(
+        self,
+        chat_id: str | int,
+        text: str,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        on_text_reset: Callable[[], None] | None = None,
+        on_checkpoint: Callable[[], list[str]] | None = None,
+    ) -> BotReply:
         if not self._peer_allowed(chat_id):
             return self._deny_allowlist()
         try:
-            self._resolve_actor(chat_id)
+            actor = self._resolve_actor(chat_id)
         except (TelegramActorDenied, ChannelActorDenied):
             return self._deny_actor()
+        self._clear_mismatched_wp_context(chat_id, actor)
         raw = (text or "").strip()
         if not raw:
             return BotReply(text="Skriv /help eller /commands — eller bara fråga.")
+
+        wp_command = self._wp_context_command(chat_id, raw)
+        if wp_command is not None:
+            return wp_command
 
         # OpenClaw slash commands first
         oc = dispatch_openclaw_command(
@@ -203,15 +248,23 @@ class BotHandler:
         if wants_hard_escalate_confirm(raw):
             return self._start_escalate_confirm(chat_id, raw)
 
-        return self._run_llm_chat(chat_id, raw)
+        return self._run_llm_chat(
+            chat_id,
+            raw,
+            on_progress=on_progress,
+            on_text_delta=on_text_delta,
+            on_text_reset=on_text_reset,
+            on_checkpoint=on_checkpoint,
+        )
 
     def handle_callback(self, chat_id: str | int, data: str) -> BotReply:
         if not self._peer_allowed(chat_id):
             return self._deny_allowlist()
         try:
-            self._resolve_actor(chat_id)
+            actor = self._resolve_actor(chat_id)
         except (TelegramActorDenied, ChannelActorDenied):
             return self._deny_actor()
+        self._clear_mismatched_wp_context(chat_id, actor)
         raw = (data or "").strip()
         if raw == "escalate:yes":
             return as_reply(self._confirm_escalate(chat_id, yes=True))
@@ -306,6 +359,11 @@ class BotHandler:
                 if pending and pending.kind in {
                     "order_status",
                     "product_desc",
+                    "product_update",
+                    "page_update",
+                    "post_update",
+                    "site_update",
+                    "plugin_status",
                 }:
                     return blocked
             return self._confirm_pending_text(chat_id, yes=True)
@@ -320,6 +378,27 @@ class BotHandler:
         session = dict(prev.get("session") or {})
         session["last_order_id"] = str(order_id)
         self._merge_state(chat_id, session=session)
+
+    def _clear_mismatched_wp_context(self, chat_id: str | int, actor: str) -> None:
+        state = self.store.get(chat_id) or {}
+        session = dict(state.get("session") or {})
+        context = session.get("wp_ops_context")
+        if context is None:
+            return
+        if context_matches(
+            context,
+            actor=actor,
+            channel=self.channel,
+            conversation_id=f"{self.channel}:{chat_id}",
+        ):
+            return
+        session.pop("wp_ops_context", None)
+        self._merge_state(
+            chat_id,
+            session=session,
+            messages=state.get("messages"),
+            tool_digest=state.get("tool_digest"),
+        )
 
     def _touch_session_case(self, chat_id: str | int, case_id8: str) -> None:
         prev = self.store.get(chat_id) or {}
@@ -479,6 +558,12 @@ class BotHandler:
             session["last_order_id"] = str(pending.payload["order_id"])
         if pending.kind == "case_regenerate" and pending.payload.get("case_id"):
             session["last_case_id8"] = str(pending.payload["case_id"])[:8]
+        if pending.kind == "product_update" and pending.payload.get("product_id"):
+            session["last_product_id"] = str(pending.payload["product_id"])
+        if pending.kind == "page_update" and pending.payload.get("page_id"):
+            session["last_page_id"] = str(pending.payload["page_id"])
+        if pending.kind == "post_update" and pending.payload.get("post_id"):
+            session["last_post_id"] = str(pending.payload["post_id"])
         self._merge_state(
             chat_id,
             flow="pending_action",
@@ -517,7 +602,15 @@ class BotHandler:
         if not self._pending_allowed(actor_obj, pending):
             self._clear_pending(chat_id)
             return BotReply(text=self._deny_pending_reply(pending))
-        if pending.kind in {"order_status", "product_desc"}:
+        if pending.kind in {
+            "order_status",
+            "product_desc",
+            "product_update",
+            "page_update",
+            "post_update",
+            "site_update",
+            "plugin_status",
+        }:
             blocked = self._mutations_blocked_reply()
             if blocked:
                 return blocked
@@ -539,6 +632,45 @@ class BotHandler:
                 language=str(pending.payload.get("language") or "sv"),
                 publish=bool(pending.payload.get("publish")),
                 actor=actor,
+            )
+        elif pending.kind == "product_update":
+            domain = pending.payload.get("domain") or self._session_market(chat_id)
+            ok, msg = execute_product_update(
+                product_id=str(pending.payload.get("product_id") or ""),
+                fields=dict(pending.payload.get("fields") or {}),
+                actor=actor,
+                domain=str(domain) if domain else None,
+            )
+        elif pending.kind == "page_update":
+            domain = pending.payload.get("domain") or self._session_market(chat_id)
+            ok, msg = execute_page_update(
+                page_id=str(pending.payload.get("page_id") or ""),
+                fields=dict(pending.payload.get("fields") or {}),
+                actor=actor,
+                domain=str(domain) if domain else None,
+            )
+        elif pending.kind == "post_update":
+            domain = pending.payload.get("domain") or self._session_market(chat_id)
+            ok, msg = execute_post_update(
+                post_id=str(pending.payload.get("post_id") or ""),
+                fields=dict(pending.payload.get("fields") or {}),
+                actor=actor,
+                domain=str(domain) if domain else None,
+            )
+        elif pending.kind == "site_update":
+            domain = pending.payload.get("domain") or self._session_market(chat_id)
+            ok, msg = execute_site_update(
+                fields=dict(pending.payload.get("fields") or {}),
+                actor=actor,
+                domain=str(domain) if domain else None,
+            )
+        elif pending.kind == "plugin_status":
+            domain = pending.payload.get("domain") or self._session_market(chat_id)
+            ok, msg = execute_plugin_status(
+                plugin=str(pending.payload.get("plugin") or ""),
+                status=str(pending.payload.get("status") or ""),
+                actor=actor,
+                domain=str(domain) if domain else None,
             )
         elif pending.kind == "case_regenerate":
             # Prefer full id via store if only id8
@@ -584,9 +716,25 @@ class BotHandler:
             )
         return BotReply(text=f"{prefix}\n{msg}")
 
-    def _run_llm_chat(self, chat_id: str | int, message: str) -> BotReply:
+    def _run_llm_chat(
+        self,
+        chat_id: str | int,
+        message: str,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        on_text_reset: Callable[[], None] | None = None,
+        on_checkpoint: Callable[[], list[str]] | None = None,
+    ) -> BotReply:
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
+        actor = self._resolve_actor(chat_id)
+        conversation_id = f"{self.channel}:{chat_id}"
+        wp_context = session.get("wp_ops_context")
+        if not context_matches(
+            wp_context, actor=actor, channel=self.channel, conversation_id=conversation_id
+        ):
+            session.pop("wp_ops_context", None)
         history = list(prev.get("messages") or [])
         prior_digest = str(prev.get("tool_digest") or "")
         result = run_chat(
@@ -596,6 +744,13 @@ class BotHandler:
             prior_digest=prior_digest,
             sticky_order_id=session.get("last_order_id"),
             sticky_case_id8=session.get("last_case_id8"),
+            actor=actor,
+            channel=self.channel,
+            conversation_id=conversation_id,
+            on_progress=on_progress,
+            on_text_delta=on_text_delta,
+            on_text_reset=on_text_reset,
+            on_checkpoint=on_checkpoint,
         )
         if result.sticky_order_id:
             session["last_order_id"] = str(result.sticky_order_id)
@@ -603,6 +758,16 @@ class BotHandler:
             session["last_case_id8"] = str(result.sticky_case_id8)
         if result.sticky_market:
             session["last_market"] = str(result.sticky_market)
+        if result.order_list_shown is not None:
+            session["order_list_shown"] = int(result.order_list_shown)
+        if result.sticky_product_id:
+            session["last_product_id"] = str(result.sticky_product_id)
+        if result.sticky_page_id:
+            session["last_page_id"] = str(result.sticky_page_id)
+        if result.sticky_post_id:
+            session["last_post_id"] = str(result.sticky_post_id)
+        if result.wp_ops_context is not None:
+            session["wp_ops_context"] = result.wp_ops_context
 
         self._merge_state(
             chat_id,
@@ -662,3 +827,78 @@ class BotHandler:
             actions = triage_cases_actions(result.suggest_case_ids)
 
         return bot_reply(text, actions=actions, needs_typing=True)
+
+    def _wp_context_command(self, chat_id: str | int, text: str) -> BotReply | None:
+        """Minimal user controls for the sticky, actor-scoped WordPress site."""
+        match = re.fullmatch(r"/wp(?:\s+(.*))?", text.strip(), re.I)
+        if not match:
+            return None
+        parts = (match.group(1) or "").strip().split()
+        action = parts[0].lower() if parts else "help"
+        state = self.store.get(chat_id) or {}
+        session = dict(state.get("session") or {})
+        if action == "clear" and len(parts) == 1:
+            session.pop("wp_ops_context", None)
+            self._merge_state(
+                chat_id,
+                session=session,
+                messages=state.get("messages"),
+                tool_digest=state.get("tool_digest"),
+            )
+            return BotReply(text="WordPress-sajtkontexten är rensad.")
+        if action == "help" and len(parts) == 1:
+            return BotReply(text="/wp sites · /wp use <site-id> · /wp clear")
+        try:
+            actor = self._resolve_actor(chat_id)
+        except (TelegramActorDenied, ChannelActorDenied):
+            return self._deny_actor()
+        tools = WpAgentTools()
+        if action == "sites" and len(parts) == 1:
+            output = tools.execute(
+                "wp_list_sites",
+                {},
+                actor=actor,
+                channel=self.channel,
+                conversation_id=f"{self.channel}:{chat_id}",
+            )
+            if output.data.get("ok") is not True:
+                return BotReply(text="Du saknar rättighet att läsa WordPress-sajter.")
+            sites = output.data.get("sites", [])
+            if not sites:
+                return BotReply(text="Inga registrerade WordPress-sajter.")
+            lines = ["Registrerade WordPress-sajter:"]
+            for row in sites[:20]:
+                lines.append(
+                    f"- {row.get('site_id')} · {row.get('name')} · "
+                    f"{row.get('environment')} · status {row.get('status')}"
+                )
+            return BotReply(text="\n".join(lines))
+        if action == "use" and len(parts) == 2:
+            site_id = parts[1]
+            output = tools.execute(
+                "wp_site_status",
+                {"site_id": site_id},
+                actor=actor,
+                channel=self.channel,
+                conversation_id=f"{self.channel}:{chat_id}",
+            )
+            if output.data.get("ok") is not True:
+                return BotReply(text="Sajten är okänd eller du saknar rättighet att läsa den.")
+            context = context_for_storage(
+                actor=actor,
+                channel=self.channel,
+                conversation_id=f"{self.channel}:{chat_id}",
+                site_id=output.site_id,
+                operation_ids=output.operation_ids,
+            )
+            if context is None:
+                return BotReply(text="WordPress-sajten kunde inte väljas.")
+            session["wp_ops_context"] = context
+            self._merge_state(
+                chat_id,
+                session=session,
+                messages=state.get("messages"),
+                tool_digest=state.get("tool_digest"),
+            )
+            return BotReply(text=f"Aktiv WordPress-sajt: {site_id}. Fråga om status, backup eller uppdateringar.")
+        return BotReply(text="Använd /wp sites, /wp use <site-id> eller /wp clear.")

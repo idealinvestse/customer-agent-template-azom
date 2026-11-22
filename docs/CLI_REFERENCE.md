@@ -237,9 +237,13 @@ python -m ecom_ops --mock --actor agent wp file-propose --id mock-staging --kind
 python -m ecom_ops --mock --actor agent wp file-apply --id mock-staging --plan fe-aaaaaaaaaaaa --from ./edit.css
 ```
 
+Telegram's WordPress conversation uses the same registered site ids. Use `/wp sites` to list sites visible under `WP_OPS_READ`, `/wp use <site-id>` to set the current conversation site, and `/wp clear` to clear it. Natural-language requests can use the named site-status, backup-status, security-findings, open-operations, and plan-preview tools. Each turn is limited to 3 WordPress tool calls, 30 seconds of tool execution, 4 KB per result, and 10 KB combined. Plan previews are stored with a digest for 12 hours but remain non-executable and cannot be approved while the update and restore adapters are unavailable.
+
 Staging checks, staging backups, and staging drills need `WP_OPS_OPERATE`. Production checks and production mock backups need `WP_OPS_ADMIN`. `wp restore` is not a command. A verified manifest stays `green: false` with `encryption: unconfigured` and `offsite: false`.
 
 `wp files` lists themes, plugins, or the editable files in one component. `file-propose` and `file-apply` read the new text from `--from`. There is no `--body`. A staging edit needs `WP_OPS_OPERATE`. A production edit needs `WP_OPS_ADMIN` and `CODE_EDIT`. The JSON does not include the file body. `AZOM_USE_MOCK=1` keeps the edit on the local mock tree even if `AZOM_WP_FILES_SSH=1`.
+
+The document root and SSH login are set in the dashboard at `/wp/<id>/ssh`, not by a CLI flag. Oscar can save them. `wp show` and `wp sites` do not include the local identity path or the public host key. The private key is not printed.
 
 #### WordPress ops Do / Do not
 

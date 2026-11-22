@@ -18,6 +18,7 @@ from ecom_ops.model_router.errors import (
     ModelRateLimitError,
     ModelUnavailableError,
 )
+from ecom_ops.model_router.streaming import read_chat_completion_sse
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 XAI_CHAT_URL = "https://api.x.ai/v1/chat/completions"
@@ -58,12 +59,13 @@ class XaiApiKeyRoute:
             raise ModelConfigError("XAI_API_KEY is not configured")
 
         model = request.model or self._model()
+        streaming = request.on_text_delta is not None
         payload = {
             "model": model,
             "messages": request.messages,
             "max_tokens": request.max_output_tokens,
             "temperature": request.temperature,
-            "stream": False,
+            "stream": streaming,
         }
         try:
             response = requests.post(
@@ -73,33 +75,45 @@ class XaiApiKeyRoute:
                     "Content-Type": "application/json",
                 },
                 json=payload,
+                stream=streaming,
                 timeout=request.timeout,
             )
         except requests.RequestException as exc:
             raise ModelUnavailableError("xAI API endpoint unreachable") from exc
 
         if response.status_code == 401:
+            response.close()
             raise ModelAuthError("xAI API key was rejected")
         if response.status_code == 429:
+            response.close()
             raise ModelRateLimitError("xAI API rate limit reached")
         if response.status_code >= 400:
-            raise ModelUnavailableError(f"xAI API request rejected ({response.status_code})")
+            status = response.status_code
+            response.close()
+            raise ModelUnavailableError(f"xAI API request rejected ({status})")
 
         try:
-            data = response.json()
+            if streaming:
+                content, usage = read_chat_completion_sse(
+                    response.iter_lines(decode_unicode=True),
+                    on_text_delta=request.on_text_delta,
+                )
+            else:
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise ModelUnavailableError("xAI API response was invalid")
+                choices = data.get("choices") or []
+                if not choices:
+                    raise ModelUnavailableError("xAI API response missing choices")
+                content = str((choices[0].get("message") or {}).get("content") or "").strip()
+                usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         except ValueError as exc:
             raise ModelUnavailableError("xAI API response was not JSON") from exc
-        if not isinstance(data, dict):
-            raise ModelUnavailableError("xAI API response was invalid")
-
-        choices = data.get("choices") or []
-        if not choices:
-            raise ModelUnavailableError("xAI API response missing choices")
-        content = str((choices[0].get("message") or {}).get("content") or "").strip()
+        finally:
+            response.close()
         if not content:
             raise ModelUnavailableError("xAI API returned no content")
 
-        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
         prompt_tokens = int(usage.get("prompt_tokens") or 0)
         completion_tokens = int(usage.get("completion_tokens") or 0)
         total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))

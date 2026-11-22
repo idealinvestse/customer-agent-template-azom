@@ -2,6 +2,8 @@
 
 V2.1 (see docs/WOO_WORDPRESS.md — WordPress client):
 - Read + write for posts, pages, media, users, comments, settings.
+- Themes are list-only. Plugins are list plus active/inactive. No install,
+  update, delete, or theme switch.
 - Auth: HTTP Basic with WordPress username + Application Password
   (``WP_APP_PASSWORD``). Application Passwords are supported by WordPress
   core 5.6+ and are exposed on azom.no via ``/wp-admin/authorize-application.php``.
@@ -15,10 +17,16 @@ V2.1 (see docs/WOO_WORDPRESS.md — WordPress client):
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import quote, unquote
 
 from ecom_ops.security import SecurityError, get_env, sanitize_text
+
+_PAGE_STATUSES = frozenset({"draft", "publish", "private", "pending"})
+_PLUGIN_STATUSES = frozenset({"active", "inactive"})
+_PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*(?:/[a-z0-9][a-z0-9_-]*)?$")
 
 # --------------------------------------------------------------------------- #
 # Data models
@@ -94,6 +102,34 @@ class InMemoryWpTransport:
             "description": "Nordisk e-handel",
             "language": "nb",
         }
+        self.themes: dict[str, dict[str, Any]] = {
+            "twentytwentyfive": {
+                "stylesheet": "twentytwentyfive",
+                "name": "Twenty Twenty-Five",
+                "status": "active",
+                "version": "1.0",
+            },
+            "twentytwentyfour": {
+                "stylesheet": "twentytwentyfour",
+                "name": "Twenty Twenty-Four",
+                "status": "inactive",
+                "version": "1.3",
+            },
+        }
+        self.plugins: dict[str, dict[str, Any]] = {
+            "woocommerce/woocommerce": {
+                "plugin": "woocommerce/woocommerce",
+                "name": "WooCommerce",
+                "status": "active",
+                "version": "9.0",
+            },
+            "akismet/akismet": {
+                "plugin": "akismet/akismet",
+                "name": "Akismet",
+                "status": "inactive",
+                "version": "5.3",
+            },
+        }
         self.calls: list[tuple[str, str, dict | None]] = []
         self._next_id = 100
 
@@ -133,6 +169,11 @@ class InMemoryWpTransport:
                 self.settings.update(json or {})
                 return self.settings
             raise SecurityError(f"Unhandled WP settings: {method}")
+
+        if collection == "themes":
+            return self._themes(method, parts)
+        if collection == "plugins":
+            return self._plugins(method, parts, json)
 
         store = self._store_for(collection)
         if store is None:
@@ -202,6 +243,34 @@ class InMemoryWpTransport:
                 return {"deleted": True, "id": iid}
             raise SecurityError(f"WP API error 404: {collection}/{item_id}")
         raise SecurityError(f"Unhandled WP item op: {method}")
+
+    def _themes(self, method: str, parts: list[str]) -> Any:
+        if method.upper() != "GET" or len(parts) != 1:
+            raise SecurityError(f"Unhandled WP themes: {method}")
+        return [dict(row) for row in self.themes.values()]
+
+    def _plugins(self, method: str, parts: list[str], body: dict[str, Any] | None) -> Any:
+        verb = method.upper()
+        if len(parts) == 1:
+            if verb == "GET":
+                return [dict(row) for row in self.plugins.values()]
+            raise SecurityError(f"Unhandled WP plugins: {verb}")
+        plugin_id = unquote("/".join(parts[1:]))
+        row = self.plugins.get(plugin_id)
+        if row is None:
+            raise SecurityError(f"WP API error 404: plugins/{plugin_id}")
+        if verb == "GET":
+            return dict(row)
+        if verb in {"POST", "PUT", "PATCH"}:
+            status = str((body or {}).get("status") or "").strip().lower()
+            if status not in _PLUGIN_STATUSES:
+                raise SecurityError("Invalid plugin status")
+            if set(body or {}) - {"status"}:
+                raise SecurityError("Unhandled WP plugin field")
+            updated = {**row, "status": status}
+            self.plugins[plugin_id] = updated
+            return dict(updated)
+        raise SecurityError(f"Unhandled WP plugins: {verb}")
 
     def _store_for(self, collection: str) -> dict[int, dict[str, Any]] | None:
         # posts and pages share self.posts (distinguished by "type" field)
@@ -341,9 +410,14 @@ class WordPressClient:
         if title is not None:
             payload["title"] = sanitize_text(title, max_len=300)
         if content is not None:
-            payload["content"] = content
+            payload["content"] = sanitize_text(content, max_len=8000)
         if status is not None:
-            payload["status"] = status
+            normalized = str(status).strip().lower()
+            if normalized not in _PAGE_STATUSES:
+                raise SecurityError(f"Invalid post status: {status}")
+            payload["status"] = normalized
+        if not payload:
+            raise SecurityError("No post fields to update")
         data = self.transport.request(
             "POST",
             self._url(f"/wp-json/wp/v2/posts/{pid}"),
@@ -393,7 +467,38 @@ class WordPressClient:
         )
         return self._to_post(data)
 
-    # --- media ------------------------------------------------------------ #
+    def update_page(
+        self,
+        page_id: str | int,
+        *,
+        title: str | None = None,
+        content: str | None = None,
+        status: str | None = None,
+    ) -> WpPost:
+        """Update one page over the REST API. Does not delete or create."""
+        pid = _validate_int_id(page_id)
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = sanitize_text(title, max_len=300)
+        if content is not None:
+            payload["content"] = sanitize_text(content, max_len=8000)
+        if status is not None:
+            normalized = str(status).strip().lower()
+            if normalized not in _PAGE_STATUSES:
+                raise SecurityError(f"Invalid page status: {status}")
+            payload["status"] = normalized
+        if not payload:
+            raise SecurityError("No page fields to update")
+        data = self.transport.request(
+            "POST",
+            self._url(f"/wp-json/wp/v2/pages/{pid}"),
+            auth=self._auth(),
+            json=payload,
+            timeout=self.timeout,
+        )
+        return self._to_post(data)
+
+    # --- media                                                            #
 
     def list_media(
         self, *, per_page: int = 10, page: int = 1
@@ -468,6 +573,58 @@ class WordPressClient:
         )
         return data if isinstance(data, dict) else {}
 
+    def update_site_identity(
+        self,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Update the site title or tagline. Other settings stay untouched."""
+        payload: dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = sanitize_text(title, max_len=200)
+        if description is not None:
+            payload["description"] = sanitize_text(description, max_len=300)
+        if not payload:
+            raise SecurityError("No site fields to update")
+        return self.update_settings(**payload)
+
+    # --- themes and plugins (no install, update, or delete) -------------- #
+
+    def list_themes(self) -> list[dict[str, Any]]:
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wp/v2/themes"),
+            auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def list_plugins(self) -> list[dict[str, Any]]:
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wp/v2/plugins"),
+            auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def set_plugin_status(self, plugin: str, status: str) -> dict[str, Any]:
+        """Turn one existing plugin on or off. Does not install, update, or delete."""
+        plugin_id = _validate_plugin_id(plugin)
+        normalized = str(status).strip().lower()
+        if normalized not in _PLUGIN_STATUSES:
+            raise SecurityError(f"Invalid plugin status: {status}")
+        encoded = quote(plugin_id, safe="")
+        data = self.transport.request(
+            "POST",
+            self._url(f"/wp-json/wp/v2/plugins/{encoded}"),
+            auth=self._auth(),
+            json={"status": normalized},
+            timeout=self.timeout,
+        )
+        return data if isinstance(data, dict) else {}
+
     # --- discovery -------------------------------------------------------- #
 
     def discover_namespaces(self) -> list[str]:
@@ -508,6 +665,13 @@ class WordPressClient:
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+
+def _validate_plugin_id(value: str) -> str:
+    plugin_id = str(value or "").strip().lower()
+    if not _PLUGIN_ID_RE.fullmatch(plugin_id):
+        raise SecurityError(f"Invalid plugin id: {value}")
+    return plugin_id
 
 
 def _validate_int_id(value: str | int) -> int:

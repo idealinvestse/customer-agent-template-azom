@@ -5,7 +5,7 @@
 <div class="space-y-5">
   <div>
     <h2 class="az-page-title">Beteende</h2>
-    <p class="az-muted mt-1">Systemtexter för chat, klassning och utkast. En ändrad text får en ny version. Kundmail skickas inte härifrån.</p>
+    <p class="az-muted mt-1">Promptar för chatt, klassning, kundutkast och produkttext. Chattens fasta runtime-regler och serversidans behörigheter går inte att ändra här. En ändrad prompt får en ny version; kundmail skickas inte härifrån.</p>
   </div>
 
   {% if error %}
@@ -15,7 +15,7 @@
   <section class="az-card border-oscar-600/35">
     <form method="post" action="/oscar/behavior" class="space-y-5">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      {% for name, label in [('chat', 'Chat'), ('classify', 'Klassning'), ('draft', 'Utkast')] %}
+      {% for name, label in [('chat', 'Chat'), ('classify', 'Klassning'), ('draft', 'Kundutkast'), ('product_desc', 'Produkttext')] %}
       {% set row = prompts.get(name, {}) %}
       <div>
         <label class="az-label" for="prompt-{{ name }}">{{ label }} · version {{ row.get('version', '') }}</label>

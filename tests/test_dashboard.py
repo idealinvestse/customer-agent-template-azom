@@ -53,6 +53,22 @@ def test_health_unauthenticated(dash_client):
     assert resp.get_json()["ok"] is True
 
 
+def test_live_session_cookie_secure_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.setenv("DASHBOARD_OSCAR_PASSWORD", "live-oscar-secret")
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "live-jonatan-secret")
+    monkeypatch.delenv("DASHBOARD_COOKIE_SECURE", raising=False)
+    monkeypatch.chdir(DASH_DIR)
+    app = _load_dashboard_app()
+    assert app.config["SESSION_COOKIE_SECURE"] is True
+    monkeypatch.setenv("DASHBOARD_COOKIE_SECURE", "0")
+    app = _load_dashboard_app()
+    assert app.config["SESSION_COOKIE_SECURE"] is False
+
+
 def test_index_requires_auth(dash_client):
     assert dash_client.get("/").status_code == 401
 

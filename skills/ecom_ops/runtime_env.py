@@ -61,6 +61,7 @@ _ALLOW_KEYS = frozenset(
         "XAI_MODEL",
         "XAI_API_KEY",
         "AZOM_XAI_GROK_BUILD",
+        "AZOM_TELEGRAM_MODEL_ROUTE",
         "MESSENGER_PAGE_ACCESS_TOKEN",
         "MESSENGER_APP_SECRET",
         "MESSENGER_VERIFY_TOKEN",

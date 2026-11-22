@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SECRET = "mock-shop-app-password-aaa"
 MARKER = "AZOM-FILE-MARKER"
 STYLE = "/var/www/shop/wp-content/themes/twentytwentyfive/style.css"
+HOST_KEY = "ssh-ed25519 " + base64.b64encode(b"azom-host-key-bytes").decode("ascii") + " test"
 
 
 class MemTree:
@@ -238,7 +241,10 @@ def test_ssh_commands_are_the_fixed_templates_and_shell_stays_blocked(monkeypatc
     monkeypatch.setenv("SSH_USER", "root")
     monkeypatch.setenv("SSH_PORT", "22")
     monkeypatch.delenv("SSH_IDENTITY_FILE", raising=False)
-    site = parse_site(_row("stage", environment="staging", host="shop.internal"))
+    site = replace(
+        parse_site(_row("stage", environment="staging", host="shop.internal")),
+        host_public_key=HOST_KEY,
+    )
     runner = RecordingRunner()
     transport = SshFileTransport(site, runner)
     assert transport.list_dir("/var/www/shop/wp-content/themes") == ["twentytwentyfive"]
@@ -253,7 +259,9 @@ def test_ssh_commands_are_the_fixed_templates_and_shell_stays_blocked(monkeypatc
     ]
     assert runner.calls[-1][2] == b"/* next */\n"
     called: list[list[str]] = []
-    openssh = OpenSshRunner(execute=lambda argv, stdin, timeout: called.append(argv) or (0, b""))
+    openssh = OpenSshRunner(
+        execute=lambda argv, stdin, timeout: called.append(argv) or (0, b""), user="deploy"
+    )
     code, out = openssh.run("mock-shop.example.test", f"cat -- '{STYLE}'")
     assert (code, out, called) == (126, b"", [])
     code, out = openssh.run("shop.internal", "sed -i 's/a/b/' /tmp/file.php")
@@ -265,6 +273,20 @@ def test_ssh_commands_are_the_fixed_templates_and_shell_stays_blocked(monkeypatc
     assert is_critical_ssh_command("sed -i 's/a/b/' file.php")
     assert is_critical_ssh_command("vim wp-config.php")
     assert not is_ssh_allowlisted("tee -- '/var/www/shop/a.php'")
+
+
+def test_broad_root_is_refused_before_the_transport(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    row = _row("stage", environment="staging")
+    row["files_root"] = "/var/www"
+    tree = MemTree()
+    svc = _service(tmp_path, [row], tree)
+    read = svc.read_file("stage", "theme", "twentytwentyfive", "style.css", actor="jonatan")
+    assert read.ok is False
+    assert read.data["error_class"] == "PathRejected"
+    assert read.message == "The files root is too broad."
+    assert tree.reads == []
 
 
 def test_cli_proposes_from_a_file_and_keeps_the_body_out_of_json(tmp_path, monkeypatch, capsys):

@@ -65,10 +65,17 @@ def create_app() -> Flask:
     application.wsgi_app = ProxyFix(application.wsgi_app, x_for=1, x_proto=1)
     application.jinja_env.globals["case_age"] = _case_age
     live = os.environ.get("AZOM_USE_MOCK", "1").lower() not in {"1", "true", "yes", "on"}
+    cookie_raw = os.environ.get("DASHBOARD_COOKIE_SECURE", "").strip().lower()
+    if cookie_raw in {"1", "true", "yes", "on"}:
+        cookie_secure = True
+    elif cookie_raw in {"0", "false", "no", "off"}:
+        cookie_secure = False
+    else:
+        cookie_secure = live
     application.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
-        SESSION_COOKIE_SECURE=live,
+        SESSION_COOKIE_SECURE=cookie_secure,
     )
     init_auth(application)
     register_health_routes(application)

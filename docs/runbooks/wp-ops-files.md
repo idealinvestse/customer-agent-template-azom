@@ -30,6 +30,20 @@
 - Behandla `.azom-bak` som en off-site-backup eller som en produktionsåterställning.
 - Markera fas 4, live soak eller managed hosting som klart.
 
+## SSH-inställningar
+
+Öppna webbplatsen och länken SSH-inställningar.
+
+- Rot på servern och värdnamn sparas för den sajten. Ett tomt fält, eller samma värde som registret, ärver `config/wp_sites.yaml`. Roten måste ha minst tre led. Den får inte börja med `/etc`, `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/proc`, `/sys`, `/dev`, `/root`, `/boot`, `/tmp`, `/run`, `/var/log`, `/var/lib`, `/var/run` eller `/var/spool`.
+- Användare, port och en lokal sökväg till en nyckel kan sättas per sajt. Tomt fält ärver `SSH_USER`, `SSH_PORT` och `SSH_IDENTITY_FILE`; det finns ingen standardanvändare. Användaren måste vara explicit och får inte vara `root`. Saknad eller root-användare stoppas innan ssh-processen startar. `SSH_HOST` är den andra SSH-klienten, inte filtransportens värd.
+- Den globala reserven skrivs till `runtime.env` bara när fältet har ett värde. En rad i `secrets.env` med samma namn används före den.
+- Klistra in den privata nyckeln en gång. Den får inte ha en lösenfras. Sidan visar sedan bara att nyckeln är sparad. En tom ruta ändrar den inte. Kryssrutan tar bort den. Den sparade nyckeln används före den lokala sökvägen.
+- Klistra in värdens publika nyckel, en rad. Oscar ser fingeravtrycket SHA256. Jonatan ser bara om den är satt. Live SSH vägrar utan den, innan någon socket öppnas.
+- Lösenord skickas inte. Formuläret öppnar inte SSH och kan inte slå på `AZOM_WP_FILES_SSH`.
+- `bin/backup-azom-data.sh` tar inte med `ssh-keys/`. En vanlig tarball innehåller inte den privata nyckeln.
+- Jonatan ser rot, värd, användare, port och om en nyckel finns. Jonatan ser inte sökvägen till identitetsfilen och har inget formulär. Både staging och produktion kräver Oscar för att spara.
+- En trasig rad i `wp_ssh.json` hoppas över för den sajten. Övriga sajter laddas. En oläsbar fil stoppar ytan med texten `wp_ssh.json kan inte läsas.`
+
 ## 1. Läs filen
 
 ```bash

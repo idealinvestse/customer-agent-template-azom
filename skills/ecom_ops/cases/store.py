@@ -934,6 +934,11 @@ class CaseStore:
                         continue
                 except ValueError:
                     continue
+                if self._telegram_approve_job_unresolved(str(row["id"])):
+                    # A durable Telegram approval is still running, or its
+                    # external send outcome is uncertain after a restart.
+                    # Reopening here could authorize a duplicate customer mail.
+                    continue
                 cur = conn.execute(
                     """
                     UPDATE cases SET status = 'open', updated_at = ?
@@ -943,6 +948,30 @@ class CaseStore:
                 )
                 released += int(cur.rowcount)
         return released
+
+    @staticmethod
+    def _telegram_approve_job_unresolved(case_id: str) -> bool:
+        """Fail closed while a matching durable Telegram send needs reconciliation."""
+        jobs_path = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data")) / "telegram_jobs.sqlite3"
+        if not jobs_path.is_file():
+            return False
+        id8 = str(case_id)[:8]
+        callback_pattern = f'%"data":"cases:approve:{id8}"%'
+        command_pattern = f'%"text":"/cases approve {id8}%'
+        try:
+            with sqlite3.connect(jobs_path, timeout=0.5) as jobs:
+                row = jobs.execute(
+                    "SELECT 1 FROM bot_jobs WHERE side_effect_started=1 "
+                    "AND (state IN ('running','needs_reconciliation') "
+                    "OR (state='reconciled' AND reconciliation_outcome='done')) "
+                    "AND (payload_json LIKE ? OR payload_json LIKE ?) LIMIT 1",
+                    (callback_pattern, command_pattern),
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            # If the job ledger cannot be read, leave the sending claim for
+            # Oscar to reconcile instead of reopening a possibly sent reply.
+            return True
 
     def patch_after_regen(
         self,

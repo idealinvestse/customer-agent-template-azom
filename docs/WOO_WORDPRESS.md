@@ -50,7 +50,8 @@ Create WP Application Passwords in wp-admin (example authorize URL pattern: `/wp
 
 - `get_order`, `list_orders`, `find_orders_by_email`
 - `update_order_status`
-- `get_product`, `update_product_description`
+- `get_product`, `list_products`, `update_product_description`
+- `update_product` — allowlisted PUT: `name`, `description`, `short_description`, `regular_price`, `stock_quantity`, `stock_status`, `status`. Other keys, including `sku`, are dropped. Stock quantity also sets `manage_stock`.
 
 Auth: HTTP Basic with `WOO_CONSUMER_KEY` / `WOO_CONSUMER_SECRET`.  
 Mock: `InMemoryWooTransport` when `AZOM_USE_MOCK=1`.
@@ -72,9 +73,11 @@ Mock: `InMemoryWooTransport` when `AZOM_USE_MOCK=1`.
 | Resource | Client surface |
 |----------|----------------|
 | Posts | list / get / create / update / delete |
-| Pages | list / get only |
+| Pages | list / get / update (`title`, `content`, `status`). No delete from this client method |
 | Media, users, comments | list |
-| Settings | get / update |
+| Settings | get / update. Telegram site identity writes only `title` and `description` |
+| Themes | list (`stylesheet`, name, status). No switch, install, or file edit |
+| Plugins | list; set status `active` or `inactive` only. No install, update, or delete |
 | Discovery | `discover_namespaces` |
 
 Auth: Application Passwords via `WP_USERNAME` + `WP_APP_PASSWORD` (alias `WORDPRESS_USERNAME` accepted).  
@@ -96,7 +99,11 @@ Oscar probe: `probe_wordpress`.
 
 - Assume meta-only tracking extraction is the primary path.
 - Put Woo/WP secrets in repo YAML — env / `AZOM_DATA_DIR/secrets.env` only.
-- Call write endpoints (order status, product publish) as Jonatan via Telegram without operator/admin actor mapping.
+- Call write endpoints (order status, product publish, product fields, page content) as Jonatan via Telegram. Jonatan lacks `PRODUCT_DESC_WRITE` and `WP_OPS_OPERATE`.
+- Edit a product, page, post, site title, tagline, or plugin from Telegram without the confirm button. The chat stores the change in the session and waits for Ja.
+- Turn a plugin on or off as Jonatan or the operator. Plugin on/off needs `WP_OPS_ADMIN` (Oscar).
+- Install, update, delete, or switch a theme or plugin from Telegram. Those wait until a real backup exists.
+- Turn on `AZOM_WP_FILES_SSH` to change a product, page, or post. Those edits go through WooCommerce and WordPress REST. Theme and plugin files stay on the separate wp-ops path.
 
 ## Tests (evidence)
 

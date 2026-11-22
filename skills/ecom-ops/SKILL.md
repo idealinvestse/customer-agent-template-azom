@@ -1,7 +1,7 @@
 ---
 name: ecom-ops
 description: >
-  Azom WooCommerce ops (order-status, product desc, support, mail, SSH, cases).
+  Azom WooCommerce ops (order-status, product desc, support, mail, SSH, cases, bounded WordPress reads and preview-only update/restore plans).
   V2: dashboard onboarding, Gmail OAuth, OpenClaw Messenger/Telegram hybrid,
   Cases 2.0 + Path B suggest-approve rails. Google Ads + GA4 marketing ledger
   (read → suggest → HITL mutate). Critical/code edits escalate to Oscar.
@@ -61,8 +61,16 @@ version: "3.0.0"
 
 ## Messenger / Telegram (OpenClaw hybrid)
 
-Slash: `/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` `/cases` `/order` `/health` `/brief` `/marketing` …  
-Free text: read-only tool prefetch + LLM phrasing (Swedish). **Send only** via `/cases approve` or approve button/postback — never from free-text alone. **Ads mutates** only via dashboard/CLI approve — never free-text.
+Slash: `/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` `/cases` `/order` `/health` `/brief` `/marketing` `/wp sites` `/wp use <site-id>` `/wp clear`.
+
+Free text uses tool-backed reads and proposals. It can read WooCommerce orders/products and WordPress pages, posts, site title/tagline, themes, and plugin status. Order, product, page, post, and site-text writes wait for their confirmation button; plugin on/off also requires Oscar. A free-text "yes" never authorizes a write. Customer mail only goes through an explicit approve path.
+
+WordPress operations use the named, site-bound tools `wp_list_sites`, `wp_site_status`, `wp_backup_status`, `wp_security_findings`, `wp_prepare_update_plan`, `wp_prepare_restore_plan`, and `wp_list_open_operations`. The server checks actor and site permissions and limits a turn to 3 calls, 30 seconds, 4 KiB per result, and 10 KiB total. Site context is bound to actor, channel, and conversation for 12 hours; `/wp sites`, `/wp use <site-id>`, and `/wp clear` select or clear it. Update/restore plans are locked previews with no approval or execution path. Status, backup, and security results may be mock or unknown; live health checks, security scanning, version discovery, update execution, and production restore are not implemented.
+
+`AZOM_TELEGRAM_MODEL_ROUTE` pins one route for Telegram free text and does not fall through on failure. Customer mail requires `/cases approve` or the approve button/postback; never from free text. Ads mutations remain blocked outside the dashboard/CLI approval rails.
+
+
+Telegram runs durable per-chat jobs from a SQLite inbox with a bounded worker pool. Read turns can take up to three steer messages at safe checkpoints; approved actions queue later input and never run concurrently with another approved action for the same site. `/status`, `/jobs`, `/cancel`, and Oscar-only `/reconcile` are Telegram receiver controls. Messenger remains synchronous.
 
 ## Mail providers
 
@@ -81,7 +89,9 @@ Details: `docs/MAIL_PROVIDERS.md`.
 
 See `docs/WOO_WORDPRESS.md` — shipment trackings, multi-site `domain=`, WordPress Application Passwords, webhook HMAC, retries.
 
-Site operations are separate: `docs/WORDPRESS_OPS.md`. Phase 1 is mock health. Phase 2 is a local mock backup manifest and a staging drill. A typed edit can replace one existing theme or plugin file. That path is not a general shell, not a plugin update, and not a restore. Live SSH stays off unless mock mode is off and `AZOM_WP_FILES_SSH=1`. Production checks and production mock backups need `WP_OPS_ADMIN`. A production file edit also needs `CODE_EDIT`. `restore` refuses. A verified mock backup is not off-site and not green.
+Site operations are separate from the WordPress content client: [`docs/WORDPRESS_OPS.md`](../../docs/WORDPRESS_OPS.md). The chat exposes named, site-bound reads for registry/status, backup status, security findings, and open operations, plus locked update/restore plan previews. The previews cannot be approved or executed. The server enforces actor/site RBAC and bounded calls (3 calls, 30 seconds, 4 KiB per result / 10 KiB total). The 12-hour site context is scoped to actor, channel, and conversation. There is no model-created shell, PHP, or WP-CLI. Security scanning, version discovery, live health checks, update execution, and production restore are not implemented; outputs must report mock or unknown states accurately.
+
+Phase 1 is mock health. Phase 2 is a local mock backup manifest and a staging drill. A typed edit can replace one existing theme or plugin file through the dashboard/CLI path; this is not a chat tool, general shell, plugin update, or restore. Oscar sets the document root and SSH login at `/wp/<id>/ssh`. The private key is stored in the data directory and is not shown again. A normal backup excludes `ssh-keys/`. Live SSH stays off unless mock mode is off, `AZOM_WP_FILES_SSH=1`, a public host key is pinned, and an explicit non-root user is configured. `wp show` does not include the identity path. Production checks and production mock backups need `WP_OPS_ADMIN`. A production file edit also needs `CODE_EDIT`. `restore` refuses. A verified mock backup is not off-site and not green.
 
 ## Marketing Google
 

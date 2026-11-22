@@ -24,6 +24,36 @@ def test_pending_allowed_for_viewer():
     assert handler._pending_allowed(viewer, pending_regen)
     assert handler._pending_allowed(operator, pending_order)
     assert handler._pending_allowed(operator, pending_product)
+    product_update = PendingAction(
+        kind="product_update",
+        payload={"product_id": "501", "fields": {"name": "X"}},
+    )
+    page_update = PendingAction(
+        kind="page_update",
+        payload={"page_id": "2", "fields": {"title": "Om"}},
+    )
+    assert not handler._pending_allowed(viewer, product_update)
+    assert not handler._pending_allowed(viewer, page_update)
+    assert handler._pending_allowed(operator, product_update)
+    assert handler._pending_allowed(operator, page_update)
+    post_update = PendingAction(
+        kind="post_update", payload={"post_id": "1", "fields": {"title": "Hej"}}
+    )
+    site_update = PendingAction(
+        kind="site_update", payload={"fields": {"title": "Azom"}}
+    )
+    plugin_status = PendingAction(
+        kind="plugin_status",
+        payload={"plugin": "akismet/akismet", "status": "active"},
+    )
+    oscar = Actor(name="oscar", role="full_admin")
+    assert not handler._pending_allowed(viewer, post_update)
+    assert not handler._pending_allowed(viewer, site_update)
+    assert not handler._pending_allowed(viewer, plugin_status)
+    assert handler._pending_allowed(operator, post_update)
+    assert handler._pending_allowed(operator, site_update)
+    assert not handler._pending_allowed(operator, plugin_status)
+    assert handler._pending_allowed(oscar, plugin_status)
 
 
 def test_exec_pending_enforces_pending_allowed_messenger(tmp_path, monkeypatch):
@@ -55,3 +85,9 @@ def test_start_pending_denies_order_write_for_jonatan(tmp_path, monkeypatch):
     )
     assert "operator" in reply.text.lower() or "oscar" in reply.text.lower()
     assert reply.actions is None
+    page = PendingAction(
+        kind="page_update", payload={"page_id": "2", "fields": {"title": "Om"}}
+    )
+    denied = handler._start_pending("chat1", page, "Föreslår sida", actor=viewer)
+    assert "WP_OPS_OPERATE" in denied.text
+    assert denied.actions is None

@@ -24,7 +24,7 @@ This repository ships as the **Azom** pilot (package 3.0.0). Fork it, then walk 
 3. Edit [`config/rbac.yaml`](../config/rbac.yaml) so `roles` keys **include** those three actor names. Dashboard Basic Auth usernames come from profile; CLI `--actor` comes from RBAC. Both must match.
 4. Edit [`config/sites.yaml`](../config/sites.yaml) domains + customer. LLM spend cap is **`config/limits.yaml` `openrouter_cap`** only (`budget_cap_llm` is a display alias).
 5. Edit [`config/mailboxes.yaml`](../config/mailboxes.yaml). Leave extra markets `enabled: false` until credentials exist.
-6. Adapt [`SOUL.md`](../SOUL.md) and [`config/prompts.yaml`](../config/prompts.yaml) (voice + classify/draft). Do **not** remove HITL rules.
+6. Adapt [`SOUL.md`](../SOUL.md) and [`config/prompts.yaml`](../config/prompts.yaml) (chat voice, classify, customer drafts, and product copy). Preserve the fixed runtime policy, server-side RBAC, and HITL rules.
 7. Point Woo/mail/OAuth env at the new shop. Never commit `.env` or tokens.
 8. Update systemd `--actor` on retention-purge / shadow-report if the admin name is not `oscar`.
 9. Env names stay Azom-shaped (`DASHBOARD_OSCAR_PASSWORD*`) even if the admin actor is renamed — map the person, not the env key.

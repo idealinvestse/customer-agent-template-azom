@@ -16,6 +16,7 @@ V2.1 additions (see docs/WOO_WORDPRESS.md):
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -28,9 +29,24 @@ import requests
 from ecom_ops.security import (
     SecurityError,
     get_env,
+    sanitize_text,
     validate_order_id,
     validate_order_status,
 )
+
+_PRODUCT_WRITE_FIELDS = frozenset(
+    {
+        "name",
+        "description",
+        "short_description",
+        "regular_price",
+        "stock_quantity",
+        "stock_status",
+        "status",
+    }
+)
+_STOCK_STATUSES = frozenset({"instock", "outofstock", "onbackorder"})
+_PRODUCT_STATUSES = frozenset({"draft", "pending", "private", "publish"})
 
 # --------------------------------------------------------------------------- #
 # Data models
@@ -878,6 +894,58 @@ class WooCommerceClient:
         payload: dict[str, Any] = {"description": description}
         if short_description is not None:
             payload["short_description"] = short_description
+        return self.transport.request(
+            "PUT",
+            self._url(f"/wp-json/wc/v3/products/{pid}"),
+            auth=self._auth(),
+            json=payload,
+            timeout=self.timeout,
+        )
+
+    def update_product(
+        self, product_id: str | int, fields: dict[str, Any]
+    ) -> dict[str, Any]:
+        """PUT an allowlisted set of product fields. Unknown keys are dropped."""
+        pid = validate_order_id(product_id)
+        payload: dict[str, Any] = {}
+        for key, value in (fields or {}).items():
+            if key not in _PRODUCT_WRITE_FIELDS:
+                continue
+            payload[key] = value
+        if "name" in payload:
+            payload["name"] = sanitize_text(str(payload["name"]), max_len=200)
+        if "description" in payload:
+            payload["description"] = sanitize_text(str(payload["description"]), max_len=8000)
+        if "short_description" in payload:
+            payload["short_description"] = sanitize_text(
+                str(payload["short_description"]), max_len=1000
+            )
+        if "regular_price" in payload:
+            price = str(payload["regular_price"]).strip()
+            if not re.fullmatch(r"\d{1,8}(\.\d{1,2})?", price):
+                raise SecurityError("Invalid product price")
+            payload["regular_price"] = price
+        if "stock_quantity" in payload:
+            try:
+                qty = int(payload["stock_quantity"])
+            except (TypeError, ValueError) as exc:
+                raise SecurityError("Invalid stock quantity") from exc
+            if qty < 0 or qty > 999999:
+                raise SecurityError("Invalid stock quantity")
+            payload["stock_quantity"] = qty
+            payload["manage_stock"] = True
+        if "stock_status" in payload:
+            stock = str(payload["stock_status"]).strip().lower()
+            if stock not in _STOCK_STATUSES:
+                raise SecurityError("Invalid stock status")
+            payload["stock_status"] = stock
+        if "status" in payload:
+            status = str(payload["status"]).strip().lower()
+            if status not in _PRODUCT_STATUSES:
+                raise SecurityError("Invalid product status")
+            payload["status"] = status
+        if not any(key in _PRODUCT_WRITE_FIELDS for key in payload):
+            raise SecurityError("No allowed product fields")
         return self.transport.request(
             "PUT",
             self._url(f"/wp-json/wc/v3/products/{pid}"),

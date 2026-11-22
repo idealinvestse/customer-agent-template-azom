@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextvars
 import json
 import re
+from collections.abc import Callable
 
 from ecom_ops.model_router import get_model_router
 from ecom_ops.model_router.base import ModelRequest
@@ -57,21 +58,31 @@ def _complete_request(
     site: str = "azom",
     case_id: str | None = None,
     actor: str | None = None,
+    route_id: str | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
+    on_text_reset: Callable[[], None] | None = None,
 ):
-    """Run one router completion and return the full result, including model."""
-    return get_model_router().complete(
-        ModelRequest(
-            messages=messages,
-            model=model,
-            max_output_tokens=max_tokens,
-            temperature=temperature,
-            timeout=timeout,
-            site=site,
-            case_id=case_id,
-            actor=actor,
-        ),
-        telemetry=telemetry,
+    """Run one router completion and return the full result, including model.
+
+    ``route_id`` calls that route only. An empty value keeps the normal
+    fall-through order.
+    """
+    request = ModelRequest(
+        messages=messages,
+        model=model,
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+        site=site,
+        case_id=case_id,
+        actor=actor,
+        on_text_delta=on_text_delta,
+        on_text_reset=on_text_reset,
     )
+    router = get_model_router()
+    if route_id:
+        return router.complete_route(route_id, request, telemetry=telemetry)
+    return router.complete(request, telemetry=telemetry)
 
 
 def chat_completion(
@@ -85,6 +96,9 @@ def chat_completion(
     site: str = "azom",
     case_id: str | None = None,
     actor: str | None = None,
+    route_id: str | None = None,
+    on_text_delta: Callable[[str], None] | None = None,
+    on_text_reset: Callable[[], None] | None = None,
 ) -> tuple[str, float]:
     """Run a chat completion through the configured model router.
 
@@ -101,6 +115,9 @@ def chat_completion(
         site=site,
         case_id=case_id,
         actor=actor,
+        route_id=route_id,
+        on_text_delta=on_text_delta,
+        on_text_reset=on_text_reset,
     )
     _served_model.set(result.model or "")
     return result.content, float(result.cost_usd or 0.0)
@@ -382,17 +399,13 @@ def generate_product_desc_with_llm(
         return None
 
     lang = (language or "sv").lower()
-    system = (
-        "You write WooCommerce product copy for Azom (Nordic e-commerce). "
-        "Respond with exactly two labeled blocks:\n"
-        "SHORT: <one-line short_description, max ~120 chars>\n"
-        "LONG: <HTML long description with <p> and optional <ul><li>>\n"
-        "No markdown fences. Do not invent certifications or warranty claims."
-    )
+    from ecom_ops.prompts import get_prompt
+
+    system, prompt_version = get_prompt("product_desc")
     user = (
         f"Language: {lang}\n"
         f"Product name: {name}\n"
-        f"Features: {features or 'premium quality'}"
+        f"Features: {features or '(none supplied)'}"
     )
     _served_model.set("")
     try:
@@ -410,7 +423,7 @@ def generate_product_desc_with_llm(
             action="llm_draft_error",
             site=site,
             cost_usd=0.0,
-            meta={"error": _safe_error(exc), "kind": "product_desc"},
+            meta={"error": _safe_error(exc), "kind": "product_desc", "prompt_version": prompt_version},
         )
         return None
 
@@ -425,6 +438,7 @@ def generate_product_desc_with_llm(
                 "error": "unparseable_product_desc",
                 "kind": "product_desc",
                 "model": model,
+                "prompt_version": prompt_version,
             },
         )
         return None
@@ -435,6 +449,6 @@ def generate_product_desc_with_llm(
         unit_type="tokens",
         units=1.0,
         cost_usd=cost,
-        meta={"product_name": name[:80], "model": model},
+        meta={"product_name": name[:80], "model": model, "prompt_version": prompt_version},
     )
     return parsed

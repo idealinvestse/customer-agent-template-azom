@@ -93,6 +93,13 @@ def register_wp_routes(app: Flask) -> None:
         )
         return _redirect_site(site_id, result)
 
+    @app.route("/wp/<site_id>/ssh", methods=["GET", "POST"])
+    @_auth_required
+    def wp_ssh(site_id: str):
+        if request.method == "POST":
+            return _post_ssh(site_id)
+        return _render_ssh(site_id)
+
     @app.route("/wp/<site_id>/files")
     @_auth_required
     def wp_files(site_id: str):
@@ -154,6 +161,63 @@ def register_wp_routes(app: Flask) -> None:
                 _files_location(site_id, kind, slug, relative, plan=plan, notice="applied")
             )
         return redirect(_files_location(site_id, kind, slug, relative, err=result.message))
+
+
+def _post_ssh(site_id: str):
+    from ecom_ops.wp_ops import WpOpsService
+
+    result = WpOpsService().save_ssh_settings(
+        site_id,
+        actor=g.actor["name"],
+        files_root=request.form.get("files_root") or "",
+        ssh_host=request.form.get("ssh_host") or "",
+        ssh_user=request.form.get("ssh_user") or "",
+        ssh_port=request.form.get("ssh_port") or "",
+        ssh_identity_file=request.form.get("ssh_identity_file") or "",
+        private_key=request.form.get("ssh_private_key") or "",
+        clear_key=(request.form.get("clear_ssh_key") or "") in {"1", "on", "true"},
+        global_user=request.form.get("global_ssh_user") or "",
+        global_port=request.form.get("global_ssh_port") or "",
+        global_identity_file=request.form.get("global_ssh_identity_file") or "",
+        host_public_key=request.form.get("host_public_key") or "",
+    )
+    blocked = _file_block(site_id, result)
+    if blocked is not None:
+        return blocked
+    if result.ok:
+        return redirect(url_for("wp_ssh", site_id=site_id) + f"?{_flash_q(result.message)}")
+    return redirect(url_for("wp_ssh", site_id=site_id) + f"?{_flash_q(err=result.message)}")
+
+
+def _render_ssh(site_id: str):
+    from ecom_ops.wp_ops import WpOpsService
+
+    result = WpOpsService().ssh_settings(site_id, actor=g.actor["name"])
+    blocked = _file_block(site_id, result)
+    if blocked is not None:
+        return blocked
+    shown = WpOpsService().show_site(site_id, actor=g.actor["name"])
+    if _denied(shown):
+        return Response("Saknar behörighet", 403)
+    site = (shown.data or {}).get("site") if shown.ok else None
+    ssh = (result.data or {}).get("ssh") if result.ok else None
+    error = None if result.ok else result.message
+    return render_template(
+        "wp_ssh.html",
+        **_dashboard_context(
+            site=site,
+            ssh=ssh,
+            can_save=_can_save_ssh(),
+            error=error,
+        ),
+    )
+
+
+def _can_save_ssh() -> bool:
+    from ecom_ops.rbac import Actor, Permission
+
+    actor = Actor(name=g.actor["name"], role=g.actor["role"])
+    return actor.has(Permission.WP_OPS_ADMIN)
 
 
 def _redirect_site(site_id: str, result: object):

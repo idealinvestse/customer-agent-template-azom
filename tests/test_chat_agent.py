@@ -141,6 +141,11 @@ def test_approve_nl_confirm_only(tmp_path, monkeypatch):
 
 def test_run_chat_no_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    class NoRoutes:
+        def any_configured(self):
+            return False
+
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.get_model_router", lambda: NoRoutes())
     result = run_chat("Hej", history=[], session={})
     assert result.text == FALLBACK_NO_KEY
     assert len(result.messages) == 2
@@ -158,6 +163,15 @@ def test_run_chat_tool_first_without_llm(monkeypatch):
 
 def test_run_chat_budget_skip(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+
+    class OpenRouterOnly:
+        def any_configured(self):
+            return True
+
+        def has_route_outside_openrouter_budget(self):
+            return False
+
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.get_model_router", lambda: OpenRouterOnly())
 
     class FakeTel:
         def within_budget(self, cap):
@@ -334,3 +348,285 @@ def test_lookup_order_tool_mock(monkeypatch):
     out = tool_lookup_order("1001")
     assert "1001" in out or "Order" in out
     assert "Headset" in out or "Rader" in out
+
+
+def test_integration_check_lists_orders_without_llm(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("llm")
+
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.chat_completion", boom)
+    result = run_chat("Kontrollera integrationen")
+    assert "1001" in result.text
+    assert "svarade" in result.text
+    assert "customer@example.com" not in result.text
+
+
+def test_market_pointer_lists_orders(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    pref = gather_tool_results("Det gäller azom.no")
+    assert pref.sticky_market == "no"
+    assert pref.results[0][0] == "list_recent_orders"
+    assert "1001" in pref.results[0][1]
+
+
+def test_tools_question_is_the_capability_list(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    result = run_chat("Vilka verktyg har du?")
+    assert "Woo-kopplingen" in result.text
+    assert "Order lookup failed" not in result.text
+
+
+def test_short_retry_keeps_market(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    pref = gather_tool_results("Kolla nu", sticky_market="no")
+    assert pref.sticky_market == "no"
+    assert pref.results[0][0] == "list_recent_orders"
+
+
+def test_woo_failure_hides_response_body(monkeypatch):
+    from ecom_ops.bot.chat_agent import tool_list_recent_orders
+    from ecom_ops.security import SecurityError
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    def fail(self, **_kwargs):
+        raise SecurityError("WooCommerce API error 401: secret-body ck_live")
+
+    monkeypatch.setattr(
+        "ecom_ops.integrations.woocommerce.WooCommerceClient.list_orders",
+        fail,
+    )
+    text, shown = tool_list_recent_orders(domain="no", offset=3)
+    assert "HTTP 401" in text
+    assert "secret-body" not in text
+    assert "ck_live" not in text
+    assert shown == 3
+
+
+def test_next_page_skips_shown_orders(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    pref = gather_tool_results("nästa 1", listed_offset=1)
+    assert pref.order_list_shown == 2
+    assert "1002" in pref.results[0][1]
+    assert "1001" not in pref.results[0][1]
+    assert "<tool_call>" not in pref.results[0][1]
+
+
+def test_fler_ordrar_continues_without_llm(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("llm")
+
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.chat_completion", boom)
+    result = run_chat(
+        "kan du plocka fram fler ordrar",
+        session={"order_list_shown": 1, "last_market": "no"},
+    )
+    assert "1002" in result.text
+    assert "1001" not in result.text
+    assert "<tool_call>" not in result.text
+    assert result.order_list_shown == 2
+
+
+def test_model_tool_call_is_executed(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    from ecom_ops.bot.chat_agent import _fulfill_model_tool_call
+
+    raw = (
+        '<tool_call>\n{"name": "list_recent_orders", "arguments": '
+        '{"store": "azom.no", "limit": 1, "offset": 1}}\n</tool_call>'
+    )
+    text, shown = _fulfill_model_tool_call(raw, domain=None, offset=0)
+    assert text is not None
+    assert "1002" in text
+    assert "tool_call" not in text
+    assert shown == 2
+
+
+def test_list_products_skips_llm(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("llm")
+
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.chat_completion", boom)
+    result = run_chat("visa produkter")
+    assert "501" in result.text
+    assert "Azom Pro Headset" in result.text
+    assert "lager 12" in result.text
+    assert result.pending_action is None
+    assert result.sticky_product_id == "501"
+
+
+def test_list_pages_includes_about(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("llm")
+
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.chat_completion", boom)
+    result = run_chat("visa sidor")
+    assert "Om oss" in result.text
+    assert "2" in result.text
+    assert result.sticky_page_id == "2"
+
+
+def test_product_rename_is_pending_until_confirm(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("write")
+
+    monkeypatch.setattr(
+        "ecom_ops.integrations.woocommerce.WooCommerceClient.update_product",
+        boom,
+    )
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.chat_completion", boom)
+    result = run_chat("ändra produkt 501 namn till Nytt namn")
+    assert result.pending_action is not None
+    assert result.pending_action.kind == "product_update"
+    assert result.pending_action.payload["fields"]["name"] == "Nytt namn"
+    assert "Ja" in result.text
+    assert "Azom Pro Headset" in result.text
+    from ecom_ops.integrations.woocommerce import client_from_env
+
+    fresh = client_from_env(use_mock=True)
+    assert fresh.get_product("501")["name"] == "Azom Pro Headset"
+
+
+def test_product_update_persists_on_shared_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    from ecom_ops.bot.catalog import execute_product_update
+    from ecom_ops.integrations.woocommerce import InMemoryWooTransport, WooCommerceClient
+
+    transport = InMemoryWooTransport()
+    client = WooCommerceClient(base_url="https://mock.local", transport=transport)
+
+    def same_client(**_kwargs):
+        return client
+
+    monkeypatch.setattr("ecom_ops.integrations.woocommerce.client_from_env", same_client)
+    ok, msg = execute_product_update(
+        product_id="501",
+        fields={"name": "Nytt namn", "sku": "EVIL"},
+        actor="oscar",
+    )
+    assert ok
+    assert transport.products["501"]["name"] == "Nytt namn"
+    assert "sku" not in transport.products["501"]
+    assert "EVIL" not in msg
+    ok_stock, _msg = execute_product_update(
+        product_id="501",
+        fields={"stock_quantity": 3},
+        actor="oscar",
+    )
+    assert ok_stock
+    assert transport.products["501"]["stock_quantity"] == 3
+    assert transport.products["501"]["manage_stock"] is True
+
+
+def test_page_rename_is_pending_until_confirm(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("write")
+
+    monkeypatch.setattr(
+        "ecom_ops.integrations.wordpress.WordPressClient.update_page",
+        boom,
+    )
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.chat_completion", boom)
+    result = run_chat("ändra sidan Om oss titel till Om Azom")
+    assert result.pending_action is not None
+    assert result.pending_action.kind == "page_update"
+    assert result.pending_action.payload["page_id"] == "2"
+    assert result.pending_action.payload["fields"]["title"] == "Om Azom"
+    assert "Ja" in result.text
+
+
+def test_page_update_persists_on_shared_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    from ecom_ops.bot.catalog import execute_page_update
+    from ecom_ops.integrations.wordpress import InMemoryWpTransport, WordPressClient
+
+    transport = InMemoryWpTransport()
+    client = WordPressClient(base_url="https://mock.local", transport=transport)
+
+    def same_client(**_kwargs):
+        return client
+
+    monkeypatch.setattr("ecom_ops.integrations.wordpress.wp_client_from_env", same_client)
+    ok, msg = execute_page_update(
+        page_id="2",
+        fields={"title": "Om Azom", "content": "<p>Hej</p>"},
+        actor="oscar",
+    )
+    assert ok
+    assert "2" in msg
+    assert transport.posts[2]["title"]["rendered"] == "Om Azom"
+    assert transport.posts[2]["content"] == "<p>Hej</p>"
+
+
+def test_invalid_price_does_not_propose(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    result = run_chat("ändra produkt 501 pris till gratis")
+    assert result.pending_action is None
+    assert "Priset" in result.text
+
+
+def test_next_products_are_not_orders(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    pref = gather_tool_results("nästa 20 produkter", listed_offset=5)
+    assert pref.results[0][0] == "list_products"
+    assert "1001" not in pref.results[0][1]
+
+
+def test_sticky_product_rename(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    result = run_chat("ändra namn till Z", session={"last_product_id": "501"})
+    assert result.pending_action is not None
+    assert result.pending_action.payload["product_id"] == "501"
+    assert result.pending_action.payload["fields"]["name"] == "Z"
+
+
+def test_several_product_matches_do_not_write(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    def two(self, **_kwargs):
+        return [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}]
+
+    monkeypatch.setattr(
+        "ecom_ops.integrations.woocommerce.WooCommerceClient.list_products",
+        two,
+    )
+    pref = gather_tool_results("ändra produkt headset namn till X")
+    assert pref.pending_action is None
+    assert "Flera produkter" in pref.results[0][1]
+
+
+def test_model_product_write_is_not_executed(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    from ecom_ops.bot.chat_agent import _fulfill_model_tool_call
+
+    raw = (
+        '<tool_call>{"name": "update_product", "arguments": '
+        '{"product_id": "501", "fields": {"name": "Hack"}}}</tool_call>'
+    )
+    text, shown = _fulfill_model_tool_call(raw, domain=None, offset=0)
+    assert text is not None
+    assert "inte gjord" in text
+    assert "Hack" not in text
+    assert "tool_call" not in text
+    assert shown is None
+
+
+def test_generated_description_stays_a_proposal(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    pref = gather_tool_results("generera produktbeskrivning för produkt 42")
+    assert pref.pending_action is not None
+    assert pref.pending_action.kind == "product_desc"

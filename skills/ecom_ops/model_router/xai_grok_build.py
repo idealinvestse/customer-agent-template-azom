@@ -11,10 +11,14 @@ contract that Azom can implement without guessing. Do not fake that flow.
 
 from __future__ import annotations
 
+import codecs
+import json
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +31,11 @@ from ecom_ops.model_router.errors import (
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 DEFAULT_XAI_MODEL = "grok-4"
+_POLL_SECONDS = 0.25
+_DEFAULT_HARD_TIMEOUT = 180
+_MAX_HARD_TIMEOUT = 600
+# Phases that mean this turn is still producing text. waiting_for_model does not.
+_ACTIVE_PHASES = frozenset({"streaming_reasoning", "streaming_text"})
 _AUTH_MARKERS = (
     "not logged in",
     "not authenticated",
@@ -44,6 +53,188 @@ def _stderr_says_unauthenticated(stderr: str) -> bool:
     """True when the CLI text is an auth failure. The text is not returned."""
     lowered = (stderr or "").lower()
     return any(marker in lowered for marker in _AUTH_MARKERS)
+
+
+def _now() -> float:
+    return time.monotonic()
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _hard_limit(idle: int) -> int:
+    """Upper bound while reasoning or text is still streaming.
+
+    The idle timeout resets on new active phases. This cap still stops a
+    stream that never ends. Values above 600 seconds are clamped.
+    """
+    raw = (os.environ.get("AZOM_XAI_GROK_HARD_TIMEOUT") or "").strip()
+    chosen = int(raw) if raw.isdigit() and int(raw) > 0 else _DEFAULT_HARD_TIMEOUT
+    return max(idle, min(chosen, _MAX_HARD_TIMEOUT))
+
+
+def _sessions_dir() -> Path:
+    return Path.home() / ".grok" / "sessions"
+
+
+def _event_files(work: Path) -> list[Path]:
+    """Grok session event logs for this temp cwd. No prompt or chat files."""
+    base = _sessions_dir()
+    if not base.is_dir():
+        return []
+    name = work.name
+    found: list[Path] = []
+    try:
+        children = list(base.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        if not child.is_dir() or name not in child.name:
+            continue
+        candidates = [child / "events.jsonl"]
+        try:
+            candidates.extend(sub / "events.jsonl" for sub in child.iterdir() if sub.is_dir())
+        except OSError:
+            continue
+        for path in candidates:
+            if path.is_file():
+                found.append(path)
+    return found
+
+
+def _count_active(path: Path, state: dict[str, tuple[int, str]]) -> int:
+    """Count new streaming_reasoning or streaming_text phases.
+
+    Only the phase name is inspected. Prompt text is not kept.
+    """
+    key = str(path)
+    offset, partial = state.get(key, (0, ""))
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return 0
+    if size < offset:
+        offset, partial = 0, ""
+    if size == offset:
+        return 0
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(offset)
+            chunk = handle.read()
+            offset = handle.tell()
+    except OSError:
+        return 0
+    text = partial + chunk
+    lines = text.split("\n")
+    state[key] = (offset, lines[-1][-4000:])
+    count = 0
+    for line in lines[:-1]:
+        row_text = line.strip()
+        if not row_text:
+            continue
+        try:
+            row = json.loads(row_text)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(row, dict)
+            and row.get("type") == "phase_changed"
+            and row.get("phase") in _ACTIVE_PHASES
+        ):
+            count += 1
+    return count
+
+
+def spawn_grok(
+    command: list[str],
+    cwd: str,
+    on_text_delta=None,
+) -> subprocess.Popen[str]:
+    """Start grok and drain pipes so a long answer cannot block the child."""
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+    )
+    holder: dict[str, str] = {"out": "", "err": ""}
+
+    def _read(pipe: Any, key: str) -> None:
+        if pipe is None:
+            return
+        raw_pipe = getattr(pipe, "buffer", None)
+        read_chunk = getattr(raw_pipe, "read1", None)
+        if key != "out" or not on_text_delta or not callable(read_chunk):
+            holder[key] = pipe.read()
+            return
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        chunks: list[str] = []
+        while True:
+            raw = read_chunk(1024)
+            if not raw:
+                break
+            text = decoder.decode(raw)
+            if text:
+                chunks.append(text)
+                try:
+                    on_text_delta(text)
+                except Exception:
+                    pass
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            chunks.append(tail)
+            try:
+                on_text_delta(tail)
+            except Exception:
+                pass
+        holder[key] = "".join(chunks)
+
+    threads = [
+        threading.Thread(target=_read, args=(proc.stdout, "out"), daemon=True),
+        threading.Thread(target=_read, args=(proc.stderr, "err"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    proc.azom_output = holder  # type: ignore[attr-defined]
+    proc.azom_threads = threads  # type: ignore[attr-defined]
+    return proc
+
+
+def _read_output(proc: Any) -> tuple[str, str]:
+    threads = getattr(proc, "azom_threads", None)
+    holder = getattr(proc, "azom_output", None)
+    if threads is not None and holder is not None:
+        for thread in threads:
+            thread.join(timeout=5)
+        return str(holder.get("out") or ""), str(holder.get("err") or "")
+    return str(getattr(proc, "stdout_data", "") or ""), str(getattr(proc, "stderr_data", "") or "")
+
+
+def _stop_process(proc: Any) -> None:
+    if isinstance(proc, subprocess.Popen):
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return
+    proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        return
 
 
 def grok_build_enabled() -> bool:
@@ -129,30 +320,44 @@ class XaiGrokBuildRoute:
                 "--tools",
                 "",
             ]
+            idle = request.timeout if request.timeout and request.timeout > 0 else 30
+            hard = _hard_limit(idle)
+            started = _now()
+            deadline = started + idle
+            hard_at = started + hard
+            phase_state: dict[str, tuple[int, str]] = {}
             try:
-                process = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    timeout=request.timeout,
-                    check=False,
-                    cwd=work,
-                )
+                process = spawn_grok(command, work, request.on_text_delta)
             except FileNotFoundError as exc:
                 raise ModelConfigError("Grok Build CLI binary was not found") from exc
-            except subprocess.TimeoutExpired as exc:
-                raise ModelUnavailableError("Grok Build CLI timed out") from exc
+            while True:
+                code = process.poll()
+                active = 0
+                for events in _event_files(Path(work)):
+                    active += _count_active(events, phase_state)
+                if active:
+                    # Still reasoning or writing the answer: grant another idle window.
+                    deadline = min(_now() + idle, hard_at)
+                if code is not None:
+                    break
+                now = _now()
+                if now >= hard_at or now >= deadline:
+                    _stop_process(process)
+                    _read_output(process)
+                    raise ModelUnavailableError("Grok Build CLI timed out")
+                _sleep(_POLL_SECONDS)
 
+            stdout, stderr = _read_output(process)
             if process.returncode != 0:
                 code = f"exit_{process.returncode}"
-                if _stderr_says_unauthenticated(process.stderr or ""):
+                if _stderr_says_unauthenticated(stderr):
                     raise ModelAuthError(
                         "Grok Build is not authenticated. Run grok login --device-auth",
                         code=code,
                     )
                 raise ModelUnavailableError("Grok Build CLI failed", code=code)
 
-            content = (process.stdout or "").strip()
+            content = stdout.strip()
             if not content:
                 raise ModelUnavailableError("Grok Build CLI returned no content")
 

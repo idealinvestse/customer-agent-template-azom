@@ -17,7 +17,11 @@
       Väntande uppdateringar: okänd. Checksumma är inte verifierad.
       En lokal mock-backup kopierar inga filer och är inte off-site. Kryptering är inte konfigurerad.
     </p>
-    <p class="mt-3 text-sm"><a class="text-steel-300" href="{{ url_for('wp_files', site_id=site.id) }}">Tema- och pluginfiler</a></p>
+    <p class="mt-3 text-sm">
+      <a class="text-steel-300" href="{{ url_for('wp_files', site_id=site.id) }}">Tema- och pluginfiler</a>
+      ·
+      <a class="text-steel-300" href="{{ url_for('wp_ssh', site_id=site.id) }}">SSH-inställningar</a>
+    </p>
     {% endif %}
     {% if error %}
     <p class="mt-3 text-warn">{{ error }}</p>

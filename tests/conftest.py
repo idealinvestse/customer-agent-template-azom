@@ -33,6 +33,7 @@ def _isolate_env(tmp_path, monkeypatch):
         "XAI_MODEL",
         "AZOM_XAI_GROK_BUILD",
         "AZOM_MODEL_ROUTE_ORDER",
+        "AZOM_TELEGRAM_MODEL_ROUTE",
     ):
         monkeypatch.delenv(name, raising=False)
     reset_model_router()

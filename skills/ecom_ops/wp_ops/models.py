@@ -29,6 +29,25 @@ _ENVIRONMENTS = frozenset({"production", "staging"})
 _QUERY_SECRET = ("password", "token", "secret", "key")
 _FILES_ROOT = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_./-]{0,180}$")
 _SSH_HOST = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+_BROAD_ROOTS = (
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/root",
+    "/boot",
+    "/tmp",
+    "/run",
+    "/var/log",
+    "/var/lib",
+    "/var/run",
+    "/var/spool",
+)
 
 
 def clean_error_class(value: str | None) -> str | None:
@@ -94,6 +113,10 @@ class Site:
     alert_owner: str
     files_root: str
     ssh_host: str
+    ssh_user: str = ""
+    ssh_port: int = 0
+    ssh_identity_file: str = ""
+    host_public_key: str = ""
 
     def capability_map(self) -> dict[str, str]:
         return dict(self.capabilities)
@@ -131,6 +154,8 @@ class Site:
             "alert_owner": self.alert_owner,
             "files_root": self.files_root,
             "ssh_host": self.ssh_host,
+            "ssh_user": self.ssh_user,
+            "ssh_port": self.ssh_port,
             "pending_updates": None,
         }
 
@@ -226,6 +251,18 @@ def _files_root(value: Any, *, site_id: str) -> str:
     if not _FILES_ROOT.fullmatch(text) or ".." in text.split("/"):
         raise ValueError(f"{site_id}: files_root must be an absolute path without '..'")
     return text
+
+
+def files_root_narrow(value: str) -> bool:
+    """True when a remote root is deep enough to jail one site."""
+    text = str(value or "").strip().rstrip("/")
+    parts = [part for part in text.split("/") if part]
+    if len(parts) < 3 or any(part in {".", ".."} for part in parts):
+        return False
+    for prefix in _BROAD_ROOTS:
+        if text == prefix or text.startswith(prefix + "/"):
+            return False
+    return True
 
 
 def _ssh_host(value: Any, *, site_id: str) -> str:

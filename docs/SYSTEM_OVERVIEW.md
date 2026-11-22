@@ -85,9 +85,9 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **LLM** | `llm.py` + `model_router/` | Route order, ChatGPT OAuth, xAI, OpenRouter fallback — [`MODEL_ROUTER.md`](MODEL_ROUTER.md) |
 | **OAuth Gmail** | `oauth/gmail` | Browser consent → `oauth/gmail.json` |
 | **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |
-| **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text + `/marketing` read |
+| **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text + `/marketing` read; Telegram also surfaces progress and streamed answer drafts |
 | **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | Content and store API — [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
-| **WordPress site ops** | `wp_ops/` | Phase 1–2 mock health, local backup manifests, and a typed theme/plugin file edit — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
+| **WordPress site ops** | `wp_ops/` | Mock health/backups, typed theme/plugin file edits, server-checked bot reads, bounded WordPress tool loop, and immutable non-executable update/restore previews — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
 | **smoke / readiness** | `smoke.py`, `ops_status.py` | Opt-in live smoke; `/health` poll age |
 
 ## 4. Cases 2.0 + Path B (AI)
@@ -116,8 +116,12 @@ See [`CASES.md`](CASES.md) for the full operator guide (Swedish).
 See [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) and [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md). Identity: [`SOUL.md`](../SOUL.md).
 
 1. Slash / postback commands — session, tools, cases, order, health, brief, marketing (read-only).
-2. Free text — intent → **read-only tool prefetch** → LLM phrasing under SOUL-aligned prompt.
-3. Explicit write UX — approve keyboard/postback, `/cases approve`, dashboard, CLI. **Never silent send.**
+2. Free text — intent → read tools and confirm-only write proposals → SOUL-aligned LLM response. WordPress ops uses a separate named-tool loop bound to the selected site and checked by server-side RBAC (3 calls / 30 seconds maximum).
+3. Explicit write UX — confirm button/postback, `/cases approve`, dashboard, CLI. **Never silent send.** WordPress update/restore plans are previews only and cannot execute.
+
+**Telegram background jobs:** A durable inbox acknowledges updates before moving the poll cursor. A bounded worker pool runs the existing synchronous handlers in the background, one job at a time per chat. `/status`, `/jobs`, `/stop`, `/cancel`, and Oscar-only `/reconcile` stay responsive while work runs. Read turns accept up to three steer messages at safe checkpoints; approved actions queue later input and are never replayed after an uncertain side effect. Telegram conversation state migrates from JSON into the job database. Messenger remains on its existing synchronous webhook and store.
+
+**Telegram progress UX:** Free text exposes concise progress and named tool status in an editable status message, then streams model text into an editable answer message. The final `BotReply` replaces the draft and keeps its buttons. Messenger does not pass these callbacks and remains final-response only. This is Azom's Bot API implementation of the progress/edit pattern; it is separate from OpenClaw's native stream mode and never exposes private reasoning or tool arguments.
 
 Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basic Auth).
 
@@ -134,6 +138,8 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/cases/poll` | POST | Manual poll |
 | `/marketing` | J/O | Ads+GA4 digest + suggest HITL |
 | `/wp`, `/wp/<id>` | `WP_OPS_READ` | WordPress site status. Unknown and mock-verified backups are not green |
+| `GET /wp/<id>/ssh` | `WP_OPS_READ` | Site root and SSH login. The private key is not shown. A viewer does not see the identity path |
+| `POST /wp/<id>/ssh` | `WP_OPS_ADMIN` | Save root, host, user, port, key, and a public host key. Does not open SSH |
 | `POST /wp/<id>/check` | operate / admin | Mock read-only check |
 | `POST /wp/<id>/backup` | operate / admin | Local mock backup manifest. No production restore route |
 | `POST /wp/<id>/restore-drill` | `WP_OPS_OPERATE` | Staging drill of a verified manifest |
@@ -141,7 +147,7 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/interact` | auth | Support draft playground |
 | `/oscar`, `/oscar/secrets`, `/oscar/escalations` | Oscar | Admin + resolve |
 | `/oscar/models/settings` | Oscar | Save model ids and Grok Build flag |
-| `/oscar/behavior` | Oscar | Edit chat, classify, and draft prompts |
+| `/oscar/behavior` | Oscar | Edit chat, classify, draft, and product-copy prompts; chat runtime policy remains fixed |
 | `/oscar/telegram` | Oscar | Telegram process status. Allowlist stays in the process env |
 | `/oscar/secrets/test` | Oscar | Connection probes (incl. ga4 / google_ads / merchant) |
 | `/oauth/gmail/start`, `/status` | auth | Gmail OAuth start / status |
@@ -211,6 +217,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `AZOM_MODEL_ROUTE_ORDER` | Model route order (default chatgpt, Grok Build, xAI key, OpenRouter) |
 | `OPENAI_SIWC_*` / `OPENAI_MODEL` | ChatGPT OAuth (Azom-owned refresh). Endpoints are env, not hardcoded |
 | `AZOM_XAI_GROK_BUILD` / `XAI_GROK_BIN` / `XAI_MODEL` | Delegated Grok Build route (opt-in) |
+| `AZOM_TELEGRAM_MODEL_ROUTE` | Optional Telegram-only route id. No fall-through |
 | `XAI_API_KEY` | xAI API-key fallback |
 | `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | OpenRouter fallback. Dollar cap applies here only |
 | `TELEGRAM_*` | Bot allowlist + actor map |

@@ -308,7 +308,7 @@ MODEL_RUNTIME_KEYS = frozenset(
 def _valid_model_id(value: str) -> bool:
     if not value or len(value) > 128 or any(ch.isspace() for ch in value):
         return False
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:/@+-")
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:/@+-~")
     return all(ch in allowed for ch in value)
 
 

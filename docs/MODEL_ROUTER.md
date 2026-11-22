@@ -84,16 +84,18 @@ Azom is its own public OAuth client. Endpoints come from env:
 | Env | Role |
 |-----|------|
 | `OPENAI_SIWC_CLIENT_ID` | `dynamic_agent_client` for the first registration, or a saved issued id |
-| `OPENAI_SIWC_REDIRECT_URI` | Dashboard callback, exact match |
-| `OPENAI_SIWC_AUTHORIZATION_URL` | Authorize endpoint. Not hardcoded. |
-| `OPENAI_SIWC_TOKEN_URL` | Token endpoint. Not hardcoded. |
-| `OPENAI_SIWC_HOST_ID` | Stable opaque host id for this VPS. Saved on the session. |
+| `OPENAI_SIWC_REDIRECT_URI` | Dashboard callback, exact match. Default `http://127.0.0.1:<DASHBOARD_PORT>/oauth/openai/callback` |
+| `OPENAI_SIWC_AUTHORIZATION_URL` | Authorize endpoint. Default `https://auth.openai.com/api/accounts/authorize` |
+| `OPENAI_SIWC_TOKEN_URL` | Token endpoint. Default `https://auth.openai.com/api/accounts/oauth/token` |
+| `OPENAI_SIWC_HOST_ID` | Stable opaque host id. Default is created once in `AZOM_DATA_DIR/openai_siwc_host_id` |
 | `OPENAI_MODEL` | Responses model. Default `gpt-5.2` when unset. |
 | `OPENAI_SIWC_SCOPE` | Optional. Default includes `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`. |
 | `OPENAI_SIWC_RESOURCE` | Optional. Default `https://api.openai.com/v1`. |
 | `OPENAI_SIWC_AGENT_NAME` | Optional. Default `Azom`. Sent only on first dynamic registration. |
 
 Flow:
+
+When none of those five variables is set, Azom uses the defaults above. If any one of them is set, the others are not filled in.
 
 1. Oscar opens `/oauth/openai/start` (Oscar role, existing Basic Auth).
 2. Azom creates random `state` (10 minutes), PKCE S256, and `nonce`.
@@ -120,15 +122,19 @@ The authorize redirect does not include `id_token_hint`, so the id token is not 
 
 ## xAI
 
-**Grok Build** runs `XAI_GROK_BIN` (default `grok` once the route is enabled) as one headless turn: `--model`, `--prompt-file`, `--max-turns 1`, `--no-subagents`, `--disable-web-search`, `--no-memory`, `--verbatim`, `--tools` with an empty list. The prompt is written to a temp file mode `0600` inside an empty temp directory that is removed afterwards. It is not placed on argv and it is not written to stdin. `--single` is not used: this CLI rejects `--single` together with `--prompt-file`. `--permission-mode plan` is not used: a probe of that mode waited without printing a completion. `--print` does not exist on this build. A missing binary is `ModelConfigError`. A timeout is `ModelUnavailableError`. A non-zero exit whose stderr looks like a login failure is `ModelAuthError` with code `exit_N`. Every other non-zero exit is `ModelUnavailableError` with code `exit_N`. The error string does not copy stderr. `status()` reports `connected=false` and `auth_checked=false` even when the route is enabled, because checking login would spawn the CLI or read `auth.json`. `refresh_owner` is `grok_build`. An empty tool list is the restriction Azom can set without guessing tool names. It is not a separate sandbox proof. The router still tries the next configured route after a Grok failure.
+**Grok Build** runs `XAI_GROK_BIN` (default `grok` once the route is enabled) as one headless turn: `--model`, `--prompt-file`, `--max-turns 1`, `--no-subagents`, `--disable-web-search`, `--no-memory`, `--verbatim`, `--tools` with an empty list. The prompt is written to a temp file mode `0600` inside an empty temp directory that is removed afterwards. It is not placed on argv and it is not written to stdin. `--single` is not used: this CLI rejects `--single` together with `--prompt-file`. `--permission-mode plan` is not used: a probe of that mode waited without printing a completion. `--print` does not exist on this build. A missing binary is `ModelConfigError`. The call's idle timeout is `ModelRequest.timeout` (30 seconds for Telegram). Each new Grok session phase `streaming_reasoning` or `streaming_text` resets that idle window. `waiting_for_model` does not. `AZOM_XAI_GROK_HARD_TIMEOUT` (default 180, maximum 600) still stops a stream that never finishes. A timeout is `ModelUnavailableError`. A non-zero exit whose stderr looks like a login failure is `ModelAuthError` with code `exit_N`. Every other non-zero exit is `ModelUnavailableError` with code `exit_N`. The error string does not copy stderr. `status()` reports `connected=false` and `auth_checked=false` even when the route is enabled, because checking login would spawn the CLI or read `auth.json`. `refresh_owner` is `grok_build`. An empty tool list is the restriction Azom can set without guessing tool names. It is not a separate sandbox proof. The router still tries the next configured route after a Grok failure.
 
 **API key** sends `model`, `messages`, `max_tokens`, and `temperature` to `https://api.x.ai/v1/chat/completions`. 401 is auth, 429 is rate limit, other 4xx/5xx are unavailable.
 
-**TODO / blocker:** direct app-owned xAI OAuth refresh is not implemented. Do not add it until xAI's current client registration, scopes, token endpoint, and inference contract are verified. The note lives in `skills/ecom_ops/model_router/xai_grok_build.py`.
+Oscar can start `grok login --device-auth` from `/oscar`. The page shows the verification URL and the short user code, then polls `GET /oscar/models/xai/login/status` every two seconds while the status is `pending`. The poll stops on `finished` or `failed` and replaces the paragraph in place. The child is started with stdin closed so it cannot wait on the dashboard console. Grok Build stores the session. Azom does not read `auth.json` and does not store an xAI access or refresh token. A zero exit sets `AZOM_XAI_GROK_BUILD=1`.
+
+Telegram free text uses `AZOM_TELEGRAM_MODEL_ROUTE` when it is one of `chatgpt_oauth`, `xai_grok_build`, `xai_api_key`, or `openrouter`. That call does not fall through to the next route. For the two xAI routes the model id is `XAI_MODEL`. A `/model` session pin is sent only when the Telegram route, or the first configured route, is OpenRouter. Other callers keep `AZOM_MODEL_ROUTE_ORDER`.
+
+**TODO / blocker:** direct app-owned xAI OAuth refresh is not implemented. Do not add an Azom-owned xAI client or token file. The note lives in `skills/ecom_ops/model_router/xai_grok_build.py`.
 
 ## OpenRouter and budget
 
-OpenRouter stays a fallback. The chat-completions URL, `HTTP-Referer: https://azom.se`, and `X-Title: AzomOps-Agent` are unchanged. Estimated cost is `0.15` USD / 1M input tokens + `0.60` USD / 1M output tokens, minimum `0.0001` when usage exists.
+OpenRouter stays a fallback. When `OPENROUTER_MODEL` is unset the model id is `deepseek/deepseek-v4.1-flash-1017`. The chat-completions URL, `HTTP-Referer: https://azom.se`, and `X-Title: AzomOps-Agent` are unchanged. Oscar searches ids from `/oscar?model_q=&catalog=openrouter` (or `catalog=xai` when `XAI_API_KEY` is set). The search calls the provider model list, not a completion. Estimated cost is `0.15` USD / 1M input tokens + `0.60` USD / 1M output tokens, minimum `0.0001` when usage exists.
 
 The USD cap in `config/limits.yaml` applies to that estimate only. Route telemetry stores `cost_usd=0` and puts `estimated_cost_usd` in meta. Classify, draft, product description, and chat record that estimate once on success. An unparseable classify or product body still records it. Oscar's isolated OpenRouter test records `llm_model_test` with the same estimate. The estimate is at least `0.0001` for any returned completion, including when the provider omits token counts.
 
@@ -143,7 +149,7 @@ $AZOM_DATA_DIR/model_oauth/<provider>_<account_id>.lock
 
 Writes use a temp file in the same directory, `fsync`, `os.replace`, and `chmod 0600`. `public_view()` whitelists status fields. It does not include `access_token`, `refresh_token`, `id_token`, `code_verifier`, `oauth_state`, or `nonce`.
 
-`model_oauth/` is gitignored. `bin/backup-azom-data.sh` excludes it. A normal backup cannot restore ChatGPT. Oscar keeps a separate encrypted copy only if off-box restore is required.
+`model_oauth/` is gitignored. `bin/backup-azom-data.sh` excludes it, and the same script excludes `ssh-keys/`. A normal backup cannot restore ChatGPT or the per-site private SSH keys. Oscar keeps a separate encrypted copy only if off-box restore is required.
 
 Last isolated test result is `AZOM_DATA_DIR/model_router_status.json` (route id, ok, error class, error code, model, provider, time). It is outside `model_oauth/` so ordinary backups may keep it.
 
@@ -159,8 +165,10 @@ Oscar only, existing CSRF on POST:
 | Callback | `GET /oauth/openai/callback` (state check; code is not copied into the next redirect) |
 | Testa modell | `POST /oscar/models/test` with one `route_id`. Prompt: `Reply with the single word PONG. Do not call tools.` `max_output_tokens` is 512. The page does not call it on load. |
 | Koppla från | `POST /oscar/models/chatgpt/disconnect` |
-| xAI | Grok Build enable flag and model id. `XAI_API_KEY` is an Oscar secret. Direct xAI OAuth stays unavailable. |
-| Behavior | `GET/POST /oscar/behavior` edits `chat`, `classify`, and `draft` in `config/prompts.yaml` and bumps the version of a changed text. |
+| xAI login | `POST /oscar/models/xai/login` runs `grok login --device-auth` and shows the code. `GET /oscar/models/xai/login/status` is Oscar-only and returns status, URL, code, and detail. The page polls it while status is `pending`. Azom does not read `auth.json`. |
+| Model search | `GET /oscar?model_q=&catalog=openrouter` or `catalog=xai`. Choosing a row fills the model field. Save still writes `runtime.env`. |
+| xAI | Grok Build enable flag and model id. `XAI_API_KEY` is an Oscar secret. Direct app-owned xAI OAuth stays unavailable. |
+| Behavior | `GET/POST /oscar/behavior` edits versioned `chat`, `classify`, `draft`, and `product_desc` prompts in `config/prompts.yaml`. The bot reads current prompt text from disk; chat appends fixed runtime policy and the bounded WordPress tool guide. Changed prompt text gets a new version. |
 | Usage | `GET /data/telemetry` filters action, route, and errors. Meta is shown without secret-like keys. |
 | History | `GET /data/audit` reads `audit.jsonl`. Jonatan can read it. A `cases` target links to the case. |
 
