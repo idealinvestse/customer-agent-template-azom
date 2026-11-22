@@ -70,3 +70,55 @@ def test_oscar_model_panel_and_isolated_test(tmp_path, monkeypatch):
     body = again.get_data(as_text=True)
     assert "refresh-secret" not in body
     assert "authorization code" not in body.lower()
+
+
+def test_oscar_saves_model_ids_without_provider_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("XAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("AZOM_XAI_GROK_BUILD", raising=False)
+    monkeypatch.chdir(DASH_DIR)
+    app = _load_dashboard_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    denied = client.post(
+        "/oscar/models/settings",
+        headers=_auth("jonatan", "jonatan", client=client),
+        data={"OPENAI_MODEL": "gpt-test"},
+    )
+    assert denied.status_code == 403
+
+    saved = client.post(
+        "/oscar/models/settings",
+        headers=_auth(client=client),
+        data={
+            "OPENAI_MODEL": "gpt-test",
+            "XAI_MODEL": "grok-4",
+            "OPENROUTER_MODEL": "deepseek/deepseek-v4-flash",
+            "AZOM_XAI_GROK_BUILD": "1",
+        },
+    )
+    assert saved.status_code == 302
+    page = client.get("/oscar", headers=_auth())
+    text = page.get_data(as_text=True)
+    assert "gpt-test" in text
+    assert "deepseek/deepseek-v4-flash" in text
+    assert "Direkt xAI OAuth är inte tillgänglig" in text
+    runtime = (tmp_path / "data" / "runtime.env").read_text(encoding="utf-8")
+    assert "OPENAI_MODEL=gpt-test" in runtime
+    assert "AZOM_XAI_GROK_BUILD=1" in runtime
+    assert "sk-" not in runtime
+
+    bad = client.post(
+        "/oscar/models/settings",
+        headers=_auth(client=client),
+        data={"OPENAI_MODEL": "not a model"},
+        follow_redirects=True,
+    )
+    assert bad.status_code == 200
+    assert "Ogiltigt" in bad.get_data(as_text=True)

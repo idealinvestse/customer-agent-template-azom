@@ -75,7 +75,7 @@ openclaw --version
 # expect: Node v24.22.3 or newer in the 24 LTS line; OpenClaw 2026.11.6
 ```
 
-När läget är `local`, uppdatera den hanterade tjänsten från samma nvm-installation: `openclaw gateway install --force --port 18789 --runtime node --runtime-path "$env:NVM_HOME\nodejs\node.exe"`. Gateway-installationen startar tjänsten. Om Task Scheduler säger `Access is denied`, kör inte kommandot som en annan användare; låt Task Scheduler-ägaren göra service-definitionens uppdatering.
+När läget är `local`, uppdatera den hanterade tjänsten från samma nvm-installation: `openclaw gateway install --force --port 18789 --runtime node --runtime-path "$env:NVM_HOME\nodejs\node.exe"`. Gateway-installationen startar tjänsten. Ett vanligt medium-token från samma användare får `Access is denied` mot uppgiftens XML i `System32\Tasks`. Kör inte kommandot som en annan användare. Ägaren uppdaterar definitionen med sitt upphöjda token.
 
 ## 5. Doctor och status
 

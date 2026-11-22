@@ -67,6 +67,32 @@ def test_overlay_skips_protected_keys(tmp_path, monkeypatch):
     assert os.environ.get("MAIL_PROVIDER") == "gmail"
 
 
+def test_overlay_applies_model_ids_and_skips_telegram_allowlist(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "111")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZOM_XAI_GROK_BUILD", raising=False)
+    (tmp_path / "runtime.env").write_text(
+        "OPENAI_MODEL=gpt-test\nAZOM_XAI_GROK_BUILD=1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "secrets.env").write_text(
+        "XAI_API_KEY=test-key\nTELEGRAM_ALLOWED_CHAT_IDS=999\n",
+        encoding="utf-8",
+    )
+    reset_bootstrap_for_tests()
+    applied = apply_overlays(data_dir=tmp_path)
+    assert "OPENAI_MODEL" in applied
+    assert "XAI_API_KEY" in applied
+    assert "AZOM_XAI_GROK_BUILD" in applied
+    assert "TELEGRAM_ALLOWED_CHAT_IDS" not in applied
+    assert os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS") == "111"
+    assert os.environ.get("OPENAI_MODEL") == "gpt-test"
+    assert os.environ.get("AZOM_XAI_GROK_BUILD") == "1"
+
+
 def test_close_refuses_sending(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     store = CaseStore(path=tmp_path / "cases.db")

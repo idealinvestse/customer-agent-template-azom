@@ -48,7 +48,7 @@ version: "3.0.0"
 
 | Surface | Entry |
 |---------|--------|
-| Dashboard | `./bin/start-dashboard.sh` → `/onboarding`, `/settings`, `/cases`, `/marketing`, `/oscar` |
+| Dashboard | `./bin/start-dashboard.sh` → `/onboarding`, `/settings`, `/cases`, `/marketing`, `/wp`, `/oscar` |
 | Model router | `ecom_ops.llm` facade over `ecom_ops.model_router`. Oscar: `/oscar` test, `/oauth/openai/start` |
 | Gmail OAuth | `/oauth/gmail/start` → tokens in `AZOM_DATA_DIR/oauth/gmail.json` |
 | Google marketing OAuth | `/oauth/google/start` → `AZOM_DATA_DIR/oauth/google_marketing.json` |
@@ -81,15 +81,17 @@ Details: `docs/MAIL_PROVIDERS.md`.
 
 See `docs/WOO_WORDPRESS.md` — shipment trackings, multi-site `domain=`, WordPress Application Passwords, webhook HMAC, retries.
 
+Site operations are separate: `docs/WORDPRESS_OPS.md`. Phase 1 is mock health. Phase 2 is a local mock backup manifest and a staging drill. Do not update plugins, restore a database, or run a shell from this card. Production checks and production mock backups need `WP_OPS_ADMIN`. `restore` refuses. A verified mock backup is not off-site and not green.
+
 ## Marketing Google
 
 See `docs/MARKETING_GOOGLE.md` — mock-first Ads+GA4; live **reads** shipped; HITL mutate + kill-switches (mutate still refused).
 
 ## RBAC
 
-- **Jonatan:** `viewer` (+ mail/SSH read, settings non-secret, **CASE_REPLY**, **MARKETING_READ**, **MARKETING_SUGGEST**)
-- **Oscar:** `full_admin` (secrets UI + escalation resolve + probes + **MARKETING_MUTATE** + `shadow-report` / `retention-purge`)
-- **Agent (automation):** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, case poll, **MARKETING_READ**)
+- **Jonatan:** `viewer` (+ mail/SSH read, settings non-secret, **CASE_REPLY**, **MARKETING_READ**, **MARKETING_SUGGEST**, **WP_OPS_READ**)
+- **Oscar:** `full_admin` (secrets UI + escalation resolve + probes + **MARKETING_MUTATE** + `shadow-report` / `retention-purge` + **WP_OPS_ADMIN**; restore still refuses)
+- **Agent (automation):** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, case poll, **MARKETING_READ**, **WP_OPS_OPERATE** for staging health, mock backup, and staging drill)
 
 ## Escalation
 

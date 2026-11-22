@@ -32,6 +32,7 @@ from oauth_routes import register_oauth_routes  # noqa: E402
 from oscar_routes import register_oscar_routes  # noqa: E402
 from settings_store import apply_env_overlays  # noqa: E402
 from webhooks import register_webhook_routes  # noqa: E402
+from wp_routes import register_wp_routes  # noqa: E402
 
 
 def _case_age(iso: str | None) -> str:
@@ -76,6 +77,7 @@ def create_app() -> Flask:
     register_cases_routes(application)
     register_oscar_routes(application)
     register_marketing_routes(application)
+    register_wp_routes(application)
     register_oauth_routes(application)
 
     @application.context_processor

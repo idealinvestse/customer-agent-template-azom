@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Beteende – Azom{% endblock %}
+{% block page_subtitle %}Beteende{% endblock %}
+{% block content %}
+<div class="space-y-5">
+  <div>
+    <h2 class="az-page-title">Beteende</h2>
+    <p class="az-muted mt-1">Systemtexter för chat, klassning och utkast. En ändrad text får en ny version. Kundmail skickas inte härifrån.</p>
+  </div>
+
+  {% if error %}
+  <div class="rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger" role="alert">{{ error }}</div>
+  {% endif %}
+
+  <section class="az-card border-oscar-600/35">
+    <form method="post" action="/oscar/behavior" class="space-y-5">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      {% for name, label in [('chat', 'Chat'), ('classify', 'Klassning'), ('draft', 'Utkast')] %}
+      {% set row = prompts.get(name, {}) %}
+      <div>
+        <label class="az-label" for="prompt-{{ name }}">{{ label }} · version {{ row.get('version', '') }}</label>
+        <textarea class="az-textarea" id="prompt-{{ name }}" name="{{ name }}" required maxlength="8000">{{ row.get('system', '') }}</textarea>
+      </div>
+      {% endfor %}
+      <div class="flex flex-wrap gap-2">
+        <button class="az-btn-oscar" type="submit">Spara beteende</button>
+        <a class="az-btn-secondary" href="/settings">Flaggor i Inställningar</a>
+        <a class="az-btn-secondary" href="/oscar">Tillbaka</a>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

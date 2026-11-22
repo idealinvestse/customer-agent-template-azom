@@ -16,6 +16,7 @@
    - CLI: [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md)
    - Mail: [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md)
    - Woo/WP: [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
+   - WordPress site ops: [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md)
    - Marketing Google (Ads+GA4): [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md)
    - Model router: [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md)
    - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
@@ -27,9 +28,9 @@
 ## Budget and roles
 
 - OpenRouter budget: **USD 100** (`config/limits.yaml`)
-- **Jonatan:** `viewer` (+ mail/SSH read, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**)
-- **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags + **MARKETING_MUTATE** + `shadow-report` / `retention-purge`)
-- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**)
+- **Jonatan:** `viewer` (+ mail/SSH read, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**, **WP_OPS_READ**)
+- **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags + **MARKETING_MUTATE** + `shadow-report` / `retention-purge` + **WP_OPS_ADMIN**; **WP_OPS_RESTORE** still refuses)
+- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**, **WP_OPS_OPERATE** for staging health, mock backup, and staging drill only)
 
 ## Goals
 
@@ -204,8 +205,10 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 - **Mock soft-soak:** `bash bin/mock-soak-azom.sh` · `python -m ecom_ops classify-eval` · `python -m ecom_ops kpis`
 - **FU9 auto-send:** rails only — see [`docs/CASES.md`](docs/CASES.md) (**do not wire** without Oscar written enable + soak preconditions)
 - **NO/DK mailboxes:** remain `enabled: false` until Oscar + credentials
-- **Out of scope:** multi-tenant SaaS, FAQ/KB, default-on auto-send, Meta/TikTok ads, default-on Ads mutate
+- **Out of scope:** multi-tenant SaaS, FAQ/KB, default-on auto-send, Meta/TikTok ads, default-on Ads mutate, managed WordPress hosting, autonomous WordPress updates or restores
 
 ## V2.1 Woo/WordPress (pointer)
 
 See [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) for shipment trackings, multi-site `domain=`, WordPress client, retries, webhooks, pagination, probes.
+
+WordPress site operations (Phase 1 mock health, Phase 2 local mock backup and staging drill): [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md). Production restore stays refused. Do not contact customer sites or enable updates from that surface.

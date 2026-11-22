@@ -54,7 +54,8 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | **Pilot maturity toolkit** | Read-only `soak-preflight`, Oscar `cases calibration-export` / `calibration-report` (redacted), `kpis --baseline` deltas, shadow suggest-vs-outcome cross-tab. **Does not** mark A1 soak, baseline, or live calibration complete. |
 | **Ops hardening** | SQLite WAL + busy_timeout, budget pacing fields, structured poll/approve logs, `/health` extras (`null_send`, `budget_ratio`, `last_poll_errors`). Shared allowlisted runtime overlays (CLI/poll/bot/dashboard). `/metrics` token-only. Waitress in prod. Case send/close state machine + replied retention. Backup script checkpoints WAL before copy. |
 | **V3.0.0** | Pilot toolkit + ops hardening + NO/DK enable-ready (still disabled) + live marketing **reads** + dashboard health/webhook modules + cases approve/ingest/draft facades + `config/profile.yaml` + [`TEMPLATE_GUIDE.md`](TEMPLATE_GUIDE.md). **Not** multi-tenant SaaS. **Not** A1 soak complete. **Not** FU9 wire. |
-| **Model router** | `skills/ecom_ops/model_router/` + `llm.py` facade. Order: ChatGPT OAuth (Azom-owned refresh), opt-in xAI Grok Build (delegated), xAI API key, OpenRouter fallback. Dollar cap applies to estimated OpenRouter cost only. Oscar `/oscar` model test has **no fallback**. Direct app-owned xAI OAuth is **not** implemented. ChatGPT `id_token` signature is **not** verified. Live SIWC connect is an Oscar step, not done. See [`MODEL_ROUTER.md`](MODEL_ROUTER.md). |
+| **Model router** | `skills/ecom_ops/model_router/` + `llm.py` facade. Order: ChatGPT OAuth (Azom-owned refresh), opt-in xAI Grok Build (delegated), xAI API key, OpenRouter fallback. Dollar cap applies to estimated OpenRouter cost only. Oscar `/oscar` sets model ids and the Grok Build flag, tests one route with **no fallback**, edits prompt texts at `/oscar/behavior`, and reads Telegram process status at `/oscar/telegram`. Usage filters live at `/data/telemetry`. Action history lives at `/data/audit`. Direct app-owned xAI OAuth is **not** implemented. ChatGPT `id_token` signature is **not** verified. Live SIWC connect is an Oscar step, not done. See [`MODEL_ROUTER.md`](MODEL_ROUTER.md). |
+| **WordPress site ops (Phase 1–2)** | Mock per-site registry, separate `WP_SECRET_*` refs, read-only health, alert dedupe, local mock backup manifests, and a staging drill. A verified manifest is not off-site, not encrypted, and not green. Checksum, updates, scanners, live site calls, and production restore are **not** implemented. `restore()` still returns `RestoreNotInMvp`. Not managed hosting. See [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md). |
 
 ## Ops next (human-owned — agents must not mark done)
 
@@ -66,6 +67,8 @@ Treat these as done in the repository. Do not re-implement from scratch.
 | Weekly ops cadences | Oscar / Jonatan | Open after soak |
 
 **Agent rule:** Never mark live soak complete. Never open a PR that wires auto-send into poll until every FU9 gate in [`CASES.md`](CASES.md) is green **and** Oscar gives written enable.
+
+The local OpenClaw client upgrade is a separate Windows snapshot. Its docs are pushed on `docs/openclaw-local-upgrade` (`e66c56f`) and are not merged to `main`. That work does not deploy Azom and does not close the four gates above. Detail: [`openclaw-upgrade-report.md`](openclaw-upgrade-report.md).
 
 ## FU9 auto-send (summary)
 
@@ -91,6 +94,7 @@ Do not start these unless product ownership changes:
 - Default-on auto-send
 - Outlook browser OAuth UI (env + probe only today)
 - Broad scope expansion beyond Azom single-customer deepen
+- Managed WordPress hosting, autonomous production updates or restores, malware cleanup, and a WordPress availability SLA. Phase 2 is a local mock manifest and staging drill only ([`WORDPRESS_OPS.md`](WORDPRESS_OPS.md)).
 
 ## OpenRouter budget
 
@@ -102,9 +106,9 @@ Do not start these unless product ownership changes:
 
 | Actor | Role | Typical powers |
 |-------|------|----------------|
-| **Jonatan** | `viewer` | Read mail/SSH, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST** |
-| **Oscar** | `full_admin` | Secrets UI, probes, resolve escalations, experiment flags, **MARKETING_MUTATE**, `shadow-report` / `retention-purge` |
-| **agent** | `operator` | order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH health, cases poll, **MARKETING_READ** |
+| **Jonatan** | `viewer` | Read mail/SSH, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**, **WP_OPS_READ** |
+| **Oscar** | `full_admin` | Secrets UI, probes, resolve escalations, experiment flags, **MARKETING_MUTATE**, `shadow-report` / `retention-purge`, **WP_OPS_ADMIN**. **WP_OPS_RESTORE** exists and still refuses. |
+| **agent** | `operator` | order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH health, cases poll, **MARKETING_READ**, **WP_OPS_OPERATE** (staging health checks only) |
 
 ## Absorption note (historical docs removed)
 
@@ -129,6 +133,7 @@ Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, fini
 | Mail setup | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
 | Gmail OAuth | [`V2_OAUTH_GMAIL.md`](V2_OAUTH_GMAIL.md) |
 | Woo/WP API surface | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
+| WordPress site operations | [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) · operator [`runbooks/wp-ops-backup.md`](runbooks/wp-ops-backup.md) |
 | Model router | [`MODEL_ROUTER.md`](MODEL_ROUTER.md) · operator [`runbooks/model-oauth.md`](runbooks/model-oauth.md) |
 | OpenClaw client upgrade | [`runbooks/openclaw-upgrade.md`](runbooks/openclaw-upgrade.md) · snapshot [`openclaw-upgrade-report.md`](openclaw-upgrade-report.md) |
 | Gateway / secret incidents | [`runbooks/gateway-recovery.md`](runbooks/gateway-recovery.md) · [`runbooks/secret-leak-response.md`](runbooks/secret-leak-response.md) |

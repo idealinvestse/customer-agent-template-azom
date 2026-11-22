@@ -11,7 +11,9 @@ from settings_store import (
     apply_env_overlays,
     load_settings_view,
     resolve_escalation,
+    save_model_runtime,
     save_secrets,
+    secrets_file_has_key,
     secrets_status,
 )
 from support import (
@@ -129,6 +131,102 @@ def register_oscar_routes(app: Flask) -> None:
 
         OpenAIChatGPTOAuthRoute().disconnect()
         return redirect(url_for("oscar_home") + "?msg=ChatGPT+fran+kopplad")
+
+    @app.route("/oscar/models/settings", methods=["POST"])
+    @_oscar_required
+    def oscar_model_settings():
+        from ecom_ops.audit import log_action
+
+        try:
+            saved = save_model_runtime(request.form, grok_build_posted=True)
+        except ValueError as exc:
+            return redirect(url_for("oscar_home", err=str(exc)))
+        if saved:
+            log_action(
+                actor=g.actor["name"],
+                action="model_settings_save",
+                target="runtime.env",
+                details={"keys": saved},
+            )
+        msg = "Modellval sparat" if saved else "Inga ändringar"
+        return redirect(url_for("oscar_home", msg=msg))
+
+    @app.route("/oscar/behavior", methods=["GET", "POST"])
+    @_oscar_required
+    def oscar_behavior():
+        from ecom_ops.audit import log_action
+        from ecom_ops.prompts import get_prompt, save_prompt_texts
+
+        error = None
+        if request.method == "POST":
+            try:
+                changed = save_prompt_texts(
+                    {
+                        "chat": request.form.get("chat", ""),
+                        "classify": request.form.get("classify", ""),
+                        "draft": request.form.get("draft", ""),
+                    }
+                )
+            except ValueError as exc:
+                error = str(exc)
+            else:
+                if changed:
+                    log_action(
+                        actor=g.actor["name"],
+                        action="prompt_save",
+                        target="prompts.yaml",
+                        details={"versions": changed},
+                    )
+                msg = "Beteende sparat" if changed else "Inga ändringar"
+                return redirect(url_for("oscar_behavior", msg=msg))
+        prompts = {}
+        for name in ("chat", "classify", "draft"):
+            system, version = get_prompt(name)
+            prompts[name] = {"system": system, "version": version}
+        return render_template(
+            "oscar_behavior.html",
+            **_dashboard_context(prompts=prompts, error=error),
+        )
+
+    @app.route("/oscar/telegram")
+    @_oscar_required
+    def oscar_telegram():
+        import os
+
+        apply_env_overlays()
+        allow_raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
+        actor_raw = os.environ.get("TELEGRAM_ACTOR_MAP", "")
+        last = _load_probe_last()
+        probe = None
+        for row in (last or {}).get("results") or []:
+            if isinstance(row, dict) and row.get("id") == "telegram":
+                probe = dict(row)
+                message = str(probe.get("message") or "")
+                if "api.telegram.org/bot" in message:
+                    probe["message"] = "getMe failed"
+                break
+
+        def _count(raw: str) -> int:
+            return len([part for part in str(raw).replace(";", ",").split(",") if part.strip()])
+
+        return render_template(
+            "oscar_telegram.html",
+            **_dashboard_context(
+                token_present=bool(os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()),
+                allow_count=_count(allow_raw),
+                actor_count=_count(actor_raw),
+                allow_in_secrets_file=secrets_file_has_key("TELEGRAM_ALLOWED_CHAT_IDS"),
+                actor_in_secrets_file=secrets_file_has_key("TELEGRAM_ACTOR_MAP"),
+                probe=probe,
+            ),
+        )
+
+    @app.route("/oscar/telegram/probe", methods=["POST"])
+    @_oscar_required
+    def oscar_telegram_probe():
+        single = run_probe("telegram")
+        _merge_probe_last(single)
+        return redirect(url_for("oscar_telegram", msg="Telegram-probe körd"))
 
     @app.route("/oscar/secrets", methods=["GET", "POST"])
     @_oscar_required

@@ -6,6 +6,18 @@
 
 Inga minnen, databaser eller workspace-filer har raderats av uppgraderingen.
 
+## Beslut 2026-11-22
+
+Inget i tabellen är utfört. Uppgraderingen bad om ett beslut. Minneshygien kräver ett särskilt ja innan någon arkiverar eller raderar.
+
+| Post | Beslut |
+|------|--------|
+| Daganteckning 2026-07-11 | Rekommendation: arkivera till `memory/archive/` när en människa sagt ja. Radera inte. Inte gjort. |
+| `LLM_MODEL_CATALOG.md` | Regenerera inte. En skanning kan bli ett modell-anrop. Vänta tills operatören ber om den. |
+| 74 transkript | Låt `openclaw doctor` arkivera dem i ett senare underhållsfönster, efter ett särskilt ja. Inte i den här körningen. |
+| `clawd-onyx` | Lämna kvar. Radera inte. |
+| Azom `MEMORY.md` | Skapa inte filen. |
+
 | Fil | Post | Varför den är föråldrad | Rekommenderad åtgärd | Risk | Mänskligt ja |
 |-----|------|-------------------------|----------------------|------|----------------|
 | `C:\Users\Django\clawd\memory\2026-07-11.md` | Daganteckning 2026-07-11 | Inte ett driftfaktum. Beskriver ett vuxet rollspelsuppdrag och en minnesflush. Ska inte styra senare beslut. | Arkivera till `memory/archive/` med samma filnamn. Radera inte. | Låg för drift. Texten kan vara privat. | Ja |

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Historik – Azom{% endblock %}
+{% block page_subtitle %}Historik{% endblock %}
+{% block content %}
+<div class="space-y-5">
+  <div>
+    <h2 class="az-page-title">Historik</h2>
+    <p class="az-muted mt-1">Skrivande åtgärder. Details är redigerade. Prompttext och tokens visas inte.</p>
+  </div>
+
+  <section class="az-card">
+    {% if rows %}
+    <div class="overflow-x-auto">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Aktör</th>
+            <th>Action</th>
+            <th>Mål</th>
+            <th>Lyckad</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in rows %}
+          <tr>
+            <td>{{ e.get('created_at', '')[:19] }}</td>
+            <td>{{ e.get('actor', '') }}</td>
+            <td><code class="az-code">{{ e.get('action', '') }}</code></td>
+            <td>
+              {% if e.get('target') == 'cases' and e.get('target_id') %}
+              <a class="text-steel-300 hover:underline" href="/cases/{{ e.get('target_id') }}">{{ e.get('target_id') }}</a>
+              {% else %}
+              {{ e.get('target', '') }}{% if e.get('target_id') %} · {{ e.get('target_id') }}{% endif %}
+              {% endif %}
+            </td>
+            <td>{% if e.get('success') %}<span class="az-present">ja</span>{% else %}<span class="az-missing">nej</span>{% endif %}</td>
+            <td class="az-muted">{{ e.get('details', {}) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted">Ingen historik.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

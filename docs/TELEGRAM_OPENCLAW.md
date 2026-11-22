@@ -64,6 +64,12 @@ TELEGRAM_ACTOR_MAP=111111111:jonatan
 
 **Dåligt (prod):** Tom allowlist eller tom map i live — **alla nekas** (fail-closed). Sätt båda enligt Oscars policy innan go-live.
 
+### Dashboard
+
+Oscar öppnar `/oscar/telegram`. Sidan visar om token finns, hur många id som ligger i processens allowlist, hur många poster actor map har, och senaste probe.
+
+Token byts under `/oscar/secrets`. Allowlist och actor map sätts i processmiljön (systemd eller skalet). `TELEGRAM_ALLOWED_CHAT_IDS` och `TELEGRAM_ACTOR_MAP` är skyddade overlay-nycklar. Ett värde i `secrets.env` laddas inte in och öppnar inte boten.
+
 ---
 
 ## Slash-katalog (OpenClaw-kompatibel + Azom)

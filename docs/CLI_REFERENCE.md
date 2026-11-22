@@ -218,6 +218,36 @@ python -m ecom_ops --mock --actor jonatan marketing mp-queue --name purchase --p
 python -m ecom_ops --mock --actor jonatan marketing merchant-queue --offer-id SKU-1 --title "…"
 ```
 
+### `wp`
+
+WordPress site health and local mock backups (Phase 1–2). See [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md).
+
+```bash
+python -m ecom_ops --mock --actor jonatan wp sites
+python -m ecom_ops --mock --actor jonatan wp status
+python -m ecom_ops --mock --actor jonatan wp show --id mock-staging
+python -m ecom_ops --mock --actor agent wp check --id mock-staging
+python -m ecom_ops --mock --actor oscar wp check --id mock-shop
+python -m ecom_ops --mock --actor oscar wp check --due
+python -m ecom_ops --mock --actor oscar wp backup --id mock-shop
+python -m ecom_ops --mock --actor jonatan wp backups --id mock-shop
+python -m ecom_ops --mock --actor agent wp restore-drill --backup <backup-id> --target mock-staging
+```
+
+Staging checks, staging backups, and staging drills need `WP_OPS_OPERATE`. Production checks and production mock backups need `WP_OPS_ADMIN`. `wp restore` is not a command. A verified manifest stays `green: false` with `encryption: unconfigured` and `offsite: false`.
+
+#### WordPress ops Do / Do not
+
+**Do:**
+
+- Use the synthetic `example.test` sites unless the owner names a pilot.
+- Read `secret_ref` as an environment variable name.
+
+**Do not:**
+
+- Point `wp check` at a customer site. The package has no live HTTP client.
+- Treat an unknown backup, a verified local mock manifest, or a single failed probe as a green, healthy site.
+
 `status` includes `ga4=on|off` and `ads=on|off`. Soft path: `bash bin/mock-marketing-azom.sh`.
 
 ## Environment that changes CLI behavior

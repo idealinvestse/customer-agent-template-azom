@@ -18,6 +18,7 @@ SECRET_KEYS = frozenset(
         "SSH_PRIVATE_KEY",
         "SSH_PASSWORD",
         "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
         "MAILCOW_API_KEY",
         "SMTP_PASSWORD",
         "MAIL_PASSWORD",
@@ -68,6 +69,7 @@ EDITABLE_SECRET_KEYS = (
     "SSH_PORT",
     "SSH_PASSWORD",
     "OPENROUTER_API_KEY",
+    "XAI_API_KEY",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_ALLOWED_CHAT_IDS",
     "MESSENGER_PAGE_ACCESS_TOKEN",
@@ -293,6 +295,67 @@ def save_settings(form: dict[str, Any]) -> dict[str, Any]:
     return load_settings_view()
 
 
+MODEL_RUNTIME_KEYS = frozenset(
+    {
+        "OPENAI_MODEL",
+        "XAI_MODEL",
+        "OPENROUTER_MODEL",
+        "AZOM_XAI_GROK_BUILD",
+    }
+)
+
+
+def _valid_model_id(value: str) -> bool:
+    if not value or len(value) > 128 or any(ch.isspace() for ch in value):
+        return False
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:/@+-")
+    return all(ch in allowed for ch in value)
+
+
+def save_model_runtime(form: dict[str, Any], *, grok_build_posted: bool = False) -> list[str]:
+    """Write non-secret model ids to runtime.env. Empty fields stay unchanged."""
+    updates: dict[str, str] = {}
+    for key in ("OPENAI_MODEL", "XAI_MODEL", "OPENROUTER_MODEL"):
+        if key not in form:
+            continue
+        raw = str(form.get(key) or "").strip()
+        if raw == "":
+            continue
+        if not _valid_model_id(raw):
+            raise ValueError(f"Ogiltigt modell-id för {key}")
+        updates[key] = raw
+    if grok_build_posted:
+        updates["AZOM_XAI_GROK_BUILD"] = "1" if _as_bool(form.get("AZOM_XAI_GROK_BUILD")) else "0"
+    if not updates:
+        return []
+    _write_env_file(
+        _data_dir() / "runtime.env",
+        updates,
+        allow_keys=MODEL_RUNTIME_KEYS,
+    )
+    apply_env_overlays()
+    return list(updates)
+
+
+def secrets_file_has_key(key: str) -> bool:
+    """True when secrets.env names the key. The value is not returned."""
+    path = _data_dir() / "secrets.env"
+    if not path.is_file():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        name, _, _value = raw.partition("=")
+        if name.strip() == key:
+            return True
+    return False
+
+
 def save_secrets(updates: dict[str, str]) -> list[str]:
     """Oscar-only: write secrets.env. Returns list of keys saved."""
     cleaned: dict[str, str] = {}
@@ -323,7 +386,7 @@ def secrets_status() -> list[dict[str, Any]]:
         ("Mail OAuth", ["MAIL_OAUTH_CLIENT_ID", "MAIL_OAUTH_CLIENT_SECRET", "MAIL_OAUTH_REDIRECT_URI"]),
         ("Graph", ["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_USER"]),
         ("SSH", ["SSH_HOST", "SSH_USER", "SSH_PORT", "SSH_PASSWORD"]),
-        ("LLM", ["OPENROUTER_API_KEY"]),
+        ("LLM", ["OPENROUTER_API_KEY", "XAI_API_KEY"]),
         ("Telegram", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHAT_IDS"]),
         (
             "Messenger",

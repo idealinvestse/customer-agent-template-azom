@@ -86,7 +86,8 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **OAuth Gmail** | `oauth/gmail` | Browser consent → `oauth/gmail.json` |
 | **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |
 | **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text + `/marketing` read |
-| **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
+| **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | Content and store API — [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
+| **WordPress site ops** | `wp_ops/` | Phase 1–2 mock health and local backup manifests — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
 | **smoke / readiness** | `smoke.py`, `ops_status.py` | Opt-in live smoke; `/health` poll age |
 
 ## 4. Cases 2.0 + Path B (AI)
@@ -132,9 +133,16 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/cases`, `/cases/<id>` | J/O | Queue, draft save, approve, close (+ shadow badges) |
 | `/cases/poll` | POST | Manual poll |
 | `/marketing` | J/O | Ads+GA4 digest + suggest HITL |
+| `/wp`, `/wp/<id>` | `WP_OPS_READ` | WordPress site status. Unknown and mock-verified backups are not green |
+| `POST /wp/<id>/check` | operate / admin | Mock read-only check |
+| `POST /wp/<id>/backup` | operate / admin | Local mock backup manifest. No production restore route |
+| `POST /wp/<id>/restore-drill` | `WP_OPS_OPERATE` | Staging drill of a verified manifest |
 | `/marketing/suggests/*` | POST J/O | Build / deny / approve suggests |
 | `/interact` | auth | Support draft playground |
 | `/oscar`, `/oscar/secrets`, `/oscar/escalations` | Oscar | Admin + resolve |
+| `/oscar/models/settings` | Oscar | Save model ids and Grok Build flag |
+| `/oscar/behavior` | Oscar | Edit chat, classify, and draft prompts |
+| `/oscar/telegram` | Oscar | Telegram process status. Allowlist stays in the process env |
 | `/oscar/secrets/test` | Oscar | Connection probes (incl. ga4 / google_ads / merchant) |
 | `/oauth/gmail/start`, `/status` | auth | Gmail OAuth start / status |
 | `/oauth/gmail/callback` | public | Google redirect (OAuth `state` validated) |
@@ -146,7 +154,7 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/ready` | public | 503 when cases poll stale |
 | `/oscar/gdpr/export`, `/oscar/gdpr/delete` | Oscar | GDPR export / delete |
 | `/cases/bulk-close` | POST auth | Bulk close (not bulk approve) |
-| `/data/telemetry`, `/data/escalations` | auth | JSON data views |
+| `/data/telemetry`, `/data/audit`, `/data/escalations` | auth | Usage rows, audit history, escalations |
 | `/logs`, `/telemetry`, `/escalations`, `/manage` | auth | Ops pages |
 
 Auth: Basic Auth usernames come from `config/profile.yaml` actors (Azom defaults `jonatan` / `oscar`). Passwords or Werkzeug hashes via `DASHBOARD_PASSWORD*` / `DASHBOARD_OSCAR_PASSWORD*`. `DASHBOARD_USER` in `.env` is documentation-only — code does not read it. CSRF on browser POSTs (`DASHBOARD_SECRET_KEY`). `/metrics` is **token-only** (`METRICS_SCRAPE_TOKEN` Bearer). `/live` is liveness; `/ready` is 503 when cases poll is stale.
@@ -169,6 +177,7 @@ python -m ecom_ops --mock [--null-send] cases poll|list|show|reply|draft|regener
 python -m ecom_ops --actor oscar cases shadow-report [--days 7]
 python -m ecom_ops --actor oscar cases retention-purge [--dry-run]
 python -m ecom_ops --mock marketing digest|health|suggests|…
+python -m ecom_ops --mock wp sites|status|show|check|backup|backups|restore-drill
 python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends|soak-preflight
 python -m ecom_ops.bot
 ```
@@ -187,6 +196,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `config/limits.yaml` | OpenRouter cap |
 | `config/cases_ai.yaml` | suggest-approve + auto-send rails |
 | `config/marketing.yaml` | Ads/GA4 allowlists, mutate defaults, kill env names |
+| `config/wp_sites.yaml` | Synthetic WordPress site registry. Secret refs only |
 | `config/integrations.yaml` | mail presets; Google flags are **non-gating reserved** |
 | `config/dashboard.yaml` | reserved UI flags — **not loaded** by Python |
 | `config/customer.json` | customer metadata / KPIs |
@@ -196,7 +206,8 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 |------------------|---------|
 | `AZOM_USE_MOCK` | Mock all integrations |
 | `AZOM_CONFIG_DIR` / `AZOM_DATA_DIR` | Paths |
-| `WOO_*`, `WP_*`, `MAIL_*`, `GRAPH_*`, `SSH_*` | Integrations |
+| `WOO_*`, `WP_*`, `MAIL_*`, `GRAPH_*`, `SSH_*` | Integrations. `WP_USERNAME` / `WP_APP_PASSWORD` are the content client, not per-site ops |
+| `WP_SECRET_*` | One application-password variable per registered WordPress site |
 | `AZOM_MODEL_ROUTE_ORDER` | Model route order (default chatgpt, Grok Build, xAI key, OpenRouter) |
 | `OPENAI_SIWC_*` / `OPENAI_MODEL` | ChatGPT OAuth (Azom-owned refresh). Endpoints are env, not hardcoded |
 | `AZOM_XAI_GROK_BUILD` / `XAI_GROK_BIN` / `XAI_MODEL` | Delegated Grok Build route (opt-in) |

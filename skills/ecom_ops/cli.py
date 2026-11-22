@@ -288,6 +288,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Report counts without modifying"
     )
 
+    p_wp = sub.add_parser("wp", help="WordPress site operations (mock health and local backup metadata)")
+    wp_sub = p_wp.add_subparsers(dest="wp_command", required=True)
+    wp_sub.add_parser("sites", help="List registered sites")
+    p_wp_show = wp_sub.add_parser("show", help="Show one site and its latest checks")
+    p_wp_show.add_argument("--id", required=True, dest="wp_site_id")
+    wp_sub.add_parser("status", help="Health summary for every registered site")
+    p_wp_check = wp_sub.add_parser("check", help="Run read-only health checks")
+    p_wp_check.add_argument("--id", dest="wp_site_id")
+    p_wp_check.add_argument(
+        "--due",
+        action="store_true",
+        help="Run checks whose interval has elapsed",
+    )
+    p_wp_backup = wp_sub.add_parser("backup", help="Create a local mock backup manifest")
+    p_wp_backup.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_backups = wp_sub.add_parser("backups", help="List local mock backup manifests")
+    p_wp_backups.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_drill = wp_sub.add_parser("restore-drill", help="Record a staging restore drill")
+    p_wp_drill.add_argument("--backup", required=True, dest="backup_id")
+    p_wp_drill.add_argument("--target", required=True, dest="target_site_id")
+
     return parser
 
 
@@ -755,6 +776,38 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         parser.error(f"Unknown marketing command: {cmd}")
+        return 2
+
+    if args.command == "wp":
+        from ecom_ops.wp_ops import WpOpsService
+
+        wp = WpOpsService()
+        cmd = args.wp_command
+        if cmd == "sites":
+            return _print(wp.list_sites(actor=args.actor))
+        if cmd == "status":
+            return _print(wp.list_sites(actor=args.actor))
+        if cmd == "show":
+            return _print(wp.show_site(args.wp_site_id, actor=args.actor))
+        if cmd == "check":
+            if args.due and args.wp_site_id:
+                parser.error("wp check accepts --id or --due, not both")
+                return 2
+            if args.due:
+                return _print(wp.run_due(actor=args.actor))
+            if not args.wp_site_id:
+                parser.error("wp check requires --id or --due")
+                return 2
+            return _print(wp.run_checks(args.wp_site_id, actor=args.actor))
+        if cmd == "backup":
+            return _print(wp.create_backup(args.wp_site_id, actor=args.actor))
+        if cmd == "backups":
+            return _print(wp.list_backups(args.wp_site_id, actor=args.actor))
+        if cmd == "restore-drill":
+            return _print(
+                wp.restore_drill(args.backup_id, target_site_id=args.target_site_id, actor=args.actor)
+            )
+        parser.error(f"Unknown wp command: {cmd}")
         return 2
 
     parser.error(f"Unknown command: {args.command}")

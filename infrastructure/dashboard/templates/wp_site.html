@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}{{ site.display_name if site else 'Webbplats' }} – Azom{% endblock %}
+{% block page_subtitle %}WordPress-drift{% endblock %}
+{% block content %}
+<div class="space-y-5" data-live-calls="false">
+  <section class="az-card">
+    <p class="text-sm"><a class="text-steel-300" href="{{ url_for('wp_sites') }}">Alla webbplatser</a></p>
+    {% if site %}
+    <h2 class="az-page-title mt-2">{{ site.display_name }}</h2>
+    <p class="az-muted mt-2 text-sm">
+      {{ site.environment }} · {{ site.canonical_url }}
+      · underhåll {{ site.maintenance_window }}
+      · hemlighet {{ site.secret_ref }} ({{ 'finns' if site.credential_present else 'saknas' }})
+    </p>
+    <p class="az-muted mt-2 text-sm">
+      Versioner kommer från registret, inte från en live-läsning.
+      Väntande uppdateringar: okänd. Checksumma är inte verifierad.
+      En lokal mock-backup kopierar inga filer och är inte off-site. Kryptering är inte konfigurerad.
+    </p>
+    {% endif %}
+    {% if error %}
+    <p class="mt-3 text-warn">{{ error }}</p>
+    {% endif %}
+    {% if can_run and site %}
+    <form class="mt-4" method="post" action="{{ url_for('wp_site_check', site_id=site.id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button class="az-btn-primary" type="submit">Kör läskontroll</button>
+    </form>
+    <form class="mt-3" method="post" action="{{ url_for('wp_site_backup', site_id=site.id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button class="az-btn-primary" type="submit">Skapa mock-backup</button>
+    </form>
+    {% endif %}
+  </section>
+
+  {% if site %}
+  <section class="az-card">
+    <h2 class="az-section-title">Kontroller</h2>
+    {% if checks %}
+    <ul class="mt-3 space-y-2 text-sm">
+      {% for row in checks %}
+      <li data-check="{{ row.check }}" data-tone="{{ row.tone }}">
+        {% if row.result == 'verified' %}
+        <span class="az-badge bg-ink-700 text-mist-200" data-tone="attention" data-backup="verified">verifierad, inte off-site</span>
+        {% elif row.tone == 'ok' %}
+        <span class="az-badge bg-ok/15 text-ok">ok</span>
+        {% else %}
+        <span class="az-badge bg-ink-700 text-mist-200">{{ 'fel' if row.result == 'fail' else 'okänd' }}</span>
+        {% endif %}
+        {{ row.check }} · {{ row.target }}
+        {% if row.error_class %}· {{ row.error_class }}{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="az-muted mt-3 text-sm">Ingen kontroll är körd. Okänd status är inte grön.</p>
+    {% endif %}
+  </section>
+
+  <section class="az-card">
+    <h2 class="az-section-title">Incidenter</h2>
+    {% if incidents %}
+    <ul class="mt-3 space-y-2 text-sm">
+      {% for item in incidents %}
+      <li>{{ item.state }} · {{ item.check }} · {{ item.error_class }} · ägare {{ item.owner }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="az-muted mt-3 text-sm">Inga incidenter.</p>
+    {% endif %}
+  </section>
+
+  <section class="az-card">
+    <h2 class="az-section-title">Mock-backuper</h2>
+    <p class="az-muted mt-2 text-sm">Manifestet ligger lokalt. Inga bytes kopieras och inget lämnar maskinen.</p>
+    {% if backups %}
+    <ul class="mt-3 space-y-2 text-sm">
+      {% for item in backups %}
+      <li data-backup-id="{{ item.id }}" data-backup="{{ item.completion }}">
+        {% if item.completion == 'verified' %}
+        <span class="az-badge bg-ink-700 text-mist-200" data-tone="attention">verifierad, inte off-site</span>
+        {% elif item.completion == 'failed' %}
+        <span class="az-badge bg-ink-700 text-mist-200" data-tone="attention">fel</span>
+        {% else %}
+        <span class="az-badge bg-ink-700 text-mist-200" data-tone="attention">okänd</span>
+        {% endif %}
+        {{ item.id }} · {{ item.completion }} · {{ item.encryption }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="az-muted mt-3 text-sm">Ingen mock-backup.</p>
+    {% endif %}
+    {% if can_drill and staging_targets %}
+    <form class="mt-4 space-y-2" method="post" action="{{ url_for('wp_restore_drill', site_id=site.id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <label class="block text-sm">
+        Backup
+        <select class="mt-1" name="backup_id">
+          {% for item in backups %}
+          {% if item.completion == 'verified' %}
+          <option value="{{ item.id }}">{{ item.id }}</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+      </label>
+      <label class="block text-sm">
+        Staging-mål
+        <select class="mt-1" name="target_site_id">
+          {% for target in staging_targets %}
+          <option value="{{ target.id }}" data-drill-target="{{ target.id }}">{{ target.display_name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="az-btn-primary" type="submit">Kör staging-drill</button>
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="az-card">
+    <h2 class="az-section-title">Staging-drills</h2>
+    {% if drills %}
+    <ul class="mt-3 space-y-2 text-sm">
+      {% for item in drills %}
+      <li data-drill="staging" data-orders-mutated="{{ 'false' if not item.orders_mutated else 'true' }}">
+        {{ item.id }} · {{ item.target_site_id }} · {{ item.recovery_seconds }} s
+        · ordrar oförändrade · {{ item.order_reconciliation }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="az-muted mt-3 text-sm">Ingen staging-drill.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

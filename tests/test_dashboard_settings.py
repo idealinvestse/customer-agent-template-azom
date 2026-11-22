@@ -212,7 +212,95 @@ def test_oscar_resolve_escalation(dash_client):
 def test_data_pages(dash_client):
     assert dash_client.get("/data/telemetry", headers=_auth()).status_code == 200
     assert dash_client.get("/data/escalations", headers=_auth()).status_code == 200
+    assert dash_client.get("/data/audit", headers=_auth()).status_code == 200
     assert dash_client.get("/interact", headers=_auth()).status_code == 200
+
+
+def test_telemetry_filter_hides_secret_meta(dash_client):
+    import json
+
+    data = Path(os.environ["AZOM_DATA_DIR"])
+    (data / "telemetry.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "created_at": "2026-11-22T12:00:00+00:00",
+                        "action": "model_route_selected",
+                        "cost_usd": 0.0,
+                        "meta": {
+                            "route_id": "openrouter",
+                            "model": "deepseek/deepseek-v4-flash",
+                            "prompt_tokens": 3,
+                            "completion_tokens": 4,
+                            "access_token": "hidden-value",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "created_at": "2026-11-22T12:01:00+00:00",
+                        "action": "llm_classify_error",
+                        "meta": {"error_class": "ModelAuthError", "route_id": "chatgpt_oauth"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    page = dash_client.get(
+        "/data/telemetry?route=openrouter",
+        headers=_auth(),
+    )
+    text = page.get_data(as_text=True)
+    assert page.status_code == 200
+    assert "deepseek/deepseek-v4-flash" in text
+    assert "hidden-value" not in text
+    assert "chatgpt_oauth" not in text
+    errors = dash_client.get("/data/telemetry?errors=1", headers=_auth())
+    err_text = errors.get_data(as_text=True)
+    assert "ModelAuthError" in err_text
+    assert "deepseek/deepseek-v4-flash" not in err_text
+
+
+def test_oscar_behavior_and_audit(dash_client):
+    denied = dash_client.get("/oscar/behavior", headers=_auth())
+    assert denied.status_code == 403
+    denied_tg = dash_client.get("/oscar/telegram", headers=_auth())
+    assert denied_tg.status_code == 403
+
+    oscar = _auth("oscar", "oscar", client=dash_client)
+    page = dash_client.get("/oscar/behavior", headers=oscar)
+    assert page.status_code == 200
+    assert b"Spara beteende" in page.data
+
+    empty = dash_client.post(
+        "/oscar/behavior",
+        headers=oscar,
+        data={"chat": "   ", "classify": "Klassa.", "draft": "Skriv."},
+    )
+    assert empty.status_code == 200
+    assert "tom" in empty.get_data(as_text=True)
+
+    saved = dash_client.post(
+        "/oscar/behavior",
+        headers=oscar,
+        data={"chat": "Ny chattext.", "classify": "Klassa.", "draft": "Skriv."},
+        follow_redirects=True,
+    )
+    assert saved.status_code == 200
+    assert b"Ny chattext." in saved.data
+    audit = dash_client.get("/data/audit", headers=_auth())
+    audit_text = audit.get_data(as_text=True)
+    assert "prompt_save" in audit_text
+    assert "Ny chattext." not in audit_text
+
+    telegram = dash_client.get("/oscar/telegram", headers=oscar)
+    tg = telegram.get_data(as_text=True)
+    assert telegram.status_code == 200
+    assert "Allowlist i processen" in tg
+    assert "processmiljön" in tg
 
 
 def test_settings_rejects_secret_key_via_store(tmp_path, monkeypatch, config_dir):

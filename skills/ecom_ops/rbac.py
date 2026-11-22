@@ -25,6 +25,10 @@ class Permission(str, Enum):
     MARKETING_READ = "marketing_read"
     MARKETING_SUGGEST = "marketing_suggest"
     MARKETING_MUTATE = "marketing_mutate"
+    WP_OPS_READ = "wp_ops_read"
+    WP_OPS_OPERATE = "wp_ops_operate"
+    WP_OPS_ADMIN = "wp_ops_admin"
+    WP_OPS_RESTORE = "wp_ops_restore"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
@@ -36,6 +40,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.CASE_REPLY,
             Permission.MARKETING_READ,
             Permission.MARKETING_SUGGEST,
+            Permission.WP_OPS_READ,
         }
     ),
     # ``read_only`` is an alias for ``viewer`` (kept for config compatibility).
@@ -47,6 +52,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.CASE_REPLY,
             Permission.MARKETING_READ,
             Permission.MARKETING_SUGGEST,
+            Permission.WP_OPS_READ,
         }
     ),
     "operator": frozenset(
@@ -60,6 +66,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.CASE_REPLY,
             Permission.SSH_READ,
             Permission.MARKETING_READ,
+            Permission.WP_OPS_READ,
+            Permission.WP_OPS_OPERATE,
         }
     ),
     "full_admin": frozenset(set(Permission)),

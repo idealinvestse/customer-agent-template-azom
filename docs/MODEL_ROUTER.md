@@ -153,11 +153,16 @@ Oscar only, existing CSRF on POST:
 
 | Action | Path |
 |--------|------|
-| Status on `/oscar` | Preferred route, last test, needs_reauth, generation, expires, refresh owner, host id, plan-usage flag |
+| Status on `/oscar` | Preferred route, order (not editable), model id, last test, needs_reauth, generation, expires, refresh owner, host id, plan-usage flag |
+| Save model ids | `POST /oscar/models/settings` writes `OPENAI_MODEL`, `XAI_MODEL`, `OPENROUTER_MODEL`, and `AZOM_XAI_GROK_BUILD` to `runtime.env`. Empty model fields stay unchanged. |
 | Anslut / Återanslut | `GET /oauth/openai/start` |
 | Callback | `GET /oauth/openai/callback` (state check; code is not copied into the next redirect) |
-| Testa modell | `POST /oscar/models/test` with one `route_id`. Prompt: `Reply with the single word PONG. Do not call tools.` `max_output_tokens` is 512. |
+| Testa modell | `POST /oscar/models/test` with one `route_id`. Prompt: `Reply with the single word PONG. Do not call tools.` `max_output_tokens` is 512. The page does not call it on load. |
 | Koppla från | `POST /oscar/models/chatgpt/disconnect` |
+| xAI | Grok Build enable flag and model id. `XAI_API_KEY` is an Oscar secret. Direct xAI OAuth stays unavailable. |
+| Behavior | `GET/POST /oscar/behavior` edits `chat`, `classify`, and `draft` in `config/prompts.yaml` and bumps the version of a changed text. |
+| Usage | `GET /data/telemetry` filters action, route, and errors. Meta is shown without secret-like keys. |
+| History | `GET /data/audit` reads `audit.jsonl`. Jonatan can read it. A `cases` target links to the case. |
 
 ## Telemetry
 

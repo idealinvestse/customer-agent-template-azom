@@ -207,6 +207,8 @@
           <a href="/settings" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/settings') else '' }}">Inställningar</a>
           <a href="/secrets" class="az-nav-link {{ 'az-nav-link-active' if path == '/secrets' else '' }}">Secrets</a>
           <a href="/data/telemetry" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/telemetry') else '' }}">Telemetry</a>
+          <a href="/data/audit" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/audit') else '' }}">Historik</a>
+          <a href="/wp" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/wp') else '' }}">Webbplatser</a>
           <div
             class="px-1"
             x-data="{ connected: {{ 'true' if gmail_connected else 'false' }}, email: '' }"
@@ -259,6 +261,8 @@
         <div>
           <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-oscar-500/80">Oscar</p>
           <a href="/oscar" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path == '/oscar' else '' }}">Oscar</a>
+          <a href="/oscar/behavior" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/behavior') else '' }}">Beteende</a>
+          <a href="/oscar/telegram" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/telegram') else '' }}">Telegram</a>
           <a href="/oscar/secrets" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/secrets') else '' }}">Oscar secrets</a>
           <a href="/oscar/escalations" class="az-nav-link az-nav-link-oscar flex items-center justify-between gap-2 {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/escalations') else '' }}">
             <span>Oscar eskaleringar</span>

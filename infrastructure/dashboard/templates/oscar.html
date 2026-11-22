@@ -37,7 +37,7 @@
 
   <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
     <h2 class="az-section-title text-oscar-400/80">Modellrouter</h2>
-    <p class="az-muted">Aktiv route: <strong>{{ model_preferred or "ingen" }}</strong>. Test kör en route utan fallback.</p>
+    <p class="az-muted">Aktiv route: <strong>{{ model_preferred or "ingen" }}</strong>. Ordning: {{ model_order | join(', ') }}. Ordningen går inte att ändra här. Test kör en route utan fallback.</p>
     {% if model_last_test %}
     <p class="mt-2">
       Senaste test:
@@ -57,6 +57,7 @@
         <thead>
           <tr>
             <th>Route</th>
+            <th>Modell</th>
             <th>Konfigurerad</th>
             <th>Refresh</th>
             <th>needs_reauth</th>
@@ -70,6 +71,7 @@
           {% set row = model_routes.get(route_id, {}) %}
           <tr>
             <td>{{ route_id }}{% if route_id == model_preferred %} · aktiv{% endif %}</td>
+            <td><code class="az-code">{{ row.get("model", "") }}</code></td>
             <td>{% if row.get("configured") %}ja{% else %}nej{% endif %}</td>
             <td>{{ row.get("refresh_owner", "") }}</td>
             <td>{% if row.get("needs_reauth") %}<span class="az-missing">ja</span>{% else %}nej{% endif %}</td>
@@ -87,6 +89,34 @@
         </tbody>
       </table>
     </div>
+    <form method="post" action="/oscar/models/settings" class="mt-4 space-y-4">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div class="grid gap-4 sm:grid-cols-3">
+        <div>
+          <label class="az-label" for="OPENAI_MODEL">OPENAI_MODEL</label>
+          <input class="az-input !max-w-none" id="OPENAI_MODEL" name="OPENAI_MODEL" value="{{ model_routes.get('chatgpt_oauth', {}).get('model', '') }}" />
+        </div>
+        <div>
+          <label class="az-label" for="XAI_MODEL">XAI_MODEL</label>
+          <input class="az-input !max-w-none" id="XAI_MODEL" name="XAI_MODEL" value="{{ model_routes.get('xai_api_key', {}).get('model', '') }}" />
+        </div>
+        <div>
+          <label class="az-label" for="OPENROUTER_MODEL">OPENROUTER_MODEL</label>
+          <input class="az-input !max-w-none" id="OPENROUTER_MODEL" name="OPENROUTER_MODEL" value="{{ model_routes.get('openrouter', {}).get('model', '') }}" />
+        </div>
+      </div>
+      <label class="flex cursor-pointer items-center gap-2.5 text-sm text-mist-200">
+        <input
+          class="h-4 w-4 rounded border-ink-600 bg-ink-950 text-steel-500"
+          type="checkbox"
+          name="AZOM_XAI_GROK_BUILD"
+          value="1"
+          {% if model_routes.get('xai_grok_build', {}).get('configured') %}checked{% endif %}
+        />
+        AZOM_XAI_GROK_BUILD — Grok Build äger sessionen. Azom läser inte auth.json.
+      </label>
+      <button class="az-btn-oscar" type="submit">Spara modellval</button>
+    </form>
     <div class="mt-4 flex flex-wrap gap-2">
       <a class="az-btn-oscar" href="/oauth/openai/start">Anslut ChatGPT</a>
       <a class="az-btn-secondary" href="/oauth/openai/start">Återanslut</a>
@@ -101,13 +131,16 @@
       Host-id: {{ chatgpt.get("ext_agent_host_id") or "saknas" }}.
       Plananvändning: {% if chatgpt.get("plan_usage") %}beviljad{% else %}inte bekräftad{% endif %}.
       ID-token signatur: inte verifierad.
-      xAI Grok Build äger sin egen session. Direkt xAI OAuth är inte implementerat.
+      xAI Grok Build äger sin egen session och refresh. Direkt xAI OAuth är inte tillgänglig: xAI har inte publicerat ett klientkontrakt som Azom kan använda. API-nyckeln sätts under Oscar secrets och visas inte igen.
     </p>
   </section>
 
   <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
     <h2 class="az-section-title text-oscar-400/80">Snabblänkar</h2>
     <div class="flex flex-wrap gap-2">
+      <a class="az-btn-secondary" href="/oscar/behavior">Beteende</a>
+      <a class="az-btn-secondary" href="/oscar/telegram">Telegram</a>
+      <a class="az-btn-secondary" href="/data/audit">Historik</a>
       <a class="az-btn-secondary" href="/settings">Inställningar</a>
       <a class="az-btn-secondary" href="/data/telemetry">Telemetry</a>
       <a class="az-btn-secondary" href="/data/escalations">Eskaleringar</a>

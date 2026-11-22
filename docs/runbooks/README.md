@@ -18,5 +18,6 @@ Varje runbook följer samma form: trigger → diagnoskommandon → fix → verif
 | [gmail-oauth-revoked.md](gmail-oauth-revoked.md) | Gmail OAuth refresh-token revoked |
 | [cases-db-corrupt.md](cases-db-corrupt.md) | cases.db korrupt / SQLite disk-I/O |
 | [dashboard-rate-limited.md](dashboard-rate-limited.md) | Dashboard login rate-limited (429) |
+| [wp-ops-backup.md](wp-ops-backup.md) | Lokal mock-backup och staging-drill. Ingen produktionsåterställning |
 
 **Gör inte:** Markera live soak eller FU9 som klart från en runbook-fix — det ägs av Oscar + Jonatan via [`PILOT_OPS.md`](../PILOT_OPS.md) / [`CASES.md`](../CASES.md).

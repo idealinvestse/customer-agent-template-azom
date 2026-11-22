@@ -24,6 +24,7 @@
 | Order context / tracking | `skills/ecom_ops/order_context.py` (heuristic fallback remains) |
 | Dashboard Woo webhook | `POST /webhooks/woo` |
 | Probes | `infrastructure/dashboard/secret_probes.py` (`probe_wordpress`, Woo probes) |
+| Site operations | `skills/ecom_ops/wp_ops/` — Phase 1–2 mock health and local backup manifests. Not this content client. See [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md). |
 
 ## Environment
 

@@ -4,9 +4,9 @@
 **Audience:** Oscar och den som äger Windows-klienten.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md). Vid konflikt vinner den filen.
 
-Inga tokens, API-nycklar eller OAuth-värden finns i den här rapporten. Azom är inte driftsatt. Ingenting är pushat.
+Inga tokens, API-nycklar eller OAuth-värden finns i den här rapporten. Azom är inte driftsatt. Dokumentationsgrenen `docs/openclaw-local-upgrade` är pushad till origin och är inte mergad till `main`.
 
-Avsnitt 1–20 beskriver läget direkt efter paketbytet, då gateway fortfarande var `remote`. Avsnitt 21 är den senare lokala starten.
+Avsnitt 1–21 är historiken. Aktuellt läge står i avsnitt 22 och 23.
 
 ## 1. Före-version
 
@@ -53,7 +53,7 @@ Den första workspace-packningen fastnade på `node_modules` och avbröts. Den s
 
 ## 6. Ändrade filer
 
-Azom-repot, gren `docs/openclaw-local-upgrade`, inte pushad:
+Azom-repot, gren `docs/openclaw-local-upgrade`, pushad som `e66c56f` och inte mergad till `main`:
 
 - `AGENTS.md`, `SOUL.md`, `README.md`
 - `docs/CURRENT_STATE.md`, `docs/README.md`, `docs/TELEGRAM_OPENCLAW.md`
@@ -180,7 +180,7 @@ Lokal primärmodell i config är oförändrad: LM Studio-aliasen som stod där f
 4. Flytta klartexthemligheter till SecretRefs i ett underhållsfönster.
 5. Ta ställning till [`memory-cleanup-proposals.md`](memory-cleanup-proposals.md). Inget är arkiverat.
 6. Live-testa Telegram, dashboard och modellrader först när värden är uppe och ett betalt anrop är godkänt.
-7. Commit och push av grenen `docs/openclaw-local-upgrade` är inte gjord.
+7. Commit och push av grenen `docs/openclaw-local-upgrade` är gjorda (`e66c56f` på origin). Grenen är inte mergad till `main`. Se avsnitt 23.
 
 ## 20. Nästa iteration
 
@@ -206,7 +206,7 @@ Operatören bad därefter att systemet skulle testas lokalt, inte mot den offlin
 
 Config före lägesbytet ligger i samma backup som `openclaw.json.before-local-mode`.
 
-Kvar manuellt: Node 24.22.1 eller nyare, SecretRefs, `openclaw update repair` och sedan `doctor --fix` för cerebras och mistral, samt minnesförslagen. Ingen commit och ingen push.
+Node, plugin-reparation, commit och push är gjorda efter det här avsnittet. Se avsnitt 22 och 23.
 
 ## 22. Efterföljande underhåll 2026-11-22
 
@@ -228,10 +228,62 @@ Kuraterad backup finns i `C:\Users\Django\openclaw-agent-backup-2026-11-22`. Den
 
 ### SecretRefs och kvarvarande blockerare
 
-Sex configfält använder strukturerade `env`-SecretRefs: Gateway token, remote token, Telegram bot token, samt Cerebras-, Mistral- och NVIDIA-API-nycklar. Duplicerade nyckelrader för OpenRouter, NVIDIA, Cerebras, FAL och Hugging Face togs bort från `.env`; motsvarande befintliga user environment-värden finns kvar. Audit visar **0 olösta refs** och **3 plaintext credentials** i den gemensamma `state/openclaw.sqlite`-auth-profilstore: `lmstudio:default`, `groq:default` och `openrouter:default`.
+Sex configfält använder strukturerade `env`-SecretRefs: Gateway token, remote token, Telegram bot token, samt Cerebras-, Mistral- och NVIDIA-API-nycklar. Duplicerade nyckelrader för OpenRouter, NVIDIA, Cerebras, FAL och Hugging Face togs bort från `.env`; motsvarande befintliga user environment-värden finns kvar. Vid det här läget fanns **3 plaintext credentials** kvar i den gemensamma auth-profilstoren. De är migrerade i avsnitt 23.
 
-OpenClaw 2026.11.6 anger att `secrets configure` inte kan migrera den gemensamma auth-profilstoren; den kan bara ändra en agents lokala store. Värdena lämnades orörda. De flyttades inte till OpenClaws SQLite Secret Store, i enlighet med Azoms regel att inte lagra tokens i SQLite.
+OpenClaw 2026.11.6 `secrets configure` kan bara ändra en agents lokala store. `secrets apply` med en plan nådde både agent-storen och `state/openclaw.sqlite`. Värdena flyttades inte till OpenClaws SQLite Secret Store.
 
-`doctor --fix` kunde inte uppdatera Task Scheduler XML (`Access is denied`) och återställde den tidigare service-definitionen. Gateway kör efter reparationen, men `gateway status` markerar fortfarande service-config-auditen som ej grön. Task Scheduler-ägaren med rättigheter behöver uppdatera definitionen; kör inte install som en annan användare.
+`doctor --fix` kunde inte uppdatera Task Scheduler XML (`Access is denied`) från ett medium-token. Definitionen uppdaterades senare med ägarens upphöjda token. Se avsnitt 23.
 
-En bred 442 MB-arkivfil från ett avbrutet backupförsök ligger kvar i `C:\Users\Django\openclaw-backup-2026-11-22-131040\openclaw-state.tar.gz`. Den är **inte** den kuraterade backupen och ska inte användas. Borttagning blockerades av verktygspolicyn. Använd i stället `C:\Users\Django\openclaw-agent-backup-2026-11-22`.
+Den breda arkivfilen `C:\Users\Django\openclaw-backup-2026-11-22-131040\openclaw-state.tar.gz` är borttagen. Använd `C:\Users\Django\openclaw-agent-backup-2026-11-22`.
+
+## 23. Stängda punkter 2026-11-22
+
+### Task Scheduler
+
+`openclaw gateway install --force --port 18789 --runtime node` med ägarens upphöjda token skrev om uppgiften. Ett medium-token från samma användare får fortfarande `Access is denied` mot XML-filen. Installationen kördes inte som ett annat konto.
+
+| Fält | Nu |
+|------|----|
+| `LogonType` | `S4U` |
+| Boot-trigger | finns |
+| `RestartOnFailure` | `PT1M`, count 3 |
+| Kommando | `C:\WINDOWS\System32\cmd.exe` |
+| Arbetskatalog | `C:\Users\Django\.openclaw` |
+
+`gateway status` rapporterar **0** `definitionDrift`. Uppgiften är `Running`. `127.0.0.1:18789` lyssnar, `openclaw health` har event loop ok, Telegram är konfigurerad och ansluten, och dashboarden svarar HTTP 200. Inget meddelande skickades.
+
+Auditen är inte helt grön. En rekommenderad finding återstår: `gateway-managed-env-embedded`. Installern skriver hanterade miljövärden i `gateway.cmd`. Processgranskningen kan inte matcha lyssnarens `node.exe` mot uppgiftens `cmd.exe`, så runtime-status visas som `unknown` trots att uppgiften kör.
+
+### Auth-profiler
+
+| Profil | Användning | Åtgärd |
+|--------|------------|--------|
+| `lmstudio:default` | Primärmodell | `keyRef` mot `LMSTUDIO_API_KEY` |
+| `groq:default` | Första fallback | `keyRef` mot `GROQ_API_KEY` |
+| `openrouter:default` | Tillåten i modellistan, inte i fallback-kedjan | Behållen. `keyRef` mot `OPENROUTER_API_KEY` |
+
+`GROQ_API_KEY` och `OPENROUTER_API_KEY` matchade redan användarmiljön. `LM_API_KEY` är platshållaren `lm-studio` och matchar inte den nyckel profilen använde. Den befintliga profilnyckeln kopierades till `LMSTUDIO_API_KEY` i användarmiljön. Värdet skrevs inte ut.
+
+`openclaw secrets apply` skrev `keyRef` i agent-storen och tog bort klartext för LM Studio och OpenRouter i den gemensamma storen. Groq saknar `models.providers`-block, så apply lämnade den gemensamma klartexten. Den raden fick samma `keyRef` medan gateway var stoppad. En återställningskopia under `openclaw-media-persistence-recovery-*` fick samma form.
+
+`openclaw secrets audit --check`: **0** plaintext, **0** olösta refs. Två `REF_SHADOWED`-varningar återstår. Auth-profilerna för LM Studio och OpenRouter går före samma env-ref i `openclaw.json`. Inget betalt anrop gjordes.
+
+### Arkiv
+
+`openclaw-state.tar.gz` (442122240 byte) är borttagen. Den kuraterade backupen lästes om: 474 state-poster och 155 workspace-poster, utan `node_modules`, npm, cache, loggar, temp, traces eller `.git`.
+
+### Minnesförslag
+
+Inte utförda. Beslutet står i [`memory-cleanup-proposals.md`](memory-cleanup-proposals.md). Arkivering kräver ett särskilt ja.
+
+### Inte kört
+
+Betalda modelltester och OAuth-tester är inte körda. Messenger ingår inte i den här OpenClaw-configen och verifierades inte här.
+
+### Standardmodell
+
+Primärmodellen är `openrouter/deepseek/deepseek-v4.1-flash-1017` (DeepSeek V4.1 Flash, ögonblicksbilden från 2026-10-17). OpenRouter-routingen sorterar på `price`. Den tidigare lokala LM Studio-modellen ligger först bland fallbacks. Inget modell-anrop gjordes för att prova bytet.
+
+### Azom, fortfarande öppet
+
+A1 live soak, KPI-baslinje, liveklassificering med 20–50 redigerade exempel och veckovis driftkadens ägs av Oscar och Jonatan. De är inte markerade klara.

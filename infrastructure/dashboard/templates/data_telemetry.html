@@ -5,25 +5,66 @@
 <div class="space-y-5">
   <div>
     <h2 class="az-page-title">Telemetry</h2>
-    <p class="az-muted mt-1">Senaste händelser och kostnadsspårning.</p>
+    <p class="az-muted mt-1">Senaste händelser, route och kostnad. Prompttext lagras inte.</p>
   </div>
 
   <section class="az-card">
-    <h2 class="az-section-title">Telemetry (senaste 200)</h2>
+    <form method="get" action="/data/telemetry" class="grid gap-4 sm:grid-cols-4">
+      <div>
+        <label class="az-label" for="action">Action</label>
+        <input class="az-input !max-w-none" id="action" name="action" value="{{ action_filter }}" />
+      </div>
+      <div>
+        <label class="az-label" for="route">Route</label>
+        <input class="az-input !max-w-none" id="route" name="route" value="{{ route_filter }}" />
+      </div>
+      <label class="flex items-end gap-2 pb-2 text-sm text-mist-200">
+        <input type="checkbox" name="errors" value="1" {% if errors_only %}checked{% endif %} />
+        Bara fel
+      </label>
+      <div class="flex items-end">
+        <button class="az-btn-primary" type="submit">Filtrera</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="az-card">
+    <h2 class="az-section-title">Rader ({{ rows | length }})</h2>
     {% if rows %}
     <div class="overflow-x-auto">
       <table class="az-table">
         <thead>
-          <tr><th>When</th><th>Action</th><th>Site</th><th>Cost</th><th>Meta</th></tr>
+          <tr>
+            <th>When</th>
+            <th>Action</th>
+            <th>Route</th>
+            <th>Modell</th>
+            <th>Tokens</th>
+            <th>Cost</th>
+            <th>Fel</th>
+            <th>Detalj</th>
+          </tr>
         </thead>
         <tbody>
           {% for e in rows %}
           <tr>
             <td>{{ e.get('created_at', '')[:19] }}</td>
-            <td><code class="az-code">{{ e.get('action', e.get('raw', '')[:40]) }}</code></td>
-            <td>{{ e.get('site', '') }}</td>
+            <td><code class="az-code">{{ e.get('action', '') }}</code></td>
+            <td>{{ e.get('route_id', '') }}</td>
+            <td>{{ e.get('model', '') }}</td>
+            <td>
+              {% if e.get('prompt_tokens') is not none or e.get('completion_tokens') is not none %}
+              {{ e.get('prompt_tokens', '') }}/{{ e.get('completion_tokens', '') }}
+              {% endif %}
+            </td>
             <td>{{ e.get('cost_usd', '') }}</td>
-            <td class="az-muted">{{ e.get('meta', {}) }}</td>
+            <td>{{ e.get('error_class', '') }}</td>
+            <td>
+              <details>
+                <summary class="cursor-pointer text-steel-300">meta</summary>
+                <pre class="mt-2 max-w-md whitespace-pre-wrap text-xs text-mist-400">{{ e.get('safe_meta', {}) }}</pre>
+              </details>
+            </td>
           </tr>
           {% endfor %}
         </tbody>

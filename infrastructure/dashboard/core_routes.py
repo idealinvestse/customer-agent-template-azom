@@ -15,6 +15,48 @@ from support import (
     _tail_jsonl,
 )
 
+_SECRET_META = ("token", "secret", "password", "authorization", "api_key", "apikey")
+
+
+def _telemetry_rows(
+    rows: list,
+    *,
+    action_filter: str,
+    route_filter: str,
+    errors_only: bool,
+) -> list[dict]:
+    shown: list[dict] = []
+    action_q = action_filter.lower()
+    route_q = route_filter.lower()
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        meta = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+        action = str(raw.get("action") or "")
+        route_id = str(meta.get("route_id") or meta.get("selected_route") or "")
+        error_class = str(meta.get("error_class") or meta.get("error") or "")
+        if action_q and action_q not in action.lower():
+            continue
+        if route_q and route_q not in route_id.lower():
+            continue
+        is_error = bool(error_class) or "error" in action.lower()
+        if errors_only and not is_error:
+            continue
+        safe_meta = {
+            key: value
+            for key, value in meta.items()
+            if not any(part in str(key).lower() for part in _SECRET_META)
+        }
+        row = dict(raw)
+        row["route_id"] = route_id
+        row["model"] = meta.get("model") or ""
+        row["prompt_tokens"] = meta.get("prompt_tokens")
+        row["completion_tokens"] = meta.get("completion_tokens")
+        row["error_class"] = error_class
+        row["safe_meta"] = safe_meta
+        shown.append(row)
+    return shown
+
 
 def register_core_routes(app: Flask) -> None:
     @app.route("/metrics")
@@ -224,9 +266,33 @@ def register_core_routes(app: Flask) -> None:
     @app.route("/data/telemetry")
     @_auth_required
     def data_telemetry():
-        rows = _tail_jsonl(_data_dir() / "telemetry.jsonl", 200)
+        action_filter = (request.args.get("action") or "").strip()[:80]
+        route_filter = (request.args.get("route") or "").strip()[:80]
+        errors_only = request.args.get("errors") == "1"
+        rows = _telemetry_rows(
+            _tail_jsonl(_data_dir() / "telemetry.jsonl", 200),
+            action_filter=action_filter,
+            route_filter=route_filter,
+            errors_only=errors_only,
+        )
         return render_template(
             "data_telemetry.html",
+            **_dashboard_context(
+                rows=rows,
+                action_filter=action_filter,
+                route_filter=route_filter,
+                errors_only=errors_only,
+            ),
+        )
+
+    @app.route("/data/audit")
+    @_auth_required
+    def data_audit():
+        from ecom_ops.audit import read_audit_log
+
+        rows = read_audit_log(limit=200)
+        return render_template(
+            "data_audit.html",
             **_dashboard_context(rows=rows),
         )
 

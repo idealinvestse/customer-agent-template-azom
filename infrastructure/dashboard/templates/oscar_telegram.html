@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Telegram – Azom{% endblock %}
+{% block page_subtitle %}Telegram{% endblock %}
+{% block content %}
+<div class="space-y-5">
+  <div>
+    <h2 class="az-page-title">Telegram</h2>
+    <p class="az-muted mt-1">Effektiv processmiljö. Allowlist och actor map läses inte från secrets.env.</p>
+  </div>
+
+  <section class="az-card border-oscar-600/35">
+    <h2 class="az-section-title text-oscar-400/80">Status</h2>
+    <dl class="mt-3 space-y-2 text-sm">
+      <div>Token: {% if token_present %}<span class="az-present">finns</span>{% else %}<span class="az-missing">saknas</span>{% endif %}</div>
+      <div>Allowlist i processen: {{ allow_count }} id</div>
+      <div>Actor map i processen: {{ actor_count }} poster</div>
+      <div>
+        Senaste probe:
+        {% if probe %}
+          {{ probe.status }} — {{ probe.message }}
+          {% if probe.checked_at %} · {{ probe.checked_at }}{% endif %}
+        {% else %}
+          <span class="az-muted">ingen sparad</span>
+        {% endif %}
+      </div>
+    </dl>
+    {% if allow_in_secrets_file or actor_in_secrets_file %}
+    <p class="mt-4 text-sm text-warn">
+      secrets.env innehåller
+      {% if allow_in_secrets_file %}<code class="az-code">TELEGRAM_ALLOWED_CHAT_IDS</code>{% endif %}
+      {% if allow_in_secrets_file and actor_in_secrets_file %} och {% endif %}
+      {% if actor_in_secrets_file %}<code class="az-code">TELEGRAM_ACTOR_MAP</code>{% endif %}.
+      De värdena används inte. Sätt dem i processmiljön. Tom lista i live nekar alla.
+    </p>
+    {% else %}
+    <p class="az-muted mt-4">Allowlist och actor map ändras i processmiljön, inte i den här formen. Tom lista i live nekar alla.</p>
+    {% endif %}
+    <div class="mt-4 flex flex-wrap gap-2">
+      <form method="post" action="/oscar/telegram/probe">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button class="az-btn-oscar" type="submit">Kör probe</button>
+      </form>
+      <a class="az-btn-secondary" href="/oscar/secrets">Byt token</a>
+      <a class="az-btn-secondary" href="/oscar">Tillbaka</a>
+    </div>
+  </section>
+</div>
+{% endblock %}

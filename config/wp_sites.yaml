@@ -1,0 +1,59 @@
+# Synthetic WordPress operations registry.
+# Secret values do not belong in this file. Each secret_ref is an environment
+# variable name (WP_SECRET_*), never WP_USERNAME or WP_APP_PASSWORD.
+# Hosts under example.test are mock probe targets. Do not replace them with
+# a customer site without the owner's scoped approval.
+sites:
+  - id: mock-shop
+    display_name: Mock Shop
+    canonical_url: https://mock-shop.example.test
+    environment: production
+    business_owner: customer
+    hosting_provider: unconfigured
+    wordpress_version: "6.7"
+    php_version: "8.3"
+    woocommerce: true
+    critical_urls:
+      - https://mock-shop.example.test/
+      - https://mock-shop.example.test/checkout
+    maintenance_window: "not agreed"
+    secret_ref: WP_SECRET_MOCK_SHOP
+    alert_owner: unassigned
+    alert_confirmations: 2
+    check_interval_seconds: 300
+    timeout_seconds: 10
+    dedupe_window_seconds: 30
+    capabilities:
+      hosting_api: unknown
+      wp_cli: unknown
+      staging: unknown
+      backup: unknown
+      restore: unknown
+      uptime: available
+      security_scanner: unknown
+  - id: mock-staging
+    display_name: Mock Staging
+    canonical_url: https://mock-staging.example.test
+    environment: staging
+    business_owner: customer
+    hosting_provider: unconfigured
+    wordpress_version: "6.7"
+    php_version: "8.3"
+    woocommerce: false
+    critical_urls:
+      - https://mock-staging.example.test/
+    maintenance_window: "not agreed"
+    secret_ref: WP_SECRET_MOCK_STAGING
+    alert_owner: unassigned
+    alert_confirmations: 2
+    check_interval_seconds: 300
+    timeout_seconds: 10
+    dedupe_window_seconds: 30
+    capabilities:
+      hosting_api: unknown
+      wp_cli: unknown
+      staging: unavailable
+      backup: unknown
+      restore: unknown
+      uptime: available
+      security_scanner: unknown

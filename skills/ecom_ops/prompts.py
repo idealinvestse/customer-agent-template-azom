@@ -13,6 +13,7 @@ Usage::
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -100,3 +101,55 @@ def get_prompt(name: str, *, language: str | None = None) -> tuple[str, str]:
 def reload_prompts() -> None:
     """Clear the cache so subsequent get_prompt calls re-read the file."""
     _load_prompts.cache_clear()
+
+
+_PROMPT_NAMES = ("classify", "draft", "chat")
+_MAX_PROMPT_CHARS = 8000
+
+
+def _bump_version(current: str) -> str:
+    match = re.search(r"(\d+)$", (current or "").strip())
+    if not match:
+        return "1"
+    number = int(match.group(1)) + 1
+    prefix = (current or "")[: match.start()]
+    return f"{prefix}{number}"
+
+
+def save_prompt_texts(updates: dict[str, str]) -> dict[str, str]:
+    """Replace system text for classify, draft, and chat.
+
+    Returns ``{name: new_version}`` for texts that changed. Empty text and
+    text over 8000 characters raise ``ValueError``. Unchanged text keeps
+    its version.
+    """
+    data = dict(_load_prompts())
+    changed: dict[str, str] = {}
+    for name in _PROMPT_NAMES:
+        if name not in updates:
+            continue
+        text = str(updates[name]).strip()
+        if not text:
+            raise ValueError(f"{name} är tom")
+        if len(text) > _MAX_PROMPT_CHARS:
+            raise ValueError(f"{name} är längre än 8000 tecken")
+        entry = data.get(name) if isinstance(data.get(name), dict) else {}
+        current = str(entry.get("system") or "").strip()
+        if current == text:
+            continue
+        version = _bump_version(str(entry.get("version") or _BUILTIN[name]["version"]))
+        new_entry = dict(entry)
+        new_entry["system"] = text
+        new_entry["version"] = version
+        data[name] = new_entry
+        changed[name] = version
+    if not changed:
+        return {}
+    path = _prompts_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    reload_prompts()
+    return changed

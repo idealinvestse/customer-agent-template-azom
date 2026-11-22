@@ -145,6 +145,7 @@ Full table + coverage matrix: [`docs/README.md`](docs/README.md)
 | [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md) | Messenger (SV) |
 | [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md) | Telegram (SV) |
 | [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) | Woo/WP (EN) |
+| [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md) | WordPress site ops, Phase 1–2 mock (EN) |
 | [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md) | Model router (EN) |
 | [`docs/TEMPLATE_GUIDE.md`](docs/TEMPLATE_GUIDE.md) | Fork / instantiate checklist (EN) |
 | [`docs/runbooks/`](docs/runbooks/) | Incident-runbooks (SV) |
