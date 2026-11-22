@@ -60,6 +60,54 @@
 - Escalate critical / code_edit / secrets / unsafe SSH to Oscar.
 - Update living docs when behavior or CLI changes ([`docs/DOC_STYLE.md`](docs/DOC_STYLE.md)).
 
+## Modellrouting
+
+- Use the model router. Do not choose a provider inside a single function.
+- The ChatGPT OAuth session is owned and rotated by Azom.
+- The xAI Grok Build session is owned and updated by Grok Build.
+- OpenRouter is the fallback. It is not required for an OAuth route.
+- On model failure, classify it as auth, config, rate limit, or unavailable.
+- Never log tokens, authorization codes, or raw provider bodies.
+- Detail: [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md) · [`docs/runbooks/model-oauth.md`](docs/runbooks/model-oauth.md).
+
+## Drift
+
+- Do not make live provider calls without an explicit enable.
+- Use mock or synthetic data for tests.
+- Keep the template fallback when a model route is missing or fails.
+- Report a failed route as failed. Do not hide the failure behind a fallback success.
+
+## Säkerhet
+
+- Do not read, copy, or rotate Grok Build `auth.json`.
+- Do not reuse the Gmail, Google Marketing, Codex CLI, or any other application OAuth client.
+- Keep tokens, authorization codes, and provider response bodies out of logs, telemetry, UI, SQLite, and export.
+- Use the RBAC, HITL, null-send, kill switches, and human approval already defined in this file.
+
+## Uppgradering
+
+- Back up OpenClaw data and config before an upgrade.
+- Stop the Gateway and dependent local services in a controlled way.
+- Upgrade with the method that matches the install. Do not deploy Azom as part of a CLI upgrade.
+- Run doctor and health after start.
+- Verify Telegram, Messenger, dashboard, a model test, and OAuth status.
+- Procedure: [`docs/runbooks/openclaw-upgrade.md`](docs/runbooks/openclaw-upgrade.md).
+
+## Git och arbetsyta
+
+- Run `git status -sb` before edits.
+- Use a separate branch when the change should not land directly on the current branch.
+- Do not push, merge, or deploy without an explicit request.
+- Leave unrelated local changes untouched.
+
+## Minneshygien
+
+- Save only durable facts, preferences, and active projects.
+- Mark expired decisions as archived, not deleted.
+- Check critical facts against current code or docs.
+- Do not decide from stale model choices or old OAuth flows.
+- Rules: [`docs/memory-hygiene.md`](docs/memory-hygiene.md). Proposals: [`docs/memory-cleanup-proposals.md`](docs/memory-cleanup-proposals.md).
+
 **Do not:**
 
 - Silent-send customer mail from free-text / NL “godkänn”.

@@ -32,7 +32,7 @@ Incoming update
     └─ free text → chat_agent.run_chat
                      intent heuristics
                      read-only tool prefetch (order / cases / ops)
-                     OpenRouter phrasing (optional)
+                     model-router phrasing (optional; OpenRouter is fallback only)
                      BotReply + optional approve / triage keyboards
 ```
 

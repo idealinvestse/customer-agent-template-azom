@@ -51,7 +51,7 @@ python -m ecom_ops status
 python -m ecom_ops --mock order-status --order-id 1001 --status completed
 python -m ecom_ops --mock mail fetch
 python -m ecom_ops --mock cases poll
-python -m ecom_ops support --message "Var är order 1001?"
+python -m ecom_ops --mock support --message "Var är order 1001?"
 python -m ecom_ops kpis --days 7
 python -m ecom_ops classify-eval
 bash bin/mock-soak-azom.sh   # soft ops path (mock) — ersätter INTE live soak
@@ -148,6 +148,7 @@ Full table + coverage matrix: [`docs/README.md`](docs/README.md)
 | [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md) | Model router (EN) |
 | [`docs/TEMPLATE_GUIDE.md`](docs/TEMPLATE_GUIDE.md) | Fork / instantiate checklist (EN) |
 | [`docs/runbooks/`](docs/runbooks/) | Incident-runbooks (SV) |
+| [`docs/openclaw-upgrade-report.md`](docs/openclaw-upgrade-report.md) | Senaste lokala OpenClaw-uppgraderingen (SV, snapshot) |
 | [`SOUL.md`](SOUL.md) | Agent personality & hard constraints |
 | [`AGENTS.md`](AGENTS.md) | Agent operating notes (EN) |
 | [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md) | Skill card (EN) |

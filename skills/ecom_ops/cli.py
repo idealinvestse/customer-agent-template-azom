@@ -291,6 +291,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _mock_mode() -> bool:
+    """True after ``--mock`` or when ``AZOM_USE_MOCK`` is already set.
+
+    Mock integrations must not call the model router. Call this after
+    ``--mock`` has copied itself into the environment.
+    """
+    from ecom_ops.runtime_env import env_flag
+
+    return env_flag("AZOM_USE_MOCK")
+
+
 def main(argv: list[str] | None = None) -> int:
     from ecom_ops.runtime_env import bootstrap_runtime
 
@@ -337,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
             site=args.site,
             publish=args.publish,
             actor=args.actor,
+            allow_llm=not _mock_mode(),
         )
         return _print(result)
 
@@ -349,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
             language=args.language,
             site=args.site,
             actor=args.actor,
+            use_mock=True if _mock_mode() else None,
+            allow_llm=not _mock_mode(),
         )
         return _print(result)
 

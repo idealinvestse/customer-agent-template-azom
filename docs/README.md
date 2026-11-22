@@ -22,6 +22,12 @@ Language split: **Swedish** = ops/pilot/runbooks · **English** = agents/dev/arc
 | [`COMPLIANCE.md`](COMPLIANCE.md) | Oscar | GDPR / retention / gaps |
 | [`runbooks/`](runbooks/) | Ops | Incident procedures |
 | [`runbooks/model-oauth.md`](runbooks/model-oauth.md) | Oscar | ChatGPT / xAI / OpenRouter model routes |
+| [`runbooks/openclaw-upgrade.md`](runbooks/openclaw-upgrade.md) | Oscar | Local OpenClaw client upgrade |
+| [`runbooks/gateway-recovery.md`](runbooks/gateway-recovery.md) | Oscar | Gateway will not start |
+| [`runbooks/secret-leak-response.md`](runbooks/secret-leak-response.md) | Oscar | Token or key exposure |
+| [`memory-hygiene.md`](memory-hygiene.md) | Agents / Oscar | What memory may keep |
+| [`openclaw-md-inventory.md`](openclaw-md-inventory.md) | Agents | Markdown inventory for this upgrade |
+| [`openclaw-upgrade-report.md`](openclaw-upgrade-report.md) | Oscar | Point-in-time upgrade report |
 
 ## Agents / developers (English)
 
@@ -65,6 +71,8 @@ Each major surface has one **primary** living doc:
 | Docker overlays | [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md) |
 | Secrets / Gmail OAuth | [`V2_OAUTH_GMAIL.md`](V2_OAUTH_GMAIL.md) + `.env.example` |
 | Incidents | [`runbooks/`](runbooks/) |
+| OpenClaw client upgrade | [`runbooks/openclaw-upgrade.md`](runbooks/openclaw-upgrade.md) · [`openclaw-upgrade-report.md`](openclaw-upgrade-report.md) |
+| Memory hygiene | [`memory-hygiene.md`](memory-hygiene.md) |
 | Compliance | [`COMPLIANCE.md`](COMPLIANCE.md) |
 | Agent voice | [`../SOUL.md`](../SOUL.md) |
 

@@ -22,22 +22,26 @@ version: "3.0.0"
 **Cases:** `docs/CASES.md`  
 **CLI:** `docs/CLI_REFERENCE.md`  
 **Dev setup:** `docs/DEVELOPER_GUIDE.md`  
-**Model router:** `docs/MODEL_ROUTER.md`
+**Model router:** `docs/MODEL_ROUTER.md`  
+**Safe ops:** `skills/azom-safe-ops/SKILL.md`  
+**Router health:** `skills/model-router-health/SKILL.md`  
+**OAuth incident:** `skills/oauth-incident/SKILL.md`  
+**OpenClaw client upgrade:** `skills/openclaw-upgrade/SKILL.md`
 
 ## Prioritized actions
 
 | Action | Module | CLI |
 |--------|--------|-----|
-| order-status update | `ecom_ops.actions.order_status` | `python -m ecom_ops order-status --order-id ID --status STATUS --mock` |
-| product description | `ecom_ops.actions.product_desc` | `python -m ecom_ops product-desc --product-id ID --language sv --mock` |
-| customer support draft | `ecom_ops.actions.support` | `python -m ecom_ops support --message "..." --mock` |
-| cases poll / approve | `ecom_ops.cases.service` | `python -m ecom_ops cases poll\|list\|show\|reply\|draft\|regenerate\|close --mock` |
+| order-status update | `ecom_ops.actions.order_status` | `python -m ecom_ops --mock order-status --order-id ID --status STATUS` |
+| product description | `ecom_ops.actions.product_desc` | `python -m ecom_ops --mock product-desc --product-id ID --language sv` |
+| customer support draft | `ecom_ops.actions.support` | `python -m ecom_ops --mock support --message "..."` |
+| cases poll / approve | `ecom_ops.cases.service` | `python -m ecom_ops --mock cases poll\|list\|show\|reply\|draft\|regenerate\|close` |
 | shadow report (Oscar) | `ecom_ops.cases.shadow_report` | `python -m ecom_ops --actor oscar cases shadow-report` |
 | retention purge (Oscar) | `ecom_ops.cases.retention` | `python -m ecom_ops --actor oscar cases retention-purge --dry-run` |
 | null-send profile | `ecom_ops.runtime_profile` | `--null-send` or `AZOM_NULL_SEND=1` |
-| SSH / VPS | `ecom_ops.actions.ssh_ops` | `python -m ecom_ops ssh --command "uptime" --mock` |
-| mail send/fetch | `ecom_ops.actions.mail` | `python -m ecom_ops mail send\|fetch\|reply --mock` |
-| marketing Ads+GA4 | `ecom_ops.actions.marketing` | `python -m ecom_ops marketing digest\|health\|consistency\|suggests\|… --mock` |
+| SSH / VPS | `ecom_ops.actions.ssh_ops` | `python -m ecom_ops --mock ssh --command "uptime"` |
+| mail send/fetch | `ecom_ops.actions.mail` | `python -m ecom_ops --mock mail send\|fetch\|reply` |
+| marketing Ads+GA4 | `ecom_ops.actions.marketing` | `python -m ecom_ops --mock marketing digest\|health\|consistency\|suggests\|…` |
 | runtime status | CLI | `python -m ecom_ops status` · `python -m ecom_ops smoke` |
 
 ## V2 surfaces
@@ -96,9 +100,14 @@ Tickets: `$AZOM_DATA_DIR/escalations.jsonl` (default `.azom-data/`).
 ## Automation
 
 ```bash
-./bin/ecom-automation.sh order-status --order-id 1001 --status completed
-./bin/ecom-automation.sh mail fetch
+# cwd: repository root
+# env: AZOM_USE_MOCK=1
+python -m ecom_ops --mock order-status --order-id 1001 --status completed
+python -m ecom_ops --mock mail fetch
 ./bin/ecom-automation.sh critical "short summary"
 ./bin/cases-poll.sh
-sudo bash bin/install.sh   # full VPS bootstrap (Ubuntu 26/24)
 ```
+
+`bin/ecom-automation.sh` defaults `AZOM_USE_MOCK=1`, then sources `.env`, which can turn mock off. Prefer the `python -m ecom_ops --mock` form above.
+
+Stop: do not send customer mail, change a live order, or run `sudo bash bin/install.sh` from this card unless Oscar has asked for that exact action.

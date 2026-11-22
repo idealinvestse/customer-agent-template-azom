@@ -11,6 +11,9 @@ Varje runbook följer samma form: trigger → diagnoskommandon → fix → verif
 | [woo-webhook-disabled.md](woo-webhook-disabled.md) | Woo stänger av webhook efter upprepade misslyckade leveranser |
 | [openrouter-budget-exhausted.md](openrouter-budget-exhausted.md) | OpenRouter-budget slut — OpenRouter-anrop skippas |
 | [model-oauth.md](model-oauth.md) | Modellroute, ChatGPT OAuth, xAI, backup av refresh-token |
+| [openclaw-upgrade.md](openclaw-upgrade.md) | Lokal OpenClaw-klient: backup, uppgradering, verifiering, rollback |
+| [gateway-recovery.md](gateway-recovery.md) | Gateway startar inte, port, config, plugin, databaslås |
+| [secret-leak-response.md](secret-leak-response.md) | Token eller nyckel har synts i logg, chat eller git |
 | [mail-poll-stuck.md](mail-poll-stuck.md) | Cases-poll fastnar (credentials / IMAP) |
 | [gmail-oauth-revoked.md](gmail-oauth-revoked.md) | Gmail OAuth refresh-token revoked |
 | [cases-db-corrupt.md](cases-db-corrupt.md) | cases.db korrupt / SQLite disk-I/O |

@@ -13,7 +13,7 @@ mkdir -p "${AZOM_DATA_DIR}"
 
 python -m ecom_ops --mock order-status --order-id 1001 --status completed | grep -q '"ok": true'
 python -m ecom_ops --mock product-desc --product-id 501 --language sv | grep -q '"ok": true'
-python -m ecom_ops support --message "Var är order 1001?" | grep -q '"ok": true'
+python -m ecom_ops --mock support --message "Var är order 1001?" | grep -q '"ok": true'
 python -m ecom_ops --mock ssh --command uptime | grep -q '"ok": true'
 python -m ecom_ops --mock ssh --command "rm -rf /" | grep -q '"escalated": true'
 python -m ecom_ops --mock mail send --to customer@example.com --subject "Test" --body "Hej" | grep -q '"ok": true'

@@ -130,6 +130,8 @@ Facts from former `docs/superpowers/`, `docs/solutions/`, `docs/ideation/`, fini
 | Gmail OAuth | [`V2_OAUTH_GMAIL.md`](V2_OAUTH_GMAIL.md) |
 | Woo/WP API surface | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
 | Model router | [`MODEL_ROUTER.md`](MODEL_ROUTER.md) · operator [`runbooks/model-oauth.md`](runbooks/model-oauth.md) |
+| OpenClaw client upgrade | [`runbooks/openclaw-upgrade.md`](runbooks/openclaw-upgrade.md) · snapshot [`openclaw-upgrade-report.md`](openclaw-upgrade-report.md) |
+| Gateway / secret incidents | [`runbooks/gateway-recovery.md`](runbooks/gateway-recovery.md) · [`runbooks/secret-leak-response.md`](runbooks/secret-leak-response.md) |
 | Google Ads + GA4 | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Install / deploy | [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) |
 | Docker overlays | [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md) |

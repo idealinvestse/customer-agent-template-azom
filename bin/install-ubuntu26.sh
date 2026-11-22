@@ -463,7 +463,7 @@ export AZOM_DATA_DIR="${DATA_DIR}"
 export AZOM_USE_MOCK=1
 cd "${APP_DIR}"
 .venv/bin/python -m ecom_ops --mock order-status --order-id 1001 --status completed >/dev/null
-.venv/bin/python -m ecom_ops support --message "Order 1001 status?" >/dev/null
+.venv/bin/python -m ecom_ops --mock support --message "Order 1001 status?" >/dev/null
 .venv/bin/python -m ecom_ops --mock ssh --command uptime >/dev/null
 .venv/bin/python -m ecom_ops --mock mail fetch >/dev/null
 .venv/bin/python -m ecom_ops --help >/dev/null

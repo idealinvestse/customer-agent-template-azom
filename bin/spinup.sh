@@ -62,7 +62,7 @@ PY
 
 echo "==> Smoke: order-status + support + ssh + mail (mock)"
 "$PY" -m ecom_ops --mock order-status --order-id 1001 --status completed >/dev/null
-"$PY" -m ecom_ops support --message "Order 1001 status?" >/dev/null
+"$PY" -m ecom_ops --mock support --message "Order 1001 status?" >/dev/null
 "$PY" -m ecom_ops --mock ssh --command uptime >/dev/null
 "$PY" -m ecom_ops --mock mail fetch >/dev/null
 

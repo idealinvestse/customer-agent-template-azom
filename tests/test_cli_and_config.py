@@ -34,10 +34,32 @@ def test_cli_order_status(capsys):
 
 
 def test_cli_support(capsys):
-    code = main(["support", "--message", "Order 1002 shipping delay"])
+    code = main(["--mock", "support", "--message", "Order 1002 shipping delay"])
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] is True
+    assert out["classify_method"] == "keyword"
+
+
+def test_cli_mock_skips_model_router(capsys, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise AssertionError("model router was called in mock mode")
+
+    monkeypatch.setattr("ecom_ops.llm.chat_completion", boom)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("AZOM_MODEL_ROUTE_ORDER", "openrouter")
+
+    support = main(["--mock", "support", "--message", "Var är order 1001?"])
+    assert support == 0
+    support_out = json.loads(capsys.readouterr().out)
+    assert support_out["classify_method"] == "keyword"
+
+    product = main(
+        ["--mock", "product-desc", "--name", "Lampa", "--features", "matt", "--language", "sv"]
+    )
+    assert product == 0
+    product_out = json.loads(capsys.readouterr().out)
+    assert product_out["ok"] is True
 
 
 def test_cli_ssh_escalate(capsys):

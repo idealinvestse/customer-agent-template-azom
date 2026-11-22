@@ -125,3 +125,18 @@ sudo -u azom grep model_route_selected /var/lib/azom/telemetry.jsonl | tail -5
 ```
 
 Dashboardens senaste test ska matcha samma `route_id`.
+
+## 10. Token safety
+
+**Gör:**
+
+- Behandla refresh-token som en hemlighet med ägare. ChatGPT ägs av Azom. Grok Build ägs av Grok Build.
+- Vid `invalid_grant` eller `needs_reauth`: stoppa fler refresh-försök och be Oscar återansluta.
+- Sök i loggar efter felklass och route-id, inte efter tokensträngar.
+
+**Gör inte:**
+
+- Läsa, kopiera eller rotera Grok Builds `auth.json`.
+- Återanvända Gmail, Google Marketing, Codex CLI eller någon annan applikations OAuth-klient.
+- Skriva tokens, authorization codes eller råa provider-svar till logg, telemetry, UI, SQLite eller export.
+- Köra ett betalt provideranrop från den här runbooken utan Oscars uttryckliga ja.

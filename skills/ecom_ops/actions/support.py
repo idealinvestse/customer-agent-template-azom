@@ -567,6 +567,7 @@ class SupportService:
         actor: Actor | str | None = None,
         use_mock: bool | None = None,
         order_context: str | None = None,
+        allow_llm: bool = True,
     ) -> SupportResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
@@ -577,12 +578,17 @@ class SupportService:
             if customer_email:
                 customer_email = validate_email(customer_email)
 
-            category, confidence, classify_method = hybrid_classify(
-                text,
-                language=language,
-                telemetry=self.telemetry,
-                site=site,
-            )
+            if allow_llm:
+                category, confidence, classify_method = hybrid_classify(
+                    text,
+                    language=language,
+                    telemetry=self.telemetry,
+                    site=site,
+                )
+            else:
+                category = classify_message(text)
+                confidence = _KEYWORD_CONFIDENCE
+                classify_method = "keyword"
             order_id = extract_order_id(text)
             # SB2: only when text lacks id and email maps to exactly one Woo order
             if not order_id and customer_email:
@@ -634,16 +640,18 @@ class SupportService:
                     suggest_approve=False,
                 )
 
-            reply = draft_support_with_llm(
-                customer_message=text,
-                category=category.value,
-                language=language,
-                customer_name=customer_name,
-                order_id=order_id,
-                order_context=resolved_context,
-                telemetry=self.telemetry,
-                site=site,
-            )
+            reply = None
+            if allow_llm:
+                reply = draft_support_with_llm(
+                    customer_message=text,
+                    category=category.value,
+                    language=language,
+                    customer_name=customer_name,
+                    order_id=order_id,
+                    order_context=resolved_context,
+                    telemetry=self.telemetry,
+                    site=site,
+                )
             if not reply:
                 reply = draft_reply(
                     category=category,

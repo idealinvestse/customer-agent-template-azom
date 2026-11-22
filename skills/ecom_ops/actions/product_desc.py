@@ -89,10 +89,12 @@ class ProductDescService:
         self.escalation = escalation or default_escalation
 
     def _resolve_copy(
-        self, name: str, features: str, language: str, *, site: str
+        self, name: str, features: str, language: str, *, site: str, allow_llm: bool = True
     ) -> tuple[str, str]:
         if self.generator is not None:
             return self.generator(name, features, language)
+        if not allow_llm:
+            return _template_generator(name, features, language)
         from ecom_ops.llm import generate_product_desc_with_llm
 
         llm = generate_product_desc_with_llm(
@@ -120,6 +122,7 @@ class ProductDescService:
         site: str = "azom",
         publish: bool = False,
         actor: Actor | str | None = None,
+        allow_llm: bool = True,
     ) -> ProductDescResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
@@ -142,7 +145,7 @@ class ProductDescService:
             features_s = sanitize_text(features, max_len=2000) if features.strip() else "premium quality"
 
             short, long_desc = self._resolve_copy(
-                product_name, features_s, lang, site=site
+                product_name, features_s, lang, site=site, allow_llm=allow_llm
             )
 
             published = False

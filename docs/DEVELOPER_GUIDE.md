@@ -68,7 +68,7 @@ python -m ecom_ops --mock order-status --order-id 1001 --status completed
 python -m ecom_ops --mock mail fetch
 python -m ecom_ops --mock cases poll
 python -m ecom_ops --mock --null-send cases poll
-python -m ecom_ops support --message "Var är order 1001?"
+python -m ecom_ops --mock support --message "Var är order 1001?"
 python -m ecom_ops --mock marketing digest --days 7
 python -m ecom_ops classify-eval
 python -m ecom_ops kpis --days 7
