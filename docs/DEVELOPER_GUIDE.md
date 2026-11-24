@@ -61,6 +61,8 @@ python -m ecom_ops status
 
 Optional: copy `.env.example` to `.env` and keep `AZOM_USE_MOCK=1`.
 
+The WordPress review checks use `php -l` only when PHP is on `PATH`; it parses files and does not execute them. WPCS, Plugin Check, PHPUnit, asset lint, egress, WordPress runtime, and browser preview require isolated runtimes and are expected to report `unavailable` until those runtimes are installed and integrated. Do not treat a missing tool as a pass.
+
 ### Smoke commands (mock)
 
 ```bash

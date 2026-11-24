@@ -34,7 +34,7 @@ Incoming update
     ├─ "granska startsidans källkod" → jobbkind page_review
     │            fyra sajtbundna steg: startsida, editorinnehåll, källfiler, browser-preview
     │            inga orderverktyg och ingen orderdigest
-    │            browser, PHP eller sandbox som inte körts = not_run/unavailable
+    │            php -l körs med fast kommando när PHP finns; browser/runtime = unavailable
     └─ free text → chat_agent.run_chat
                      intent heuristics
                      read tools + confirm-only write proposals
@@ -44,6 +44,8 @@ Incoming update
 ```
 
 **Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI. En sidgranskning anropar inte orderchatten. En följdfråga medan jobbet körs stannar i sidgranskningen. Fritext “ja” och `action:yes` godkänner inte granskningen. Den redan körande botprocessen har inte startats om, så `page_review` är inte live förrän en begärd omstart.
+
+En filplansnotis kan länka till dashboardens planvy när `AZOM_DASHBOARD_PUBLIC_URL` är en HTTPS-URL. Länken innehåller bara registrerat `site_id` och `plan_id`, kräver dashboardinloggning och RBAC, och utför eller godkänner ingenting. Utan giltig HTTPS-bas visas ingen absolut länk.
 
 ### Live-status och strömmande svar
 

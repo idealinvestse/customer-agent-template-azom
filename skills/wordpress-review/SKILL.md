@@ -26,6 +26,25 @@ A request such as "granska startsidans källkod" is this task. The server runs f
 
 Use only those tools. Do not pass a URL, host, or path. Do not write shell, PHP, or WP-CLI. Do not write the site.
 
+## WordPress and WooCommerce review knowledge
+
+- For classic themes, use the server-returned candidate order. Common fallbacks include `front-page.php`, `home.php`, `page.php`, `singular.php`, and `index.php`; a static front page and the posts index have different entry points.
+- For block themes, inspect `templates/*.html`, `parts/*.html`, `theme.json`, and any database-assigned Site Editor template. A database override can take precedence over the theme file; say which layer the evidence came from.
+- A child theme inherits from its parent. Treat parent files as read-only evidence and report the active child and parent relationship only when the registered site data confirms it.
+- Inspect CSS and JavaScript only when a real source read identifies the file. Enqueue calls, template hooks, and plugin callbacks are evidence of possible influence, not proof that a hook ran on the page.
+- WooCommerce overrides belong under the active theme's `woocommerce/` directory. Do not patch WooCommerce core or infer an override from a file name alone.
+- For WooCommerce code, check HPOS compatibility declarations and avoid assuming `shop_order` posts are the source of truth. Review Cart and Checkout Blocks separately from shortcode checkout. Never run a real payment, submit an order, or change stock during a review.
+- Review capability checks, nonces, input validation, sanitization, context-appropriate escaping, and authorization around writes. A source excerpt is a finding lead, not a completed security audit.
+- Review responsive layout and accessibility with actual viewport/DOM evidence when available: keyboard access, labels and names, focus visibility, contrast, heading order, and overflow. Report console and network failures only when the browser tool returned them.
+
+## Evidence and check status
+
+Each finding should include a source file and line or a DOM selector, severity, confidence, reproduction steps, and the checks actually run. Separate confirmed defect from hypothesis. Mark unavailable and not-run checks explicitly.
+
+The current review check runner performs `php -l` only when the PHP binary is present. WPCS, Plugin Check, PHPUnit, asset lint, egress checks, WordPress runtime, and browser rendering still require isolated runtimes that are not wired in. A static WooCommerce declaration check is only a pre-check; it does not prove runtime compatibility. Never describe the review workspace UI or a saved mock record as a rendered preview.
+
+This skill is review guidance. It grants no site permission and does not change the approval gates.
+
 ## Three layers
 
 Keep these apart in every finding:

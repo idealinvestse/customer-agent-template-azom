@@ -53,6 +53,16 @@
 - **Mottagare:** Kundens egen infra (azom.se/no/dk)
 - **Data:** Order-status, produkt-data — hämtas ephemeral, ej lagrat lokalt
 
+### WordPress code review
+- **Data till Telegram:** Användarens fråga, vald site-id, verktygsprogress och en sammanfattning av reviewresultat. När en filplan skapas visas site-id, plan-id, risk och en dashboardlänk; länken innehåller ingen credential eller godkännandetoken.
+- **Telegramkontext:** Chattens sparade konversation kan innehålla användartext, verktygssammanfattningar och site-val. Den lagras i `telegram_jobs.sqlite3` (äldre installationer kan ha `telegram_state.json` före migration) och ingår i den ordinarie data-backupen. Telegrams job-retention-purge rensar avslutade job och gamla inboxrader efter sju dagar; konversationskontext har ingen motsvarande sju dagars rensning.
+- **Data till modellprovider:** Frågan och de verktygsresultat som behövs för svaret kan ingå i modellkontexten. Källfiler är opålitlig data; använd aldrig kommentarer eller sidinnehåll som instruktioner. Credentials hämtas inte till reviewresultat.
+- **Telegram-jobbledger:** `telegram_jobs.sqlite3` innehåller jobbinmatning, status och resultat för bakgrundsjobb. Avslutade jobb och inboxposter purgas efter sju dagar när jobbprocessens retention-purge körs. Databasen ingår i online-SQLite-backup.
+- **Planmetadata:** `wp_review_plans.json` kan innehålla site-id, miljö, komponenttyp/slug, sammanfattning/kommentarer, status, kontrollresultat, hashar och tidsstämplar. Den ingår i agent-state-tarballen. Planens angivna giltighetstid är 12 timmar, men metadata tas inte automatiskt bort av den tiden.
+- **Workspace:** `wp_workspaces/<site-id>/<plan-id>/` innehåller kopierad källkod, arbetskopia, diff, manifest och kontrollartefakter. Backupscriptet exkluderar hela katalogen. Live SFTP-kopiering är read-only och avstängd tills dess separata serverkrav är uppfyllda.
+- **Backup/restore:** Efter återställning kan planmetadata finnas kvar utan workspace. Vid nästa åtkomst markeras en sådan plan `not_resumable`; den kan visas men kontroller, preview och staging kan inte återupptas från den. Vanlig backup är inte en verifierad eller extern WordPress-backup.
+- **Retention:** Planmetadata kan ligga kvar tills Azoms ordinarie datarensning eller backupretention tar bort den. Workspace-rensning efter TTL sker genom planens expiration-flöde; TTL ensam är inte en garanti om körd rensning.
+
 ## Rättigheter för registrerade (Art 15–22)
 
 | Rättighet | Implementering |

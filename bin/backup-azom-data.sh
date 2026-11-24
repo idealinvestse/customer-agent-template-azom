@@ -83,7 +83,9 @@ TARBALL="${STAMP_DIR}/azom-data.tar.gz"
 # model_oauth holds ChatGPT refresh tokens.
 # ssh-keys holds per-site private keys for the WordPress file transport.
 # wp_file_payloads holds theme and plugin review copies outside the plan record.
-# Keep those directories out of the ordinary tarball.
+# wp_workspaces holds copied source, diffs, and check artifacts; it is excluded.
+# wp_review_plans.json metadata is included. A restored plan without its workspace
+# is marked not_resumable by the application and cannot resume checks or staging.
 # Take a separate encrypted copy if Oscar needs an off-box restore.
 tar -czf "$TARBALL" \
   --exclude="${BACKUP_DIR}" \
