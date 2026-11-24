@@ -681,8 +681,8 @@ class WooCommerceClient:
     ) -> list[WooOrder]:
         """Search recent orders by billing email (read-only).
 
-        Woo REST: GET /orders?search=<email>&per_page=N (and filter in-memory
-        by billing.email for mock / noisy search results).
+        Woo REST: GET /orders?search=<email>&per_page=N. Live returns only
+        orders whose billing.email matches exactly. No exact match returns [].
         """
         email_l = (email or "").strip().lower()
         if not email_l or "@" not in email_l:
@@ -719,7 +719,7 @@ class WooCommerceClient:
                 for o in all_orders
                 if (o.billing_email or "").strip().lower() == email_l
             ][:limit]
-        return orders[:limit]
+        return []
 
     def update_order_status(self, order_id: str | int, status: str) -> WooOrder:
         oid = validate_order_id(order_id)

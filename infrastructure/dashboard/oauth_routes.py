@@ -80,7 +80,7 @@ def register_oauth_routes(app: Flask) -> None:
 
         error = request.args.get("error")
         if error:
-            return Response(f"OAuth error: {error}", 400)
+            return Response("OAuth error", 400, mimetype="text/plain")
         code = request.args.get("code", "").strip()
         state = request.args.get("state", "").strip()
         if not code or not state:
@@ -90,8 +90,8 @@ def register_oauth_routes(app: Flask) -> None:
             return Response("Invalid or expired OAuth state", 400)
         try:
             exchange_code(code)
-        except Exception as exc:
-            return Response(f"Token exchange failed: {exc}", 502)
+        except Exception:
+            return Response("Token exchange failed", 502, mimetype="text/plain")
         return redirect(url_for("marketing_home") + "?msg=Google+marketing+kopplad")
 
     @app.route("/oauth/google/status")
@@ -133,7 +133,7 @@ def register_oauth_routes(app: Flask) -> None:
 
         error = request.args.get("error")
         if error:
-            return Response(f"OAuth error: {error}", 400)
+            return Response("OAuth error", 400, mimetype="text/plain")
         code = request.args.get("code", "").strip()
         state = request.args.get("state", "").strip()
         if not code or not state:
@@ -143,8 +143,8 @@ def register_oauth_routes(app: Flask) -> None:
             return Response("Invalid or expired OAuth state", 400)
         try:
             store.exchange_code(code)
-        except Exception as exc:
-            return Response(f"Token exchange failed: {exc}", 502)
+        except Exception:
+            return Response("Token exchange failed", 502, mimetype="text/plain")
         finally:
             store.clear_state()
         return redirect(url_for("onboarding") + "?msg=Gmail+kopplad")

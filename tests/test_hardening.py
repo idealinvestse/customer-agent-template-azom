@@ -170,6 +170,115 @@ def test_stale_send_claim_sweeper(tmp_path, monkeypatch):
     assert store.get(case.id).status == "open"
 
 
+def test_started_send_claim_is_not_reopened(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    store = CaseStore(path=tmp_path / "cases.db")
+    case = store.create_case(
+        mailbox_id="mb",
+        subject="S",
+        from_addr="a@b.co",
+        body="x",
+        category="other",
+        draft_reply="Hej",
+        order_id=None,
+        message_id="<h4@x>",
+    )
+    assert store.claim_for_send(case.id) is not None
+    assert store.mark_send_started(case.id) is True
+    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    with store._conn() as conn:
+        conn.execute(
+            "UPDATE cases SET updated_at = ? WHERE id = ?",
+            (old, case.id),
+        )
+    assert store.release_stale_send_claims(max_age_seconds=600) == 0
+    assert store.get(case.id).status == "sending"
+
+
+def test_uncertain_approve_keeps_sending(tmp_path, monkeypatch):
+    from ecom_ops.actions.mail import MailSendResult
+    from ecom_ops.cases.service import CaseService
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    store = CaseStore(path=tmp_path / "cases.db")
+    case = store.create_case(
+        mailbox_id="mb",
+        subject="S",
+        from_addr="a@b.co",
+        body="x",
+        category="other",
+        draft_reply="Hej",
+        order_id=None,
+        message_id="<h5@x>",
+    )
+
+    class Mail:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def send(self, **_kwargs):
+            self.calls += 1
+            return MailSendResult(
+                ok=False,
+                uncertain=True,
+                message="Mejltransporten svarade inte säkert. Utskicket försöktes inte igen.",
+            )
+
+    mail = Mail()
+    result = CaseService(store=store, mail=mail).approve_and_send(case.id, actor="jonatan")
+    assert mail.calls == 1
+    assert result.ok is False
+    assert store.get(case.id).status == "sending"
+
+
+def test_save_secrets_does_not_apply_channel_allowlists(tmp_path, monkeypatch):
+    import os
+
+    dash = ROOT / "infrastructure" / "dashboard"
+    if str(ROOT / "skills") not in sys.path:
+        sys.path.insert(0, str(ROOT / "skills"))
+    if str(dash) not in sys.path:
+        sys.path.insert(0, str(dash))
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "111")
+    monkeypatch.setenv("MESSENGER_ALLOWED_PSIDS", "psid-old")
+    monkeypatch.setenv("MESSENGER_ACTOR_MAP", "psid-old:jonatan")
+    (tmp_path / "secrets.env").write_text(
+        "TELEGRAM_ALLOWED_CHAT_IDS=999\nMAIL_FROM=file@example.com\n",
+        encoding="utf-8",
+    )
+    from settings_store import _write_env_file, save_secrets
+
+    saved = save_secrets(
+        {
+            "TELEGRAM_ALLOWED_CHAT_IDS": "222",
+            "MESSENGER_ALLOWED_PSIDS": "psid-new",
+            "MESSENGER_ACTOR_MAP": "psid-new:oscar",
+            "MAIL_FROM": "new@example.com",
+        }
+    )
+    assert "TELEGRAM_ALLOWED_CHAT_IDS" not in saved
+    assert "MESSENGER_ALLOWED_PSIDS" not in saved
+    assert "MESSENGER_ACTOR_MAP" not in saved
+    assert saved == ["MAIL_FROM"]
+    assert os.environ["TELEGRAM_ALLOWED_CHAT_IDS"] == "111"
+    assert os.environ["MESSENGER_ALLOWED_PSIDS"] == "psid-old"
+    assert os.environ["MESSENGER_ACTOR_MAP"] == "psid-old:jonatan"
+    text = (tmp_path / "secrets.env").read_text(encoding="utf-8")
+    assert "TELEGRAM_ALLOWED_CHAT_IDS=999" in text
+    assert "222" not in text
+    assert "MAIL_FROM=new@example.com" in text
+    _write_env_file(
+        tmp_path / "secrets.env",
+        {"MESSENGER_ALLOWED_PSIDS": "psid-written", "MAIL_FROM": "again@example.com"},
+    )
+    assert os.environ["MESSENGER_ALLOWED_PSIDS"] == "psid-old"
+    rewritten = (tmp_path / "secrets.env").read_text(encoding="utf-8")
+    assert "psid-written" not in rewritten
+    assert "MAIL_FROM=again@example.com" in rewritten
+
+
 def test_create_case_integrity_returns_existing(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
     store = CaseStore(path=tmp_path / "cases.db")

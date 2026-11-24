@@ -397,6 +397,128 @@ def test_telegram_job_is_page_review_and_not_chat(monkeypatch, tmp_path: Path):
     assert isinstance(BotReply(text="ok"), BotReply)
 
 
+def test_page_review_steer_is_not_promoted_to_read_turn(tmp_path: Path):
+    store = TelegramJobStore(tmp_path / "jobs.sqlite3")
+    store.accept_update(
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 10,
+                "chat": {"id": 5},
+                "text": "granska startsidans källkod",
+            },
+        }
+    )
+    job = store.claim_next()
+    assert job is not None and job["kind"] == "page_review"
+    steered = store.accept_update(
+        {
+            "update_id": 2,
+            "message": {"message_id": 11, "chat": {"id": 5}, "text": "ja"},
+        }
+    )
+    assert steered["disposition"] == "steer"
+    assert store.complete_job(job["job_id"], {"text": "klar"}) == []
+    assert store.claim_next() is None
+
+
+def test_read_turn_steer_still_queues(tmp_path: Path):
+    store = TelegramJobStore(tmp_path / "jobs.sqlite3")
+    store.accept_update(
+        {
+            "update_id": 1,
+            "message": {"message_id": 10, "chat": {"id": 5}, "text": "hej"},
+        }
+    )
+    job = store.claim_next()
+    assert job is not None and job["kind"] == "read_turn"
+    steered = store.accept_update(
+        {
+            "update_id": 2,
+            "message": {"message_id": 11, "chat": {"id": 5}, "text": "ja"},
+        }
+    )
+    assert steered["disposition"] == "steer"
+    queued = store.complete_job(job["job_id"], {"text": "svar"})
+    assert len(queued) == 1
+    nxt = store.claim_next()
+    assert nxt is not None
+    assert nxt["kind"] == "read_turn"
+    assert nxt["payload"]["text"] == "ja"
+
+
+def test_page_review_chat_result_clears_digest_flag(monkeypatch):
+    monkeypatch.setattr(
+        "ecom_ops.wp_ops.page_review_loop.run_bounded_page_review_loop",
+        lambda **_kwargs: type("Outcome", (), {"text": "Rapport"})(),
+    )
+    result = run_chat(
+        "granska startsidans källkod",
+        actor="oscar",
+        prior_digest="order 1001",
+        channel="telegram",
+        conversation_id="telegram:5",
+    )
+    assert result.clear_tool_digest is True
+    assert result.tool_digest == ""
+    from ecom_ops.bot.handlers import _stored_tool_digest
+
+    assert _stored_tool_digest(result, "order 1001") == ""
+
+
+def test_page_review_job_clears_saved_order_digest():
+    from ecom_ops.bot.handlers import BotHandler
+    from ecom_ops.bot.page_review_job import run_page_review_job
+
+    class Store:
+        def __init__(self) -> None:
+            self.data = {
+                "5": {
+                    "tool_digest": "order 1001",
+                    "session": {"kept": True},
+                    "flow": "content_confirm",
+                    "messages": [{"role": "user", "content": "hej"}],
+                }
+            }
+
+        def get(self, chat_id):
+            return self.data.get(str(chat_id))
+
+        def set(self, chat_id, state) -> None:
+            self.data[str(chat_id)] = state
+
+        def clear(self, chat_id) -> None:
+            self.data.pop(str(chat_id), None)
+
+    class Handler:
+        channel = "telegram"
+
+        def __init__(self) -> None:
+            self.store = Store()
+
+        _merge_state = BotHandler._merge_state
+
+        def _peer_allowed(self, _chat_id: str) -> bool:
+            return True
+
+        def _resolve_actor(self, _chat_id: str) -> str:
+            return "oscar"
+
+    handler = Handler()
+    reply = run_page_review_job(
+        handler,
+        {"chat_id": "5"},
+        progress=lambda _message: None,
+    )
+    state = handler.store.get("5")
+    assert state is not None
+    assert state["tool_digest"] == ""
+    assert state["session"] == {"kept": True}
+    assert state["flow"] == "content_confirm"
+    assert state["messages"]
+    assert "Välj en WordPress-sajt" in reply.text
+
+
 def test_stub_checks_are_not_passed_and_do_not_open_preview(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AZOM_WP_SANDBOX", "0")
     monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))

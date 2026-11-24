@@ -16,7 +16,7 @@ from typing import Any
 from ecom_ops.profile import DEFAULT_VIEWER, load_profile
 
 # Bump when adding breaking schema changes; _migrate() applies steps in order.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _default_db_path() -> Path:
@@ -285,6 +285,10 @@ class CaseStore:
         if current < 5:
             self._migrate_v5_shadow(conn)
             self._record_version(conn, 5)
+            current = 5
+        if current < 6:
+            self._migrate_v6_send_started(conn)
+            self._record_version(conn, 6)
 
     def _migrate_columns(self, conn: sqlite3.Connection) -> None:
         case_cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
@@ -345,6 +349,18 @@ class CaseStore:
             alters.append("ALTER TABLE cases ADD COLUMN shadow_deny_reason TEXT")
         for sql in alters:
             conn.execute(sql)
+
+    def _migrate_v6_send_started(self, conn: sqlite3.Connection) -> None:
+        """Record whether a sending claim already called the mail transport."""
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
+        if "send_started" not in cols:
+            conn.execute(
+                "ALTER TABLE cases ADD COLUMN send_started INTEGER NOT NULL DEFAULT 0"
+            )
+        # In-flight rows have an unknown transport outcome. Leave them claimed.
+        conn.execute(
+            "UPDATE cases SET send_started = 1 WHERE status = 'sending'"
+        )
 
     def find_by_message_id(self, message_id: str) -> Case | None:
         if not message_id:
@@ -836,7 +852,7 @@ class CaseStore:
         with self._conn() as conn:
             cur = conn.execute(
                 """
-                UPDATE cases SET status = 'sending', updated_at = ?
+                UPDATE cases SET status = 'sending', send_started = 0, updated_at = ?
                 WHERE id = ? AND status IN ('open', 'escalated')
                 """,
                 (now, case_id),
@@ -859,6 +875,22 @@ class CaseStore:
                 (status, now, case_id),
             )
         return self.get(case_id)
+
+    def mark_send_started(self, case_id: str) -> bool:
+        """Mark a sending claim immediately before the mail transport is called.
+
+        The stale-claim sweeper does not reopen a row once this is set.
+        """
+        now = _now()
+        with self._conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE cases SET send_started = 1, updated_at = ?
+                WHERE id = ? AND status = 'sending'
+                """,
+                (now, case_id),
+            )
+            return cur.rowcount == 1
 
     def mark_replied(
         self,
@@ -916,7 +948,11 @@ class CaseStore:
         return self.get(case_id)
 
     def release_stale_send_claims(self, *, max_age_seconds: int = 600) -> int:
-        """Revert ``sending`` claims older than ``max_age_seconds`` back to open."""
+        """Revert unsent ``sending`` claims older than ``max_age_seconds`` to open.
+
+        A claim whose mail transport was invoked stays ``sending``. Oscar
+        reconciles it. Reopening that row would allow a second customer mail.
+        """
         cutoff = datetime.now(UTC).timestamp() - max(60, int(max_age_seconds))
         released = 0
         with self._conn() as conn:
@@ -943,6 +979,7 @@ class CaseStore:
                     """
                     UPDATE cases SET status = 'open', updated_at = ?
                     WHERE id = ? AND status = 'sending'
+                      AND COALESCE(send_started, 0) = 0
                     """,
                     (now, row["id"]),
                 )

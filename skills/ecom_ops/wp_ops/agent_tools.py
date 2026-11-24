@@ -115,6 +115,50 @@ FILE_LOOP_MAX_TOTAL_BYTES = 49_152
 _FILE_READ_DEFAULT = 4096
 _FILE_READ_MAX = 8192
 
+
+def _utf8_window(encoded: bytes, offset: int, limit: int) -> tuple[str, int | None]:
+    """Return one strict UTF-8 window and the next byte offset.
+
+    The slice starts and ends on a character boundary. A character longer
+    than ``limit`` is returned whole, at most 4 bytes, so the cursor moves.
+    ``next_offset`` is None only when the file is exhausted.
+    """
+    size = len(encoded)
+    if offset >= size or limit < 1:
+        return "", None
+    start = offset
+    if start > 0:
+        hops = 0
+        while start < size and 0x80 <= encoded[start] <= 0xBF and hops < 3:
+            start += 1
+            hops += 1
+    if start >= size:
+        return "", None
+    end = min(start + limit, size)
+    text = ""
+    while end > start:
+        try:
+            text = encoded[start:end].decode()
+            break
+        except UnicodeDecodeError:
+            end -= 1
+    else:
+        end = start
+    if text == "" and start < size:
+        end = min(start + 4, size)
+        while end > start:
+            try:
+                text = encoded[start:end].decode()
+                break
+            except UnicodeDecodeError:
+                end -= 1
+        else:
+            end = min(start + 1, size)
+            text = ""
+    next_offset = end if end < size else None
+    return text, next_offset
+
+
 FILE_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "wp_component_context": {
         "type": "object",
@@ -406,12 +450,8 @@ class WpAgentTools:
             if offset < 0 or offset > 65536 or limit < 1 or limit > _FILE_READ_MAX:
                 return ToolOutput(_error("InvalidToolArguments"), site_id)
             body = _REDACT_SECRET_LINES.sub("[credential-bearing source line redacted]", body)
-            encoded_body = body.encode("utf-8")
-            window = encoded_body[offset : offset + limit]
-            next_offset = None
-            if offset < len(encoded_body) and offset + len(window) < len(encoded_body):
-                next_offset = offset + len(window)
-            preview = window.decode("utf-8", errors="ignore")
+            encoded_body = body.encode()
+            preview, next_offset = _utf8_window(encoded_body, offset, limit)
             live = data.get("live_calls") is True
             return ToolOutput(
                 {

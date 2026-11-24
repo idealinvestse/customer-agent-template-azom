@@ -157,6 +157,61 @@ def test_woo_list_orders_for_probe():
     assert len(orders) >= 1
 
 
+def test_live_email_search_returns_only_exact_billing_email():
+    class SearchTransport:
+        def __init__(self, rows: list[dict]) -> None:
+            self.rows = rows
+
+        def request(self, method, url, **_kwargs):
+            assert method == "GET"
+            assert "azom.no" not in url
+            return self.rows
+
+    other = SearchTransport(
+        [
+            {
+                "id": 7,
+                "status": "processing",
+                "currency": "SEK",
+                "total": "10",
+                "billing": {"email": "other@example.com"},
+            }
+        ]
+    )
+    client = WooCommerceClient(
+        base_url="https://mock.local",
+        consumer_key="ck",
+        consumer_secret="cs",
+        transport=other,
+    )
+    assert client.find_orders_by_email("buyer@example.com") == []
+    exact = SearchTransport(
+        [
+            {
+                "id": 8,
+                "status": "processing",
+                "currency": "SEK",
+                "total": "10",
+                "billing": {"email": "Buyer@Example.com"},
+            },
+            {
+                "id": 9,
+                "status": "processing",
+                "currency": "SEK",
+                "total": "11",
+                "billing": {"email": "other@example.com"},
+            },
+        ]
+    )
+    matched = WooCommerceClient(
+        base_url="https://mock.local",
+        consumer_key="ck",
+        consumer_secret="cs",
+        transport=exact,
+    ).find_orders_by_email("buyer@example.com")
+    assert [order.id for order in matched] == ["8"]
+
+
 def test_approve_send_sets_in_reply_to_and_references(case_store_path, telemetry):
     """Outbound case reply must thread with In-Reply-To / References."""
     transport = InMemoryMailTransport()

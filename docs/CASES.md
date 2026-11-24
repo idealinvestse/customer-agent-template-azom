@@ -27,7 +27,7 @@
 |--------|-----------|
 | `open` | Ny / i kö |
 | `escalated` | Abuse/legal/critical eller mänskligt eskalerat |
-| `sending` | Transient claim under `approve_and_send` (claim/release) — syns sällan i UI |
+| `sending` | Transient claim under `approve_and_send` (claim/release) — syns sällan i UI. En claim där mejltransporten redan anropats återgår inte till `open`. Oscar stämmer av den. |
 | `replied` | Utkast godkänt och mejlat |
 | `closed` | Stängt utan kundsvar |
 

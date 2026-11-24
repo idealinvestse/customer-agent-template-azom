@@ -289,6 +289,48 @@ def test_case_detail_no_shadow_badge_when_unevaluated(dash_client):
     assert "Skugga:" not in body
 
 
+def _plain_oauth_error(dash_client, path: str) -> None:
+    resp = dash_client.get(
+        path,
+        query_string={"error": "<script>azom-oauth-reflect</script>"},
+    )
+    assert resp.status_code == 400
+    assert resp.mimetype == "text/plain"
+    assert b"azom-oauth-reflect" not in resp.data
+    assert b"<script>" not in resp.data
+
+
+def test_oauth_callbacks_do_not_reflect_errors(dash_client, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
+    monkeypatch.delenv("DASHBOARD_PASSWORD_HASH", raising=False)
+    monkeypatch.delenv("DASHBOARD_OSCAR_PASSWORD", raising=False)
+    monkeypatch.delenv("DASHBOARD_OSCAR_PASSWORD_HASH", raising=False)
+    _plain_oauth_error(dash_client, "/oauth/google/callback")
+    _plain_oauth_error(dash_client, "/oauth/gmail/callback")
+
+    marker = "token-secret-leak-marker"
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr("ecom_ops.oauth.google_marketing.exchange_code", boom)
+    monkeypatch.setattr("ecom_ops.oauth.gmail.GmailOAuthStore.exchange_code", boom)
+    from ecom_ops.oauth.gmail import GmailOAuthStore
+    from ecom_ops.oauth.google_marketing import GoogleMarketingOAuthStore
+
+    google_state = GoogleMarketingOAuthStore().create_state()
+    gmail_state = GmailOAuthStore().create_state()
+    for path, state in (
+        ("/oauth/google/callback", google_state),
+        ("/oauth/gmail/callback", gmail_state),
+    ):
+        resp = dash_client.get(path, query_string={"code": "abc", "state": state})
+        assert resp.status_code == 502
+        assert resp.mimetype == "text/plain"
+        assert marker.encode() not in resp.data
+        assert b"Token exchange failed" in resp.data
+
+
 def test_approve_under_null_send_does_not_flash_skickat(dash_client, monkeypatch):
     import os
     from pathlib import Path

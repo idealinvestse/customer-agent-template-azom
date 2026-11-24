@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 import requests
 
-from ecom_ops.security import get_env
+from ecom_ops.security import SecurityError, get_env
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -222,8 +222,11 @@ def exchange_code(code: str) -> GoogleMarketingTokenBundle:
     )
     resp.raise_for_status()
     data = resp.json()
+    access_token = str(data.get("access_token") or "")
+    if not access_token:
+        raise SecurityError("Google marketing token response missing access_token")
     bundle = GoogleMarketingTokenBundle(
-        access_token=str(data.get("access_token") or ""),
+        access_token=access_token,
         refresh_token=str(data.get("refresh_token") or ""),
         expires_at=time.time() + float(data.get("expires_in") or 3600),
         token_type=str(data.get("token_type") or "Bearer"),

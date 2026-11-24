@@ -139,6 +139,43 @@ def test_windowed_read_reports_next_offset_without_a_1200_clip(tmp_path, monkeyp
     assert flagged.data["error_class"] == "InvalidToolArguments"
 
 
+def test_windowed_read_keeps_a_split_utf8_character(tmp_path, monkeypatch):
+    service = _service(tmp_path, monkeypatch)
+    tools = _tools(service)
+    path = _style(tmp_path, "mock-staging")
+    original = ("A" * 4095) + "ö" + ("B" * 20)
+    path.write_text(original, encoding="utf-8")
+    full = _digest(path)
+    pages: list[str] = []
+    offset = 0
+    base = {
+        "site_id": "mock-staging",
+        "kind": "theme",
+        "slug": "twentytwentyfive",
+        "path": "style.css",
+    }
+    for _ in range(4):
+        args = dict(base)
+        if offset:
+            args["offset"] = offset
+        page = tools.execute("wp_read_theme_plugin_file", args, actor="oscar")
+        assert page.data["ok"] is True
+        assert page.data["sha256"] == full
+        pages.append(page.data["content"])
+        nxt = page.data["next_offset"]
+        if nxt is None:
+            assert page.data["truncated"] is False
+            break
+        assert page.data["truncated"] is True
+        assert nxt > offset
+        offset = nxt
+    else:
+        raise AssertionError("window did not reach the end of the file")
+    assert "".join(pages) == original
+    assert pages[0] == "A" * 4095
+    assert pages[1].startswith("ö")
+
+
 def test_denied_file_result_does_not_inherit_another_status(tmp_path, monkeypatch):
     tools = _tools(_service(tmp_path, monkeypatch))
     denied = tools._file_result(

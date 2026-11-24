@@ -472,6 +472,7 @@ class ChatResult:
     offer_escalate: bool = False
     soft_escalate_nudge: bool = False
     tool_digest: str = ""
+    clear_tool_digest: bool = False
     approve_confirm_only: bool = False
     pending_action: PendingAction | None = None
     sticky_order_id: str | None = None
@@ -1552,6 +1553,7 @@ def run_chat(
             text=text,
             messages=_with_turn(text),
             tool_digest="",
+            clear_tool_digest=True,
             sticky_order_id=str(sticky_order_id) if sticky_order_id else None,
             sticky_case_id8=str(sticky_case_id8) if sticky_case_id8 else None,
             sticky_market=str(sticky_market) if sticky_market else None,

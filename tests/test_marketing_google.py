@@ -371,3 +371,28 @@ def test_woo_window_passes_after_before(monkeypatch):
     assert "after" in calls[0] and "before" in calls[0]
     assert svc._woo_revenue(days=7) == 0.0
     assert len(calls) >= 2
+
+
+def test_exchange_code_refuses_empty_access_token(monkeypatch, tmp_path):
+    from ecom_ops.oauth.google_marketing import GoogleMarketingOAuthStore, exchange_code
+    from ecom_ops.security import SecurityError
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret")
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, str]:
+            return {"token_type": "Bearer", "expires_in": "3600"}
+
+    monkeypatch.setattr(
+        "ecom_ops.oauth.google_marketing.requests.post",
+        lambda *_args, **_kwargs: Response(),
+    )
+    with pytest.raises(SecurityError, match="missing access_token"):
+        exchange_code("real-code")
+    assert not GoogleMarketingOAuthStore().has_tokens()

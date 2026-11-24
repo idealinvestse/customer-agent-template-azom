@@ -938,7 +938,7 @@ class TelegramJobStore:
         with self._connection() as conn:
             self._begin(conn)
             row = conn.execute(
-                "SELECT conversation_id,source_update_id FROM bot_jobs "
+                "SELECT conversation_id,source_update_id,kind FROM bot_jobs "
                 "WHERE job_id=? AND state='running'",
                 (job_id,),
             ).fetchone()
@@ -962,6 +962,19 @@ class TelegramJobStore:
                 "WHERE job_id=? AND consumed_at IS NULL ORDER BY steer_id",
                 (job_id,),
             ).fetchall()
+            if row["kind"] == "page_review":
+                for steer in leftover:
+                    conn.execute(
+                        "UPDATE bot_job_steers SET consumed_at=? WHERE steer_id=?",
+                        (now, steer["steer_id"]),
+                    )
+                    self._event(
+                        conn,
+                        job_id,
+                        "steer_held",
+                        "Följdfrågan stannar i sidgranskningen",
+                    )
+                leftover = []
             queued: list[dict[str, Any]] = []
             for steer in leftover:
                 sequence = conn.execute(

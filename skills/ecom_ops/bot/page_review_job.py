@@ -27,6 +27,9 @@ def run_page_review_job(
         actor = str(handler._resolve_actor(chat_id))
     except Exception:
         return BotReply(text="Actor-behörigheten kunde inte verifieras. Ingen sida hämtades.")
+    merge = getattr(handler, "_merge_state", None)
+    if callable(merge):
+        merge(chat_id, tool_digest="")
     if on_checkpoint:
         try:
             steers = on_checkpoint() or []

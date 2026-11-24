@@ -64,6 +64,48 @@ def test_invalid_email_rejected(mail_client, telemetry, escalation):
     result = svc.send(to="not-an-email", subject="X", body="Y", actor="agent")
     assert not result.ok
     assert not result.escalated
+    assert result.uncertain is False
+
+
+def test_timeout_is_one_attempt_and_uncertain(telemetry, escalation):
+    class Once:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def send(self, **_kwargs):
+            self.calls += 1
+            raise TimeoutError("smtp-data-maybe-accepted")
+
+    client = Once()
+    svc = MailService(client=client, telemetry=telemetry, escalation=escalation)
+    result = svc.send(
+        to="customer@example.com",
+        subject="Order update",
+        body="Din order är på väg.",
+        actor="agent",
+    )
+    assert client.calls == 1
+    assert result.ok is False
+    assert result.uncertain is True
+    assert "smtp-data-maybe-accepted" not in result.message
+    stored = (escalation.store_path).read_text(encoding="utf-8")
+    assert "smtp-data-maybe-accepted" not in stored
+
+
+def test_security_error_from_client_is_not_uncertain(telemetry, escalation):
+    class Reject:
+        def send(self, **_kwargs):
+            raise SecurityError("validation failed")
+
+    svc = MailService(client=Reject(), telemetry=telemetry, escalation=escalation)
+    result = svc.send(
+        to="customer@example.com",
+        subject="Order update",
+        body="Hej",
+        actor="agent",
+    )
+    assert result.ok is False
+    assert result.uncertain is False
 
 
 def test_reply(mail_client, telemetry, escalation):

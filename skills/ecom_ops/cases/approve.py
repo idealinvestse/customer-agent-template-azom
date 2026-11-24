@@ -85,6 +85,15 @@ def approve_and_send(
 
         in_reply_to, references_header = _outbound_thread_headers(case, svc.store)
 
+        if not svc.store.mark_send_started(case_id):
+            svc.store.release_send_claim(case_id, status=prior_status)
+            restored = svc.store.get(case_id) or case
+            return CaseActionResult(
+                ok=False,
+                message="Kunde inte markera att utskicket startade",
+                case=restored.to_dict(),
+            )
+
         send = svc.mail.send(
             to=case.from_addr,
             subject=subject,
@@ -96,6 +105,15 @@ def approve_and_send(
             references_header=references_header,
         )
         if not send.ok:
+            if send.uncertain:
+                fresh = svc.store.get(case_id) or claimed
+                return CaseActionResult(
+                    ok=False,
+                    message=send.message,
+                    case=fresh.to_dict(),
+                    escalated=send.escalated,
+                    ticket_id=send.ticket_id,
+                )
             svc.store.release_send_claim(case_id, status=prior_status)
             restored = svc.store.get(case_id) or case
             return CaseActionResult(

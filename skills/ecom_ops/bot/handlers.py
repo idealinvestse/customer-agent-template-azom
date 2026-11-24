@@ -16,6 +16,7 @@ from ecom_ops.bot.actors import (
 from ecom_ops.bot.catalog import execute_page_update, execute_product_update
 from ecom_ops.bot.chat_agent import (
     SOFT_ESCALATE_NUDGE,
+    ChatResult,
     run_chat,
     tool_lookup_order,
     wants_escalate,
@@ -56,6 +57,13 @@ from ecom_ops.security import validate_order_id
 from ecom_ops.wp_ops.agent_tools import WpAgentTools, context_for_storage, context_matches
 
 ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
+
+
+def _stored_tool_digest(result: ChatResult, prior_digest: str) -> str:
+    """Keep an explicit empty digest when a page review clears the order summary."""
+    if result.clear_tool_digest:
+        return ""
+    return result.tool_digest or prior_digest
 
 
 def telegram_chat_allowed(chat_id: str | int) -> bool:
@@ -796,7 +804,7 @@ class BotHandler:
             slots={},
             session=session,
             messages=result.messages,
-            tool_digest=result.tool_digest or prior_digest,
+            tool_digest=_stored_tool_digest(result, prior_digest),
         )
 
         text = result.text
@@ -810,7 +818,7 @@ class BotHandler:
                 slots={"message": message[:500]},
                 session=session,
                 messages=result.messages,
-                tool_digest=result.tool_digest or prior_digest,
+                tool_digest=_stored_tool_digest(result, prior_digest),
             )
             if "eskalera" not in text.lower():
                 text = f"{text}\n\nVill du eskalera till Oscar?"

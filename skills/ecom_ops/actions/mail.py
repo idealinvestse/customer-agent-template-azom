@@ -30,6 +30,7 @@ class MailSendResult:
     provider_status: dict[str, Any] | None = None
     escalated: bool = False
     ticket_id: str | None = None
+    uncertain: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +41,7 @@ class MailSendResult:
             "provider_status": self.provider_status,
             "escalated": self.escalated,
             "ticket_id": self.ticket_id,
+            "uncertain": self.uncertain,
         }
 
 
@@ -104,34 +106,39 @@ class MailService:
             require_permission(
                 actor_obj, required_permission or Permission.MAIL_SEND
             )
-            # Retry only network-ish errors — never after an uncertain accept
-            # (SMTP timeout after the server may have taken the message).
-            status = None
-            last_exc = None
-            for attempt in range(2):
-                try:
-                    status = self.client.send(
-                        to=to,
-                        subject=subject,
-                        body=body,
-                        cc=cc,
-                        html_body=html_body,
-                        in_reply_to=in_reply_to,
-                        references_header=references_header,
-                    )
-                    break
-                except SecurityError:
-                    raise  # validation errors are not transient
-                except (TimeoutError, ConnectionError, OSError) as exc:
-                    last_exc = exc
-                    if attempt == 0:
-                        import time
-
-                        time.sleep(2)
-                    else:
-                        raise
-            if status is None and last_exc:
-                raise last_exc
+            # One attempt. A timeout can mean the server already accepted it.
+            try:
+                status = self.client.send(
+                    to=to,
+                    subject=subject,
+                    body=body,
+                    cc=cc,
+                    html_body=html_body,
+                    in_reply_to=in_reply_to,
+                    references_header=references_header,
+                )
+            except SecurityError:
+                raise
+            except (TimeoutError, ConnectionError, OSError):
+                reason = (
+                    "Mejltransporten svarade inte säkert. "
+                    "Utskicket försöktes inte igen."
+                )
+                ticket = self.escalation.escalate_critical(
+                    reason,
+                    details={
+                        "site": site,
+                        "subject": subject[:120],
+                        "uncertain": True,
+                    },
+                )
+                return MailSendResult(
+                    ok=False,
+                    message=reason,
+                    escalated=True,
+                    ticket_id=ticket.id,
+                    uncertain=True,
+                )
             to_list = status.get("to") or (
                 [to] if isinstance(to, str) else list(to)
             )

@@ -71,12 +71,9 @@ EDITABLE_SECRET_KEYS = (
     "OPENROUTER_API_KEY",
     "XAI_API_KEY",
     "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_ALLOWED_CHAT_IDS",
     "MESSENGER_PAGE_ACCESS_TOKEN",
     "MESSENGER_APP_SECRET",
     "MESSENGER_VERIFY_TOKEN",
-    "MESSENGER_ALLOWED_PSIDS",
-    "MESSENGER_ACTOR_MAP",
     "AZOM_DASHBOARD_PUBLIC_URL",
     "WP_USERNAME",
     "WP_APP_PASSWORD",
@@ -137,6 +134,8 @@ def _save_yaml(name: str, data: dict[str, Any]) -> None:
 
 
 def _write_env_file(path: Path, updates: dict[str, str], *, allow_keys: frozenset[str] | None = None) -> None:
+    from ecom_ops.runtime_env import PROTECTED_OVERLAY_KEYS
+
     existing: dict[str, str] = {}
     order: list[str] = []
     if path.is_file():
@@ -151,6 +150,8 @@ def _write_env_file(path: Path, updates: dict[str, str], *, allow_keys: frozense
             existing[k] = v.strip()
     for k, v in updates.items():
         if allow_keys is not None and k not in allow_keys:
+            continue
+        if k in PROTECTED_OVERLAY_KEYS:
             continue
         if k not in existing:
             order.append(k)
