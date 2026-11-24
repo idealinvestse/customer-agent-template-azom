@@ -31,15 +31,19 @@ Incoming update
     ├─ slash → openclaw_commands.dispatch_openclaw_command
     │            (/cases approve → real send via CaseService)
     ├─ mid-flow multi-step (order_lookup …)
+    ├─ "granska startsidans källkod" → jobbkind page_review
+    │            fyra sajtbundna steg: startsida, editorinnehåll, källfiler, browser-preview
+    │            inga orderverktyg och ingen orderdigest
+    │            browser, PHP eller sandbox som inte körts = not_run/unavailable
     └─ free text → chat_agent.run_chat
                      intent heuristics
                      read tools + confirm-only write proposals
-                     bounded named WordPress ops tool loop (site-bound, RBAC checked)
+                     bounded named WordPress ops tool loop (site-bound, RBAC checked; Oscar-only read-only SFTP file reads)
                      model-router phrasing (optional; AZOM_TELEGRAM_MODEL_ROUTE pins one route)
                      BotReply + optional approve / triage keyboards
 ```
 
-**Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI.
+**Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI. En sidgranskning anropar inte orderchatten. En följdfråga medan jobbet körs stannar i sidgranskningen. Fritext “ja” och `action:yes` godkänner inte granskningen. Den redan körande botprocessen har inte startats om, så `page_review` är inte live förrän en begärd omstart.
 
 ### Live-status och strömmande svar
 
@@ -57,6 +61,8 @@ Snabba svar som blir klara före statusfördröjningen skickar bara slutsvaret. 
 
 **Modell:** när `AZOM_TELEGRAM_MODEL_ROUTE` är `xai_grok_build` använder fritext den routen och `XAI_MODEL`. Ett fel faller inte vidare till nästa route. Om Grok fortfarande resonerar eller skriver svaret nollställs vilotiden på 30 sekunder. `AZOM_XAI_GROK_HARD_TIMEOUT` stoppar anropet ändå, normalt efter 180 sekunder. `/model` sparar en session-pin, men pin skickas bara när Telegram-routen är `openrouter`. Övriga anrop följer `AZOM_MODEL_ROUTE_ORDER`.
 
+Läsvarv för flera ordrar hämtar högst åtta kända ordernummer först och låter sedan `grok-4.3` med `--reasoning-effort low` be om upp till fem läsningar, med 20 sekunders vila, 45 sekunders tak per runda och 90 sekunder för hela fasen; statusraden säger vilket steg som pågår, och ett avbrutet modellsteg behåller redan hämtad text.
+
 ---
 
 ### Bakgrundsjobb och fortsatt dialog
@@ -67,6 +73,7 @@ Telegram tar emot uppdateringar oberoende av modell- och verktygsjobb. En SQLite
 - Text och knappar under en godkänd åtgärd köas som nästa tur. De kan inte ändra den redan godkända åtgärden. Godkända åtgärder serialiseras; WordPress-ändringar låses per vald sajt.
 - `/status` visar aktivt jobb och senaste steg. `/jobs` visar väntande jobb. `/stop` eller `/cancel [job-id]` begär kooperativ avbrytning; en åtgärd kan inte avbrytas när sidoeffekten har startat.
 - Ett läsjobb kan köas om efter processomstart. En godkänd åtgärd som kan ha startat får `needs_reconciliation` och körs inte om. Endast Oscar kan stämma av den med `/reconcile <job-id> done|not_applied` efter kontroll av externa system. Kommandot utför ingen åtgärd.
+- Direkt före sidoeffekten gör arbetaren en förkontroll av åtgärdsformat, chattens allowlist, actor-mappning och aktuell bekräftelsesnapshot. Förkontrollen stoppar en felaktig eller inaktuell köpost; handlern kontrollerar därefter behörighet, mål och kill-switch igen innan tjänsteanropet.
 - Slutliga svar och Telegram-meddelande-id sparas för leveransförsök. Leverans är minst en gång; vid fel kan ett svar komma dubbelt.
 
 Inbox, jobb, leveransmetadata och Telegram-samtalshistorik ligger i `AZOM_DATA_DIR/telegram_jobs.sqlite3`. Vid första start migreras `telegram_state.json` en gång och den gamla filen lämnas kvar. Databasfilerna har begränsade filrättigheter; avslutade jobb behålls i sju dagar och olösta avstämningar tills de löses. Backup-jobbet tar en onlinekopia av jobbkön och utesluter Node/Python-bibliotek från tarballen. Messenger fortsätter använda sin befintliga synkrona lagring.
@@ -82,7 +89,7 @@ TELEGRAM_ACTOR_MAP=111111111:jonatan,222222222:oscar
 # TELEGRAM_FAIL_CLOSED=1
 ```
 
-Vid start registrerar boten `TELEGRAM_MENU_COMMANDS` via Telegram `setMyCommands`.
+Vid start registrerar boten `TELEGRAM_MENU_COMMANDS` via Telegram `setMyCommands`. Chatten får veta den mappade aktören i varje tur. En fritext som «jag är Oscar» ändrar inte rollen, och Oscar ombeds inte eskalera till sig själv.
 
 ### Bra / dåligt exempel
 
@@ -192,7 +199,24 @@ WordPress driftverktygen är separata från WordPress-innehållets `list_pages`/
 | `wp_prepare_restore_plan` | Skapa låst restore-preview; restore kan inte köras |
 | `wp_list_open_operations` | Läs öppna driftärenden för sajt/konversation |
 
-Servern begränsar WordPress-loopens tur till 3 anrop, 30 sekunder, 4 KiB per resultat och 10 KiB totalt. Användaren måste välja en registrerad sajt; servern gör RBAC-kontroll vid varje verktygskörning. Driftstatus kan vara mock eller okänd. Livehälsokontroller, säkerhetsskanning, versionsupptäckt, uppdatering och produktions-restore är inte implementerade. Planer är förhandsgranskningar utan godkännande- eller exekveringsväg.
+Servern begränsar driftloopens tur till 3 anrop, 30 sekunder, 4 KiB per resultat och 10 KiB totalt. Användaren måste välja en registrerad sajt; servern gör RBAC-kontroll vid varje verktygskörning. Driftstatus kan vara mock eller okänd. Livehälsokontroller, säkerhetsskanning, versionsupptäckt, uppdatering och produktions-restore är inte implementerade. Update- och restoreplaner är förhandsgranskningar utan godkännande- eller exekveringsväg.
+
+Filverktyg är en egen tur. Driftloopen kör dem inte. Den turen får högst 4 läsningar, 1 sökning, 8 anrop och 45 sekunder. Statusraden namnger verktyg, sajt och sökväg och citerar inte källan.
+
+| Namngivet verktyg | Användning |
+|-------------------|------------|
+| `wp_component_context` | Registeruppgifter utan hemligheter, värd eller filrot. Inget REST-anrop när mock är på |
+| `wp_list_component_tree` | En katalognivå. Jonatan får lista |
+| `wp_search_component` | Bokstavlig sökning. Bara Oscar. Inget regex och inget helt filinnehåll |
+| `wp_read_theme_plugin_file` | Fönster, normalt 4096 byte och högst 8192, med `next_offset`. Bara Oscar |
+| `wp_propose_file_diff` / `wp_propose_new_file` | Namngiven plan med bas- och resultat-hash. Skriver inte filen |
+| `wp_validate_plan` | Kontrollerar hashar. Hög risk flyttas inte fram. Ingen PHP-process |
+| `wp_apply_staging` | Från modellen: bara ett förslag. Knappen `wpfile:stage:{plan_id}` skriver enbart mock-staging |
+| `wp_request_production` / `wp_deploy_production` | Alltid stopp. Ingen Telegram-knapp för produktion |
+| `wp_verify_change` | Jämför hash. Sidkontroller körs inte |
+| `wp_rollback_file` | `RestoreNotInMvp`. Ingen återställning |
+
+`action:yes` ändrar inte en filplan. Avbryt är `wpfile:no:{plan_id}` och raderar diffen. Fri text «ja» räcker inte.
 
 ### Site write rails
 
@@ -205,6 +229,7 @@ Servern begränsar WordPress-loopens tur till 3 anrop, 30 sekunder, 4 KiB per re
 | Post field | `action:yes` / `action:no` | `WP_OPS_OPERATE` |
 | Site title or tagline | `action:yes` / `action:no` | `WP_OPS_OPERATE` |
 | Plugin on/off | `action:yes` / `action:no` | `WP_OPS_ADMIN` (Oscar) |
+| Stagingfil | `wpfile:stage:{plan_id}` / `wpfile:no:{plan_id}` | `WP_OPS_OPERATE` på registrerad staging. Bara lokal mockträd. Produktion har ingen knapp |
 | Regen draft | `cases:regen:{id8}` | `CASE_REPLY` (Jonatan OK) |
 
 Jonatan kan approve:a cases men **inte** skriva Woo order/product om hen inte är mappad till `agent`/`oscar`.

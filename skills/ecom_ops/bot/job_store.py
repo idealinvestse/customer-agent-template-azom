@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.wp_ops.page_review_intent import is_page_review
+
 MAX_STEERS_PER_JOB = 3
 MAX_QUEUED_PER_CHAT = 8
 JOB_LEASE_SECONDS = 120
@@ -25,7 +27,7 @@ _ACTION_COMMAND = re.compile(
 )
 _ACTION_CALLBACK = re.compile(
     r"^(?:cases:approve:|cases:regen:|order:set:|product:desc:|action:yes$|"
-    r"escalate:yes$)",
+    r"escalate:yes$|wpfile:stage:fe-[a-f0-9]{12}$)",
     re.I,
 )
 
@@ -268,7 +270,10 @@ class TelegramJobStore:
         with self._connection() as conn:
             self._begin(conn)
             existing = conn.execute(
-                "SELECT job_id, disposition FROM telegram_inbox WHERE update_id=?",
+                "SELECT inbox.disposition AS disposition, jobs.job_id AS job_id "
+                "FROM telegram_inbox AS inbox "
+                "LEFT JOIN bot_jobs AS jobs ON jobs.source_update_id=inbox.update_id "
+                "WHERE inbox.update_id=?",
                 (update_id,),
             ).fetchone()
             if existing:
@@ -343,7 +348,7 @@ class TelegramJobStore:
                     (conversation_id,),
                 ).fetchone()
                 is_command = text.lstrip().startswith("/")
-                if running and running["kind"] == "read_turn" and not is_command:
+                if running and running["kind"] in {"read_turn", "page_review"} and not is_command:
                     consumed = conn.execute(
                         "SELECT COUNT(*) AS n FROM bot_job_steers WHERE job_id=? "
                         "AND consumed_at IS NOT NULL",
@@ -381,7 +386,12 @@ class TelegramJobStore:
                             "chat_id": chat_id,
                             "update_id": update_id,
                         }
-                kind = "action" if _ACTION_COMMAND.match(text.strip()) else "read_turn"
+                if _ACTION_COMMAND.match(text.strip()):
+                    kind = "action"
+                elif is_page_review(text):
+                    kind = "page_review"
+                else:
+                    kind = "read_turn"
                 payload = {
                     "type": "message",
                     "chat_id": chat_id,
@@ -410,7 +420,7 @@ class TelegramJobStore:
                     "callback_query_id": parsed["callback_query_id"],
                     "source_message_id": parsed.get("source_message_id"),
                 }
-                if data in {"action:yes", "escalate:yes"}:
+                if data in {"action:yes", "escalate:yes"} or data.startswith("wpfile:stage:"):
                     state_row = conn.execute(
                         "SELECT state_json FROM telegram_conversations WHERE chat_id=?",
                         (chat_id,),

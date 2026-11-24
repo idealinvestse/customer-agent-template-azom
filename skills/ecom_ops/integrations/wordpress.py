@@ -229,7 +229,14 @@ class InMemoryWpTransport:
         if method.upper() == "GET":
             if iid not in store:
                 raise SecurityError(f"WP API error 404: {collection}/{item_id}")
-            return store[iid]
+            row = store[iid]
+            content = row.get("content") if isinstance(row, dict) else None
+            editing = str((params or {}).get("context") or "") == "edit"
+            if isinstance(content, dict) and "raw" in content and not editing:
+                hidden = dict(content)
+                hidden.pop("raw", None)
+                return {**row, "content": hidden}
+            return row
         if method.upper() in {"POST", "PUT", "PATCH"}:
             if iid not in store:
                 raise SecurityError(f"WP API error 404: {collection}/{item_id}")
@@ -457,12 +464,14 @@ class WordPressClient:
         )
         return self._to_posts(data) if isinstance(data, list) else []
 
-    def get_page(self, page_id: str | int) -> WpPost:
+    def get_page(self, page_id: str | int, *, context: str | None = None) -> WpPost:
         pid = _validate_int_id(page_id)
+        params = {"context": "edit"} if context == "edit" else None
         data = self.transport.request(
             "GET",
             self._url(f"/wp-json/wp/v2/pages/{pid}"),
             auth=self._auth(),
+            params=params,
             timeout=self.timeout,
         )
         return self._to_post(data)

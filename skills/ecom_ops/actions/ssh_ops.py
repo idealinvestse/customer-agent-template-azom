@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -53,7 +54,7 @@ class SSHOpsService:
         telemetry: Telemetry | None = None,
         escalation: EscalationService | None = None,
     ) -> None:
-        self.host = host or os.environ.get("SSH_HOST", "azom-vps")
+        self.host = host or os.environ.get("SSH_HOST", "")
         self.client = client or SSHClient(host=self.host)
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
@@ -76,6 +77,7 @@ class SSHOpsService:
             # Code-edit / destructive always escalate to Oscar
             if is_critical_ssh_command(cmd) and not is_ssh_allowlisted(cmd):
                 require_permission(actor_obj, Permission.SSH_READ)  # even viewers can request
+                command_digest = hashlib.sha256(cmd.encode("utf-8")).hexdigest()
                 reason = (
                     EscalationReason.CODE_EDIT
                     if any(x in cmd for x in ("sed -i", "vim", "nano", "tee", "git "))
@@ -83,9 +85,9 @@ class SSHOpsService:
                 )
                 ticket = self.escalation.escalate(
                     reason=reason,
-                    summary=f"SSH command requires Oscar approval: {cmd[:120]}",
+                    summary="SSH command is outside the read-only allowlist and was blocked.",
                     details={
-                        "command": cmd,
+                        "command_sha256": command_digest,
                         "host": self.host,
                         "site": site,
                         "actor": actor_obj.name,
@@ -96,7 +98,7 @@ class SSHOpsService:
                     action="ssh_escalated",
                     site=site,
                     unit_type="ssh_cmds",
-                    meta={"command": cmd, "ticket_id": ticket.id},
+                    meta={"command_sha256": command_digest, "ticket_id": ticket.id},
                 )
                 return SSHOpsResult(
                     ok=False,
@@ -148,7 +150,11 @@ class SSHOpsService:
         except AccessDenied as exc:
             ticket = self.escalation.escalate_critical(
                 f"SSH denied for {actor_obj.name}",
-                details={"error": str(exc), "command": cmd, "site": site},
+                details={
+                    "error": str(exc),
+                    "command_sha256": hashlib.sha256(cmd.encode("utf-8")).hexdigest(),
+                    "site": site,
+                },
             )
             return SSHOpsResult(
                 ok=False,

@@ -31,9 +31,21 @@ from ecom_ops.model_router.errors import (
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 DEFAULT_XAI_MODEL = "grok-4"
+_FAST_TOOL_MODEL = "grok-4.3"
+_FAST_TOOL_FALLBACK = "grok-4.7-build-fast"
 _POLL_SECONDS = 0.25
 _DEFAULT_HARD_TIMEOUT = 180
 _MAX_HARD_TIMEOUT = 600
+_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
+_UNKNOWN_MODEL_MARKERS = (
+    "unknown model",
+    "model not found",
+    "invalid model",
+    "not a valid model",
+    "unrecognized model",
+    "no such model",
+    "unsupported model",
+)
 # Phases that mean this turn is still producing text. waiting_for_model does not.
 _ACTIVE_PHASES = frozenset({"streaming_reasoning", "streaming_text"})
 _AUTH_MARKERS = (
@@ -55,6 +67,19 @@ def _stderr_says_unauthenticated(stderr: str) -> bool:
     return any(marker in lowered for marker in _AUTH_MARKERS)
 
 
+def _stderr_says_unknown_model(stderr: str) -> bool:
+    """True when the CLI rejected the model id. The text is not returned."""
+    lowered = (stderr or "").lower()
+    return any(marker in lowered for marker in _UNKNOWN_MODEL_MARKERS)
+
+
+def _accepted_effort(request: ModelRequest) -> str | None:
+    effort = (request.reasoning_effort or "").strip().lower()
+    if effort in _EFFORTS:
+        return effort
+    return None
+
+
 def _now() -> float:
     return time.monotonic()
 
@@ -63,12 +88,15 @@ def _sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def _hard_limit(idle: int) -> int:
+def _hard_limit(idle: int, override: int | None = None) -> int:
     """Upper bound while reasoning or text is still streaming.
 
     The idle timeout resets on new active phases. This cap still stops a
-    stream that never ends. Values above 600 seconds are clamped.
+    stream that never ends. A positive override replaces the env cap for
+    that call. Values above 600 seconds are clamped.
     """
+    if override is not None and int(override) > 0:
+        return max(idle, min(int(override), _MAX_HARD_TIMEOUT))
     raw = (os.environ.get("AZOM_XAI_GROK_HARD_TIMEOUT") or "").strip()
     chosen = int(raw) if raw.isdigit() and int(raw) > 0 else _DEFAULT_HARD_TIMEOUT
     return max(idle, min(chosen, _MAX_HARD_TIMEOUT))
@@ -277,6 +305,83 @@ class XaiGrokBuildRoute:
             "delegated_refresh": True,
         }
 
+    def _grok_command(
+        self,
+        binary: str,
+        model: str,
+        prompt_path: Path,
+        effort: str | None,
+    ) -> list[str]:
+        command = [
+            binary,
+            "--model",
+            model,
+            "--prompt-file",
+            str(prompt_path),
+            "--max-turns",
+            "1",
+            "--no-subagents",
+            "--disable-web-search",
+            "--no-memory",
+            "--verbatim",
+            "--tools",
+            "",
+        ]
+        if effort:
+            command.extend(["--reasoning-effort", effort])
+        return command
+
+    def _run_cli(
+        self,
+        command: list[str],
+        work: str,
+        request: ModelRequest,
+    ) -> str:
+        idle = request.timeout if request.timeout and request.timeout > 0 else 30
+        hard = _hard_limit(idle, request.hard_timeout)
+        started = _now()
+        deadline = started + idle
+        hard_at = started + hard
+        phase_state: dict[str, tuple[int, str]] = {}
+        try:
+            process = spawn_grok(command, work, request.on_text_delta)
+        except FileNotFoundError as exc:
+            raise ModelConfigError("Grok Build CLI binary was not found") from exc
+        while True:
+            code = process.poll()
+            active = 0
+            for events in _event_files(Path(work)):
+                active += _count_active(events, phase_state)
+            if active:
+                # Still reasoning or writing the answer: grant another idle window.
+                deadline = min(_now() + idle, hard_at)
+            if code is not None:
+                break
+            now = _now()
+            if now >= hard_at or now >= deadline:
+                _stop_process(process)
+                _read_output(process)
+                raise ModelUnavailableError("Grok Build CLI timed out")
+            _sleep(_POLL_SECONDS)
+
+        stdout, stderr = _read_output(process)
+        if process.returncode != 0:
+            exit_code = f"exit_{process.returncode}"
+            if _stderr_says_unauthenticated(stderr):
+                raise ModelAuthError(
+                    "Grok Build is not authenticated. Run grok login --device-auth",
+                    code=exit_code,
+                )
+            failed = ModelUnavailableError("Grok Build CLI failed", code=exit_code)
+            if _stderr_says_unknown_model(stderr):
+                failed.unknown_model = True  # type: ignore[attr-defined]
+            raise failed
+
+        content = stdout.strip()
+        if not content:
+            raise ModelUnavailableError("Grok Build CLI returned no content")
+        return content
+
     def complete(
         self,
         request: ModelRequest,
@@ -305,61 +410,25 @@ class XaiGrokBuildRoute:
                 os.chmod(prompt_path, 0o600)
             except OSError:
                 pass
-            command = [
-                binary,
-                "--model",
-                model,
-                "--prompt-file",
-                str(prompt_path),
-                "--max-turns",
-                "1",
-                "--no-subagents",
-                "--disable-web-search",
-                "--no-memory",
-                "--verbatim",
-                "--tools",
-                "",
-            ]
-            idle = request.timeout if request.timeout and request.timeout > 0 else 30
-            hard = _hard_limit(idle)
-            started = _now()
-            deadline = started + idle
-            hard_at = started + hard
-            phase_state: dict[str, tuple[int, str]] = {}
-            try:
-                process = spawn_grok(command, work, request.on_text_delta)
-            except FileNotFoundError as exc:
-                raise ModelConfigError("Grok Build CLI binary was not found") from exc
-            while True:
-                code = process.poll()
-                active = 0
-                for events in _event_files(Path(work)):
-                    active += _count_active(events, phase_state)
-                if active:
-                    # Still reasoning or writing the answer: grant another idle window.
-                    deadline = min(_now() + idle, hard_at)
-                if code is not None:
+            effort = _accepted_effort(request)
+            # grok --model grok-4.3 models does not reject the id. A real
+            # call may. Retry that one rejection with the fast build model.
+            candidates = [model]
+            if model == _FAST_TOOL_MODEL:
+                candidates.append(_FAST_TOOL_FALLBACK)
+            content = ""
+            served = model
+            for index, chosen in enumerate(candidates):
+                command = self._grok_command(binary, chosen, prompt_path, effort)
+                try:
+                    content = self._run_cli(command, work, request)
+                    served = chosen
                     break
-                now = _now()
-                if now >= hard_at or now >= deadline:
-                    _stop_process(process)
-                    _read_output(process)
-                    raise ModelUnavailableError("Grok Build CLI timed out")
-                _sleep(_POLL_SECONDS)
-
-            stdout, stderr = _read_output(process)
-            if process.returncode != 0:
-                code = f"exit_{process.returncode}"
-                if _stderr_says_unauthenticated(stderr):
-                    raise ModelAuthError(
-                        "Grok Build is not authenticated. Run grok login --device-auth",
-                        code=code,
-                    )
-                raise ModelUnavailableError("Grok Build CLI failed", code=code)
-
-            content = stdout.strip()
-            if not content:
-                raise ModelUnavailableError("Grok Build CLI returned no content")
+                except ModelUnavailableError as exc:
+                    unknown = bool(getattr(exc, "unknown_model", False))
+                    if unknown and index == 0 and len(candidates) > 1:
+                        continue
+                    raise
 
             tel.record(
                 action="model_xai_grok_build",
@@ -372,7 +441,7 @@ class XaiGrokBuildRoute:
                 meta={
                     "provider": self.provider,
                     "route_id": self.route_id,
-                    "model": model,
+                    "model": served,
                     "usage_known": False,
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
@@ -386,7 +455,7 @@ class XaiGrokBuildRoute:
                 content=content,
                 provider=self.provider,
                 route_id=self.route_id,
-                model=model,
+                model=served,
                 usage_known=False,
                 cost_usd=0.0,
             )

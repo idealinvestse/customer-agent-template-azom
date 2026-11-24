@@ -211,4 +211,4 @@ Messenger runs on the **dashboard** webhook (no separate systemd unit). Telegram
 
 See [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) for shipment trackings, multi-site `domain=`, WordPress client, retries, webhooks, pagination, probes.
 
-WordPress site operations (Phase 1 mock health, Phase 2 local mock backup and staging drill, typed theme/plugin file edit): [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md). The file edit is not a general shell. Live SSH stays off unless mock mode is off and `AZOM_WP_FILES_SSH=1`. Production restore stays refused. Do not contact customer sites or enable updates from that surface.
+WordPress site operations (Phase 1 mock health, Phase 2 local mock backup and staging drill, typed theme/plugin file edit): [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md). The file edit is not a general shell. Chat may propose a named theme or plugin diff with a base hash and a result hash. That plan is review data. Live SSH stays off unless mock mode is off and `AZOM_WP_FILES_SSH=1`. Production restore stays refused. Do not contact customer sites or enable updates from that surface.

@@ -330,9 +330,9 @@ def test_dashboard_ssh_settings_hide_the_key_and_block_viewers(tmp_path, monkeyp
     assert 'name="AZOM_WP_FILES_SSH"' not in form_body
     assert 'data-ssh="false"' in form_body
     assert 'data-live-calls="false"' in form_body
-    assert "Lösenord skickas inte." in form_body
+    assert "lösenordsinloggning" in form_body
     assert "lösenfras" in form_body
-    assert "ärver registret" in form_body
+    assert "måste sluta på -wp-reader" in form_body
     posted = client.post(
         "/wp/mock-staging/ssh",
         headers=oscar,
@@ -340,7 +340,7 @@ def test_dashboard_ssh_settings_hide_the_key_and_block_viewers(tmp_path, monkeyp
             "_csrf": oscar["X-CSRF-Token"],
             "files_root": "/var/www/from-dashboard",
             "ssh_host": "mock-staging.example.test",
-            "ssh_user": "deploy",
+            "ssh_user": "azom-wp-reader",
             "ssh_port": "2222",
             "ssh_identity_file": identity,
             "host_public_key": host_key,

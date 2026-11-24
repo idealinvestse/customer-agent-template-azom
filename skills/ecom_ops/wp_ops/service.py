@@ -150,8 +150,16 @@ class WpOpsService:
         relative: str,
         *,
         actor: str,
+        admin_only: bool = False,
     ) -> WpOpsResult:
-        return self._file_editor().read_file(site_id, kind, slug, relative, actor=actor)
+        return self._file_editor().read_file(
+            site_id,
+            kind,
+            slug,
+            relative,
+            actor=actor,
+            admin_only=admin_only,
+        )
 
     def propose_file(
         self,
@@ -176,6 +184,102 @@ class WpOpsService:
         actor: str,
     ) -> WpOpsResult:
         return self._file_editor().apply(site_id, plan_id, new_text, actor=actor)
+
+    def _file_changes(self):
+        from ecom_ops.wp_ops.file_changes import FileChangeOps
+
+        return FileChangeOps(self._file_editor())
+
+    def list_component_tree(
+        self, site_id: str, kind: str, slug: str, relative: str, *, actor: str
+    ) -> WpOpsResult:
+        return self._file_changes().list_tree(site_id, kind, slug, relative, actor=actor)
+
+    def search_component(
+        self, site_id: str, kind: str, slug: str, relative: str, query: str, *, actor: str
+    ) -> WpOpsResult:
+        return self._file_changes().search(
+            site_id, kind, slug, relative, query, actor=actor
+        )
+
+    def propose_file_diff(
+        self,
+        site_id: str,
+        kind: str,
+        slug: str,
+        relative: str,
+        new_text: str,
+        base_sha256: str,
+        summary: str,
+        *,
+        actor: str,
+        parent_slug: str | None = None,
+    ) -> WpOpsResult:
+        return self._file_changes().propose(
+            site_id,
+            kind,
+            slug,
+            relative,
+            new_text,
+            base_sha256,
+            summary,
+            actor=actor,
+            create=False,
+            parent_slug=parent_slug,
+        )
+
+    def propose_new_file(
+        self,
+        site_id: str,
+        kind: str,
+        slug: str,
+        relative: str,
+        new_text: str,
+        base_sha256: str,
+        summary: str,
+        *,
+        actor: str,
+        parent_slug: str | None = None,
+    ) -> WpOpsResult:
+        return self._file_changes().propose(
+            site_id,
+            kind,
+            slug,
+            relative,
+            new_text,
+            base_sha256,
+            summary,
+            actor=actor,
+            create=True,
+            parent_slug=parent_slug,
+        )
+
+    def validate_file_plan(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().validate(site_id, plan_id, actor=actor)
+
+    def preview_file_stage(self, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().preview_stage(plan_id, actor=actor)
+
+    def stage_file_plan(self, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().stage(plan_id, actor=actor)
+
+    def deny_file_plan(self, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().deny(plan_id, actor=actor)
+
+    def request_file_production(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().request_production(site_id, plan_id, actor=actor)
+
+    def deploy_file_production(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().deploy_production(site_id, plan_id, actor=actor)
+
+    def verify_file_plan(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().verify(site_id, plan_id, actor=actor)
+
+    def rollback_file_plan(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().rollback(site_id, plan_id, actor=actor)
+
+    def review_file_plan(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self._file_changes().review(site_id, plan_id, actor=actor)
 
     def ssh_settings(self, site_id: str, *, actor: str) -> WpOpsResult:
         denied = self._need(actor, Permission.WP_OPS_READ, action="wp_ops_ssh_settings")

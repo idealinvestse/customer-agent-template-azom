@@ -1,4 +1,4 @@
-"""Load ``config/wp_sites.yaml``. The file holds references, never secret values."""
+"""Load the local WordPress site registry without storing secret values."""
 
 from __future__ import annotations
 
@@ -24,7 +24,19 @@ def load_sites(
     data_dir: Path | None = None,
     apply_overlay: bool = True,
 ) -> tuple[Site, ...]:
-    file_path = path or (config_dir() / "wp_sites.yaml")
+    if path is not None:
+        file_path = Path(path)
+    else:
+        config_root = config_dir()
+        raw_mock = os.environ.get("AZOM_USE_MOCK")
+        mock_mode = raw_mock is None or raw_mock.strip().lower() not in {"0", "false", "no", "off"}
+        if mock_mode:
+            mock_registry = config_root / "wp_sites.mock.yaml"
+            file_path = mock_registry if mock_registry.is_file() else config_root / "wp_sites.yaml"
+        else:
+            data_root = Path(data_dir or os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+            runtime_registry = data_root / "wp_sites.yaml"
+            file_path = runtime_registry if runtime_registry.is_file() else config_root / "wp_sites.yaml"
     if not file_path.is_file():
         return ()
     loaded = yaml.safe_load(file_path.read_text(encoding="utf-8")) or {}

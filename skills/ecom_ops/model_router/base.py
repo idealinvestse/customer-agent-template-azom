@@ -21,6 +21,8 @@ class ModelRequest:
     actor: str | None = None
     on_text_delta: Callable[[str], None] | None = None
     on_text_reset: Callable[[], None] | None = None
+    reasoning_effort: str | None = None
+    hard_timeout: int | None = None
 
 
 @dataclass(frozen=True)

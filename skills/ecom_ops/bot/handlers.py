@@ -350,6 +350,26 @@ class BotHandler:
         if raw == "product:cancel":
             self._clear_pending(chat_id)
             return BotReply(text="Avbrutet — ingen produktbeskrivning genererad.")
+        if raw == "wpfile:no" or raw.startswith("wpfile:no:"):
+            plan_id = raw.split(":", 2)[2] if raw.startswith("wpfile:no:") else ""
+            if plan_id:
+                if not re.fullmatch(r"fe-[a-f0-9]{12}", plan_id):
+                    return BotReply(text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK))
+                from ecom_ops.wp_ops import WpOpsService
+
+                WpOpsService().deny_file_plan(plan_id, actor=actor)
+            return BotReply(text="Avbrutet. Ingen fil ändrades.")
+        if raw.startswith("wpfile:stage:"):
+            plan_id = raw.split(":", 2)[2]
+            if not re.fullmatch(r"fe-[a-f0-9]{12}", plan_id):
+                return BotReply(text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK))
+            from ecom_ops.wp_ops import WpOpsService
+
+            staged = WpOpsService().stage_file_plan(plan_id, actor=actor)
+            if staged.ok and (staged.data or {}).get("executed") is True:
+                return BotReply(text="Filen är skriven i staging. Produktionen är oförändrad.")
+            error = str((staged.data or {}).get("error_class") or "OperationUnavailable")
+            return BotReply(text=f"Staging skrevs inte ({error}). Ingen fil ändrades.")
         if raw == "action:yes":
             blocked = self._mutations_blocked_reply()
             if blocked:
@@ -798,6 +818,17 @@ class BotHandler:
                 text,
                 actions=yes_no_actions(
                     yes_data="escalate:yes", no_data="escalate:no"
+                ),
+                needs_typing=True,
+            )
+
+        if result.file_stage_plan_id and re.fullmatch(r"fe-[a-f0-9]{12}", result.file_stage_plan_id):
+            plan_id = result.file_stage_plan_id
+            return bot_reply(
+                text,
+                actions=yes_no_actions(
+                    yes_data=f"wpfile:stage:{plan_id}",
+                    no_data=f"wpfile:no:{plan_id}",
                 ),
                 needs_typing=True,
             )

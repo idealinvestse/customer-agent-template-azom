@@ -93,7 +93,9 @@ python -m ecom_ops --mock support --message "Var är order 1001?"
 
 ### `ssh` / `ssh-health`
 
-Allowlisted SSH only; unsafe commands escalate to Oscar.
+Mock accepts only exact allowlisted health commands. Live SSH is disabled unless `AZOM_SSH_READ_ENABLED=1` is set in the process environment and a dedicated non-root `*-ssh-reader`, OpenSSH key, and explicit pinned `SSH_KNOWN_HOSTS` file are configured. The runner disables SSH config, agent, password authentication, forwarding, and TTY; it refuses root, unpinned hosts, and every command outside the fixed allowlist. The account must have no sudo or Docker group access. Configure a server-side command wrapper with the same allowlist before enabling it, and verify the host key fingerprint out of band before adding it to `known_hosts`.
+
+The `known_hosts` file must contain only exact, unhashed entries for the configured host: `host key-type public-key` on port 22, or `[host]:port key-type public-key` on another port. Do not trust an unverified `ssh-keyscan` result.
 
 ```bash
 python -m ecom_ops --mock ssh --command "uptime"
@@ -241,7 +243,7 @@ Telegram's WordPress conversation uses the same registered site ids. Use `/wp si
 
 Staging checks, staging backups, and staging drills need `WP_OPS_OPERATE`. Production checks and production mock backups need `WP_OPS_ADMIN`. `wp restore` is not a command. A verified manifest stays `green: false` with `encryption: unconfigured` and `offsite: false`.
 
-`wp files` lists themes, plugins, or the editable files in one component. `file-propose` and `file-apply` read the new text from `--from`. There is no `--body`. A staging edit needs `WP_OPS_OPERATE`. A production edit needs `WP_OPS_ADMIN` and `CODE_EDIT`. The JSON does not include the file body. `AZOM_USE_MOCK=1` keeps the edit on the local mock tree even if `AZOM_WP_FILES_SSH=1`.
+`wp files` lists themes, plugins, or the editable files in one component. `file-propose` and `file-apply` read the new text from `--from`. There is no `--body` and no new file command in this pass. A staging edit needs `WP_OPS_OPERATE`. A production edit needs `WP_OPS_ADMIN` and `CODE_EDIT`. The JSON does not include the file body. `AZOM_USE_MOCK=1` keeps the edit on the local mock tree even if `AZOM_WP_FILES_SSH=1`. Live SFTP still refuses `write_bytes`, so `file-apply` cannot change a customer site. Chat diff plans and the dashboard review page are separate from these two commands. The production review POST returns `BackupNotVerified`.
 
 The document root and SSH login are set in the dashboard at `/wp/<id>/ssh`, not by a CLI flag. Oscar can save them. `wp show` and `wp sites` do not include the local identity path or the public host key. The private key is not printed.
 

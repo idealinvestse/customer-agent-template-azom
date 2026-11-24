@@ -15,6 +15,7 @@ from auth import _auth_required
 from support import _dashboard_context, _flash_q
 
 _PLAN_ID = re.compile(r"^fe-[a-f0-9]{12}$")
+_REVIEW_ID = re.compile(r"^wr-[a-f0-9]{12}$")
 _KINDS = frozenset({"theme", "plugin"})
 
 
@@ -162,6 +163,46 @@ def register_wp_routes(app: Flask) -> None:
             )
         return redirect(_files_location(site_id, kind, slug, relative, err=result.message))
 
+    @app.route("/wp/<site_id>/files/plan/<plan_id>")
+    @_auth_required
+    def wp_file_plan(site_id: str, plan_id: str):
+        return _render_file_plan(site_id, plan_id)
+
+    @app.route("/wp/<site_id>/files/deploy", methods=["POST"])
+    @_auth_required
+    def wp_file_deploy(site_id: str):
+        return _post_file_deploy(site_id)
+
+    @app.route("/wp/<site_id>/reviews/<plan_id>")
+    @_auth_required
+    def wp_review(site_id: str, plan_id: str):
+        return _render_review(site_id, plan_id)
+
+    @app.route("/wp/<site_id>/reviews/<plan_id>/comment", methods=["POST"])
+    @_auth_required
+    def wp_review_comment(site_id: str, plan_id: str):
+        return _post_review_comment(site_id, plan_id)
+
+    @app.route("/wp/<site_id>/reviews/<plan_id>/staging", methods=["POST"])
+    @_auth_required
+    def wp_review_staging(site_id: str, plan_id: str):
+        return _post_review_staging(site_id, plan_id)
+
+    @app.route("/wp/<site_id>/reviews/<plan_id>/production", methods=["POST"])
+    @_auth_required
+    def wp_review_production(site_id: str, plan_id: str):
+        return _post_review_production(site_id, plan_id)
+
+    @app.route("/wp/<site_id>/reviews/<plan_id>/preview", methods=["POST"])
+    @_auth_required
+    def wp_review_preview(site_id: str, plan_id: str):
+        return _post_review_preview(site_id, plan_id)
+
+    @app.route("/wp/<site_id>/reviews/<plan_id>/extend", methods=["POST"])
+    @_auth_required
+    def wp_review_extend(site_id: str, plan_id: str):
+        return _post_review_extend(site_id, plan_id)
+
 
 def _post_ssh(site_id: str):
     from ecom_ops.wp_ops import WpOpsService
@@ -173,12 +214,12 @@ def _post_ssh(site_id: str):
         ssh_host=request.form.get("ssh_host") or "",
         ssh_user=request.form.get("ssh_user") or "",
         ssh_port=request.form.get("ssh_port") or "",
-        ssh_identity_file=request.form.get("ssh_identity_file") or "",
+        ssh_identity_file="",
         private_key=request.form.get("ssh_private_key") or "",
         clear_key=(request.form.get("clear_ssh_key") or "") in {"1", "on", "true"},
-        global_user=request.form.get("global_ssh_user") or "",
-        global_port=request.form.get("global_ssh_port") or "",
-        global_identity_file=request.form.get("global_ssh_identity_file") or "",
+        global_user="",
+        global_port="",
+        global_identity_file="",
         host_public_key=request.form.get("host_public_key") or "",
     )
     blocked = _file_block(site_id, result)
@@ -382,6 +423,72 @@ def _scrub_posted(site_id: str, text: str) -> str:
     return cleaned if isinstance(cleaned, str) else text
 
 
+def _file_admin() -> bool:
+    from ecom_ops.rbac import Actor, Permission
+
+    actor = Actor(name=g.actor["name"], role=g.actor["role"])
+    return actor.has(Permission.WP_OPS_ADMIN) and actor.has(Permission.CODE_EDIT)
+
+
+def _render_file_plan(site_id: str, plan_id: str, *, notice: str = "", error_class: str = ""):
+    from ecom_ops.wp_ops import WpOpsService
+
+    if not _PLAN_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    if not _file_admin():
+        return Response("Saknar behörighet", 403)
+    shown = WpOpsService().show_site(site_id, actor=g.actor["name"])
+    if _denied(shown):
+        return Response("Saknar behörighet", 403)
+    if not shown.ok and (shown.data or {}).get("error_class") == "UnknownSite":
+        return Response("Okänd webbplats", 404)
+    review = WpOpsService().review_file_plan(site_id, plan_id, actor=g.actor["name"])
+    if not review.ok:
+        return Response("Okänd plan", 404)
+    plan = dict((review.data or {}).get("plan") or {})
+    diff = str((review.data or {}).get("diff") or "")
+    return render_template(
+        "wp_file_plan.html",
+        **_dashboard_context(
+            site=(shown.data or {}).get("site"),
+            plan=plan,
+            diff=diff,
+            notice=notice,
+            error_class=error_class,
+            executed=False,
+        ),
+    )
+
+
+def _post_file_deploy(site_id: str):
+    from ecom_ops.wp_ops import WpOpsService
+
+    if not _file_admin():
+        return Response("Saknar behörighet", 403)
+    plan_id = request.form.get("plan_id") or ""
+    if not _PLAN_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    review = WpOpsService().review_file_plan(site_id, plan_id, actor=g.actor["name"])
+    if not review.ok:
+        return Response("Okänd plan", 404)
+    plan = dict((review.data or {}).get("plan") or {})
+    before = request.form.get("before_digest") or ""
+    after = request.form.get("after_digest") or ""
+    environment = request.form.get("environment") or ""
+    relative = request.form.get("path") or ""
+    if (
+        before != str(plan.get("before_digest") or "")
+        or after != str(plan.get("after_digest") or "")
+        or environment != str(plan.get("environment") or "")
+        or relative != str(plan.get("relative_path") or "")
+        or environment == ""
+    ):
+        return _render_file_plan(site_id, plan_id, error_class="DigestMismatch")
+    result = WpOpsService().deploy_file_production(site_id, plan_id, actor=g.actor["name"])
+    error_class = str((result.data or {}).get("error_class") or "BackupNotVerified")
+    return _render_file_plan(site_id, plan_id, notice="blocked", error_class=error_class)
+
+
 def _can_edit(site: dict | None) -> bool:
     if not site:
         return False
@@ -398,3 +505,126 @@ def _can_drill() -> bool:
 
     actor = Actor(name=g.actor["name"], role=g.actor["role"])
     return actor.has(Permission.WP_OPS_OPERATE)
+
+
+def _review_ops():
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+    return ReviewPlans()
+
+
+def _review_http(result: object):
+    data = getattr(result, "data", None) or {}
+    kind = data.get("error_class")
+    if kind == "AccessDenied" or _denied(result):
+        return Response("Saknar behörighet", 403)
+    if kind in {"UnknownSite", "UnknownPlan", "StalePlan"}:
+        return Response("Okänd plan", 404)
+    if kind == "Expired":
+        return Response("Planen har gått ut", 403)
+    return None
+
+
+def _render_review(site_id: str, plan_id: str, *, error_class: str = "", result: dict | None = None):
+    if not _REVIEW_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    admin = _file_admin()
+    shown = _review_ops().show(site_id, plan_id, actor=g.actor["name"], include_diff=admin)
+    blocked = _review_http(shown)
+    if blocked is not None:
+        return blocked
+    payload = shown.data or {}
+    plan = dict(payload.get("plan") or {})
+    diff = str(payload.get("diff") or "") if admin else ""
+    outcome = result or {}
+    return render_template(
+        "wp_review.html",
+        **_dashboard_context(
+            plan=plan,
+            diff=diff,
+            can_review=admin,
+            error_class=error_class or str(outcome.get("error_class") or ""),
+            executed=outcome.get("executed") is True,
+            bytes_copied=False,
+            restore=str(outcome.get("restore") or ""),
+            label=str(outcome.get("label") or plan.get("label") or ""),
+            live_calls=False,
+        ),
+    )
+
+
+def _posted_hashes() -> tuple[str, str]:
+    return request.form.get("base_sha256") or "", request.form.get("work_sha256") or ""
+
+
+def _post_review_comment(site_id: str, plan_id: str):
+    if not _REVIEW_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    if not _file_admin():
+        return Response("Saknar behörighet", 403)
+    result = _review_ops().comment(site_id, plan_id, request.form.get("text") or "", actor=g.actor["name"])
+    blocked = _review_http(result)
+    if blocked is not None:
+        return blocked
+    return _render_review(site_id, plan_id, result=result.data or {})
+
+
+def _post_review_staging(site_id: str, plan_id: str):
+    if not _REVIEW_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    if not _file_admin():
+        return Response("Saknar behörighet", 403)
+    base, work = _posted_hashes()
+    result = _review_ops().approve_staging(
+        site_id, plan_id, actor=g.actor["name"], base_sha256=base, work_sha256=work
+    )
+    blocked = _review_http(result)
+    if blocked is not None:
+        return blocked
+    return _render_review(site_id, plan_id, error_class=str((result.data or {}).get("error_class") or ""), result=result.data or {})
+
+
+def _post_review_production(site_id: str, plan_id: str):
+    if not _REVIEW_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    if not _file_admin():
+        return Response("Saknar behörighet", 403)
+    base, work = _posted_hashes()
+    result = _review_ops().request_production(
+        site_id, plan_id, actor=g.actor["name"], base_sha256=base, work_sha256=work
+    )
+    blocked = _review_http(result)
+    if blocked is not None:
+        return blocked
+    data = result.data or {}
+    return _render_review(site_id, plan_id, error_class=str(data.get("error_class") or "BackupNotVerified"), result=data)
+
+
+def _post_review_extend(site_id: str, plan_id: str):
+    if not _REVIEW_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    if not _file_admin():
+        return Response("Saknar behörighet", 403)
+    result = _review_ops().extend(site_id, plan_id, actor=g.actor["name"])
+    blocked = _review_http(result)
+    if blocked is not None:
+        return blocked
+    return _render_review(site_id, plan_id, result=result.data or {})
+
+
+def _post_review_preview(site_id: str, plan_id: str):
+    if not _REVIEW_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    if not _can_drill():
+        return Response("Saknar behörighet", 403)
+    result = _review_ops().preview(site_id, plan_id, actor=g.actor["name"])
+    blocked = _review_http(result)
+    if blocked is not None:
+        return blocked
+    data = result.data or {}
+    return _render_review(
+        site_id,
+        plan_id,
+        error_class=str(data.get("error_class") or ""),
+        result=data,
+    )

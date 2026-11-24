@@ -15,14 +15,11 @@
     {% endif %}
     <h2 class="az-page-title mt-2">SSH-inställningar</h2>
     <p class="az-muted mt-2 text-sm">
-      Rotmappen och värden gäller den här sajten på servern.
-      En tom rot eller värd, eller samma värde som registret, ärver registret.
-      Användare, port och lokal identitetsfil ärver den globala miljön när fältet är tomt.
-      Inloggning använder användare, port och privat nyckel. Lösenord skickas inte.
-      Den sparade nyckeln används före den lokala sökvägen.
-      Den inklistrade nyckeln får inte ha en lösenfras.
-      Live SSH kopplar inte upp förrän en publik värdnyckel är sparad.
-      Sparande öppnar ingen anslutning.
+      WordPress använder enbart sajtens dedikerade användare som slutar på -wp-reader,
+      en sparad nyckel och SFTP med pinnad värdnyckel. Ingen global SSH-identitet,
+      lösenordsinloggning eller fjärrskal används. Livekontot måste vara begränsat på servern
+      till skrivskyddad SFTP och åtkomst till godkända tema- och pluginfiler.
+      Sparande öppnar ingen anslutning och slår inte på liveåtkomst.
     </p>
     {% if ssh %}
     <p class="az-muted mt-2 text-sm" data-ssh-posture="shown">
@@ -58,19 +55,15 @@
       </div>
       <div>
         <dt class="az-label">Användare</dt>
-        <dd>{{ ssh.ssh_user or ssh.global_user }} <span class="az-muted">({% if ssh.ssh_user %}sajt{% else %}global{% endif %})</span></dd>
+        <dd>{{ ssh.ssh_user or "saknas" }} <span class="az-muted">(måste sluta på -wp-reader)</span></dd>
       </div>
       <div>
         <dt class="az-label">Port</dt>
-        <dd>{{ ssh.ssh_port if ssh.ssh_port else ssh.global_port }}</dd>
+        <dd>{{ ssh.ssh_port if ssh.ssh_port else 22 }}</dd>
       </div>
       <div>
         <dt class="az-label">Nyckel</dt>
         <dd>{{ 'nyckel sparad' if ssh.ssh_key_stored else 'ingen nyckel sparad' }}</dd>
-      </div>
-      <div>
-        <dt class="az-label">Lokal identitetsfil</dt>
-        <dd>{{ 'satt' if ssh.identity_present else 'saknas' }}</dd>
       </div>
       <div>
         <dt class="az-label">Publik värdnyckel</dt>
@@ -80,18 +73,6 @@
           <span class="az-muted">{{ ssh.host_key_fingerprint }}</span>
           {% endif %}
         </dd>
-      </div>
-      <div>
-        <dt class="az-label">Global användare</dt>
-        <dd>{{ ssh.global_user }}</dd>
-      </div>
-      <div>
-        <dt class="az-label">Global port</dt>
-        <dd>{{ ssh.global_port }}</dd>
-      </div>
-      <div>
-        <dt class="az-label">Global identitet</dt>
-        <dd>{{ 'satt' if ssh.global_identity_present else 'saknas' }}</dd>
       </div>
     </dl>
 
@@ -108,16 +89,11 @@
       </div>
       <div>
         <label class="az-label" for="ssh_user">Användare för sajten</label>
-        <input class="az-input !max-w-none" id="ssh_user" name="ssh_user" value="{{ ssh.ssh_user }}" placeholder="{{ ssh.global_user }}" autocomplete="off" />
+        <input class="az-input !max-w-none" id="ssh_user" name="ssh_user" value="{{ ssh.ssh_user }}" placeholder="azom-wp-reader" autocomplete="off" />
       </div>
       <div>
         <label class="az-label" for="ssh_port">Port för sajten</label>
-        <input class="az-input !max-w-none" id="ssh_port" name="ssh_port" value="{% if ssh.ssh_port %}{{ ssh.ssh_port }}{% endif %}" placeholder="{{ ssh.global_port }}" inputmode="numeric" autocomplete="off" />
-      </div>
-      <div>
-        <label class="az-label" for="ssh_identity_file">Lokal sökväg till en nyckel på Azom-maskinen</label>
-        <input class="az-input !max-w-none" id="ssh_identity_file" name="ssh_identity_file" value="{{ ssh.ssh_identity_file }}" autocomplete="off" />
-        <p class="az-muted mt-1 text-sm">Den sparade nyckeln används före den här sökvägen.</p>
+        <input class="az-input !max-w-none" id="ssh_port" name="ssh_port" value="{% if ssh.ssh_port %}{{ ssh.ssh_port }}{% endif %}" placeholder="22" inputmode="numeric" autocomplete="off" />
       </div>
       <div>
         <label class="az-label" for="host_public_key">Publik värdnyckel</label>
@@ -127,33 +103,14 @@
       <div>
         <label class="az-label" for="ssh_private_key">Privat nyckel, klistras in en gång</label>
         <textarea class="az-textarea" id="ssh_private_key" name="ssh_private_key" autocomplete="off" spellcheck="false"></textarea>
-        <p class="az-muted mt-1 text-sm">Tom ruta lämnar den sparade nyckeln orörd. Nyckeln får inte ha en lösenfras.</p>
+        <p class="az-muted mt-1 text-sm">Använd en unik nyckel för läsarkontot; återanvänd inte din personliga/MobaXterm-nyckel. Tom ruta lämnar den sparade nyckeln orörd. Nyckeln får inte ha en lösenfras.</p>
       </div>
       <label class="flex items-center gap-2 text-sm">
         <input type="checkbox" name="clear_ssh_key" value="1" />
         Ta bort den sparade nyckeln
       </label>
 
-      <h2 class="az-section-title pt-2">Global reserv</h2>
-      <p class="az-muted text-sm">
-        Tomt fält lämnar runtime.env oförändrat.
-        Nu gäller användare {{ ssh.global_user }}, port {{ ssh.global_port }}.
-        Global identitet: {{ 'satt' if ssh.global_identity_present else 'saknas' }}.
-        {% if ssh.global_identity_file %}Sökväg: {{ ssh.global_identity_file }}.{% endif %}
-        En rad med samma namn i secrets.env används före runtime.env.
-      </p>
-      <div>
-        <label class="az-label" for="global_ssh_user">Global användare</label>
-        <input class="az-input !max-w-none" id="global_ssh_user" name="global_ssh_user" value="" autocomplete="off" />
-      </div>
-      <div>
-        <label class="az-label" for="global_ssh_port">Global port</label>
-        <input class="az-input !max-w-none" id="global_ssh_port" name="global_ssh_port" value="" inputmode="numeric" autocomplete="off" />
-      </div>
-      <div>
-        <label class="az-label" for="global_ssh_identity_file">Global lokal sökväg</label>
-        <input class="az-input !max-w-none" id="global_ssh_identity_file" name="global_ssh_identity_file" value="" autocomplete="off" />
-      </div>
+      <p class="az-muted text-sm">Den sparade nyckeln får inte ha en lösenfras. Endast den här sajtens nyckel används.</p>
       <button class="az-btn-primary" type="submit">Spara SSH-inställningar</button>
     </form>
     {% endif %}

@@ -1,0 +1,879 @@
+"""Site-bound theme and plugin change plans.
+
+The model may propose a diff. This module stores that diff outside the chat,
+audit, and job result. It never starts a shell, PHP, or WP-CLI process.
+Live SFTP stays read-only. Production deploy stays closed until a real
+backup and restore exist.
+"""
+
+from __future__ import annotations
+
+import difflib
+import json
+import os
+import re
+import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from ecom_ops.rbac import Permission
+from ecom_ops.wp_ops.files import (
+    FileEditor,
+    LocalTree,
+    PathRejected,
+    TransportError,
+    _digest,
+    component_dir,
+    resolve_file,
+    transport_message,
+)
+from ecom_ops.wp_ops.models import Site
+from ecom_ops.wp_ops.service import WpOpsResult
+
+_PLAN_ID = re.compile(r"^fe-[a-f0-9]{12}$")
+_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
+_EXTENSIONS = frozenset({".php", ".css", ".js", ".json", ".txt", ".html"})
+_SKIP_DIRS = frozenset({"vendor", "node_modules", "cache", "uploads", ".git"})
+_SENSITIVE = re.compile(
+    r"(?i)(^\.env(?:$|\.)|^wp-config[^/]*\.php$|"
+    r"(?:^|[-_.])(?:secrets?|credentials?|tokens?|passwords?|auth|private[-_.]?key|api[-_.]?key)(?:[-_.]|$)|"
+    r"\.(?:bak|backup|sql|sqlite3?|dump|swp|orig)$)"
+)
+_HIGH_RISK = re.compile(
+    r"checkout|cart|payment|gateway|kassan|varukorg|betalning",
+    re.I,
+)
+_PLAN_TTL = timedelta(hours=12)
+_MAX_SUMMARY = 200
+_MAX_DIFF_BYTES = 65536
+_SEARCH_FILES = 20
+_SEARCH_BYTES = 256 * 1024
+_SEARCH_HITS = 20
+_TREE_CAP = 256
+
+FILE_TOOL_NAMES = frozenset(
+    {
+        "wp_component_context",
+        "wp_list_component_tree",
+        "wp_search_component",
+        "wp_read_theme_plugin_file",
+        "wp_propose_file_diff",
+        "wp_propose_new_file",
+        "wp_validate_plan",
+        "wp_apply_staging",
+        "wp_request_production",
+        "wp_deploy_production",
+        "wp_verify_change",
+        "wp_rollback_file",
+        "wp_open_review_workspace",
+    }
+)
+
+
+def rest_reads_allowed() -> bool:
+    """Live content reads only when mock mode is explicitly off."""
+    raw = os.environ.get("AZOM_USE_MOCK")
+    if raw is None or str(raw).strip() == "":
+        return False
+    return str(raw).strip().lower() in {"0", "false", "no", "off"}
+
+
+def risk_for(relative: str, text: str) -> str:
+    parts = [part.lower() for part in str(relative or "").split("/")]
+    if any(part in {"checkout", "cart", "gateway", "payment"} for part in parts):
+        return "high"
+    if _HIGH_RISK.search(relative or "") or _HIGH_RISK.search(text or ""):
+        return "high"
+    return "low"
+
+
+def sensitive_relative(relative: str) -> bool:
+    parts = [part for part in str(relative or "").replace("\\", "/").split("/") if part]
+    if any(part.lower() in _SKIP_DIRS or _SENSITIVE.search(part) for part in parts):
+        return True
+    return False
+
+
+def production_deploy_block() -> dict[str, Any]:
+    """Production writes stay closed. A mock manifest is not a backup."""
+    return {
+        "executed": False,
+        "error_class": "BackupNotVerified",
+        "backup_offsite": False,
+        "bytes_copied": False,
+        "encryption": "unconfigured",
+        "restore": "RestoreNotInMvp",
+        "live_calls": False,
+    }
+
+
+def payload_path(data_dir: Path, plan_id: str) -> Path:
+    if not _PLAN_ID.fullmatch(plan_id):
+        raise TransportError("UnknownPlan")
+    root = (Path(data_dir) / "wp_file_payloads").resolve()
+    path = (root / plan_id).resolve()
+    if path.parent != root:
+        raise TransportError("UnknownPlan")
+    return path
+
+
+def write_payload(data_dir: Path, plan_id: str, new_text: str, diff: str) -> None:
+    path = payload_path(data_dir, plan_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps({"new_text": new_text, "diff": diff}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    temporary.replace(path)
+
+
+def read_payload(data_dir: Path, plan_id: str) -> dict[str, str]:
+    path = payload_path(data_dir, plan_id)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+        raise TransportError("PayloadMissing") from exc
+    if not isinstance(raw, dict):
+        raise TransportError("PayloadMissing")
+    new_text = raw.get("new_text")
+    diff = raw.get("diff")
+    if not isinstance(new_text, str) or not isinstance(diff, str):
+        raise TransportError("PayloadMissing")
+    return {"new_text": new_text, "diff": diff}
+
+
+def delete_payload(data_dir: Path, plan_id: str) -> None:
+    try:
+        payload_path(data_dir, plan_id).unlink(missing_ok=True)
+    except TransportError:
+        return
+
+
+def plan_expired(plan: dict[str, Any], now: datetime) -> bool:
+    stamp = plan.get("expires_at") or plan.get("created_at")
+    if not isinstance(stamp, str) or not stamp:
+        return True
+    try:
+        parsed = datetime.fromisoformat(stamp)
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    if plan.get("expires_at"):
+        return now >= parsed
+    return now - parsed > _PLAN_TTL
+
+
+def _unified(before: str, after: str, path: str) -> str:
+    diff = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=path,
+            tofile=path,
+            n=2,
+        )
+    )
+    if len(diff.encode("utf-8")) > _MAX_DIFF_BYTES:
+        return ""
+    return diff
+
+
+def _directory(root: str, kind: str, slug: str, relative: str) -> str:
+    base = component_dir(root, kind, slug)
+    text = str(relative or "").strip().replace("\\", "/")
+    if not text:
+        return base
+    parts = [part for part in text.split("/") if part]
+    if text.startswith("/") or any(part in {".", ".."} for part in parts):
+        raise PathRejected("relative")
+    if any(_SEGMENT.fullmatch(part) is None or sensitive_relative(part) for part in parts):
+        raise PathRejected("segment")
+    return base + "/" + "/".join(parts)
+
+
+class FileChangeOps:
+    """Operations that sit on top of the existing typed file editor."""
+
+    def __init__(self, editor: FileEditor) -> None:
+        self.editor = editor
+
+    def _data_dir(self) -> Path:
+        return self.editor.store.path.parent
+
+    def _now(self) -> datetime:
+        current = self.editor.clock()
+        if not isinstance(current, datetime):
+            return datetime.now(UTC)
+        if current.tzinfo is None:
+            return current.replace(tzinfo=UTC)
+        return current
+
+    def list_tree(
+        self, site_id: str, kind: str, slug: str, relative: str, *, actor: str
+    ) -> WpOpsResult:
+        editor = self.editor
+        site, denied = editor._site(site_id, actor, write=False)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        if sensitive_relative(relative):
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        try:
+            directory = _directory(site.files_root, kind, slug, relative)
+            names = editor._transport(site).list_dir(directory)
+        except PathRejected:
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        except TransportError as exc:
+            return editor._fail(
+                exc.error_class, transport_message(exc.error_class), site=site, ssh=editor._ssh(site)
+            )
+        entries: list[dict[str, str]] = []
+        truncated = False
+        for name in names:
+            if name in {".", ".."} or sensitive_relative(name) or name.lower() in _SKIP_DIRS:
+                continue
+            if len(entries) >= _TREE_CAP:
+                truncated = True
+                break
+            suffix = Path(name).suffix.lower()
+            kind_name = "file" if suffix in _EXTENSIONS else "directory"
+            entries.append({"name": name, "kind": kind_name})
+        return WpOpsResult(
+            ok=True,
+            message="tree",
+            data={
+                "ok": True,
+                "status": "listed",
+                "site_id": site.id,
+                "environment": site.environment,
+                "kind": kind,
+                "slug": slug,
+                "directory": relative or "",
+                "entries": entries,
+                "truncated": truncated,
+                "ssh": editor._ssh(site),
+                "live_calls": editor._ssh(site),
+            },
+        )
+
+    def search(
+        self,
+        site_id: str,
+        kind: str,
+        slug: str,
+        relative: str,
+        query: str,
+        *,
+        actor: str,
+    ) -> WpOpsResult:
+        editor = self.editor
+        site, denied = editor._site(site_id, actor, write=False)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        admin = editor.need(actor, Permission.WP_OPS_ADMIN, site=site, action="wp_ops_file_read")
+        if admin is not None:
+            return admin
+        text = str(query or "")
+        if len(text) < 2 or len(text) > 80:
+            return editor._fail("InvalidSearch", "Search text must be 2 to 80 characters.")
+        if sensitive_relative(relative):
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        try:
+            directory = _directory(site.files_root, kind, slug, relative)
+        except PathRejected:
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        hits: list[dict[str, Any]] = []
+        scanned_files = 0
+        scanned_bytes = 0
+        truncated = False
+        stack = [("", directory)]
+        while stack and scanned_files < _SEARCH_FILES and scanned_bytes < _SEARCH_BYTES:
+            prefix, current = stack.pop(0)
+            try:
+                names = editor._transport(site).list_dir(current)
+            except (PathRejected, TransportError):
+                continue
+            for name in names:
+                if sensitive_relative(name) or name.lower() in _SKIP_DIRS:
+                    continue
+                rel = f"{prefix}/{name}" if prefix else name
+                suffix = Path(name).suffix.lower()
+                if suffix not in _EXTENSIONS:
+                    if _SEGMENT.fullmatch(name):
+                        try:
+                            stack.append((rel, _directory(site.files_root, kind, slug, rel)))
+                        except PathRejected:
+                            continue
+                    continue
+                if scanned_files >= _SEARCH_FILES or scanned_bytes >= _SEARCH_BYTES:
+                    truncated = True
+                    break
+                try:
+                    body = editor._read_text(site, resolve_file(site.files_root, kind, slug, rel))
+                except (PathRejected, TransportError):
+                    continue
+                encoded = body.encode("utf-8")
+                scanned_files += 1
+                scanned_bytes += len(encoded)
+                if scanned_bytes > _SEARCH_BYTES:
+                    truncated = True
+                    break
+                for number, line in enumerate(body.splitlines(), start=1):
+                    if text not in line:
+                        continue
+                    excerpt = line.strip()
+                    if len(excerpt) > 120:
+                        excerpt = excerpt[:120]
+                    hits.append({"path": rel, "line": number, "excerpt": excerpt})
+                    if len(hits) >= _SEARCH_HITS:
+                        truncated = True
+                        break
+                if len(hits) >= _SEARCH_HITS:
+                    break
+            if truncated:
+                break
+        return WpOpsResult(
+            ok=True,
+            message="search",
+            data={
+                "ok": True,
+                "status": "searched",
+                "site_id": site.id,
+                "environment": site.environment,
+                "hits": hits,
+                "truncated": truncated,
+                "files_scanned": scanned_files,
+                "ssh": editor._ssh(site),
+                "live_calls": editor._ssh(site),
+            },
+        )
+
+    def propose(
+        self,
+        site_id: str,
+        kind: str,
+        slug: str,
+        relative: str,
+        new_text: str,
+        base_sha256: str,
+        summary: str,
+        *,
+        actor: str,
+        create: bool,
+        parent_slug: str | None,
+    ) -> WpOpsResult:
+        editor = self.editor
+        site, denied = editor._site(site_id, actor, write=True)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        if site.environment == "production":
+            code = editor.need(actor, Permission.CODE_EDIT, site=site, action="wp_ops_file_edit")
+            if code is not None:
+                return code
+        if kind == "plugin" and slug == "woocommerce":
+            return editor._fail("WooCoreRefused", "WooCommerce core files cannot be edited.")
+        if sensitive_relative(relative):
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        if kind == "theme" and parent_slug and slug == parent_slug:
+            return editor._fail("ParentThemeRefused", "Edit the child theme, not the parent.")
+        note = " ".join(str(summary or "").split())[:_MAX_SUMMARY]
+        locked = editor.lock(site.id)
+        if not locked.acquire(blocking=False):
+            return editor._fail("SiteBusy", "Site check already running", executed=False)
+        try:
+            return self._propose_locked(
+                site,
+                kind,
+                slug,
+                relative,
+                new_text,
+                base_sha256,
+                note,
+                actor=actor,
+                create=create,
+                parent_slug=parent_slug,
+            )
+        finally:
+            locked.release()
+
+    def _propose_locked(
+        self,
+        site: Site,
+        kind: str,
+        slug: str,
+        relative: str,
+        new_text: str,
+        base_sha256: str,
+        summary: str,
+        *,
+        actor: str,
+        create: bool,
+        parent_slug: str | None,
+    ) -> WpOpsResult:
+        editor = self.editor
+        try:
+            path = resolve_file(site.files_root, kind, slug, relative)
+            proposed = editor._validate_text(new_text)
+        except PathRejected:
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        except TransportError as exc:
+            return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+        if create and not self._parent_ready(site, path):
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        try:
+            current = editor._read_text(site, path)
+        except TransportError as exc:
+            if create and exc.error_class == "FileMissing":
+                current = ""
+            else:
+                return editor._fail(
+                    exc.error_class, transport_message(exc.error_class), site=site, ssh=editor._ssh(site)
+                )
+        else:
+            if create:
+                return editor._fail("AlreadyExists", "The file already exists.")
+        before = _digest(current.encode())
+        if str(base_sha256 or "") != before:
+            return editor._fail("DigestMismatch", "The base hash does not match the file.")
+        after = _digest(proposed.encode())
+        if before == after:
+            return editor._fail("NoChange", "The file is unchanged.")
+        risk = risk_for(relative, proposed)
+        plan_id = "fe-" + uuid.uuid4().hex[:12]
+        now = self._now()
+        diff = _unified(current, proposed, path)
+        try:
+            write_payload(self._data_dir(), plan_id, proposed, diff)
+        except (OSError, TransportError):
+            return editor._fail("PayloadMissing", "The review copy could not be stored.")
+        theme_relationship = "unknown" if parent_slug is None else "known"
+        plan = {
+            "id": plan_id,
+            "plan_id": plan_id,
+            "site_id": site.id,
+            "environment": site.environment,
+            "kind": kind,
+            "slug": slug,
+            "relative_path": relative.replace("\\", "/").strip("/"),
+            "path": path,
+            "before_digest": before,
+            "after_digest": after,
+            "byte_length": len(proposed.encode()),
+            "created_at": now.isoformat(),
+            "expires_at": (now + _PLAN_TTL).isoformat(),
+            "created_by": actor,
+            "status": "pending_review",
+            "risk": risk,
+            "summary": summary,
+            "created": create,
+            "theme_relationship": theme_relationship,
+            "payload_present": True,
+            "ssh": editor._ssh(site),
+        }
+        editor.store.update(lambda state: state.setdefault("file_edits", []).append(plan))
+        editor._audit_file(
+            actor,
+            site,
+            success=True,
+            error_class=None,
+            operation="file_diff_propose",
+            path=path,
+            byte_length=plan["byte_length"],
+            plan_id=plan_id,
+            digest=after,
+        )
+        public = {
+            key: value
+            for key, value in plan.items()
+            if key not in {"path"}
+        }
+        return WpOpsResult(
+            ok=True,
+            message="diff proposed",
+            data={
+                "ok": True,
+                "status": "pending_review",
+                "plan": public,
+                "executed": False,
+                "isolated_execution": "not_available",
+                "ssh": editor._ssh(site),
+                "live_calls": False,
+            },
+        )
+
+    def _load_plan(self, plan_id: str, site_id: str | None) -> dict[str, Any] | None:
+        if not _PLAN_ID.fullmatch(plan_id):
+            return None
+        state = self.editor.store.load()
+        for row in state.get("file_edits", []):
+            if not isinstance(row, dict) or row.get("id") != plan_id:
+                continue
+            if site_id is not None and row.get("site_id") != site_id:
+                continue
+            return row
+        return None
+
+    def _set_status(self, plan_id: str, status: str, *, actor: str) -> None:
+        now = self._now().isoformat()
+
+        def mutate(state: dict[str, Any]) -> None:
+            for row in state.get("file_edits", []):
+                if isinstance(row, dict) and row.get("id") == plan_id:
+                    row["status"] = status
+                    row["updated_at"] = now
+                    row["updated_by"] = actor
+
+        self.editor.store.update(mutate)
+
+    def validate(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        editor = self.editor
+        site, denied = editor._site(site_id, actor, write=False)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        plan = self._load_plan(plan_id, site.id)
+        if plan is None or plan.get("payload_present") is not True:
+            return editor._fail("UnknownPlan", "Unknown edit plan.")
+        if plan_expired(plan, self._now()):
+            delete_payload(self._data_dir(), plan_id)
+            return editor._fail("PlanExpired", "The edit plan has expired.")
+        try:
+            payload = read_payload(self._data_dir(), plan_id)
+            resolved = resolve_file(
+                site.files_root,
+                str(plan.get("kind") or ""),
+                str(plan.get("slug") or ""),
+                str(plan.get("relative_path") or ""),
+            )
+        except (PathRejected, TransportError):
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        if _digest(payload["new_text"].encode()) != plan.get("after_digest"):
+            return editor._fail("DigestMismatch", "The stored diff does not match the plan.")
+        if plan.get("created") is True:
+            try:
+                editor._read_text(site, resolved)
+            except TransportError as exc:
+                if exc.error_class != "FileMissing":
+                    return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+            else:
+                return editor._fail("AlreadyExists", "The file already exists.")
+        else:
+            try:
+                current = editor._read_text(site, resolved)
+            except TransportError as exc:
+                return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+            if _digest(current.encode()) != plan.get("before_digest"):
+                return editor._fail("StaleFile", "The file changed after the plan was created.")
+        advance = plan.get("risk") != "high"
+        if advance and plan.get("status") == "pending_review":
+            self._set_status(plan_id, "validated", actor=actor)
+        return WpOpsResult(
+            ok=True,
+            message="validated",
+            data={
+                "ok": True,
+                "status": "validated" if advance else "pending_review",
+                "plan_id": plan_id,
+                "site_id": site.id,
+                "environment": site.environment,
+                "risk": plan.get("risk"),
+                "advance": advance,
+                "isolated_execution": "not_available",
+                "executed": False,
+                "live_calls": False,
+            },
+        )
+
+    def _has_staging(self) -> bool:
+        from ecom_ops.wp_ops.registry import load_sites
+
+        try:
+            sites = load_sites(self.editor.registry_path, data_dir=self._data_dir())
+        except ValueError:
+            return False
+        return any(site.environment == "staging" for site in sites)
+
+    def _parent_ready(self, site: Site, path: str) -> bool:
+        transport = self.editor._transport(site)
+        if not isinstance(transport, LocalTree):
+            return True
+        return transport._local(path).parent.is_dir()
+
+    def _prepare_stage(self, plan_id: str, *, actor: str) -> tuple[Any, ...] | WpOpsResult:
+        """Check every staging guard. The tuple is ready to write; a result is a refusal."""
+        editor = self.editor
+        plan = self._load_plan(plan_id, None)
+        if plan is None:
+            return editor._fail("UnknownPlan", "Unknown edit plan.")
+        site_id = str(plan.get("site_id") or "")
+        site, denied = editor._site(site_id, actor, write=True)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        if site.environment != "staging":
+            if not self._has_staging():
+                return editor._fail("StagingUnconfigured", "No staging site is registered.")
+            return editor._fail("ProductionWriteDisabled", "Production file writes are disabled.")
+        if plan.get("risk") == "high":
+            return editor._fail(
+                "HighRiskBlocked",
+                "High-risk changes stop until an isolated check exists.",
+            )
+        if plan.get("status") not in {"pending_review", "validated"}:
+            return editor._fail("PlanNotPending", "Edit plan is not pending.")
+        if plan_expired(plan, self._now()):
+            delete_payload(self._data_dir(), plan_id)
+            return editor._fail("PlanExpired", "The edit plan has expired.")
+        transport = editor._transport(site)
+        if not isinstance(transport, LocalTree):
+            return editor._fail(
+                "DeployTransportUnavailable",
+                "Live SFTP cannot write. A separate deploy identity is required.",
+                site=site,
+                ssh=True,
+            )
+        try:
+            payload = read_payload(self._data_dir(), plan_id)
+            proposed = editor._validate_text(payload["new_text"])
+            resolved = resolve_file(
+                site.files_root,
+                str(plan.get("kind") or ""),
+                str(plan.get("slug") or ""),
+                str(plan.get("relative_path") or ""),
+            )
+        except PathRejected:
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        except TransportError as exc:
+            return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+        if _digest(proposed.encode()) != plan.get("after_digest"):
+            return editor._fail("DigestMismatch", "The stored diff does not match the plan.")
+        if plan.get("created") is True:
+            if not self._parent_ready(site, resolved):
+                return editor._fail("PathRejected", "Kind or path is not editable.")
+            try:
+                editor._read_text(site, resolved)
+            except TransportError as exc:
+                if exc.error_class != "FileMissing":
+                    return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+            else:
+                return editor._fail("AlreadyExists", "The file already exists.")
+        else:
+            try:
+                current = editor._read_text(site, resolved)
+            except TransportError as exc:
+                return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+            if _digest(current.encode()) != plan.get("before_digest"):
+                return editor._fail("StaleFile", "The file changed after the plan was created.")
+        return site, plan, proposed, resolved, transport
+
+    def preview_stage(self, plan_id: str, *, actor: str) -> WpOpsResult:
+        """Tell the chat a server button is required. This method does not write."""
+        prepared = self._prepare_stage(plan_id, actor=actor)
+        if isinstance(prepared, WpOpsResult):
+            return prepared
+        site, plan, _proposed, _resolved, _transport = prepared
+        return WpOpsResult(
+            ok=True,
+            message="approval required",
+            data={
+                "ok": True,
+                "status": "approval_required",
+                "executed": False,
+                "approval_required": True,
+                "plan_id": plan_id,
+                "site_id": site.id,
+                "environment": site.environment,
+                "risk": plan.get("risk"),
+                "live_calls": False,
+            },
+        )
+
+    def stage(self, plan_id: str, *, actor: str) -> WpOpsResult:
+        """Write a staging plan on the local mock tree. Live transport is refused."""
+        editor = self.editor
+        prepared = self._prepare_stage(plan_id, actor=actor)
+        if isinstance(prepared, WpOpsResult):
+            return prepared
+        site, plan, proposed, resolved, transport = prepared
+        if plan.get("created") is True:
+            transport._local(resolved).write_bytes(proposed.encode())
+        else:
+            try:
+                transport.write_bytes(resolved, proposed.encode())
+            except TransportError as exc:
+                return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+        written = editor._read_text(site, resolved)
+        if _digest(written.encode()) != plan.get("after_digest"):
+            return editor._fail("DigestMismatch", "The written file does not match the plan.")
+        self._set_status(plan_id, "staged", actor=actor)
+        delete_payload(self._data_dir(), plan_id)
+        editor._audit_file(
+            actor,
+            site,
+            success=True,
+            error_class=None,
+            operation="file_stage",
+            path=resolved,
+            byte_length=len(written.encode()),
+            plan_id=plan_id,
+            digest=str(plan.get("after_digest") or ""),
+        )
+        return WpOpsResult(
+            ok=True,
+            message="staged",
+            data={
+                "ok": True,
+                "status": "staged",
+                "plan_id": plan_id,
+                "site_id": site.id,
+                "environment": site.environment,
+                "executed": True,
+                "ssh": False,
+                "live_calls": False,
+            },
+        )
+
+    def deny(self, plan_id: str, *, actor: str) -> WpOpsResult:
+        editor = self.editor
+        plan = self._load_plan(plan_id, None)
+        if plan is None:
+            return editor._fail("UnknownPlan", "Unknown edit plan.")
+        _site, denied = editor._site(str(plan.get("site_id") or ""), actor, write=True)
+        if denied is not None:
+            return denied
+        if plan.get("status") not in {"pending_review", "validated"}:
+            return editor._fail("PlanNotPending", "Edit plan is not pending.")
+        delete_payload(self._data_dir(), plan_id)
+        self._set_status(plan_id, "denied", actor=actor)
+        return WpOpsResult(
+            ok=True,
+            message="denied",
+            data={
+                "ok": True,
+                "status": "denied",
+                "plan_id": plan_id,
+                "executed": False,
+                "live_calls": False,
+            },
+        )
+
+    def request_production(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        editor = self.editor
+        site, denied = editor._site(site_id, actor, write=True)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        plan = self._load_plan(plan_id, site.id)
+        if plan is None:
+            return editor._fail("UnknownPlan", "Unknown edit plan.")
+        blocked = production_deploy_block()
+        return WpOpsResult(
+            ok=False,
+            message="Production deploy is not available.",
+            data={
+                "ok": False,
+                "status": "production_blocked",
+                "plan_id": plan_id,
+                "site_id": site.id,
+                "environment": site.environment,
+                **blocked,
+            },
+        )
+
+    def deploy_production(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        return self.request_production(site_id, plan_id, actor=actor)
+
+    def verify(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        editor = self.editor
+        site, denied = editor._site(site_id, actor, write=False)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        plan = self._load_plan(plan_id, site.id)
+        if plan is None:
+            return editor._fail("UnknownPlan", "Unknown edit plan.")
+        matched = False
+        if plan.get("status") in {"staged", "deployed", "verified"}:
+            try:
+                resolved = resolve_file(
+                    site.files_root,
+                    str(plan.get("kind") or ""),
+                    str(plan.get("slug") or ""),
+                    str(plan.get("relative_path") or ""),
+                )
+                current = editor._read_text(site, resolved)
+                matched = _digest(current.encode()) == plan.get("after_digest")
+            except (PathRejected, TransportError):
+                matched = False
+        return WpOpsResult(
+            ok=True,
+            message="verify",
+            data={
+                "ok": True,
+                "status": "verified" if matched else plan.get("status") or "unknown",
+                "plan_id": plan_id,
+                "site_id": site.id,
+                "hash_matches": matched,
+                "page_checks": "not_run",
+                "executed": False,
+                "live_calls": False,
+            },
+        )
+
+    def rollback(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        editor = self.editor
+        denied = editor.need(actor, Permission.WP_OPS_RESTORE, action="wp_ops_restore")
+        if denied is not None:
+            return denied
+        plan = self._load_plan(plan_id, site_id)
+        if plan is None:
+            return editor._fail("UnknownPlan", "Unknown edit plan.")
+        return editor._fail("RestoreNotInMvp", "Restore is not available in this phase.")
+
+    def review(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
+        editor = self.editor
+        site, denied = editor._site(site_id, actor, write=False)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        plan = self._load_plan(plan_id, site.id)
+        if plan is None:
+            return editor._fail("UnknownPlan", "Unknown edit plan.")
+        diff = ""
+        if plan.get("payload_present") is True and not plan_expired(plan, self._now()):
+            try:
+                diff = read_payload(self._data_dir(), plan_id)["diff"]
+            except TransportError:
+                diff = ""
+        public = {
+            key: plan.get(key)
+            for key in (
+                "plan_id",
+                "site_id",
+                "environment",
+                "kind",
+                "slug",
+                "relative_path",
+                "before_digest",
+                "after_digest",
+                "risk",
+                "summary",
+                "status",
+                "expires_at",
+                "created",
+            )
+        }
+        return WpOpsResult(
+            ok=True,
+            message="review",
+            data={"ok": True, "plan": public, "diff": diff, "executed": False, "live_calls": False},
+        )

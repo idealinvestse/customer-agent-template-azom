@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -19,6 +20,17 @@ from ecom_ops.bot.job_store import JOB_LEASE_SECONDS, TelegramJobStore
 from ecom_ops.bot.openclaw_commands import TELEGRAM_MENU_COMMANDS
 from ecom_ops.bot.reply import BotReply, as_reply, telegram_markup_to_actions
 from ecom_ops.bot.store import TelegramConversationStore
+
+_ACTION_MESSAGE = re.compile(
+    r"^/cases\s+(?:approve|send|close|regenerate|regen|redraft)\b", re.I
+)
+_ACTION_CALLBACK = re.compile(
+    r"^(?:cases:approve:[0-9a-f]{8}|cases:regen:[0-9a-f]{8}|"
+    r"order:set:\d{1,12}:[a-z][a-z-]{0,31}|"
+    r"product:desc:(?:0|[1-9]\d{0,11}):[01]|action:yes|escalate:yes|"
+    r"wpfile:stage:fe-[a-f0-9]{12})$",
+    re.I,
+)
 
 
 def _api(token: str, method: str, **params: object) -> dict:
@@ -102,6 +114,7 @@ class _LiveTelegramTurn:
     _STATUS_DELAY = 3.0
     _EDIT_INTERVAL = 0.75
     _CHUNK_LIMIT = 3900
+    _STATUS_CLIP = 420
 
     def __init__(
         self,
@@ -158,7 +171,7 @@ class _LiveTelegramTurn:
         return {}
 
     def _status_text(self) -> str:
-        return "\n".join(self.status_lines[-10:])[:3500]
+        return "\n".join(self.status_lines[-10:])[:4200]
 
     def _persist_ids(self) -> None:
         if self.job_store and self.job_id:
@@ -199,7 +212,7 @@ class _LiveTelegramTurn:
         self.last_status_edit = now
 
     def on_progress(self, message: str) -> None:
-        value = " ".join(str(message or "").split())[:180]
+        value = " ".join(str(message or "").split())[: self._STATUS_CLIP]
         if not value:
             return
         with self.lock:
@@ -348,6 +361,8 @@ _ACTION_LOCKS_GUARD = threading.Lock()
 def _action_lock_key(job: dict, handler: BotHandler) -> str:
     payload = job.get("payload") or {}
     data = str(payload.get("data") or "")
+    if data.startswith("wpfile:stage:"):
+        return "wp-file-edits"
     if data == "action:yes":
         state = handler.store.get(job.get("chat_id")) or {}
         pending = (state.get("slots") or {}).get("pending") or {}
@@ -399,6 +414,47 @@ def _deliver_job_result(token: str, store: TelegramJobStore, job: dict) -> bool:
     return synced
 
 
+def _preflight_action_job(handler: BotHandler, job: dict) -> str | None:
+    """Fail closed on malformed, stale, or unauthorized queued actions."""
+    payload = job.get("payload")
+    if not isinstance(payload, dict):
+        return "Ogiltig åtgärdskö. Ingen ändring utfördes."
+    chat_id = str(job.get("chat_id") or "")
+    if not chat_id or str(payload.get("chat_id") or "") != chat_id:
+        return "Åtgärdens chatt stämmer inte. Ingen ändring utfördes."
+
+    payload_type = payload.get("type")
+    requires_snapshot = False
+    if payload_type == "callback":
+        data = str(payload.get("data") or "").strip()
+        if not _ACTION_CALLBACK.fullmatch(data):
+            return "Åtgärdsknappen kunde inte valideras. Ingen ändring utfördes."
+        requires_snapshot = data in {"action:yes", "escalate:yes"} or data.startswith("wpfile:stage:")
+    elif payload_type == "message":
+        if not _ACTION_MESSAGE.match(str(payload.get("text") or "").strip()):
+            return "Åtgärdskommandot kunde inte valideras. Ingen ändring utfördes."
+    else:
+        return "Okänd åtgärdstyp. Ingen ändring utfördes."
+
+    try:
+        if not handler._peer_allowed(chat_id):
+            return "Chatten saknar behörighet. Ingen ändring utfördes."
+        handler._resolve_actor(chat_id)
+    except Exception:
+        return "Actor-behörigheten kunde inte verifieras. Ingen ändring utfördes."
+
+    snapshot_required = payload.get("approval_snapshot_required") is True
+    if requires_snapshot and not snapshot_required:
+        return "Bekräftelsen saknar aktuell kontroll. Granska och bekräfta igen."
+    if snapshot_required:
+        expected = str(payload.get("approval_snapshot") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            return "Bekräftelsen saknar aktuell kontroll. Granska och bekräfta igen."
+        if expected != TelegramJobStore.approval_snapshot(handler.store.get(chat_id)):
+            return "Bekräftelsen är inaktuell. Granska åtgärden och bekräfta igen."
+    return None
+
+
 def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: dict) -> None:
     job_id = str(job["job_id"])
     chat_id = job["chat_id"]
@@ -418,7 +474,7 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
         live.clear_answer_drafts()
 
     def progress(message: str) -> None:
-        safe = " ".join(str(message or "").split())[:180]
+        safe = " ".join(str(message or "").split())[:_LiveTelegramTurn._STATUS_CLIP]
         if not safe:
             return
         try:
@@ -446,15 +502,10 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
             checkpoint()
             with _action_lock(_action_lock_key(job, handler)):
                 checkpoint()
-                expected_snapshot = payload.get("approval_snapshot")
-                if payload.get("approval_snapshot_required") and (
-                    not expected_snapshot
-                    or expected_snapshot
-                    != TelegramJobStore.approval_snapshot(handler.store.get(chat_id))
-                ):
-                    reply = BotReply(
-                        text="Den här bekräftelsen är inaktuell. Granska det aktuella förslaget och bekräfta igen."
-                    )
+                progress("Kontrollerar åtgärd, behörighet och aktuell bekräftelse.")
+                preflight_failure = _preflight_action_job(handler, job)
+                if preflight_failure:
+                    reply = BotReply(text=preflight_failure)
                 else:
                     if not store.mark_side_effect_started(job_id):
                         raise ChatCancelled()
@@ -466,6 +517,17 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
                         )
                     else:
                         reply = as_reply(handler.handle(chat_id, str(payload.get("text") or "")))
+        elif job.get("kind") == "page_review":
+            from ecom_ops.bot.page_review_job import run_page_review_job
+
+            reply = as_reply(
+                run_page_review_job(
+                    handler,
+                    job,
+                    progress=progress,
+                    on_checkpoint=checkpoint,
+                )
+            )
         elif payload.get("type") == "callback":
             reply = as_reply(handler.handle_callback(chat_id, str(payload.get("data") or "")))
         else:

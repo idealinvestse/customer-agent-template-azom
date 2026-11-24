@@ -61,6 +61,8 @@ def _complete_request(
     route_id: str | None = None,
     on_text_delta: Callable[[str], None] | None = None,
     on_text_reset: Callable[[], None] | None = None,
+    reasoning_effort: str | None = None,
+    hard_timeout: int | None = None,
 ):
     """Run one router completion and return the full result, including model.
 
@@ -78,6 +80,8 @@ def _complete_request(
         actor=actor,
         on_text_delta=on_text_delta,
         on_text_reset=on_text_reset,
+        reasoning_effort=reasoning_effort,
+        hard_timeout=hard_timeout,
     )
     router = get_model_router()
     if route_id:
@@ -99,6 +103,8 @@ def chat_completion(
     route_id: str | None = None,
     on_text_delta: Callable[[str], None] | None = None,
     on_text_reset: Callable[[], None] | None = None,
+    reasoning_effort: str | None = None,
+    hard_timeout: int | None = None,
 ) -> tuple[str, float]:
     """Run a chat completion through the configured model router.
 
@@ -118,6 +124,8 @@ def chat_completion(
         route_id=route_id,
         on_text_delta=on_text_delta,
         on_text_reset=on_text_reset,
+        reasoning_effort=reasoning_effort,
+        hard_timeout=hard_timeout,
     )
     _served_model.set(result.model or "")
     return result.content, float(result.cost_usd or 0.0)

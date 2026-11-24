@@ -2,19 +2,13 @@
 
 from __future__ import annotations
 
-import base64
 import json
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from ecom_ops.cli import main
-from ecom_ops.integrations.wp_files_ssh import (
-    OpenSshRunner,
-    SshFileTransport,
-    build_file_transport,
-)
+from ecom_ops.integrations.wp_files_ssh import SshFileTransport, build_file_transport
 from ecom_ops.rbac import clear_rbac_cache
 from ecom_ops.runtime_env import overlay_key_allowed
 from ecom_ops.security import is_critical_ssh_command, is_ssh_allowlisted
@@ -26,7 +20,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SECRET = "mock-shop-app-password-aaa"
 MARKER = "AZOM-FILE-MARKER"
 STYLE = "/var/www/shop/wp-content/themes/twentytwentyfive/style.css"
-HOST_KEY = "ssh-ed25519 " + base64.b64encode(b"azom-host-key-bytes").decode("ascii") + " test"
 
 
 class MemTree:
@@ -57,32 +50,6 @@ class MemTree:
             raise TransportError("FileMissing")
         self.files[absolute_file + ".azom-bak"] = self.files[absolute_file]
         self.files[absolute_file] = data
-
-
-class BoomRunner:
-    def run(self, host: str, command: str, *, stdin: bytes | None = None, timeout: int = 30):
-        del host, command, stdin, timeout
-        raise AssertionError("ssh was called")
-
-
-class RecordingRunner:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, bytes | None]] = []
-        self.body = b"/* mock theme */\n"
-
-    def run(self, host: str, command: str, *, stdin: bytes | None = None, timeout: int = 30):
-        del timeout
-        self.calls.append((host, command, stdin))
-        if command.startswith("ls "):
-            return 0, b"twentytwentyfive\n"
-        if command.startswith("cat "):
-            return 0, self.body
-        if command.startswith("cp "):
-            return 0, b""
-        if command.startswith("tee "):
-            self.body = stdin or b""
-            return 0, self.body
-        return 1, b""
 
 
 def _row(site_id: str, *, environment: str, host: str = "shop.example.test") -> dict:
@@ -227,49 +194,24 @@ def test_mock_flag_blocks_ssh_and_example_host_is_not_dialed(tmp_path, monkeypat
     monkeypatch.setenv("AZOM_WP_FILES_SSH", "1")
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
     site = parse_site(_row("stage", environment="staging", host="mock-staging.example.test"))
-    transport = build_file_transport(site, tmp_path, runner=BoomRunner())
+    def _refuse_socket(*_args, **_kwargs):
+        raise AssertionError("ssh socket was opened")
+
+    monkeypatch.setattr(
+        "ecom_ops.integrations.wp_files_ssh.socket.create_connection", _refuse_socket
+    )
+    transport = build_file_transport(site, tmp_path)
     assert isinstance(transport, LocalTree)
     monkeypatch.setenv("AZOM_USE_MOCK", "0")
-    live = build_file_transport(site, tmp_path, runner=BoomRunner())
+    live = build_file_transport(site, tmp_path)
+    assert isinstance(live, SshFileTransport)
     with pytest.raises(TransportError) as refused:
         live.list_dir("/var/www/shop/wp-content/themes")
     assert refused.value.error_class == "SshHostRefused"
+    with pytest.raises(TransportError) as blocked:
+        live.write_bytes(STYLE, b"/* next */\n")
+    assert blocked.value.error_class == "SshWriteDisabled"
     assert overlay_key_allowed("AZOM_WP_FILES_SSH") is False
-
-
-def test_ssh_commands_are_the_fixed_templates_and_shell_stays_blocked(monkeypatch):
-    monkeypatch.setenv("SSH_USER", "root")
-    monkeypatch.setenv("SSH_PORT", "22")
-    monkeypatch.delenv("SSH_IDENTITY_FILE", raising=False)
-    site = replace(
-        parse_site(_row("stage", environment="staging", host="shop.internal")),
-        host_public_key=HOST_KEY,
-    )
-    runner = RecordingRunner()
-    transport = SshFileTransport(site, runner)
-    assert transport.list_dir("/var/www/shop/wp-content/themes") == ["twentytwentyfive"]
-    assert transport.read_bytes(STYLE) == b"/* mock theme */\n"
-    transport.write_bytes(STYLE, b"/* next */\n")
-    commands = [call[1] for call in runner.calls]
-    assert commands == [
-        "ls -1 -- '/var/www/shop/wp-content/themes'",
-        f"cat -- '{STYLE}'",
-        f"cp -p -- '{STYLE}' '{STYLE}.azom-bak'",
-        f"tee -- '{STYLE}'",
-    ]
-    assert runner.calls[-1][2] == b"/* next */\n"
-    called: list[list[str]] = []
-    openssh = OpenSshRunner(
-        execute=lambda argv, stdin, timeout: called.append(argv) or (0, b""), user="deploy"
-    )
-    code, out = openssh.run("mock-shop.example.test", f"cat -- '{STYLE}'")
-    assert (code, out, called) == (126, b"", [])
-    code, out = openssh.run("shop.internal", "sed -i 's/a/b/' /tmp/file.php")
-    assert code == 126 and called == []
-    argv = openssh.argv("shop.internal", f"cat -- '{STYLE}'", stdin=None)
-    assert argv is not None
-    assert argv[0] == "ssh"
-    assert argv[-1] == f"cat -- '{STYLE}'"
     assert is_critical_ssh_command("sed -i 's/a/b/' file.php")
     assert is_critical_ssh_command("vim wp-config.php")
     assert not is_ssh_allowlisted("tee -- '/var/www/shop/a.php'")

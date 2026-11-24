@@ -11,20 +11,21 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
+import stat
 import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ecom_ops.runtime_env import apply_overlays, env_flag, overlay_key_allowed
+from ecom_ops.runtime_env import env_flag
 from ecom_ops.wp_ops.models import Site, _files_root, _ssh_host, files_root_narrow
 
 _SITE_ID = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _USER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
-_IDENTITY = re.compile(r"^[A-Za-z0-9/~][A-Za-z0-9_./:\\ ~-]*$")
 _HOST_KEY_TYPES = frozenset(
     {
         "ssh-ed25519",
@@ -39,24 +40,20 @@ _FIELDS = (
     "ssh_host",
     "ssh_user",
     "ssh_port",
-    "ssh_identity_file",
     "host_public_key",
 )
-_GLOBAL = ("SSH_USER", "SSH_PORT", "SSH_IDENTITY_FILE")
 _UNREADABLE = "wp_ssh.json kan inte läsas."
 _ROW = "SSH-överlagringen för sajten hoppades över."
 _ROOT = "Rotmappen måste vara en absolut sökväg."
 _ROOT_BROAD = "Rotmappen är för bred."
 _HOST = "Värden måste vara ett värdnamn."
-_USER_MSG = "Användarnamnet är inte tillåtet."
 _PORT = "Porten måste vara 1 till 65535."
-_IDENTITY_MSG = "Sökvägen till nyckeln är inte tillåten."
+_IDENTITY_MSG = "WordPress SFTP accepterar bara den lagrade nyckeln per sajt."
 _KEY = "Den privata nyckeln godtogs inte."
 _KEY_CHOICE = "Skicka antingen en ny nyckel eller rensa den sparade."
 _KEY_WRITE = "Den privata nyckeln kunde inte sparas."
 _KEY_CLEAR = "Den sparade nyckeln kunde inte tas bort."
 _HOST_KEY = "Värdens publika nyckel godtogs inte."
-_GLOBAL_HELD = "Ett globalt fält finns i secrets.env och används före runtime.env."
 _SAVE = "SSH-inställningarna kunde inte sparas."
 _MAX_KEY_BYTES = 16384
 _MAX_HOST_KEY = 2000
@@ -80,8 +77,8 @@ def overlay_file(data_dir: Path | None) -> Path:
 def stored_key_path(data_dir: Path | None, site_id: str) -> Path:
     if not _SITE_ID.fullmatch(site_id):
         raise SettingsRejected(_KEY_WRITE)
-    root = (data_dir_path(data_dir) / "ssh-keys").resolve()
-    path = (root / site_id).resolve()
+    root = data_dir_path(data_dir).resolve() / "ssh-keys"
+    path = root / site_id
     if path.parent != root:
         raise SettingsRejected(_KEY_WRITE)
     return path
@@ -95,19 +92,6 @@ def known_hosts_path(data_dir: Path | None, site_id: str) -> Path | None:
     if path.parent != root:
         return None
     return path
-
-
-def identity_ok(path: str, *, limit: int = 240) -> bool:
-    """True when ``path`` is a local identity file path, not key material."""
-    if not isinstance(path, str) or not path or len(path) > limit:
-        return False
-    if any(ch in path for ch in "\x00\r\n'\"`"):
-        return False
-    if "PRIVATE KEY" in path or "-----BEGIN" in path:
-        return False
-    if any(part == ".." for part in re.split(r"[\\/]", path)):
-        return False
-    return _IDENTITY.fullmatch(path) is not None
 
 
 def user_ok(user: str) -> bool:
@@ -162,12 +146,11 @@ def apply_ssh_overlay(sites: tuple[Site, ...], data_dir: Path | None = None) -> 
 
 
 def effective_identity(site: Site, data_dir: Path | None = None) -> str | None:
-    """Stored key file wins. Otherwise the external path. Otherwise unset."""
+    """Return the stored per-site key only; never resolve external identities."""
     path = stored_key_path(data_dir, site.id)
-    if path.is_file():
+    if path.is_file() and not path.is_symlink():
         return str(path)
-    text = site.ssh_identity_file.strip()
-    return text or None
+    return None
 
 
 def describe_ssh(
@@ -181,8 +164,6 @@ def describe_ssh(
     cleaned, errors = _parse_overlay(base)
     row = cleaned.get(site.id, {})
     stored = stored_key_path(base, site.id).is_file()
-    external = bool(site.ssh_identity_file.strip())
-    global_identity = os.environ.get("SSH_IDENTITY_FILE") or ""
     host_key = site.host_public_key.strip()
     view: dict[str, Any] = {
         "site_id": site.id,
@@ -195,24 +176,17 @@ def describe_ssh(
         "ssh_user": site.ssh_user,
         "ssh_port": site.ssh_port,
         "ssh_key_stored": stored,
-        "identity_present": external,
+        "identity_present": stored,
         "host_key_present": bool(host_key),
         "overlay_error": errors.get(site.id, ""),
-        "global_user": os.environ.get("SSH_USER") or "",
-        "global_port": os.environ.get("SSH_PORT") or "22",
-        "global_identity_present": bool(global_identity),
         "mock": env_flag("AZOM_USE_MOCK"),
         "ssh_enabled": env_flag("AZOM_WP_FILES_SSH") and not env_flag("AZOM_USE_MOCK"),
         "live_calls": False,
     }
     if include_paths:
-        view["ssh_identity_file"] = site.ssh_identity_file
-        view["global_identity_file"] = global_identity
         view["host_public_key"] = host_key
         view["host_key_fingerprint"] = host_key_fingerprint(host_key)
     else:
-        view["ssh_identity_file"] = ""
-        view["global_identity_file"] = ""
         view["host_public_key"] = ""
         view["host_key_fingerprint"] = ""
     return view
@@ -290,18 +264,40 @@ def _save_locked(
     if new_row.get("ssh_host") == site.ssh_host:
         new_row.pop("ssh_host", None)
     key_text = _validated_key(private_key, clear_key=clear_key)
-    global_updates = _validated_global(
-        global_user=global_user,
-        global_port=global_port,
-        global_identity_file=global_identity_file,
-    )
+    old_user = str(previous.get("ssh_user", site.ssh_user) or "").strip()
+    new_user = str(new_row.get("ssh_user", site.ssh_user) or "").strip()
+    key_path = stored_key_path(base, site.id)
+    try:
+        saved_key_stat = key_path.lstat()
+        has_saved_key = True
+    except FileNotFoundError:
+        saved_key_stat = None
+        has_saved_key = False
+    except OSError as exc:
+        raise SettingsRejected(_KEY_WRITE) from exc
+    if old_user.casefold() != new_user.casefold() and has_saved_key:
+        if key_text is None:
+            raise SettingsRejected(
+                "När WordPress SSH-användaren byts måste du skicka en ny, unik nyckel för läsarkontot."
+            )
+        if saved_key_stat is not None and stat.S_ISREG(saved_key_stat.st_mode):
+            try:
+                old_key_digest = hashlib.sha256(key_path.read_bytes().strip()).digest()
+            except OSError as exc:
+                raise SettingsRejected(_KEY_WRITE) from exc
+            new_key_digest = hashlib.sha256(key_text.strip().encode("utf-8")).digest()
+            if hmac.compare_digest(old_key_digest, new_key_digest):
+                raise SettingsRejected(
+                    "Använd en annan nyckel än den som var kopplad till det tidigare SSH-kontot."
+                )
+    if any(str(value or "").strip() for value in (global_user, global_port, global_identity_file)):
+        raise SettingsRejected("WordPress SFTP cannot change global SSH settings.")
     changed = [name for name in _FIELDS if previous.get(name) != new_row.get(name)]
     staged = dict(overlay)
     if new_row:
         staged[site.id] = new_row
     else:
         staged.pop(site.id, None)
-    key_path = stored_key_path(base, site.id)
     tmp_key: Path | None = None
     try:
         if key_text is not None:
@@ -314,19 +310,15 @@ def _save_locked(
         elif clear_key and key_path.is_file():
             _clear_private(key_path)
             changed.append("ssh_key")
-        notice = _write_global(base, global_updates)
+        notice = None
     except SettingsRejected:
         if tmp_key is not None:
             _unlink_quiet(tmp_key)
         raise
-    for key in global_updates:
-        if key not in changed:
-            changed.append(key)
     stored = key_path.is_file()
-    external = bool(new_row.get("ssh_identity_file"))
     return {
         "changed": changed,
-        "identity_present": stored or external,
+        "identity_present": stored,
         "global_notice": notice,
     }
 
@@ -377,7 +369,7 @@ def _changes_from_row(site_id: str, row: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(row["ssh_user"], str):
             raise ValueError(_ROW)
         user = row["ssh_user"].strip()
-        if user and not user_ok(user):
+        if user and (not user_ok(user) or not user.casefold().endswith("-wp-reader")):
             raise ValueError(_ROW)
         if user:
             changes["ssh_user"] = user
@@ -386,14 +378,6 @@ def _changes_from_row(site_id: str, row: dict[str, Any]) -> dict[str, Any]:
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError(_ROW)
         changes["ssh_port"] = port
-    if "ssh_identity_file" in row:
-        if not isinstance(row["ssh_identity_file"], str) or _looks_like_key(row["ssh_identity_file"]):
-            raise ValueError(_ROW)
-        path = row["ssh_identity_file"].strip()
-        if path and not identity_ok(path, limit=240):
-            raise ValueError(_ROW)
-        if path:
-            changes["ssh_identity_file"] = path
     if "host_public_key" in row:
         raw_key = row["host_public_key"]
         if not isinstance(raw_key, str) or _looks_like_key(raw_key):
@@ -444,8 +428,8 @@ def _validated_row(
         row["ssh_host"] = host
     user = str(ssh_user or "").strip()
     if user:
-        if not user_ok(user):
-            raise SettingsRejected(_USER_MSG)
+        if not user_ok(user) or not user.casefold().endswith("-wp-reader"):
+            raise SettingsRejected("WordPress SFTP kräver en dedikerad *-wp-reader-användare.")
         row["ssh_user"] = user
     port_text = str(ssh_port or "").strip()
     if port_text:
@@ -454,9 +438,7 @@ def _validated_row(
         row["ssh_port"] = int(port_text)
     identity = str(ssh_identity_file or "").strip()
     if identity:
-        if not identity_ok(identity, limit=240):
-            raise SettingsRejected(_IDENTITY_MSG)
-        row["ssh_identity_file"] = identity
+        raise SettingsRejected(_IDENTITY_MSG)
     public = str(host_public_key or "").strip()
     if public:
         if not host_key_ok(public):
@@ -513,33 +495,6 @@ def _read_ssh_string(blob: bytes) -> tuple[bytes, bytes]:
     return blob[4 : 4 + size], blob[4 + size :]
 
 
-def _validated_global(
-    *,
-    global_user: str,
-    global_port: str,
-    global_identity_file: str,
-) -> dict[str, str]:
-    raw = {
-        "SSH_USER": str(global_user or "").strip(),
-        "SSH_PORT": str(global_port or "").strip(),
-        "SSH_IDENTITY_FILE": str(global_identity_file or "").strip(),
-    }
-    updates: dict[str, str] = {}
-    for key, value in raw.items():
-        if not value:
-            continue
-        if not overlay_key_allowed(key):
-            continue
-        if key == "SSH_USER" and not user_ok(value):
-            raise SettingsRejected(_USER_MSG)
-        if key == "SSH_PORT" and (not value.isdigit() or not 1 <= int(value) <= 65535):
-            raise SettingsRejected(_PORT)
-        if key == "SSH_IDENTITY_FILE" and not identity_ok(value, limit=240):
-            raise SettingsRejected(_IDENTITY_MSG)
-        updates[key] = value
-    return updates
-
-
 def _looks_like_key(value: str) -> bool:
     return "\x00" in value or "PRIVATE KEY" in value or "-----BEGIN" in value
 
@@ -567,8 +522,26 @@ def _write_private_temp(path: Path, text: str) -> Path:
     tmp = path.with_name(path.name + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        _chmod_mode(path.parent, 0o700)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        parent_stat = path.parent.lstat()
+        if not stat.S_ISDIR(parent_stat.st_mode) or stat.S_ISLNK(parent_stat.st_mode):
+            raise SettingsRejected(_KEY_WRITE)
+        if os.name != "nt":
+            os.chmod(path.parent, 0o700)
+            parent_stat = path.parent.lstat()
+            if stat.S_IMODE(parent_stat.st_mode) & 0o077:
+                raise SettingsRejected(_KEY_WRITE)
+        try:
+            tmp_stat = tmp.lstat()
+        except FileNotFoundError:
+            tmp_stat = None
+        if tmp_stat is not None:
+            if not stat.S_ISREG(tmp_stat.st_mode) or stat.S_ISLNK(tmp_stat.st_mode):
+                raise SettingsRejected(_KEY_WRITE)
+            tmp.unlink()
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(tmp, flags, 0o600)
+    except SettingsRejected:
+        raise
     except OSError as exc:
         raise SettingsRejected(_KEY_WRITE) from exc
     try:
@@ -621,43 +594,6 @@ def _unlink_quiet(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def _write_global(data_dir: Path, updates: dict[str, str]) -> str | None:
-    if not updates:
-        return None
-    path = data_dir / "runtime.env"
-    existing: dict[str, str] = {}
-    order: list[str] = []
-    try:
-        if path.is_file():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                raw = line.strip()
-                if not raw or raw.startswith("#") or "=" not in raw:
-                    continue
-                key, _, value = raw.partition("=")
-                key = key.strip()
-                if key and key not in existing:
-                    order.append(key)
-                if key:
-                    existing[key] = value.strip().strip('"').strip("'")
-        for key, value in updates.items():
-            if key not in _GLOBAL or not overlay_key_allowed(key):
-                continue
-            if key not in existing:
-                order.append(key)
-            existing[key] = value
-        lines = [f"{key}={existing[key]}" for key in order if key in existing]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    except OSError as exc:
-        raise SettingsRejected(_SAVE) from exc
-    _chmod_mode(path, 0o600)
-    apply_overlays(data_dir=data_dir)
-    held = [key for key, value in updates.items() if os.environ.get(key) != value]
-    if held:
-        return _GLOBAL_HELD
-    return None
 
 
 def _acquire_file_lock(data_dir: Path) -> int:

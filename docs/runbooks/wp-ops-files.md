@@ -18,15 +18,15 @@
 **Gör:**
 
 - Låt `AZOM_USE_MOCK=1` vara på tills Oscar har godkänt en namngiven värd.
-- Sätt `AZOM_WP_FILES_SSH=1` bara i processmiljön, inte via dashboardens env-overlay, och bara när mock är av.
+- Sätt `AZOM_WP_FILES_SSH=1` bara i processmiljön, inte via dashboardens env-overlay, och först när det dedikerade SFTP-kontot är klart och verifierat.
 - Håll filen till `.php`, `.css`, `.js`, `.json`, `.txt` eller `.html` inne i temat eller pluginen.
 - Läs förslaget och skicka samma text till `file-apply`.
 
 **Gör inte:**
 
-- Skicka `sed`, `vim` eller ett eget SSH-kommando. Den vanliga allowlisten vägrar dem.
+- Skicka `sed`, `vim` eller ett eget SSH-kommando. Live-transporten använder SFTP utan fjärrskal.
 - Peka `ssh_host` i registret mot en kundsajt utan ett avgränsat godkännande. Värdar som slutar på `.example.test` kopplas inte upp.
-- Skapa en ny fil, radera en fil, eller redigera `wp-config.php` den här vägen.
+- Skapa en ny fil via CLI, radera en fil, eller redigera `wp-config.php` den här vägen. En chattplan för en ny fil kräver att föräldrakatalogen redan finns och att bas-hashen är tomfilens hash.
 - Behandla `.azom-bak` som en off-site-backup eller som en produktionsåterställning.
 - Markera fas 4, live soak eller managed hosting som klart.
 
@@ -35,12 +35,16 @@
 Öppna webbplatsen och länken SSH-inställningar.
 
 - Rot på servern och värdnamn sparas för den sajten. Ett tomt fält, eller samma värde som registret, ärver `config/wp_sites.yaml`. Roten måste ha minst tre led. Den får inte börja med `/etc`, `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/proc`, `/sys`, `/dev`, `/root`, `/boot`, `/tmp`, `/run`, `/var/log`, `/var/lib`, `/var/run` eller `/var/spool`.
-- Användare, port och en lokal sökväg till en nyckel kan sättas per sajt. Tomt fält ärver `SSH_USER`, `SSH_PORT` och `SSH_IDENTITY_FILE`; det finns ingen standardanvändare. Användaren måste vara explicit och får inte vara `root`. Saknad eller root-användare stoppas innan ssh-processen startar. `SSH_HOST` är den andra SSH-klienten, inte filtransportens värd.
-- Den globala reserven skrivs till `runtime.env` bara när fältet har ett värde. En rad i `secrets.env` med samma namn används före den.
-- Klistra in den privata nyckeln en gång. Den får inte ha en lösenfras. Sidan visar sedan bara att nyckeln är sparad. En tom ruta ändrar den inte. Kryssrutan tar bort den. Den sparade nyckeln används före den lokala sökvägen.
+- Ange ett dedikerat användarnamn som slutar på `-wp-reader` och port per sajt. WordPress SFTP ärver inte `SSH_USER` eller `SSH_IDENTITY_FILE`; använd aldrig `oscar` eller `root` för filtransporten. `SSH_HOST`, `SSH_USER` och `SSH_IDENTITY_FILE` är andra SSH-integrationers inställningar.
+- WordPress SFTP använder inte globala SSH-nycklar. Andra SSH-integrationers globala inställningar ändras inte från den här körboken.
+- Klistra in den privata nyckeln en gång. Den får inte ha en lösenfras. Sidan visar sedan bara att nyckeln är sparad. En tom ruta ändrar den inte. Kryssrutan tar bort den. Endast den lagrade per-site-nyckeln används för WordPress SFTP.
 - Klistra in värdens publika nyckel, en rad. Oscar ser fingeravtrycket SHA256. Jonatan ser bara om den är satt. Live SSH vägrar utan den, innan någon socket öppnas.
+- Livefilåtkomst använder endast den lagrade per-site-nyckeln och en SSH-användare vars namn slutar på `-wp-reader`. Kontot måste vara separat från `oscar`.
+- Servern måste tvinga `internal-sftp -R`, neka lösenord, skal, PTY och forwarding för kontot. Ge det bara läs- och traverseringsrätt till godkända tema-/pluginmappar. Ta bort symlänkar som pekar utanför dessa mappar och använd begränsad chroot när serverns kataloglayout tillåter det. Verifiera effektiv åtkomst som tjänstekontot; det får inte kunna läsa `wp-config.php`, backup eller credentials.
+- Botten ansluter till SFTP-subsystemet, kontrollerar pinnad host key före autentisering, avvisar symlänkar och läser högst 64 KiB per fil och 256 poster per katalog. Den begär aldrig ett fjärrskal.
+- Live-SFTP är skrivskyddad. `file-apply` vägras på live-SSH; mockflödet fortsätter stödja verifiering av förslag och apply.
 - Lösenord skickas inte. Formuläret öppnar inte SSH och kan inte slå på `AZOM_WP_FILES_SSH`.
-- `bin/backup-azom-data.sh` tar inte med `ssh-keys/`. En vanlig tarball innehåller inte den privata nyckeln.
+- `bin/backup-azom-data.sh` tar inte med `ssh-keys/` eller `wp_file_payloads/`. En vanlig tarball innehåller inte den privata nyckeln och inte diffens brödtext.
 - Jonatan ser rot, värd, användare, port och om en nyckel finns. Jonatan ser inte sökvägen till identitetsfilen och har inget formulär. Både staging och produktion kräver Oscar för att spara.
 - En trasig rad i `wp_ssh.json` hoppas över för den sajten. Övriga sajter laddas. En oläsbar fil stoppar ytan med texten `wp_ssh.json kan inte läsas.`
 
@@ -76,7 +80,19 @@ python -m ecom_ops --mock --actor agent wp file-apply --id mock-staging --plan f
 
 Om filen ändrats efter förslaget blir svaret `StaleFile` och filen lämnas orörd. Om texten inte matchar förslaget blir svaret `DigestMismatch`.
 
-## 4. Verifiera
+## 4. Diffplan i chatt och panel
+
+Chatten kan föreslå en namngiven diff. Planen sparar hashar. Brödtexten ligger i `AZOM_DATA_DIR/wp_file_payloads/<plan_id>`, inte i chatten, auditen eller plan-JSON.
+
+- Oscar granskar diffen på `GET /wp/<site_id>/files/plan/<plan_id>`. Jonatan får 403.
+- Staging skrivs bara av knappen `wpfile:stage:{plan_id}` och bara mot det lokala mockträdet. `action:yes` och fri text «ja» skriver inte filen.
+- `POST /wp/<site_id>/files/deploy` kräver Oscar, CSRF, plan-id, båda hasharna, sökväg och miljö. Svaret är `BackupNotVerified`. Ingen produktionsfil ändras.
+- `wp_rollback_file` och `restore()` svarar `RestoreNotInMvp`.
+- En plan utan payload, eller en plan äldre än 12 timmar, kan inte tillämpas. Raderna raderas inte av utgången.
+- WooCommerce-kärnan, ett känt föräldratema och hög risk (kassa, varukorg, betalning, gateway) stoppas före skrivning.
+- Detta är inte fas 4, inte en verifierad backup och inte en live-skrivning. `AZOM_WP_FILES_SSH` ska vara av.
+
+## 5. Verifiera
 
 - Audit-raden `wp_ops_file_edit` har sökväg, längd och digest. Den har inte filens text.
 - `restore()` svarar fortfarande `RestoreNotInMvp`.

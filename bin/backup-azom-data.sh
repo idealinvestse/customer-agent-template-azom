@@ -82,7 +82,8 @@ log "Creating tarball of Azom agent state under ${DATA_DIR}"
 TARBALL="${STAMP_DIR}/azom-data.tar.gz"
 # model_oauth holds ChatGPT refresh tokens.
 # ssh-keys holds per-site private keys for the WordPress file transport.
-# Keep both out of the ordinary tarball.
+# wp_file_payloads holds theme and plugin review copies outside the plan record.
+# Keep those directories out of the ordinary tarball.
 # Take a separate encrypted copy if Oscar needs an off-box restore.
 tar -czf "$TARBALL" \
   --exclude="${BACKUP_DIR}" \
@@ -113,6 +114,10 @@ tar -czf "$TARBALL" \
   --exclude="*/model_oauth/*" \
   --exclude="*/ssh-keys" \
   --exclude="*/ssh-keys/*" \
+  --exclude="*/wp_file_payloads" \
+  --exclude="*/wp_file_payloads/*" \
+  --exclude="*/wp_workspaces" \
+  --exclude="*/wp_workspaces/*" \
   --exclude="*/wp_ssh.lock" \
   -C "$(dirname "$DATA_DIR")" \
   "$(basename "$DATA_DIR")"

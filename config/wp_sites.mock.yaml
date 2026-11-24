@@ -1,0 +1,60 @@
+# Synthetic development and test sites. These are selected when
+# AZOM_USE_MOCK=1 or the variable is unset.
+sites:
+  - id: mock-shop
+    display_name: Mock Shop
+    canonical_url: https://mock-shop.example.test
+    environment: production
+    business_owner: customer
+    hosting_provider: unconfigured
+    wordpress_version: "6.7"
+    php_version: "8.3"
+    woocommerce: true
+    critical_urls:
+      - https://mock-shop.example.test/
+      - https://mock-shop.example.test/checkout
+    maintenance_window: "not agreed"
+    secret_ref: WP_SECRET_MOCK_SHOP
+    files_root: /var/www/mock-shop
+    ssh_host: mock-shop.example.test
+    alert_owner: unassigned
+    alert_confirmations: 2
+    check_interval_seconds: 300
+    timeout_seconds: 10
+    dedupe_window_seconds: 30
+    capabilities:
+      hosting_api: unknown
+      wp_cli: unknown
+      staging: unknown
+      backup: unknown
+      restore: unknown
+      uptime: available
+      security_scanner: unknown
+  - id: mock-staging
+    display_name: Mock Staging
+    canonical_url: https://mock-staging.example.test
+    environment: staging
+    business_owner: customer
+    hosting_provider: unconfigured
+    wordpress_version: "6.7"
+    php_version: "8.3"
+    woocommerce: false
+    critical_urls:
+      - https://mock-staging.example.test/
+    maintenance_window: "not agreed"
+    secret_ref: WP_SECRET_MOCK_STAGING
+    files_root: /var/www/mock-staging
+    ssh_host: mock-staging.example.test
+    alert_owner: unassigned
+    alert_confirmations: 2
+    check_interval_seconds: 300
+    timeout_seconds: 10
+    dedupe_window_seconds: 30
+    capabilities:
+      hosting_api: unknown
+      wp_cli: unknown
+      staging: unavailable
+      backup: unknown
+      restore: unknown
+      uptime: available
+      security_scanner: unknown

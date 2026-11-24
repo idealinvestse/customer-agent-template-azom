@@ -23,7 +23,7 @@ Dokumentationsstil: [`docs/DOC_STYLE.md`](docs/DOC_STYLE.md) · Index: [`docs/RE
 | **cases** | Mail → ärende, trådning, order-berikad draft, suggest-approve | Skicka kräver human approve |
 | **Shadow Live Ledger** | Null-send profil + FU9 skuggspår (`cases shadow-report`) | Default av; Oscar ADMIN för rapport |
 | **marketing** | Google Ads + GA4 digest / suggest / HITL mutate | Mock-first; live **reads** shipped; mutate/MP refused |
-| **SSH** | Allowlistad health/ops | Osäker/kodredigering → Oscar |
+| **SSH** | Fast health-allowlist; live av som standard, pinnad host key och dedikerat icke-root-konto krävs | Övriga kommandon blockeras/eskaleras |
 | **mail** | Gmail / Outlook / Exchange Graph / IMAP / POP3 / SMTP | Auth-fel → Oscar |
 | **dashboard** | Onboarding, settings, cases-triage, marketing, Oscar admin | Secrets only Oscar |
 | **Gmail OAuth** | Browser consent → `AZOM_DATA_DIR/oauth/gmail.json` | — |

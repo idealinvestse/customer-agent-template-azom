@@ -33,8 +33,6 @@ SSH_ALLOWLIST = frozenset(
         "systemctl is-active php-fpm",
         "systemctl is-active mysql",
         "systemctl is-active mariadb",
-        "docker ps",
-        "nginx -t",
     }
 )
 

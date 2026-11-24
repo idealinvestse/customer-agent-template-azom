@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Granskning – Azom{% endblock %}
+{% block page_subtitle %}Granskning{% endblock %}
+{% block content %}
+<div class="space-y-5" data-live-calls="false" data-executed="{{ 'true' if executed else 'false' }}" data-bytes-copied="false" data-restore="{{ restore }}" data-error="{{ error_class or '' }}" data-label="{{ label }}" data-status="{{ plan.status if plan else '' }}">
+  <section class="az-card">
+    <h2 class="az-page-title">Granskning av arbetsyta</h2>
+    <p class="az-muted mt-2 text-sm">
+      Länken kräver inloggning. Den är inte en behörighet.
+      Datat i en förhandsvisning är syntetiskt och är inte live-sajten.
+      Produktion skriver inte förrän backup och återställning är verifierade.
+    </p>
+    {% if error_class %}
+    <p class="mt-3 text-warn" data-review-error="{{ error_class }}">{{ error_class }}. Ingen produktionsfil ändrades.</p>
+    {% endif %}
+    {% if plan %}
+    <dl class="mt-4 space-y-1 text-sm">
+      <div>Plan {{ plan.plan_id }}</div>
+      <div>Sajt {{ plan.site_id }} · {{ plan.environment }}</div>
+      <div>{{ plan.kind }} / {{ plan.slug }}</div>
+      <div>Risk {{ plan.risk }} · status {{ plan.status }}</div>
+      <div>Relation {{ plan.theme_relationship }}</div>
+      <div>Bas {{ plan.base_sha256 }}</div>
+      <div>Arbete {{ plan.work_sha256 }}</div>
+    </dl>
+    {% if plan.checks %}
+    <ul class="mt-3 text-sm">
+      {% for row in plan.checks %}
+      <li>{{ row.job }}: {{ row.status }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% endif %}
+  </section>
+  {% if can_review %}
+  <section class="az-card">
+    <h2 class="az-section-title">Diff</h2>
+    {% if diff %}
+    <pre class="mt-3 whitespace-pre-wrap text-sm">{{ diff }}</pre>
+    {% else %}
+    <p class="az-muted mt-3 text-sm">Ingen diff finns för den här planen.</p>
+    {% endif %}
+  </section>
+  {% if plan %}
+  <section class="az-card">
+    <h2 class="az-section-title">Synpunkt</h2>
+    <form class="mt-3" method="post" action="{{ url_for('wp_review_comment', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <textarea name="text" maxlength="500"></textarea>
+      <button class="az-btn-primary" type="submit">Spara synpunkt</button>
+    </form>
+  </section>
+  <section class="az-card">
+    <h2 class="az-section-title">Staging, mock</h2>
+    <form class="mt-3" method="post" action="{{ url_for('wp_review_staging', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
+      <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
+      <button class="az-btn-primary" type="submit" data-review-action="staging">Godkänn lokal staging</button>
+    </form>
+  </section>
+  <section class="az-card">
+    <h2 class="az-section-title">Produktion</h2>
+    <form class="mt-3" method="post" action="{{ url_for('wp_review_production', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
+      <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
+      <button class="az-btn-primary" type="submit" data-review-action="production">Begär produktion</button>
+    </form>
+  </section>
+  <section class="az-card">
+    <h2 class="az-section-title">Tid</h2>
+    <form class="mt-3" method="post" action="{{ url_for('wp_review_extend', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button class="az-btn-primary" type="submit" data-review-action="extend">Förläng tolv timmar</button>
+    </form>
+  </section>
+  <section class="az-card">
+    <h2 class="az-section-title">Förhandsvisning</h2>
+    <form class="mt-3" method="post" action="{{ url_for('wp_review_preview', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button class="az-btn-primary" type="submit" data-review-action="preview">Bokför förhandsvisning</button>
+    </form>
+  </section>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

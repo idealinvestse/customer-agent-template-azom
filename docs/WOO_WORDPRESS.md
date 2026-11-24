@@ -24,7 +24,7 @@
 | Order context / tracking | `skills/ecom_ops/order_context.py` (heuristic fallback remains) |
 | Dashboard Woo webhook | `POST /webhooks/woo` |
 | Probes | `infrastructure/dashboard/secret_probes.py` (`probe_wordpress`, Woo probes) |
-| Site operations | `skills/ecom_ops/wp_ops/` — Phase 1–2 mock health, local backup manifests, and a typed theme/plugin file edit. Not this content client and not a general shell. See [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md). |
+| Site operations | `skills/ecom_ops/wp_ops/` — Phase 1–2 mock health, local backup manifests, and bounded read-only theme/plugin file access over pinned-key SFTP. Not this content client and not a general shell. See [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md). |
 
 ## Environment
 
@@ -103,7 +103,7 @@ Oscar probe: `probe_wordpress`.
 - Edit a product, page, post, site title, tagline, or plugin from Telegram without the confirm button. The chat stores the change in the session and waits for Ja.
 - Turn a plugin on or off as Jonatan or the operator. Plugin on/off needs `WP_OPS_ADMIN` (Oscar).
 - Install, update, delete, or switch a theme or plugin from Telegram. Those wait until a real backup exists.
-- Turn on `AZOM_WP_FILES_SSH` to change a product, page, or post. Those edits go through WooCommerce and WordPress REST. Theme and plugin files stay on the separate wp-ops path.
+- Turn on `AZOM_WP_FILES_SSH` to change a product, page, or post. Those edits go through WooCommerce and WordPress REST. Theme and plugin files stay on the separate wp-ops path. A named diff is review data. Staging mock writes use the plan-id button. Production deploy and file restore are not done.
 
 ## Tests (evidence)
 

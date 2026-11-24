@@ -1,0 +1,58 @@
+"""Telegram background job for a homepage source review.
+
+This path does not call the order chat and does not treat a steer as an order.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from ecom_ops.bot.reply import BotReply
+from ecom_ops.wp_ops.agent_tools import context_matches
+from ecom_ops.wp_ops.page_review_loop import run_bounded_page_review_loop
+
+
+def run_page_review_job(
+    handler: Any,
+    job: dict[str, Any],
+    *,
+    progress: Callable[[str], None],
+    on_checkpoint: Callable[[], list[str]] | None = None,
+) -> BotReply:
+    chat_id = str(job.get("chat_id") or "")
+    if not handler._peer_allowed(chat_id):
+        return BotReply(text="Chatten saknar behörighet. Ingen sida hämtades.")
+    try:
+        actor = str(handler._resolve_actor(chat_id))
+    except Exception:
+        return BotReply(text="Actor-behörigheten kunde inte verifieras. Ingen sida hämtades.")
+    if on_checkpoint:
+        try:
+            steers = on_checkpoint() or []
+        except Exception:
+            raise
+        if steers:
+            progress("Följdfrågan stannar i sidgranskningen. Orderverktyg kördes inte.")
+    state = handler.store.get(chat_id) or {}
+    session = state.get("session") if isinstance(state, dict) else None
+    context = session.get("wp_ops_context") if isinstance(session, dict) else None
+    channel = str(getattr(handler, "channel", "") or "")
+    site_id = ""
+    if context_matches(
+        context,
+        actor=actor,
+        channel=channel,
+        conversation_id=f"{channel}:{chat_id}",
+    ):
+        site_id = str(context.get("site_id") or "")
+    if not site_id:
+        return BotReply(
+            text="Välj en WordPress-sajt med /wp use. Ingen sida och ingen order hämtades."
+        )
+    outcome = run_bounded_page_review_loop(
+        site_id=site_id,
+        actor=actor,
+        on_progress=progress,
+    )
+    return BotReply(text=outcome.text)

@@ -93,7 +93,7 @@ def test_grok_route_requires_explicit_opt_in(monkeypatch):
 def test_grok_missing_binary(monkeypatch):
     monkeypatch.setenv("XAI_GROK_BIN", "azom-grok-missing")
 
-    def missing(command, cwd):
+    def missing(command, cwd, *_extra):
         del command, cwd
         raise FileNotFoundError("missing")
 
@@ -110,7 +110,7 @@ def test_grok_timeout_and_nonzero_hide_stderr(monkeypatch):
     silent = FakeGrok(hold=None)
     monkeypatch.setattr(
         "ecom_ops.model_router.xai_grok_build.spawn_grok",
-        lambda command, cwd: silent,
+        lambda command, cwd, *_extra: silent,
     )
     with pytest.raises(ModelUnavailableError) as timed_out:
         route.complete(_request())
@@ -122,7 +122,7 @@ def test_grok_timeout_and_nonzero_hide_stderr(monkeypatch):
     failed = FakeGrok(code=2, stdout="", stderr="refresh-token-secret")
     monkeypatch.setattr(
         "ecom_ops.model_router.xai_grok_build.spawn_grok",
-        lambda command, cwd: failed,
+        lambda command, cwd, *_extra: failed,
     )
     with pytest.raises(ModelUnavailableError) as unavailable:
         route.complete(_request())
@@ -136,7 +136,7 @@ def test_grok_timeout_and_nonzero_hide_stderr(monkeypatch):
     )
     monkeypatch.setattr(
         "ecom_ops.model_router.xai_grok_build.spawn_grok",
-        lambda command, cwd: unauthenticated,
+        lambda command, cwd, *_extra: unauthenticated,
     )
     with pytest.raises(ModelAuthError) as auth_exc:
         route.complete(_request())
@@ -165,7 +165,7 @@ def test_grok_extends_while_reasoning_or_text(monkeypatch, tmp_path):
     monkeypatch.setattr("ecom_ops.model_router.xai_grok_build._sleep", sleep)
     monkeypatch.setattr(
         "ecom_ops.model_router.xai_grok_build.spawn_grok",
-        lambda command, cwd: proc,
+        lambda command, cwd, *_extra: proc,
     )
     result = XaiGrokBuildRoute().complete(_request())
     assert result.content == "pong"
@@ -188,7 +188,7 @@ def test_grok_waiting_does_not_extend(monkeypatch, tmp_path):
     monkeypatch.setattr("ecom_ops.model_router.xai_grok_build._sleep", sleep)
     monkeypatch.setattr(
         "ecom_ops.model_router.xai_grok_build.spawn_grok",
-        lambda command, cwd: proc,
+        lambda command, cwd, *_extra: proc,
     )
     with pytest.raises(ModelUnavailableError):
         XaiGrokBuildRoute().complete(_request())
@@ -215,7 +215,7 @@ def test_grok_hard_cap_stops_endless_reasoning(monkeypatch, tmp_path):
     monkeypatch.setattr("ecom_ops.model_router.xai_grok_build._sleep", sleep)
     monkeypatch.setattr(
         "ecom_ops.model_router.xai_grok_build.spawn_grok",
-        lambda command, cwd: proc,
+        lambda command, cwd, *_extra: proc,
     )
     with pytest.raises(ModelUnavailableError) as timed_out:
         XaiGrokBuildRoute().complete(_request())
@@ -236,7 +236,7 @@ def test_grok_does_not_read_auth_json(monkeypatch, tmp_path):
 
     monkeypatch.setattr("builtins.open", spy)
 
-    def ok(command, cwd):
+    def ok(command, cwd, *_extra):
         joined = " ".join(command)
         assert "auth.json" not in joined
         assert "--print" not in command
@@ -244,6 +244,7 @@ def test_grok_does_not_read_auth_json(monkeypatch, tmp_path):
         assert "--always-approve" not in command
         assert "--permission-mode" not in command
         assert "--prompt-file" in command
+        assert "--reasoning-effort" not in command
         prompt_path = Path(command[command.index("--prompt-file") + 1])
         prompt_text = prompt_path.read_text(encoding="utf-8")
         assert prompt_text.startswith("USER:")
@@ -264,6 +265,100 @@ def test_grok_does_not_read_auth_json(monkeypatch, tmp_path):
     assert status["connected"] is False
     assert status["auth_checked"] is False
     assert not any("auth.json" in path for path in opened)
+
+
+def test_tool_round_uses_effort_and_request_hard_cap(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAI_GROK_BIN", "grok")
+    monkeypatch.setenv("AZOM_XAI_GROK_HARD_TIMEOUT", "180")
+    clock = _clock(monkeypatch)
+    events = tmp_path / "events.jsonl"
+    proc = FakeGrok(hold=None)
+    seen: dict[str, list[str]] = {}
+    monkeypatch.setattr("ecom_ops.model_router.xai_grok_build._event_files", lambda work: [events])
+
+    def sleep(seconds: float) -> None:
+        del seconds
+        clock["t"] += 1
+        with events.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps({"type": "phase_changed", "phase": "streaming_reasoning"}) + "\n"
+            )
+
+    def spawn(command, cwd, *_extra):
+        del cwd, _extra
+        seen["command"] = list(command)
+        return proc
+
+    monkeypatch.setattr("ecom_ops.model_router.xai_grok_build._sleep", sleep)
+    monkeypatch.setattr("ecom_ops.model_router.xai_grok_build.spawn_grok", spawn)
+    request = ModelRequest(
+        messages=[{"role": "user", "content": "hej"}],
+        model="grok-4.3",
+        timeout=5,
+        hard_timeout=8,
+        reasoning_effort="low",
+    )
+    with pytest.raises(ModelUnavailableError):
+        XaiGrokBuildRoute().complete(request)
+    assert proc.killed is True
+    assert clock["t"] >= 8
+    assert clock["t"] < 12
+    command = seen["command"]
+    assert command[command.index("--model") + 1] == "grok-4.3"
+    assert command[command.index("--reasoning-effort") + 1] == "low"
+
+
+def test_unknown_grok_43_retries_build_fast_once(monkeypatch):
+    monkeypatch.setenv("XAI_GROK_BIN", "grok")
+    calls: list[list[str]] = []
+
+    def spawn(command, cwd, *_extra):
+        del cwd, _extra
+        calls.append(list(command))
+        model = command[command.index("--model") + 1]
+        if model == "grok-4.3":
+            return FakeGrok(code=1, stdout="", stderr="unknown model grok-4.3")
+        return FakeGrok(stdout="pong\n")
+
+    monkeypatch.setattr("ecom_ops.model_router.xai_grok_build.spawn_grok", spawn)
+    result = XaiGrokBuildRoute().complete(
+        ModelRequest(
+            messages=[{"role": "user", "content": "hej"}],
+            model="grok-4.3",
+            timeout=5,
+            reasoning_effort="low",
+        )
+    )
+    assert result.content == "pong"
+    assert result.model == "grok-4.7-build-fast"
+    assert len(calls) == 2
+    for command in calls:
+        assert command[command.index("--reasoning-effort") + 1] == "low"
+    assert calls[1][calls[1].index("--model") + 1] == "grok-4.7-build-fast"
+    assert "unknown model" not in str(result)
+
+
+def test_plain_exit_does_not_retry_fast_model(monkeypatch):
+    monkeypatch.setenv("XAI_GROK_BIN", "grok")
+    calls = {"n": 0}
+
+    def spawn(command, cwd, *_extra):
+        del command, cwd, _extra
+        calls["n"] += 1
+        return FakeGrok(code=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr("ecom_ops.model_router.xai_grok_build.spawn_grok", spawn)
+    with pytest.raises(ModelUnavailableError) as exc:
+        XaiGrokBuildRoute().complete(
+            ModelRequest(
+                messages=[{"role": "user", "content": "hej"}],
+                model="grok-4.3",
+                timeout=5,
+            )
+        )
+    assert exc.value.code == "exit_1"
+    assert calls["n"] == 1
+    assert "boom" not in str(exc.value)
 
 
 def test_api_key_required(monkeypatch):

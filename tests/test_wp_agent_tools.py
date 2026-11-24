@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def agent_tools(tmp_path, monkeypatch):
     monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
-    service = WpOpsService(registry_path=ROOT / "config" / "wp_sites.yaml", data_dir=tmp_path)
+    service = WpOpsService(registry_path=ROOT / "config" / "wp_sites.mock.yaml", data_dir=tmp_path)
     return WpAgentTools(service), tmp_path
 
 
@@ -236,7 +236,7 @@ def test_loop_enforces_total_result_and_tool_time_budgets(monkeypatch):
             import time
 
             del name, arguments, actor, sticky_site_id, channel, conversation_id
-            time.sleep(0.01)
+            time.sleep(0.05)
             return ToolOutput({"ok": True, "status": "ok"})
 
     monkeypatch.setattr("ecom_ops.wp_ops.agent_tools.WP_TOOL_MAX_SECONDS", 0.001)

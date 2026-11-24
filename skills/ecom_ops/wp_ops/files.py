@@ -10,6 +10,7 @@ import hashlib
 import re
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -26,6 +27,7 @@ _PLAN_ID = re.compile(r"^fe-[a-f0-9]{12}$")
 _EXTENSIONS = frozenset({".php", ".css", ".js", ".json", ".txt", ".html"})
 _MAX_BYTES = 65536
 _KINDS = frozenset({"theme", "plugin"})
+_PLAN_TTL = timedelta(hours=12)
 
 
 class FileTransport(Protocol):
@@ -34,6 +36,26 @@ class FileTransport(Protocol):
     def read_bytes(self, absolute_file: str) -> bytes: ...
 
     def write_bytes(self, absolute_file: str, data: bytes) -> None: ...
+
+
+def _plan_expired(plan: dict[str, Any], now: datetime) -> bool:
+    """Legacy rows without a payload expire 12 hours after created_at."""
+    stamp = plan.get("expires_at") or plan.get("created_at")
+    if not isinstance(stamp, str) or not stamp:
+        return True
+    try:
+        parsed = datetime.fromisoformat(stamp)
+    except ValueError:
+        return True
+    if not isinstance(now, datetime):
+        now = datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    if plan.get("expires_at"):
+        return now >= parsed
+    return now - parsed > _PLAN_TTL
 
 
 class PathRejected(ValueError):
@@ -49,8 +71,24 @@ class TransportError(Exception):
 def transport_message(error_class: str) -> str:
     if error_class == "SshIdentityRejected":
         return "The SSH identity path was rejected."
+    if error_class == "SshIdentityMissing":
+        return "A per-site SSH key is required before SFTP."
+    if error_class == "SshIdentityPermissions":
+        return "The per-site SSH key permissions are too broad."
     if error_class == "SshHostKeyMissing":
         return "A public host key is required before SSH."
+    if error_class == "SshHostKeyMismatch":
+        return "The server host key did not match the pinned key."
+    if error_class == "SshAuthenticationFailed":
+        return "The dedicated SSH key was not accepted."
+    if error_class == "SshDedicatedUserRequired":
+        return "Live file access requires a dedicated *-wp-reader account."
+    if error_class == "SshWriteDisabled":
+        return "Live SFTP is read-only; file writes are disabled."
+    if error_class == "SshDirectoryTooLarge":
+        return "The remote directory exceeds the safe listing limit."
+    if error_class == "FileTooLarge":
+        return "The remote file exceeds the safe read limit."
     return "File transport failed."
 
 
@@ -233,11 +271,21 @@ class FileEditor:
         relative: str,
         *,
         actor: str,
+        admin_only: bool = False,
     ) -> WpOpsResult:
         site, denied = self._site(site_id, actor, write=False)
         if denied is not None:
             return denied
         assert isinstance(site, Site)
+        if admin_only:
+            denied = self.need(
+                actor,
+                Permission.WP_OPS_ADMIN,
+                site=site,
+                action="wp_ops_file_read",
+            )
+            if denied is not None:
+                return denied
         try:
             path = resolve_file(site.files_root, kind, slug, relative)
             body = self._read_text(site, path)
@@ -384,6 +432,9 @@ class FileEditor:
             return self._fail("UnknownPlan", "Unknown edit plan.")
         if plan.get("status") != "pending":
             return self._fail("PlanNotPending", "Edit plan is not pending.")
+        current_time = self.clock()
+        if _plan_expired(plan, current_time if isinstance(current_time, datetime) else datetime.now(UTC)):
+            return self._fail("PlanExpired", "The edit plan has expired.")
         try:
             proposed = self._validate_text(new_text)
         except TransportError as exc:
@@ -414,7 +465,13 @@ class FileEditor:
             written = self._read_text(site, resolved)
         except (PathRejected, TransportError) as exc:
             error = exc.error_class if isinstance(exc, TransportError) else "PathRejected"
-            return self._fail(error, transport_message(error), site=site, executed=False)
+            return self._fail(
+                error,
+                transport_message(error),
+                site=site,
+                executed=False,
+                ssh=self._ssh(site),
+            )
         if _digest(written.encode()) != plan.get("after_digest"):
             return self._fail("DigestMismatch", "The written file does not match the plan.", executed=False)
         applied_at = self.clock().isoformat()

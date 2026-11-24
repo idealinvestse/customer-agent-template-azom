@@ -78,7 +78,7 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **product-desc** | `actions/product_desc` | Template default; optional model router |
 | **support** | `actions/support` | Classify + draft; abuse → escalate |
 | **mail** | `actions/mail` + `integrations/mail*` | See [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
-| **SSH** | `actions/ssh_ops` | Allowlist only; else Oscar ticket |
+| **SSH** | `actions/ssh_ops` | Exact read-only health allowlist; live disabled by default and requires a dedicated non-root `*-ssh-reader`, explicit key, pinned `known_hosts`, and `AZOM_SSH_READ_ENABLED=1`. Other commands are blocked/escalated. |
 | **cases** | `cases/*` | Poll → draft → suggest-approve → human send — [`CASES.md`](CASES.md) |
 | **Shadow Live Ledger** | `cases/shadow_report.py`, `runtime_profile.py` | Null-send refuse + FU9 shadow trail — not FU9 wire |
 | **marketing** | `actions/marketing`, `marketing/*` | Google Ads + GA4 mock-first HITL — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
@@ -87,7 +87,7 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |
 | **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text + `/marketing` read; Telegram also surfaces progress and streamed answer drafts |
 | **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | Content and store API — [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
-| **WordPress site ops** | `wp_ops/` | Mock health/backups, typed theme/plugin file edits, server-checked bot reads, bounded WordPress tool loop, and immutable non-executable update/restore previews — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
+| **WordPress site ops** | `wp_ops/` | Mock health/backups, a separate theme/plugin file turn (windowed read, tree, literal search, named diff), a separate homepage source review (four site-bound reads; browser and PHP checks stay `not_run` until they really run), local-tree staging only after a plan-id button, production deploy still `BackupNotVerified`, key-only read-only SFTP with no remote shell, and immutable non-executable update/restore previews — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
 | **smoke / readiness** | `smoke.py`, `ops_status.py` | Opt-in live smoke; `/health` poll age |
 
 ## 4. Cases 2.0 + Path B (AI)
@@ -116,7 +116,7 @@ See [`CASES.md`](CASES.md) for the full operator guide (Swedish).
 See [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) and [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md). Identity: [`SOUL.md`](../SOUL.md).
 
 1. Slash / postback commands — session, tools, cases, order, health, brief, marketing (read-only).
-2. Free text — intent → read tools and confirm-only write proposals → SOUL-aligned LLM response. WordPress ops uses a separate named-tool loop bound to the selected site and checked by server-side RBAC (3 calls / 30 seconds maximum).
+2. Free text — intent → read tools and confirm-only write proposals → SOUL-aligned LLM response. WordPress drift uses a named-tool loop bound to the selected site (3 calls / 30 seconds). Theme and plugin files use a separate turn (4 reads, 1 search, 8 calls, 45 seconds) that can propose a diff and cannot write it. “Granska startsidans källkod” is a third turn: four site-bound homepage steps, no order tools, and no order digest. A missing browser or PHP binary stays `not_run/unavailable`.
 3. Explicit write UX — confirm button/postback, `/cases approve`, dashboard, CLI. **Never silent send.** WordPress update/restore plans are previews only and cannot execute.
 
 **Telegram background jobs:** A durable inbox acknowledges updates before moving the poll cursor. A bounded worker pool runs the existing synchronous handlers in the background, one job at a time per chat. `/status`, `/jobs`, `/stop`, `/cancel`, and Oscar-only `/reconcile` stay responsive while work runs. Read turns accept up to three steer messages at safe checkpoints; approved actions queue later input and are never replayed after an uncertain side effect. Telegram conversation state migrates from JSON into the job database. Messenger remains on its existing synchronous webhook and store.
@@ -143,6 +143,8 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `POST /wp/<id>/check` | operate / admin | Mock read-only check |
 | `POST /wp/<id>/backup` | operate / admin | Local mock backup manifest. No production restore route |
 | `POST /wp/<id>/restore-drill` | `WP_OPS_OPERATE` | Staging drill of a verified manifest |
+| `GET /wp/<id>/files/plan/<plan_id>` | `WP_OPS_ADMIN` and `CODE_EDIT` | Review a stored theme/plugin diff. No write |
+| `POST /wp/<id>/files/deploy` | `WP_OPS_ADMIN` and `CODE_EDIT` | CSRF POST. Returns `BackupNotVerified` and does not write |
 | `/marketing/suggests/*` | POST J/O | Build / deny / approve suggests |
 | `/interact` | auth | Support draft playground |
 | `/oscar`, `/oscar/secrets`, `/oscar/escalations` | Oscar | Admin + resolve |
@@ -202,7 +204,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `config/limits.yaml` | OpenRouter cap |
 | `config/cases_ai.yaml` | suggest-approve + auto-send rails |
 | `config/marketing.yaml` | Ads/GA4 allowlists, mutate defaults, kill env names |
-| `config/wp_sites.yaml` | Synthetic WordPress site registry. Secret refs only |
+| `config/wp_sites.yaml` | Live Azom production target; mock mode uses `config/wp_sites.mock.yaml`. Secret refs only |
 | `config/integrations.yaml` | mail presets; Google flags are **non-gating reserved** |
 | `config/dashboard.yaml` | reserved UI flags — **not loaded** by Python |
 | `config/customer.json` | customer metadata / KPIs |
@@ -267,7 +269,7 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 
 1. Input validation (`security.py`) on order ids, emails, SSH commands.
 2. Secret redaction in telemetry/escalation (includes WP + webhook secrets).
-3. SSH allowlist; shell metacharacters rejected.
+3. SSH allowlist; shell metacharacters rejected. Live additionally requires an explicit host pin, a per-process enable, a dedicated non-root account, and an explicit key; system SSH config and agent identities are disabled.
 4. RBAC gates mutations and mail send.
 5. Dashboard: Werkzeug password hashes preferred; CSRF; mock default passwords only with `AZOM_USE_MOCK=1`.
 6. Telegram/Messenger allowlists + actor maps **fail-closed in live** when empty (or when map is set and chat/PSID is unmapped).

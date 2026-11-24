@@ -242,6 +242,47 @@ def test_soft_escalate_no_sticky_flow(handler, store, monkeypatch):
     assert SOFT_ESCALATE_NUDGE in reply.text or "eskalera" in reply.lower()
 
 
+def test_mapped_oscar_is_told_to_the_model(monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    seen: dict[str, str] = {}
+
+    class Ready:
+        def any_configured(self):
+            return True
+
+        def has_route_outside_openrouter_budget(self):
+            return True
+
+        def preferred_route_id(self):
+            return "xai_grok_build"
+
+    class Tel:
+        def within_budget(self, cap):
+            del cap
+            return True
+
+        def sum_cost_usd(self):
+            return 0.0
+
+        def record(self, **kwargs):
+            del kwargs
+
+    def fake_chat(messages, **kwargs):
+        del kwargs
+        seen["sys"] = " ".join(
+            item.get("content") or "" for item in messages if item.get("role") == "system"
+        )
+        return "En rad i chatten räcker inte för Oscar-behörighet.", 0.0
+
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.get_model_router", lambda: Ready())
+    monkeypatch.setattr("ecom_ops.bot.chat_agent.chat_completion", fake_chat)
+    result = run_chat("Jag är oscar", actor="oscar", telemetry=Tel())
+    assert "Aktör i den här chatten: oscar, roll full_admin." in seen["sys"]
+    assert "Du talar med Oscar." in seen["sys"]
+    assert result.soft_escalate_nudge is False
+    assert SOFT_ESCALATE_NUDGE not in result.text
+
+
 def test_hard_escalate_still_sticky(handler, store):
     reply = handler.handle(42, "eskalera till oscar")
     assert reply.reply_markup is not None
