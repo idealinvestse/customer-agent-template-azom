@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -23,7 +24,17 @@ from ecom_ops.wp_ops.file_changes import production_deploy_block, risk_for
 from ecom_ops.wp_ops.files import LocalTree, TransportError, resolve_file
 from ecom_ops.wp_ops.models import Site
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
-from ecom_ops.wp_ops.review_checks import run_catalog, suite_status
+from ecom_ops.wp_ops.review_checks import (
+    PROFILE,
+    PROFILE_VERSION,
+    bind_artifacts,
+    public_policy,
+    requirements,
+    run_catalog,
+    run_is_publishable,
+    stamp_run,
+    suite_status,
+)
 from ecom_ops.wp_ops.review_runner import SandboxGate
 from ecom_ops.wp_ops.review_workspace import (
     PLAN_ID,
@@ -74,6 +85,8 @@ _PUBLIC = (
     "expires_at",
     "extended",
     "checks",
+    "check_run",
+    "check_generation",
     "sandbox",
     "comments",
     "label",
@@ -204,6 +217,8 @@ class ReviewPlans:
             "expires_at": (now + _TTL).isoformat(),
             "extended": False,
             "checks": [],
+            "check_run": {},
+            "check_generation": 0,
             "sandbox": self.gate.stop(
                 {"plan_id": plan_id, "engine": "unavailable", "state": "unavailable"}
             ),
@@ -272,15 +287,18 @@ class ReviewPlans:
             plan["work_sha256"] = tree_hash(root / "work")
             plan["base_sha256"] = tree_hash(root / "base")
             plan["risk"] = review_risk(str(plan.get("slug") or ""), _disk_text(root / "work"))
+            plan["check_generation"] = _generation(plan) + 1
+            plan["checks"] = []
+            plan["check_run"] = {}
             if plan.get("status") in {
                 "tests_passed",
                 "tests_failed",
                 "checks_incomplete",
+                "checks_running",
                 "review_requested",
                 "approved_for_staging",
             }:
                 plan["status"] = "validated"
-                plan["checks"] = []
             write_diff(root, _unified(root))
             write_manifest(root, plan)
             self._replace(plan)
@@ -304,10 +322,91 @@ class ReviewPlans:
             files = _text_files(root / "work")
             kind = str(plan.get("kind") or "")
             risk = str(plan.get("risk") or "low")
-            results = run_catalog(kind, files, risk, artifact_dir=root / "artifacts")
-            status = suite_status(kind, files, risk, results)
-            plan["checks"] = results
+            policy = requirements(kind, files, risk)
+            generation = _generation(plan) + 1
+            run_id = "cr-" + secrets.token_hex(6)
+            snapshot = {
+                "run_id": run_id,
+                "site_id": site_id,
+                "plan_id": plan_id,
+                "base_sha256": tree_hash(root / "base"),
+                "work_sha256": tree_hash(root / "work"),
+                "policy": policy,
+                "profile": PROFILE,
+                "profile_version": PROFILE_VERSION,
+                "started_at": self._now().isoformat(),
+                "finished_at": "",
+                "published": False,
+            }
+            plan["check_generation"] = generation
+            plan["status"] = "checks_running"
+            plan["check_run"] = snapshot
+            self._replace(plan)
+            artifact_dir = root / "artifacts"
+        try:
+            results = run_catalog(kind, files, risk, artifact_dir=artifact_dir)
+            crashed = False
+        except Exception:
+            results = []
+            crashed = True
+        with self._locks(site_id, plan_id):
+            plan = self._row(site_id, plan_id)
+            if plan is None:
+                return _fail("UnknownPlan", "Okänd plan.")
+            if plan.get("status") == "not_resumable":
+                return _fail(
+                    "WorkspaceNotResumable",
+                    "Planens arbetsyta finns inte i backupen och kan inte återupptas.",
+                    plan_id=plan_id,
+                    status="not_resumable",
+                )
+            if plan.get("status") == "expired" or self._past(plan):
+                if plan.get("status") != "expired":
+                    self._mark_expired(plan)
+                return _fail("Expired", "Planen har gått ut.", plan_id=plan_id, status="expired")
+            if _generation(plan) != generation:
+                return _fail(
+                    "StaleRun",
+                    "En nyare ändring finns. Den här körningen skrevs inte.",
+                    plan_id=plan_id,
+                    site_id=site_id,
+                    status=plan.get("status"),
+                )
+            root = workspace_root(self.data_dir, site_id, plan_id)
+            base_now = tree_hash(root / "base")
+            work_now = tree_hash(root / "work")
+            stamped = stamp_run(
+                results,
+                run_id=run_id,
+                site_id=site_id,
+                plan_id=plan_id,
+                base_sha256=str(snapshot["base_sha256"]),
+                work_sha256=str(snapshot["work_sha256"]),
+                policy=policy,
+                profile=PROFILE,
+                profile_version=PROFILE_VERSION,
+            )
+            bind_artifacts(artifact_dir, stamped, snapshot)
+            moved = base_now != snapshot["base_sha256"] or work_now != snapshot["work_sha256"]
+            status = "checks_incomplete" if crashed or moved else suite_status(kind, files, risk, stamped)
+            published = False
+            if status == "tests_passed" and not moved and not crashed:
+                candidate = {**snapshot, "published": True, "finished_at": self._now().isoformat()}
+                if run_is_publishable(kind, files, risk, stamped, candidate):
+                    published = True
+                    snapshot = candidate
+                else:
+                    status = "checks_incomplete"
+            if not published:
+                snapshot = {**snapshot, "published": False, "finished_at": self._now().isoformat()}
+            plan["checks"] = stamped
             plan["status"] = status
+            plan["check_run"] = snapshot
+            plan["base_sha256"] = base_now
+            plan["work_sha256"] = work_now
+            plan["error_class"] = "RevisionChanged" if moved else ""
+            write_diff(root, _unified(root))
+            write_manifest(root, plan)
             self._replace(plan)
         for row in results:
             self._audit(
@@ -317,8 +416,16 @@ class ReviewPlans:
                 row.get("status") != "failed",
                 job=row.get("job"),
                 outcome=row.get("status"),
+                run_id=run_id,
             )
-        return _ok("Kontrollerna är bokförda.", plan_id=plan_id, site_id=site_id, status=status, checks=results)
+        return _ok(
+            "Kontrollerna är bokförda.",
+            plan_id=plan_id,
+            site_id=site_id,
+            status=status,
+            checks=stamped,
+            check_run=snapshot,
+        )
 
     def show(self, site_id: str, plan_id: str, *, actor: str, include_diff: bool = False) -> WpOpsResult:
         denied = self._need(actor, Permission.WP_OPS_READ, action="wp_review_show")
@@ -409,7 +516,22 @@ class ReviewPlans:
             if not isinstance(transport, LocalTree):
                 return _fail("DeployTransportUnavailable", "Transporten tar inte emot skrivning.", plan_id=plan_id)
             if plan.get("status") not in _STAGE_OK:
-                return _fail("TestsNotPassed", "Kontrollerna är inte godkända.", plan_id=plan_id, status=plan.get("status"))
+                return _fail(
+                    "TestsNotPassed",
+                    "Kontrollerna är inte godkända.",
+                    plan_id=plan_id,
+                    status=plan.get("status"),
+                )
+            if plan.get("status") != "tests_passed":
+                return _fail(
+                    "EvidenceMissing",
+                    "Äldre stagingflagga öppnar inte grinden.",
+                    plan_id=plan_id,
+                    status=plan.get("status"),
+                )
+            evidence = self._require_current_evidence(plan)
+            if evidence is not None:
+                return evidence
             root = workspace_root(self.data_dir, site_id, plan_id)
             changed, problem = _changed(root)
             if problem:
@@ -489,6 +611,9 @@ class ReviewPlans:
                 return blocked
             if plan.get("status") != "tests_passed":
                 return _fail("PreviewBlocked", "Förhandsvisningen startades inte.", plan_id=plan_id, status=plan.get("status"))
+            evidence = self._require_current_evidence(plan)
+            if evidence is not None:
+                return evidence
             site, missing = self._site(site_id)
             if missing is not None:
                 return missing
@@ -504,8 +629,24 @@ class ReviewPlans:
             record["checkout_enabled"] = False
             plan["sandbox"] = record
             self._replace(plan)
-        self._audit(actor, plan, "wp_review_preview", True, outcome=record.get("state"))
-        return _ok("Förhandsvisningen är bokförd.", plan_id=plan_id, site_id=site_id, sandbox=record, status=plan["status"])
+            running = record.get("state") == "running" and record.get("engine") not in {None, "unavailable"}
+        self._audit(actor, plan, "wp_review_preview", running, outcome=record.get("state"))
+        if not running:
+            return _fail(
+                "PreviewBlocked",
+                "Förhandsvisningen startades inte.",
+                plan_id=plan_id,
+                site_id=site_id,
+                status=plan.get("status"),
+                sandbox=record,
+            )
+        return _ok(
+            "Förhandsvisningen är bokförd.",
+            plan_id=plan_id,
+            site_id=site_id,
+            sandbox=record,
+            status=plan["status"],
+        )
 
     def rollback(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
         denied = self._need(actor, Permission.WP_OPS_ADMIN, Permission.CODE_EDIT, action="wp_review_rollback")
@@ -747,6 +888,31 @@ class ReviewPlans:
             return _fail("Expired", "Planen har gått ut.", plan_id=plan.get("plan_id"), status="expired")
         return None
 
+    def _require_current_evidence(self, plan: dict[str, Any]) -> WpOpsResult | None:
+        plan_id = str(plan.get("plan_id") or "")
+        site_id = str(plan.get("site_id") or "")
+        try:
+            root = workspace_root(self.data_dir, site_id, plan_id)
+        except ReviewError as exc:
+            return _fail(exc.error_class, exc.error_class, plan_id=plan_id)
+        if not (root / "base").is_dir() or not (root / "work").is_dir():
+            return _fail("WorkspaceNotResumable", "Arbetsytan saknas.", plan_id=plan_id, status="not_resumable")
+        base_now = tree_hash(root / "base")
+        work_now = tree_hash(root / "work")
+        if base_now != plan.get("base_sha256") or work_now != plan.get("work_sha256"):
+            return _fail("RevisionStale", "Revisionen har ändrats.", plan_id=plan_id, site_id=site_id)
+        files = _text_files(root / "work")
+        kind = str(plan.get("kind") or "")
+        risk = str(plan.get("risk") or "low")
+        run = plan.get("check_run") if isinstance(plan.get("check_run"), dict) else {}
+        if not run_is_publishable(kind, files, risk, list(plan.get("checks") or []), run):
+            return _fail("EvidenceMissing", "Körningsbeviset räcker inte.", plan_id=plan_id, site_id=site_id)
+        if run.get("base_sha256") != base_now or run.get("work_sha256") != work_now:
+            return _fail("RevisionStale", "Körningen gäller en äldre revision.", plan_id=plan_id, site_id=site_id)
+        if run.get("site_id") != site_id or run.get("plan_id") != plan_id:
+            return _fail("EvidenceMismatch", "Körningen gäller en annan plan.", plan_id=plan_id, site_id=site_id)
+        return None
+
     def _gate(self, plan: dict[str, Any], base_sha256: str, work_sha256: str) -> WpOpsResult | None:
         blocked = self._fresh(plan)
         if blocked is not None:
@@ -814,10 +980,35 @@ class ReviewPlans:
                 item["reason"] = str(row.get("reason"))[:80]
             if "declaration_is_not_proof" in row:
                 item["declaration_is_not_proof"] = True
+            if row.get("evidence_class"):
+                item["evidence_class"] = str(row.get("evidence_class"))[:40]
+            if "runtime_proof" in row:
+                item["runtime_proof"] = row.get("runtime_proof") is True
+            for key in ("run_id", "site_id", "plan_id", "base_sha256", "work_sha256", "profile", "profile_version"):
+                if row.get(key):
+                    item[key] = str(row.get(key))[:80]
+            policy = row.get("policy")
+            if policy in {"required", "optional", "not_applicable"}:
+                item["policy"] = policy
             if isinstance(row.get("findings"), list):
                 item["findings"] = [str(part) for part in row["findings"]]
             checks.append(item)
         clean["checks"] = checks
+        raw_run = plan.get("check_run") if isinstance(plan.get("check_run"), dict) else {}
+        clean["check_run"] = {
+            "run_id": str(raw_run.get("run_id") or "")[:32],
+            "site_id": str(raw_run.get("site_id") or "")[:80],
+            "plan_id": str(raw_run.get("plan_id") or "")[:32],
+            "base_sha256": str(raw_run.get("base_sha256") or "")[:64],
+            "work_sha256": str(raw_run.get("work_sha256") or "")[:64],
+            "policy": public_policy(raw_run.get("policy")),
+            "profile": str(raw_run.get("profile") or "")[:40],
+            "profile_version": str(raw_run.get("profile_version") or "")[:20],
+            "started_at": str(raw_run.get("started_at") or "")[:40],
+            "finished_at": str(raw_run.get("finished_at") or "")[:40],
+            "published": raw_run.get("published") is True,
+        }
+        clean["check_generation"] = _generation(plan)
         sandbox = dict(plan.get("sandbox") or {})
         clean["sandbox"] = {
             "engine": sandbox.get("engine", "unavailable"),
@@ -902,6 +1093,13 @@ def _parse_time(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _generation(plan: dict[str, Any]) -> int:
+    try:
+        return int(plan.get("check_generation") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _sha(data: bytes) -> str:

@@ -33,6 +33,9 @@ _UNAVAILABLE = {
     "browser_smoke": "wordpress_browser_runtime_unavailable",
     "egress_probe": "isolated_egress_runtime_unavailable",
 }
+PROFILE = "wp-review-catalog"
+PROFILE_VERSION = "1"
+_POLICY = frozenset({"required", "optional", "not_applicable"})
 
 
 def _php(files: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -130,6 +133,8 @@ def _woo_static(files: list[tuple[str, str]], artifact_dir: Path | None) -> dict
         executed=True,
         simulated=False,
         declaration_is_not_proof=True,
+        evidence_class="static_precheck",
+        runtime_proof=False,
         findings=findings,
         summary=f"Woo static pre-check: {len(findings)} finding(s); not runtime verification",
     )
@@ -168,29 +173,152 @@ def run_catalog(
     return [run_job(job, kind, files, risk, artifact_dir=artifact_dir) for job in JOBS]
 
 
+def _passed_row(row: object) -> bool:
+    if not isinstance(row, dict) or row.get("status") != "passed":
+        return False
+    if row.get("executed") is not True or row.get("simulated") is not False or row.get("exit_code") != 0:
+        return False
+    if not isinstance(row.get("command"), (str, list)) or not row.get("started_at") or not row.get("finished_at"):
+        return False
+    if row.get("job") == "woo_static":
+        if row.get("evidence_class") != "static_precheck" or row.get("runtime_proof") is not False:
+            return False
+    return True
+
+
 def suite_status(kind: str, files: list[tuple[str, str]], risk: str, results: list[dict]) -> str:
-    """Required jobs must have actual non-simulated process evidence to pass."""
+    """Required jobs need real process evidence. Policy comes from ``requirements``."""
     needed = requirements(kind, files, risk)
-    by_job = {row.get("job"): row for row in results if isinstance(row, dict)}
-    failed = any(isinstance(row, dict) and row.get("status") == "failed" for row in by_job.values())
-    incomplete = False
+    rows = [row for row in results if isinstance(row, dict)]
+    jobs = [row.get("job") for row in rows]
+    duplicate = len(jobs) != len(set(jobs))
+    by_job = {row.get("job"): row for row in rows}
+    failed = any(row.get("status") == "failed" for row in rows)
+    incomplete = duplicate
     for job, level in needed.items():
         row = by_job.get(job)
+        if level == "not_applicable":
+            if isinstance(row, dict) and row.get("status") == "passed":
+                incomplete = True
+            continue
         if level != "required":
             continue
-        if (
-            not isinstance(row, dict)
-            or row.get("status") != "passed"
-            or row.get("executed") is not True
-            or row.get("simulated") is not False
-            or row.get("exit_code") != 0
-            or not isinstance(row.get("command"), (str, list))
-            or not row.get("started_at")
-            or not row.get("finished_at")
-        ):
+        if not _passed_row(row):
             incomplete = True
     if failed:
         return "tests_failed"
     if incomplete:
         return "checks_incomplete"
     return "tests_passed"
+
+
+def stamp_run(
+    results: list[dict],
+    *,
+    run_id: str,
+    site_id: str,
+    plan_id: str,
+    base_sha256: str,
+    work_sha256: str,
+    policy: dict[str, str],
+    profile: str,
+    profile_version: str,
+) -> list[dict]:
+    """Copy check rows and bind them to one snapshot. Source text stays out."""
+    stamped: list[dict] = []
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        job = str(item.get("job") or "")
+        item["run_id"] = run_id
+        item["site_id"] = site_id
+        item["plan_id"] = plan_id
+        item["base_sha256"] = base_sha256
+        item["work_sha256"] = work_sha256
+        item["policy"] = policy.get(job, "not_applicable")
+        item["profile"] = profile
+        item["profile_version"] = profile_version
+        if job == "woo_static":
+            item["evidence_class"] = "static_precheck"
+            item["runtime_proof"] = False
+        stamped.append(item)
+    return stamped
+
+
+def bind_artifacts(artifact_dir: Path | None, results: list[dict], binding: dict) -> None:
+    """Add the run id to JSON artifacts that this run already wrote."""
+    if artifact_dir is None:
+        return
+    root = artifact_dir.resolve()
+    extra = {
+        key: binding.get(key)
+        for key in (
+            "run_id",
+            "site_id",
+            "plan_id",
+            "base_sha256",
+            "work_sha256",
+            "profile",
+            "profile_version",
+        )
+    }
+    for row in results:
+        raw = row.get("artifact_path")
+        if not isinstance(raw, str) or not raw:
+            continue
+        try:
+            path = Path(raw).resolve()
+        except OSError:
+            continue
+        if path.parent != root or not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        payload["evidence"] = extra
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def run_is_publishable(
+    kind: str,
+    files: list[tuple[str, str]],
+    risk: str,
+    results: list[dict],
+    binding: dict,
+) -> bool:
+    """True only when the server policy and this snapshot's rows still agree."""
+    if suite_status(kind, files, risk, results) != "tests_passed":
+        return False
+    if not isinstance(binding, dict) or binding.get("published") is not True:
+        return False
+    run_id = binding.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return False
+    needed = requirements(kind, files, risk)
+    if binding.get("policy") != needed:
+        return False
+    by_job = {row.get("job"): row for row in results if isinstance(row, dict)}
+    for job, level in needed.items():
+        if level != "required":
+            continue
+        row = by_job.get(job)
+        if not isinstance(row, dict) or row.get("run_id") != run_id or row.get("policy") != level:
+            return False
+        for key in ("site_id", "plan_id", "base_sha256", "work_sha256", "profile", "profile_version"):
+            if row.get(key) != binding.get(key):
+                return False
+    return True
+
+
+def public_policy(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    policy: dict[str, str] = {}
+    for key, value in raw.items():
+        if key in JOBS and value in _POLICY:
+            policy[str(key)] = str(value)
+    return policy

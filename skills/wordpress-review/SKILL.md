@@ -29,7 +29,7 @@ Use only those tools. Do not pass a URL, host, or path. Do not write shell, PHP,
 ## WordPress and WooCommerce review knowledge
 
 - For classic themes, use the server-returned candidate order. Common fallbacks include `front-page.php`, `home.php`, `page.php`, `singular.php`, and `index.php`; a static front page and the posts index have different entry points.
-- For block themes, inspect `templates/*.html`, `parts/*.html`, `theme.json`, and any database-assigned Site Editor template. A database override can take precedence over the theme file; say which layer the evidence came from.
+- For block themes, inspect `templates/*.html`, `parts/*.html`, `theme.json`, and any database-assigned Site Editor template. Treat a database template name as unverified until the server read that file. `site_editor` stays `unavailable` when no database template was read. Do not promote the name to `selected_template`.
 - A child theme inherits from its parent. Treat parent files as read-only evidence and report the active child and parent relationship only when the registered site data confirms it.
 - Inspect CSS and JavaScript only when a real source read identifies the file. Enqueue calls, template hooks, and plugin callbacks are evidence of possible influence, not proof that a hook ran on the page.
 - WooCommerce overrides belong under the active theme's `woocommerce/` directory. Do not patch WooCommerce core or infer an override from a file name alone.
@@ -41,7 +41,7 @@ Use only those tools. Do not pass a URL, host, or path. Do not write shell, PHP,
 
 Each finding should include a source file and line or a DOM selector, severity, confidence, reproduction steps, and the checks actually run. Separate confirmed defect from hypothesis. Mark unavailable and not-run checks explicitly.
 
-The current review check runner performs `php -l` only when the PHP binary is present. WPCS, Plugin Check, PHPUnit, asset lint, egress checks, WordPress runtime, and browser rendering still require isolated runtimes that are not wired in. A static WooCommerce declaration check is only a pre-check; it does not prove runtime compatibility. Never describe the review workspace UI or a saved mock record as a rendered preview.
+The current review check runner performs `php -l` only when the PHP binary is present. A timeout is not a pass. WPCS, Plugin Check, PHPUnit, asset lint, egress checks, WordPress runtime, and browser rendering still require isolated runtimes that are not wired in. A static WooCommerce declaration check is `static_precheck` with `runtime_proof` false. A suite is publishable only when `check_run.published` is true for the current base and work hashes. Never describe the review workspace UI or a saved mock record as a rendered preview. The authenticated review link does not approve anything.
 
 This skill is review guidance. It grants no site permission and does not change the approval gates.
 

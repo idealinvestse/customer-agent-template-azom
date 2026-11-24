@@ -495,6 +495,9 @@ def test_dashboard_review_link_is_fail_closed(monkeypatch, tmp_path: Path):
     assert page.status_code == 200
     body = page.get_data(as_text=True)
     assert "php_lint" in body
+    assert 'data-rendered-preview="false"' in body
+    assert 'data-check-published="false"' in body
+    assert "Ingen renderad förhandsvisning." in body
     assert "Spara synpunkt" in body
     assert "Förläng tolv timmar" in body
     bare = {key: value for key, value in oscar.items() if key != "X-CSRF-Token"}

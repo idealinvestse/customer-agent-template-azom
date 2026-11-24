@@ -62,6 +62,19 @@ class PageReviewOutcome:
     layers: dict[str, Any] = field(default_factory=dict)
 
 
+def _arm_io_timeout(ctx: Any, remaining: float) -> None:
+    """Give the in-flight REST call the time still left in this review."""
+    ctx.io_timeout = remaining
+    client = getattr(ctx, "client", None)
+    if client is None or not hasattr(client, "timeout"):
+        return
+    try:
+        current = float(client.timeout)
+    except (TypeError, ValueError):
+        current = remaining
+    client.timeout = min(current, remaining)
+
+
 def execute_page_review_tool(
     name: str,
     arguments: dict[str, Any] | None,
@@ -121,7 +134,8 @@ def run_bounded_page_review_loop(
     steps: list[dict[str, Any]] = []
     calls = 0
     for name in PAGE_REVIEW_TOOLS:
-        if calls >= max_calls or now() - started > max_seconds:
+        elapsed = now() - started
+        if calls >= max_calls or elapsed > max_seconds:
             reason = "call_budget" if calls >= max_calls else "time_budget"
             row = {
                 "tool": name,
@@ -145,7 +159,21 @@ def run_bounded_page_review_loop(
                     "verification": "not_run",
                 }
         else:
-            row = _STEPS[name](ctx)
+            _arm_io_timeout(ctx, max(0.0, max_seconds - elapsed))
+            try:
+                row = _STEPS[name](ctx)
+            except TimeoutError:
+                row = {
+                    "tool": name,
+                    "site_id": ctx.site_id,
+                    "status": "not_run",
+                    "availability": "unavailable",
+                    "reason": "io_timeout",
+                    "executed": False,
+                    "wrote": False,
+                    "detail": "io_timeout unavailable",
+                    "findings": [],
+                }
             calls += 1
         row["site_id"] = ctx.site_id or site_id
         steps.append(row)

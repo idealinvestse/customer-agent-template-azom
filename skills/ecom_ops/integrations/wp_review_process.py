@@ -78,8 +78,9 @@ def run_php_lint(files: list[tuple[str, str]], artifact_dir: Path | None = None)
                         exit_code = run.returncode
                 except subprocess.TimeoutExpired:
                     results.append({"file": relative, "exit_code": None, "output": "timeout"})
-                    exit_code = 124
-                    reason = "timeout"
+                    if exit_code == 0:
+                        exit_code = 124
+                        reason = "timeout"
                     break
     except OSError:
         return {
@@ -97,7 +98,12 @@ def run_php_lint(files: list[tuple[str, str]], artifact_dir: Path | None = None)
             "simulated": False,
         }
     finished = _now()
-    status = "passed" if exit_code == 0 and not reason else "failed"
+    if reason == "timeout":
+        status = "timeout"
+    elif exit_code == 0:
+        status = "passed"
+    else:
+        status = "failed"
     row = {
         "job": "php_lint",
         "status": status,

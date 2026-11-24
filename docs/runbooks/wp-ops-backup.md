@@ -9,7 +9,7 @@
 | Term | Betydelse |
 |------|-----------|
 | **Mock-manifest** | Metadata i `wp_ops_state.json`. Ett id täcker etiketterna `files` och `database`. Inga bytes kopieras. |
-| **Off-site** | Alltid falskt i den här fasen. Manifestet lämnar inte maskinen. |
+| **Off-site** | Fältet `offsite` på mock-manifestet är alltid falskt. `bin/backup-azom-data.sh` kan ändå rsynca `AZOM_BACKUP_DIR` när `--dest` eller `AZOM_BACKUP_DEST` är satt. Den tarbollen kan innehålla `wp_ops_state.json` och `wp_review_plans.json` och utesluter `wp_workspaces/`. Det är inte en sajtåterställning. |
 | **Kryptering** | `unconfigured`. Digesten är SHA-256 av metadata, inte en nyckel. |
 | **recovery_seconds** | Tid för den lokala kontrollen. Det är inte kundens återställningstid. |
 | **Produktionsåterställning** | `wp restore` finns inte. `restore()` svarar `RestoreNotInMvp` och kör inget. |

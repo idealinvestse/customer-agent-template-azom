@@ -46,6 +46,7 @@ class ReviewContext:
     texts: dict[str, str] = field(default_factory=dict)
     file_roles: dict[str, str] = field(default_factory=dict)
     page: Any = None
+    io_timeout: float | None = None
 
 
 def _not_run(tool: str, site_id: str, reason: str, availability: str = "unavailable") -> dict[str, Any]:
@@ -252,6 +253,8 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
     try:
         settings = ctx.client.get_settings()
         themes = ctx.client.list_themes()
+    except TimeoutError:
+        return _not_run(tool, ctx.site_id, "io_timeout")
     except Exception:
         return _not_run(tool, ctx.site_id, "rest_failed")
     if not isinstance(settings, dict) or not isinstance(themes, list):
@@ -277,6 +280,8 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
     if front == "page":
         try:
             ctx.page = ctx.client.get_page(page_id, context="edit")
+        except TimeoutError:
+            return _not_run(tool, ctx.site_id, "io_timeout")
         except Exception:
             ctx.page = None
         else:
@@ -365,18 +370,37 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
     page_raw = ctx.page.raw if ctx.page is not None and isinstance(getattr(ctx.page, "raw", None), dict) else {}
     assigned_template = str(page_raw.get("template") or "").strip()
     selected = next((row for row in present if row.get("present")), None)
+    assignment_state = "absent"
     if assigned_template and assigned_template.lower() != "default":
-        template_origin = "database_assignment"
-        selected_template = assigned_template
-        template_path = None
-    elif selected is not None:
-        template_origin = "parent_theme" if selected.get("role") == "parent_read_only" else "child_theme" if ctx.relationship == "child" else "theme"
+        assignment_state = "unverified"
+        leaf = assigned_template.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for row in present:
+            path = str(row.get("path") or "").lower()
+            if row.get("present") and leaf and path.endswith("/" + leaf):
+                assignment_state = "verified"
+                selected = row
+                break
+    if selected is not None:
+        role = selected.get("role")
+        if role == "parent_read_only":
+            template_origin = "parent_theme"
+        elif ctx.relationship == "child":
+            template_origin = "child_theme"
+        else:
+            template_origin = "theme"
         selected_template = str(selected.get("path") or "")
         template_path = selected_template or None
+        selection = "verified"
+    elif present:
+        template_origin = "unresolved"
+        selected_template = None
+        template_path = None
+        selection = "candidate"
     else:
         template_origin = "unresolved"
         selected_template = None
         template_path = None
+        selection = "unavailable"
     return {
         "tool": tool,
         "site_id": ctx.site_id,
@@ -401,6 +425,10 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
         } if front == "page" else None,
         "selected_template": selected_template,
         "selected_template_path": template_path,
+        "template_assignment": assigned_template or None,
+        "assignment_state": assignment_state,
+        "selection": selection,
+        "site_editor": "unavailable",
         "stylesheet": stylesheet,
         "template": ctx.template or None,
         "theme_relationship": ctx.relationship,
