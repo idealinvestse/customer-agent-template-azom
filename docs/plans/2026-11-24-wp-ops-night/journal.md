@@ -49,8 +49,8 @@ intent (chat or dashboard)
 |---------|--------|--------|------------|-------------|------|
 | 1 Evidence and gates | Controller | `review_checks.py`, `review_plan.py`, `wp_review_process.py`, `tests/test_wp_review_evidence.py` | Timeout, duplicate, stale revision, missing workspace, old staging flag, and unavailable sandbox do not open preview or staging | `test_confirmed` in the 111-pass suite | Keep the gate. Do not loosen `requirements()`. |
 | 2 Vertical runtime | Controller | `review_runner.py` unchanged | One synthetic theme renders base and work, desktop and mobile, plus a negative fixture | `blocked`. No PHP binary. No WordPress image pulled. `tests/test_wp_runtime_e2e.py` skips unless `AZOM_WP_RUNTIME_E2E=1`, then fails | Pinned local runtime, then a dashboard or CLI caller of `ReviewPlans.run_checks`. |
-| 3 Homepage evidence | Controller | `page_review.py`, `page_review_loop.py`, `tests/test_wp_review_home_matrix.py` | Unread database template is not `selected_template`. In-flight REST uses the remaining budget. Instruction text does not call order tools | `test_confirmed` for that matrix. Classic PHP hierarchy and a real Site Editor read are `not_reproduced` | Fixture matrix for posts vs static vs child fallback when a runtime exists. |
-| 4 Operator | Controller, template only | `wp_review.html`, acceptance assertion | Review page shows run id, profile, generation, and that it is not a rendered preview | `test_confirmed` via HTML assertion. Browser was not opened | Wire `run_checks` behind the existing CSRF POST pattern. Fake Telegram adapter was not added. |
+| 3 Homepage evidence | Controller | `page_review.py`, `review_knowledge.py`, `page_review_loop.py`, `tests/test_wp_review_home_matrix.py` | Unread database template is `candidate`. `theme.json` is inventory. Classic `home.php` and a read `page-*.php` are selected. A clipped child file stops the hierarchy. A missing child file can use the parent. Unknown theme returns `selection` `unavailable` | `test_confirmed` in `tests/test_wp_review_home_matrix.py`. A real Site Editor read and isolated WordPress render stay `unavailable` | Do not select `theme.json`. Do not treat a clipped file as missing. |
+| 4 Operator | Controller, template only | `wp_review.html`, `wp_routes.py`, acceptance assertion | Review page shows run id, profile, generation, and that it is not a rendered preview. `POST /checks` is CSRF and `WP_OPS_OPERATE` | `test_confirmed` via HTML assertion and the checks POST. Browser was not opened | Do not add an approval link to `page_review`. |
 | 5 Ops readiness | Controller, docs | `wp-ops-backup.md`, `wp-ops-read-pilot.md`, `CURRENT_STATE.md`, `WORDPRESS_OPS.md` | Mock backup is not green. Host rsync is not a site restore. Read pilot stays off | Docs match `bin/backup-azom-data.sh` and `models.py` capability enum. Script was not executed | Oscar decides the rsync destination policy. |
 
 ## Verification in this session
@@ -85,3 +85,23 @@ The same WP file list as the morning report, plus these tests, exited 0: `113 pa
 ## What stayed closed
 
 `AZOM_WP_SANDBOX` off. `AZOM_WP_FILES_SSH` not enabled. No image pull. No customer site. No Telegram. No production write. `request_production` still returns `BackupNotVerified`.
+
+## Homepage selection follow-up
+
+`theme.json` could be the selected template. An oversized child file looked missing, so the parent file or a later parent file could win. `active_theme_unknown` omitted `selection`.
+
+`BLOCK_CANDIDATES` no longer includes `theme.json`. `step_home` marks each hit `read`, `missing`, or `clipped`. A clipped hit stops the hierarchy. A missing child file can still be read from the parent. A missing parent file keeps the child path. `tests/test_wp_review_home_matrix.py` locks those cases. `test_classic_posts_index_reads_home_php` passed before the production change. The clip and `theme.json` tests failed first.
+
+Full suite, from the repo root, with `AZOM_USE_MOCK=1` and `AZOM_WP_SANDBOX=0`:
+
+```
+.\.venv\Scripts\python.exe -m pytest -q --tb=line -ra --override-ini="addopts="
+```
+
+Exit 1. `779 passed, 3 failed, 1 skipped in 57.40s`. The skip is `AZOM_WP_RUNTIME_E2E` unset. No PHP, container, or browser run. The three failures are outside this diff:
+
+- `tests/test_dashboard_settings.py::test_oscar_behavior_and_audit`
+- `tests/test_telegram_state.py::test_chat_fallback_without_api_key`
+- `tests/test_telegram_state.py::test_chat_uses_session_model`
+
+Ruff on `page_review.py`, `review_knowledge.py`, and `tests/test_wp_review_home_matrix.py` exited 0. The removed-rule warning `UP038` remains.

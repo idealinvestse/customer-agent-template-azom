@@ -1,5 +1,7 @@
 # Homepage review resolution
 
+**Correction, 2026-11-25.** The sections below are the earlier reading. Current code and `tests/test_wp_review_home_matrix.py` differ where they disagree with this list: `theme.json` is inventory, not a `BLOCK_CANDIDATES` entry. A file over 65536 bytes is `clipped`, stops the hierarchy, and is not replaced by the parent or by a later file. A missing child file can still be read from the parent. A missing parent file keeps the child path. `active_theme_unknown` returns `selection` `unavailable`. An unread database template stays `candidate` on the hierarchy file that was read. It does not set `template_origin` to `database_assignment`. A real Site Editor database read is still not implemented. `site_editor` stays `unavailable`.
+
 **Purpose.** This note records how homepage review resolves `show_on_front`, page templates, child and parent themes, and block themes, and whether the 45 second budget aborts a running call. It is evidence for the 2026-11-24 plan, not a living operator doc.
 
 **Audience.** Coding agents changing homepage review under `skills/ecom_ops/wp_ops`.

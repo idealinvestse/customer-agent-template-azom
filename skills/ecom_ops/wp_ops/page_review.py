@@ -45,6 +45,7 @@ class ReviewContext:
     theme_kind: str = "unknown"
     texts: dict[str, str] = field(default_factory=dict)
     file_roles: dict[str, str] = field(default_factory=dict)
+    clipped: set[str] = field(default_factory=set)
     page: Any = None
     io_timeout: float | None = None
 
@@ -153,7 +154,10 @@ def _read(ctx: ReviewContext, absolute: str, _relative: str) -> str | None:
         data = ctx.transport.read_bytes(absolute)
     except Exception:
         return None
-    if not isinstance(data, (bytes, bytearray)) or len(data) > _MAX_FILE:
+    if not isinstance(data, (bytes, bytearray)):
+        return None
+    if len(data) > _MAX_FILE:
+        ctx.clipped.add(absolute)
         return None
     text = bytes(data).decode("utf-8", errors="replace")
     ctx.texts[absolute] = text
@@ -311,6 +315,10 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
             "template": None,
             "theme_relationship": "unknown",
             "theme_kind": "unknown",
+            "selected_template": None,
+            "selected_template_path": None,
+            "selection": "unavailable",
+            "site_editor": "unavailable",
             "candidates": [],
             "candidate_hits": [],
             "findings": [],
@@ -338,19 +346,37 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
         )
     findings = []
     present: list[dict[str, Any]] = []
+    hierarchy_blocked = False
     if root is not None and ctx.transport is not None and candidates:
         for relative in candidates:
+            absolute = root + "/" + relative
             text = _read_relative(ctx, root, relative, role="stylesheet")
             role = "stylesheet"
             path = f"themes/{stylesheet}/{relative}"
-            if text is None and ctx.relationship == "child":
+            if text is not None:
+                mark = "read"
+            elif absolute in ctx.clipped:
+                mark = "clipped"
+            else:
+                mark = "missing"
+            if text is None and mark != "clipped" and ctx.relationship == "child":
                 parent = _component(ctx, ctx.template)
                 if parent is not None:
-                    text = _read_relative(ctx, parent, relative, role="parent_read_only")
-                    role = "parent_read_only"
-                    path = f"themes/{ctx.template}/{relative}"
-            row = {"path": path, "present": text is not None, "role": role}
+                    parent_absolute = parent + "/" + relative
+                    parent_text = _read_relative(ctx, parent, relative, role="parent_read_only")
+                    if parent_text is not None:
+                        text = parent_text
+                        role = "parent_read_only"
+                        path = f"themes/{ctx.template}/{relative}"
+                        mark = "read"
+                    elif parent_absolute in ctx.clipped:
+                        path = f"themes/{ctx.template}/{relative}"
+                        mark = "clipped"
+            row = {"path": path, "present": text is not None, "role": role, "mark": mark}
             present.append(row)
+            if hierarchy_blocked or mark == "clipped":
+                hierarchy_blocked = True
+                continue
             if text is None:
                 continue
             cited = _evidence_line(path, text)
@@ -369,9 +395,17 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
             )
     page_raw = ctx.page.raw if ctx.page is not None and isinstance(getattr(ctx.page, "raw", None), dict) else {}
     assigned_template = str(page_raw.get("template") or "").strip()
-    selected = next((row for row in present if row.get("present")), None)
+    selected = None
+    stopped_on_clip = False
+    for row in present:
+        if row.get("mark") == "clipped":
+            stopped_on_clip = True
+            break
+        if row.get("present"):
+            selected = row
+            break
     assignment_state = "absent"
-    if assigned_template and assigned_template.lower() != "default":
+    if assigned_template and assigned_template.lower() != "default" and not stopped_on_clip:
         assignment_state = "unverified"
         leaf = assigned_template.replace("\\", "/").rsplit("/", 1)[-1].lower()
         for row in present:
@@ -391,11 +425,6 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
         selected_template = str(selected.get("path") or "")
         template_path = selected_template or None
         selection = "candidate" if assignment_state == "unverified" else "verified"
-    elif present:
-        template_origin = "unresolved"
-        selected_template = None
-        template_path = None
-        selection = "candidate"
     else:
         template_origin = "unresolved"
         selected_template = None

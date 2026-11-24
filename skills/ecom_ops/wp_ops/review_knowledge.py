@@ -11,7 +11,6 @@ BLOCK_CANDIDATES = (
     "templates/front-page.html",
     "templates/home.html",
     "templates/index.html",
-    "theme.json",
 )
 HOOKS = ("template_include", "template_redirect", "pre_get_posts")
 ENQUEUE = ("wp_enqueue_script", "wp_enqueue_style")
