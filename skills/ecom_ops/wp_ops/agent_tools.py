@@ -612,13 +612,22 @@ class WpAgentTools:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
         if len(summary) > 200:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
-        verified = self._verified_theme_pair(site_id, actor) if kind == "theme" else None
+        verified_theme = self._verified_theme_pair(site_id, actor) if kind == "theme" else None
+        verified_plugin = self._verified_plugin(site_id, actor, slug) if kind == "plugin" and slug else None
         ops = ReviewPlans(
             data_dir=self.service.data_dir,
             registry_path=self.service.registry_path,
             clock=self.service.clock,
         )
-        opened = ops.open(site_id, str(kind), slug, actor=actor, summary=summary, verified_theme=verified)
+        opened = ops.open(
+            site_id,
+            str(kind),
+            slug,
+            actor=actor,
+            summary=summary,
+            verified_theme=verified_theme,
+            verified_plugin=verified_plugin,
+        )
         data = dict(opened.data or {})
         data["executed"] = False
         data["live_calls"] = False
@@ -646,6 +655,25 @@ class WpAgentTools:
             stylesheet = row.get("stylesheet") or ""
             if isinstance(template, str) and isinstance(stylesheet, str) and template and stylesheet:
                 return VerifiedTheme(stylesheet=stylesheet, template=template)
+        return None
+
+    def _verified_plugin(self, site_id: str, actor: str, requested_slug: str):
+        if not rest_reads_allowed() or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,60}", requested_slug):
+            return None
+        shown = self.service.show_site(site_id, actor=actor)
+        if not shown.ok:
+            return None
+        site = (shown.data or {}).get("site") or {}
+        canonical = site.get("canonical_url") if isinstance(site, dict) else ""
+        if not isinstance(canonical, str) or component_rest_source(canonical) != "live":
+            return None
+        from ecom_ops.wp_ops.review_workspace import VerifiedPlugin
+
+        for row in load_live_plugin_rows(canonical):
+            plugin_path = row.get("plugin") or ""
+            slug = plugin_path.split("/", 1)[0]
+            if row.get("status") == "active" and slug == requested_slug:
+                return VerifiedPlugin(slug=slug)
         return None
 
     def _file_result(self, result: WpOpsResult, site_id: str) -> ToolOutput:

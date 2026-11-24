@@ -16,7 +16,12 @@ from ecom_ops.wp_ops.page_review_loop import run_bounded_page_review_loop
 from ecom_ops.wp_ops.review_checks import run_job
 from ecom_ops.wp_ops.review_plan import ReviewPlans, review_risk
 from ecom_ops.wp_ops.review_runner import FORBIDDEN_ENV_NAMES, SandboxGate, synthetic_env
-from ecom_ops.wp_ops.review_workspace import VerifiedTheme, read_site_component, workspace_root
+from ecom_ops.wp_ops.review_workspace import (
+    VerifiedPlugin,
+    VerifiedTheme,
+    read_site_component,
+    workspace_root,
+)
 from ecom_ops.wp_ops.service import WpOpsService
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -301,6 +306,37 @@ def test_sftp_workspace_copy_is_bounded_and_skips_sensitive_paths():
         ("functions.php", b"<?php\n"),
         ("style.css", b"body { color: black; }"),
     ]
+
+
+def test_existing_plugin_workspace_requires_server_verified_slug(tmp_path: Path):
+    root = "/var/www/mock-staging/wp-content/plugins/demo-plugin"
+
+    class ReadOnlyTree:
+        def list_dir(self, path):
+            return ["demo-plugin.php"] if path == root else []
+
+        def read_bytes(self, path):
+            assert path == f"{root}/demo-plugin.php"
+            return b"<?php\nadd_action('init', 'demo_init');\n"
+
+    plans = ReviewPlans(
+        data_dir=tmp_path / "data",
+        registry_path=REGISTRY,
+        transport_factory=lambda _site: ReadOnlyTree(),
+    )
+    opened = plans.open(
+        "mock-staging",
+        "plugin",
+        "demo-plugin",
+        actor="agent",
+        verified_plugin=VerifiedPlugin("demo-plugin"),
+    )
+    assert opened.ok is True
+    workspace = workspace_root(tmp_path / "data", "mock-staging", opened.data["plan_id"])
+    assert (workspace / "base" / "demo-plugin.php").read_bytes().startswith(b"<?php")
+    rejected = _plans(tmp_path).open("mock-staging", "plugin", "other-plugin", actor="agent")
+    assert rejected.ok is False
+    assert rejected.data["error_class"] == "ThirdPartyPluginRefused"
 
 
 def test_static_jobs_and_skills_do_not_invent_a_pass(monkeypatch):

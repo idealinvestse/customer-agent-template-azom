@@ -62,6 +62,13 @@ class VerifiedTheme:
     template: str
 
 
+@dataclass(frozen=True)
+class VerifiedPlugin:
+    """Server-confirmed active plugin slug; the model cannot set this value."""
+
+    slug: str
+
+
 def new_plan_id() -> str:
     return "wr-" + uuid.uuid4().hex[:12]
 

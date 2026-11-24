@@ -29,6 +29,7 @@ from ecom_ops.wp_ops.review_workspace import (
     PLAN_ID,
     SLUG,
     ReviewError,
+    VerifiedPlugin,
     VerifiedTheme,
     child_skeleton,
     delete_work,
@@ -162,6 +163,7 @@ class ReviewPlans:
         actor: str,
         summary: str = "",
         verified_theme: VerifiedTheme | None = None,
+        verified_plugin: VerifiedPlugin | None = None,
     ) -> WpOpsResult:
         denied = self._need(actor, Permission.WP_OPS_OPERATE, action="wp_review_open")
         if denied is not None:
@@ -173,7 +175,7 @@ class ReviewPlans:
             return _fail("InvalidTarget", "Ogiltig komponent.")
         summary = str(summary or "")[:200]
         try:
-            built = self._prepare(site, kind, slug, verified_theme)
+            built = self._prepare(site, kind, slug, verified_theme, verified_plugin)
         except ReviewError as exc:
             return _fail(exc.error_class, exc.error_class)
         plan_id = new_plan_id()
@@ -574,18 +576,34 @@ class ReviewPlans:
             count += 1
         return count
 
-    def _prepare(self, site: Site, kind: str, slug: str, verified: VerifiedTheme | None) -> dict[str, Any]:
+    def _prepare(
+        self,
+        site: Site,
+        kind: str,
+        slug: str,
+        verified_theme: VerifiedTheme | None,
+        verified_plugin: VerifiedPlugin | None,
+    ) -> dict[str, Any]:
         if kind == "plugin":
-            return self._prepare_plugin(site, slug)
-        return self._prepare_theme(site, slug, verified)
+            return self._prepare_plugin(site, slug, verified_plugin)
+        return self._prepare_theme(site, slug, verified_theme)
 
-    def _prepare_plugin(self, site: Site, slug: str) -> dict[str, Any]:
+    def _prepare_plugin(
+        self, site: Site, slug: str, verified: VerifiedPlugin | None
+    ) -> dict[str, Any]:
         reserved = site_plugin_slug(site.id)
         chosen = slug or reserved
         if not SLUG.fullmatch(chosen):
             raise ReviewError("SlugRejected")
         if chosen == "woocommerce":
             return _prepared([], "rejected", "unknown", "WooCoreRefused", chosen)
+        if verified is not None:
+            if not SLUG.fullmatch(verified.slug) or verified.slug != chosen:
+                return _prepared([], "rejected", "unknown", "PluginNotVerified", chosen)
+            files = read_site_component(self._transport(site), site.files_root, "plugin", chosen)
+            if not files:
+                return _prepared([], "draft", "existing_plugin", "ComponentMissing", chosen)
+            return _prepared(files, "validated", "existing_plugin", "", chosen)
         if chosen != reserved:
             return _prepared([], "fork_not_approved", "unknown", "ThirdPartyPluginRefused", chosen)
         return _prepared(plugin_skeleton(reserved), "validated", "site_plugin", "", reserved)
