@@ -306,3 +306,115 @@ def test_unknown_active_theme_does_not_invent_a_template(tmp_path: Path):
     assert home["selected_template"] in {None, ""}
     assert home["site_editor"] == "unavailable"
     assert home["candidates"] == []
+
+
+def _classic_page(memory: InMemoryWpTransport, template: str) -> WordPressClient:
+    memory.settings["show_on_front"] = "page"
+    memory.settings["page_on_front"] = 2
+    memory.posts[2]["slug"] = "hem"
+    memory.posts[2]["template"] = template
+    _activate(memory, "twentytwentyfive", "twentytwentyfive")
+    return WordPressClient(base_url="https://mock.local", transport=memory)
+
+
+def test_front_page_php_wins_over_the_assigned_page_template(tmp_path: Path):
+    memory = InMemoryWpTransport()
+    client = _classic_page(memory, "page-hem.php")
+    tree, local = _stage(tmp_path)
+    theme = _theme_dir(local, "twentytwentyfive")
+    (theme / "style.css").write_text("/* classic */\n", encoding="utf-8")
+    (theme / "front-page.php").write_text("<?php\n/* front */\n", encoding="utf-8")
+    (theme / "page-hem.php").write_text("<?php\n/* assigned */\n", encoding="utf-8")
+    outcome = _run(tmp_path, client, tree)
+    home = next(row for row in outcome.steps if row["tool"] == "wp_page_review_home")
+    assert str(home["selected_template"]).endswith("/front-page.php")
+    assert home["assignment_state"] == "unverified"
+    assert home["selection"] == "candidate"
+    assert home["template_assignment"] == "page-hem.php"
+
+
+def test_explicit_template_is_selected_when_front_page_is_missing(tmp_path: Path):
+    memory = InMemoryWpTransport()
+    client = _classic_page(memory, "full-width.php")
+    tree, local = _stage(tmp_path)
+    theme = _theme_dir(local, "twentytwentyfive")
+    (theme / "style.css").write_text("/* classic */\n", encoding="utf-8")
+    (theme / "full-width.php").write_text("<?php\n/* explicit */\n", encoding="utf-8")
+    (theme / "page.php").write_text("<?php\n/* generic page */\n", encoding="utf-8")
+    outcome = _run(tmp_path, client, tree)
+    home = next(row for row in outcome.steps if row["tool"] == "wp_page_review_home")
+    assert str(home["selected_template"]).endswith("/full-width.php")
+    assert not str(home["selected_template"]).endswith("/page.php")
+    assert home["assignment_state"] == "verified"
+    assert home["selection"] == "verified"
+
+
+def test_assigned_template_cannot_escape_the_theme(tmp_path: Path):
+    memory = InMemoryWpTransport()
+    client = _classic_page(memory, "../secret.php")
+    tree, local = _stage(tmp_path)
+    theme = _theme_dir(local, "twentytwentyfive")
+    (theme / "style.css").write_text("/* classic */\n", encoding="utf-8")
+    (theme / "page.php").write_text("<?php\n/* generic page */\n", encoding="utf-8")
+    (local / "secret.php").write_text("<?php\n/* outside */\n", encoding="utf-8")
+    outcome = _run(tmp_path, client, tree)
+    home = next(row for row in outcome.steps if row["tool"] == "wp_page_review_home")
+    assert all(".." not in str(row["path"]) for row in home["candidate_hits"])
+    assert "secret.php" not in str(home.get("selected_template") or "")
+    assert str(home["selected_template"]).endswith("/page.php")
+
+
+def test_clipped_child_front_page_is_not_in_the_parent_inventory(tmp_path: Path):
+    memory = InMemoryWpTransport()
+    memory.settings["show_on_front"] = "posts"
+    memory.themes.clear()
+    _activate(memory, "azom-child", "twentytwentyfive")
+    _activate(memory, "twentytwentyfive", "twentytwentyfive", status="inactive")
+    client = WordPressClient(base_url="https://mock.local", transport=memory)
+    tree, local = _stage(tmp_path)
+    child = _theme_dir(local, "azom-child")
+    parent = _theme_dir(local, "twentytwentyfive")
+    (child / "style.css").write_text("/* child */\n", encoding="utf-8")
+    (child / "front-page.php").write_bytes(b"<?php\n" + b"x" * 70000)
+    (parent / "front-page.php").write_text("<?php\n/* parent front */\n", encoding="utf-8")
+    outcome = _run(tmp_path, client, tree)
+    sources = next(row for row in outcome.steps if row["tool"] == "wp_page_review_sources")
+    inventory = {item["path"] for item in sources["source_inventory"]}
+    assert "themes/twentytwentyfive/front-page.php" not in inventory
+    cited = [item.get("path") for item in sources["findings"]]
+    assert all("twentytwentyfive/front-page.php" not in str(path) for path in cited)
+
+
+def test_text_cap_does_not_replace_the_child_with_the_parent(tmp_path: Path):
+    from ecom_ops.wp_ops.page_review import _MAX_FILES, prepare_context, step_home
+
+    memory = InMemoryWpTransport()
+    memory.settings["show_on_front"] = "posts"
+    memory.themes.clear()
+    _activate(memory, "azom-child", "twentytwentyfive")
+    _activate(memory, "twentytwentyfive", "twentytwentyfive", status="inactive")
+    client = WordPressClient(base_url="https://mock.local", transport=memory)
+    tree, local = _stage(tmp_path)
+    child = _theme_dir(local, "azom-child")
+    parent = _theme_dir(local, "twentytwentyfive")
+    (child / "style.css").write_text("/* child */\n", encoding="utf-8")
+    (child / "front-page.php").write_text("<?php\n/* child front */\n", encoding="utf-8")
+    (parent / "front-page.php").write_text("<?php\n/* parent front */\n", encoding="utf-8")
+    ctx = prepare_context(
+        site_id="mock-staging",
+        actor="oscar",
+        client=client,
+        transport=tree,
+        registry_path=REGISTRY,
+        data_dir=tmp_path / "data",
+    )
+    parent_file = "/var/www/mock-staging/wp-content/themes/twentytwentyfive/front-page.php"
+    ctx.texts = {f"pad/{index}": "x" for index in range(_MAX_FILES - 1)}
+    ctx.texts[parent_file] = "<?php\n/* cached parent */\n"
+    home = step_home(ctx)
+    front = next(row for row in home["candidate_hits"] if str(row["path"]).endswith("front-page.php"))
+    assert front["path"] == "themes/azom-child/front-page.php"
+    assert front["mark"] == "capped"
+    assert front["present"] is False
+    assert home["selected_template"] in {None, ""}
+    assert home["selection"] == "unavailable"

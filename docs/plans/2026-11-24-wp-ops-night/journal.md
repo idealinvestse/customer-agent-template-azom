@@ -49,7 +49,7 @@ intent (chat or dashboard)
 |---------|--------|--------|------------|-------------|------|
 | 1 Evidence and gates | Controller | `review_checks.py`, `review_plan.py`, `wp_review_process.py`, `tests/test_wp_review_evidence.py` | Timeout, duplicate, stale revision, missing workspace, old staging flag, and unavailable sandbox do not open preview or staging | `test_confirmed` in the 111-pass suite | Keep the gate. Do not loosen `requirements()`. |
 | 2 Vertical runtime | Controller | `review_runner.py` unchanged | One synthetic theme renders base and work, desktop and mobile, plus a negative fixture | `blocked`. No PHP binary. No WordPress image pulled. `tests/test_wp_runtime_e2e.py` skips unless `AZOM_WP_RUNTIME_E2E=1`, then fails | Pinned local runtime, then a dashboard or CLI caller of `ReviewPlans.run_checks`. |
-| 3 Homepage evidence | Controller | `page_review.py`, `review_knowledge.py`, `page_review_loop.py`, `tests/test_wp_review_home_matrix.py` | Unread database template is `candidate`. `theme.json` is inventory. Classic `home.php` and a read `page-*.php` are selected. A clipped child file stops the hierarchy. A missing child file can use the parent. Unknown theme returns `selection` `unavailable` | `test_confirmed` in `tests/test_wp_review_home_matrix.py`. A real Site Editor read and isolated WordPress render stay `unavailable` | Do not select `theme.json`. Do not treat a clipped file as missing. |
+| 3 Homepage evidence | Controller | `page_review.py`, `review_knowledge.py`, `page_review_loop.py`, `tests/test_wp_review_home_matrix.py` | `front-page.php` wins over a later page template. A safe assigned `.php` is the next classic candidate. `clipped` and `capped` do not fall through to the parent inventory. `theme.json` is inventory | `test_confirmed` in `tests/test_wp_review_home_matrix.py`. A real Site Editor read and isolated WordPress render stay `unavailable` | Do not let a later template replace `front-page.php`. |
 | 4 Operator | Controller, template only | `wp_review.html`, `wp_routes.py`, acceptance assertion | Review page shows run id, profile, generation, and that it is not a rendered preview. `POST /checks` is CSRF and `WP_OPS_OPERATE` | `test_confirmed` via HTML assertion and the checks POST. Browser was not opened | Do not add an approval link to `page_review`. |
 | 5 Ops readiness | Controller, docs | `wp-ops-backup.md`, `wp-ops-read-pilot.md`, `CURRENT_STATE.md`, `WORDPRESS_OPS.md` | Mock backup is not green. Host rsync is not a site restore. Read pilot stays off | Docs match `bin/backup-azom-data.sh` and `models.py` capability enum. Script was not executed | Oscar decides the rsync destination policy. |
 
@@ -105,3 +105,17 @@ Exit 1. `779 passed, 3 failed, 1 skipped in 57.40s`. The skip is `AZOM_WP_RUNTIM
 - `tests/test_telegram_state.py::test_chat_uses_session_model`
 
 Ruff on `page_review.py`, `review_knowledge.py`, and `tests/test_wp_review_home_matrix.py` exited 0. The removed-rule warning `UP038` remains.
+
+## Hierarchy follow-up
+
+`front-page.php` lost to a later page template that had also been read. An assigned name such as `full-width.php` was never opened. A clipped child file was still read from the parent during the source inventory. A full text cache treated the child as missing and could select a cached parent file.
+
+`hierarchy_candidates` places one safe assigned `.php` path after `front-page.php`. The selected file is the first readable candidate. `assignment_state` is `verified` only when that winner is the assigned template. `clipped` and `capped` stop the hierarchy and are not read from the parent. A path with `..` is not a candidate.
+
+The WordPress file list, with `AZOM_USE_MOCK=1` and `AZOM_WP_SANDBOX=0`:
+
+```
+.\.venv\Scripts\python.exe -m pytest tests/test_wp_review_evidence.py tests/test_wp_page_review.py tests/test_wp_review_acceptance.py tests/test_wp_review_home_matrix.py tests/test_wp_ops.py tests/test_wp_dashboard.py tests/test_wp_files.py tests/test_wp_file_changes.py tests/test_wp_ssh.py tests/test_wp_agent_tools.py tests/test_wp_runtime_e2e.py --override-ini="addopts=" -q --tb=line -ra
+```
+
+Exit 0. `126 passed, 1 skipped in 7.47s`. The skip is `AZOM_WP_RUNTIME_E2E` unset. PHP is still missing. No container and no browser run.

@@ -46,6 +46,7 @@ class ReviewContext:
     texts: dict[str, str] = field(default_factory=dict)
     file_roles: dict[str, str] = field(default_factory=dict)
     clipped: set[str] = field(default_factory=set)
+    capped: set[str] = field(default_factory=set)
     page: Any = None
     io_timeout: float | None = None
 
@@ -149,6 +150,7 @@ def _read(ctx: ReviewContext, absolute: str, _relative: str) -> str | None:
     if isinstance(cached, str):
         return cached
     if len(ctx.texts) >= _MAX_FILES:
+        ctx.capped.add(absolute)
         return None
     try:
         data = ctx.transport.read_bytes(absolute)
@@ -334,6 +336,8 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
         ctx.theme_kind = "unknown"
     else:
         ctx.theme_kind = _theme_kind(ctx, root)
+    page_raw = ctx.page.raw if ctx.page is not None and isinstance(getattr(ctx.page, "raw", None), dict) else {}
+    assigned_template = str(page_raw.get("template") or "").strip()
     block = ctx.theme_kind == "block"
     if ctx.theme_kind == "unknown":
         candidates: tuple[str, ...] = ()
@@ -343,6 +347,7 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
             block_theme=block,
             slug=ctx.page_slug,
             page_id=str(page_id) if page_id else "",
+            assigned_template=assigned_template,
         )
     findings = []
     present: list[dict[str, Any]] = []
@@ -357,9 +362,11 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
                 mark = "read"
             elif absolute in ctx.clipped:
                 mark = "clipped"
+            elif absolute in ctx.capped:
+                mark = "capped"
             else:
                 mark = "missing"
-            if text is None and mark != "clipped" and ctx.relationship == "child":
+            if text is None and mark not in {"clipped", "capped"} and ctx.relationship == "child":
                 parent = _component(ctx, ctx.template)
                 if parent is not None:
                     parent_absolute = parent + "/" + relative
@@ -372,9 +379,12 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
                     elif parent_absolute in ctx.clipped:
                         path = f"themes/{ctx.template}/{relative}"
                         mark = "clipped"
+                    elif parent_absolute in ctx.capped:
+                        path = f"themes/{ctx.template}/{relative}"
+                        mark = "capped"
             row = {"path": path, "present": text is not None, "role": role, "mark": mark}
             present.append(row)
-            if hierarchy_blocked or mark == "clipped":
+            if hierarchy_blocked or mark in {"clipped", "capped"}:
                 hierarchy_blocked = True
                 continue
             if text is None:
@@ -393,12 +403,10 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
                     verification="read",
                 )
             )
-    page_raw = ctx.page.raw if ctx.page is not None and isinstance(getattr(ctx.page, "raw", None), dict) else {}
-    assigned_template = str(page_raw.get("template") or "").strip()
     selected = None
     stopped_on_clip = False
     for row in present:
-        if row.get("mark") == "clipped":
+        if row.get("mark") in {"clipped", "capped"}:
             stopped_on_clip = True
             break
         if row.get("present"):
@@ -408,12 +416,9 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
     if assigned_template and assigned_template.lower() != "default" and not stopped_on_clip:
         assignment_state = "unverified"
         leaf = assigned_template.replace("\\", "/").rsplit("/", 1)[-1].lower()
-        for row in present:
-            path = str(row.get("path") or "").lower()
-            if row.get("present") and leaf and path.endswith("/" + leaf):
-                assignment_state = "verified"
-                selected = row
-                break
+        winner = str((selected or {}).get("path") or "").lower()
+        if selected and selected.get("present") and leaf and winner.endswith("/" + leaf):
+            assignment_state = "verified"
     if selected is not None:
         role = selected.get("role")
         if role == "parent_read_only":
@@ -623,6 +628,9 @@ def step_sources(ctx: ReviewContext) -> dict[str, Any]:
         except PathRejected:
             continue
         role = "parent_read_only" if kind == "parent_theme" else "plugin_read_only" if kind == "plugin" else "theme"
+        child_absolute = root + "/" + relative
+        if kind == "parent_theme" and child_absolute in ctx.clipped | ctx.capped:
+            continue
         text = _read_relative(ctx, component_root, relative, role=role)
         if text is None:
             continue
