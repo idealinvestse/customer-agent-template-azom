@@ -37,7 +37,7 @@ from ecom_ops.wp_ops.review_workspace import (
     place_work_file,
     plugin_skeleton,
     read_diff,
-    read_local_component,
+    read_site_component,
     restore_work_from_base,
     site_plugin_slug,
     tree_hash,
@@ -81,7 +81,7 @@ _PUBLIC = (
     "review_path",
     "summary",
 )
-_TERMINAL = frozenset({"rejected", "denied", "expired", "fork_not_approved"})
+_TERMINAL = frozenset({"rejected", "denied", "expired", "fork_not_approved", "not_resumable"})
 _STAGE_OK = frozenset({"tests_passed", "review_requested", "approved_for_staging"})
 _UNREACHABLE = frozenset({"approved_for_production", "deployed", "verified"})
 
@@ -202,7 +202,9 @@ class ReviewPlans:
             "expires_at": (now + _TTL).isoformat(),
             "extended": False,
             "checks": [],
-            "sandbox": self.gate.stop({"plan_id": plan_id, "state": "stopped"}),
+            "sandbox": self.gate.stop(
+                {"plan_id": plan_id, "engine": "unavailable", "state": "unavailable"}
+            ),
             "comments": [],
             "label": "mock",
             "error_class": built["error_class"],
@@ -300,7 +302,7 @@ class ReviewPlans:
             files = _text_files(root / "work")
             kind = str(plan.get("kind") or "")
             risk = str(plan.get("risk") or "low")
-            results = run_catalog(kind, files, risk)
+            results = run_catalog(kind, files, risk, artifact_dir=root / "artifacts")
             status = suite_status(kind, files, risk, results)
             plan["checks"] = results
             plan["status"] = status
@@ -602,7 +604,7 @@ class ReviewPlans:
             return _prepared([], "rejected", "child", "ParentThemeBlocked", slug)
         if slug != verified.stylesheet:
             return _prepared([], "draft", "unknown", "ThemeRelationshipUnknown", slug)
-        files = read_local_component(self._transport(site), site.files_root, "theme", slug)
+        files = read_site_component(self._transport(site), site.files_root, "theme", slug)
         if not files:
             return _prepared([], "draft", "child", "ComponentMissing", slug)
         return _prepared(files, "validated", "child", "", slug)
@@ -693,10 +695,33 @@ class ReviewPlans:
             return None
         for plan in self._load():
             if plan.get("plan_id") == plan_id and plan.get("site_id") == site_id:
+                status = str(plan.get("status") or "")
+                if status not in {"expired", "not_resumable"}:
+                    try:
+                        root = workspace_root(self.data_dir, site_id, plan_id)
+                    except ReviewError:
+                        root = None
+                    if root is None or not root.is_dir():
+                        plan["status"] = "not_resumable"
+                        plan["sandbox"] = {
+                            **dict(plan.get("sandbox") or {}),
+                            "engine": "unavailable",
+                            "state": "destroyed",
+                            "container": "unavailable",
+                            "availability": "unavailable",
+                        }
+                        self._replace(plan)
                 return plan
         return None
 
     def _fresh(self, plan: dict[str, Any]) -> WpOpsResult | None:
+        if plan.get("status") == "not_resumable":
+            return _fail(
+                "WorkspaceNotResumable",
+                "Planens arbetsyta finns inte i backupen och kan inte återupptas.",
+                plan_id=plan.get("plan_id"),
+                status="not_resumable",
+            )
         if plan.get("superseded_by"):
             return _fail("StalePlan", "En nyare diff har ett annat plan-id.", plan_id=plan.get("plan_id"))
         if plan.get("status") == "expired" or self._past(plan):
@@ -757,6 +782,13 @@ class ReviewPlans:
                 "job": row.get("job"),
                 "status": row.get("status"),
                 "summary": row.get("summary"),
+                "command": row.get("command"),
+                "started_at": row.get("started_at"),
+                "finished_at": row.get("finished_at"),
+                "exit_code": row.get("exit_code"),
+                "artifact_path": row.get("artifact_path"),
+                "executed": row.get("executed") is True,
+                "simulated": row.get("simulated") is True,
             }
             if row.get("availability"):
                 item["availability"] = str(row.get("availability"))[:40]
@@ -770,9 +802,9 @@ class ReviewPlans:
         clean["checks"] = checks
         sandbox = dict(plan.get("sandbox") or {})
         clean["sandbox"] = {
-            "engine": sandbox.get("engine", "fake"),
-            "database": sandbox.get("database", "synthetic"),
-            "network": sandbox.get("network", "none"),
+            "engine": sandbox.get("engine", "unavailable"),
+            "database": sandbox.get("database", "not_created"),
+            "network": sandbox.get("network", "not_run"),
             "env_names": [str(name) for name in sandbox.get("env_names") or []],
             "state": sandbox.get("state", "stopped"),
             "port": None,

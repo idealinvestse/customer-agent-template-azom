@@ -1172,40 +1172,22 @@ def load_live_theme_rows(canonical_url: str) -> list[dict[str, str]]:
     if component_rest_source(canonical_url) != "live":
         return []
     try:
-        from ecom_ops.integrations.wordpress import wp_client_from_env
+        from ecom_ops.integrations.wp_component_reads import load_theme_rows
 
-        client = wp_client_from_env(use_mock=False)
-        rows = client.list_themes()
+        return load_theme_rows()
     except Exception:
         return []
-    return [_public_component_row(row) for row in rows if isinstance(row, dict)]
 
 
 def load_live_plugin_rows(canonical_url: str) -> list[dict[str, str]]:
     if component_rest_source(canonical_url) != "live":
         return []
     try:
-        from ecom_ops.integrations.wordpress import wp_client_from_env
+        from ecom_ops.integrations.wp_component_reads import load_plugin_rows
 
-        client = wp_client_from_env(use_mock=False)
-        rows = client.list_plugins()
+        return load_plugin_rows()
     except Exception:
         return []
-    return [_public_component_row(row) for row in rows if isinstance(row, dict)]
-
-
-def _public_component_row(row: dict[str, Any]) -> dict[str, str]:
-    name = row.get("name")
-    if isinstance(name, dict):
-        name = name.get("rendered") or ""
-    values = {
-        "stylesheet": row.get("stylesheet"),
-        "plugin": row.get("plugin"),
-        "template": row.get("template"),
-        "status": row.get("status"),
-        "name": name,
-    }
-    return {key: value if isinstance(value, str) else "" for key, value in values.items()}
 
 
 def _file_status_detail(arguments: dict[str, Any], sticky: str | None) -> str:
@@ -1217,6 +1199,8 @@ def _file_status_detail(arguments: dict[str, Any], sticky: str | None) -> str:
 
 
 def _review_notice(results: list[dict[str, Any]]) -> str:
+    from ecom_ops.bot.dashboard_links import review_plan_url
+
     lines: list[str] = []
     for result in results:
         path = result.get("review_path")
@@ -1225,9 +1209,11 @@ def _review_notice(results: list[dict[str, Any]]) -> str:
             continue
         site = result.get("site_id") if isinstance(result.get("site_id"), str) else "sajten"
         risk = result.get("risk") if isinstance(result.get("risk"), str) else "okänd"
+        url = review_plan_url(site, plan_id)
+        link = f"{url}" if url else f"/wp/{site}/reviews/{plan_id} (kräver konfigurerad HTTPS-dashboard)"
         lines.append(
             f"Granskning {plan_id} på {site}, risk {risk}. "
-            f"Länken {path} kräver inloggning och är inte en behörighet."
+            f"Öppna {link}; länken kräver inloggning och är inte en behörighet. Den godkänner inget."
         )
     return "\n".join(lines)
 

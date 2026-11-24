@@ -22,12 +22,13 @@ from ecom_ops.wp_ops.page_review_loop import (
     execute_page_review_tool,
     run_bounded_page_review_loop,
 )
-from ecom_ops.wp_ops.review_checks import SYNTAX_MARKER, run_catalog, run_job, suite_status
+from ecom_ops.wp_ops.review_checks import run_catalog, run_job, suite_status
 from ecom_ops.wp_ops.review_plan import ReviewPlans
 from ecom_ops.wp_ops.review_runner import SandboxGate, synthetic_env
 from ecom_ops.wp_ops.review_workspace import VerifiedTheme
 
 ROOT = Path(__file__).resolve().parents[1]
+SYNTAX_MARKER = "AZOM_FAKE_PHP_SYNTAX_ERROR"
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 RAW = "<!-- wp:paragraph --><p>Hem</p>"
 
@@ -76,6 +77,16 @@ def _tree(tmp_path: Path) -> GuardTree:
     woo = theme / "woocommerce"
     woo.mkdir()
     (woo / "checkout.php").write_text("<?php\n// checkout override\n", encoding="utf-8")
+    (theme / "style.css").write_text("/* theme styles */\n", encoding="utf-8")
+    (theme / "theme.json").write_text("{\"version\": 3}\n", encoding="utf-8")
+    plugin = local / "wp-content" / "plugins" / "woocommerce"
+    plugin.mkdir(parents=True)
+    (plugin / "woocommerce.php").write_text(
+        "<?php\nadd_filter('template_include', 'wc_front');\n", encoding="utf-8"
+    )
+    templates = theme / "templates"
+    templates.mkdir()
+    (templates / "front-page.html").write_text("<!-- wp:template-part {\"slug\":\"header\"} /-->\n", encoding="utf-8")
     return GuardTree(remote, local)
 
 
@@ -115,6 +126,19 @@ def test_homepage_review_separates_layers_and_does_not_write(tmp_path: Path):
     content = next(row for row in outcome.steps if row["tool"] == "wp_page_review_content")
     assert content["database"]["editor_raw_present"] is True
     assert content["database"]["stored_rendered_is_dom"] is False
+    home = next(row for row in outcome.steps if row["tool"] == "wp_page_review_home")
+    assert home["homepage_mode"] == "static_page"
+    assert home["page_id"] == 2
+    assert home["front_page"]["slug"] == "hem"
+    assert home["front_page"]["title"] == "Om oss"
+    assert home["front_page"]["template_origin"] == "theme"
+    assert home["selected_template_path"] == "themes/twentytwentyfive/templates/front-page.html"
+    sources = next(row for row in outcome.steps if row["tool"] == "wp_page_review_sources")
+    inventory = {item["path"] for item in sources["source_inventory"]}
+    assert "themes/twentytwentyfive/style.css" in inventory
+    assert "themes/twentytwentyfive/theme.json" in inventory
+    assert "plugins/woocommerce/woocommerce.php" in inventory
+    assert sources["active_plugins"] == ["woocommerce"]
     preview = next(row for row in outcome.steps if row["tool"] == "wp_page_review_preview")
     assert preview["status"] == "not_run"
     assert preview["availability"] == "unavailable"
@@ -127,7 +151,9 @@ def test_homepage_review_separates_layers_and_does_not_write(tmp_path: Path):
     assert "not_run/unavailable" in outcome.text
     assert RAW[:20] in outcome.text
     assert any(
-        finding.get("path", "").endswith("checkout.php") and finding.get("risk") == "high"
+        isinstance(finding.get("path"), str)
+        and finding["path"].endswith("checkout.php")
+        and finding.get("risk") == "high"
         for row in outcome.steps
         for finding in row.get("findings") or []
     )
@@ -135,7 +161,9 @@ def test_homepage_review_separates_layers_and_does_not_write(tmp_path: Path):
         finding
         for row in outcome.steps
         for finding in row.get("findings") or []
-        if finding.get("line") == 2 and finding.get("verification") == "read"
+        if finding.get("line") == 2
+        and finding.get("verification") == "read"
+        and str(finding.get("path") or "").endswith("front-page.php")
     ]
     assert cited
     assert all(finding.get("excerpt") == "add_filter('template_include', 'azom_front');" for finding in cited)
@@ -147,6 +175,27 @@ def test_homepage_review_separates_layers_and_does_not_write(tmp_path: Path):
     ]
     assert checkout
     assert all(finding.get("risk") == "high" and finding.get("excerpt") == "<?php" for finding in checkout)
+
+
+def test_homepage_review_resolves_posts_index_without_inventing_static_page(tmp_path: Path):
+    client, memory = _client()
+    memory.settings["show_on_front"] = "posts"
+    memory.settings["page_on_front"] = 0
+    memory.settings["page_for_posts"] = 2
+    outcome = run_bounded_page_review_loop(
+        site_id="mock-staging",
+        actor="oscar",
+        client=client,
+        transport=_tree(tmp_path),
+        registry_path=REGISTRY,
+        data_dir=tmp_path / "data",
+    )
+    home = next(row for row in outcome.steps if row["tool"] == "wp_page_review_home")
+    content = next(row for row in outcome.steps if row["tool"] == "wp_page_review_content")
+    assert home["homepage_mode"] == "latest_posts"
+    assert home["page_id"] is None and home["page_for_posts"] == 2
+    assert home["front_page"] is None
+    assert content["database"]["kind"] == "posts_index"
 
 
 def test_parent_theme_text_is_not_reused_for_the_child(tmp_path: Path):
@@ -357,14 +406,19 @@ def test_stub_checks_are_not_passed_and_do_not_open_preview(monkeypatch, tmp_pat
     assert suite_status("theme", files, "low", results) == "checks_incomplete"
     assert all(row["status"] != "passed" for row in results if row["job"] != "woo_static")
     browser = run_job("browser_smoke", "theme", [("style.css", "body{}")], "low")
-    assert browser["status"] == "not_run"
+    assert browser["status"] == "unavailable"
     assert browser["availability"] == "unavailable"
     egress = run_job("egress_probe", "theme", files, "low")
-    assert egress["status"] == "not_run"
-    marked = [("functions.php", f"<?php\n{SYNTAX_MARKER}\n")]
+    assert egress["status"] == "unavailable"
+    marked = [("functions.php", "<?php function (\n")]
     failed = run_catalog("theme", marked, "low")
-    assert suite_status("theme", marked, "low", failed) == "tests_failed"
-    assert next(row for row in failed if row["job"] == "php_lint")["status"] == "failed"
+    lint = next(row for row in failed if row["job"] == "php_lint")
+    if lint["status"] == "failed":
+        assert lint["executed"] is True and lint["exit_code"] != 0
+        assert suite_status("theme", marked, "low", failed) == "tests_failed"
+    else:
+        assert lint["status"] == "unavailable"
+        assert suite_status("theme", marked, "low", failed) == "checks_incomplete"
     woo = run_job(
         "woo_static",
         "plugin",
@@ -380,7 +434,7 @@ def test_stub_checks_are_not_passed_and_do_not_open_preview(monkeypatch, tmp_pat
         "wr-abc",
         high_risk=False,
     )
-    assert record["state"] == "not_run"
+    assert record["state"] == "unavailable"
     assert record["container"] == "unavailable"
     assert record["env_names"] == ["AZOM_REVIEW_SYNTHETIC"]
     assert "WP_APP_PASSWORD" not in record["env_names"]
@@ -413,11 +467,12 @@ def test_stub_checks_are_not_passed_and_do_not_open_preview(monkeypatch, tmp_pat
         "mock-staging",
         plan_id,
         "functions.php",
-        f"<?php\n{SYNTAX_MARKER}\n".encode(),
+        f"<?php function {SYNTAX_MARKER}( {{\n".encode(),
         actor="oscar",
     )
     failed_plan = plans.run_checks("mock-staging", plan_id, actor="oscar")
-    assert failed_plan.data["status"] == "tests_failed"
+    expected = "tests_failed" if any(row.get("status") == "failed" for row in failed_plan.data["checks"]) else "checks_incomplete"
+    assert failed_plan.data["status"] == expected
     blocked = plans.preview("mock-staging", plan_id, actor="oscar")
     assert blocked.data["error_class"] == "PreviewBlocked"
     audit = "\n".join(json.dumps(row, ensure_ascii=False) for row in read_audit_log(limit=50))
@@ -440,6 +495,30 @@ def test_stub_checks_are_not_passed_and_do_not_open_preview(monkeypatch, tmp_pat
     restarted = plans.show("mock-staging", plan_id, actor="oscar")
     assert restarted.data["plan"]["status"] == "sandbox_expired"
     assert restarted.data["plan"]["sandbox"]["container"] == "stopped"
+
+
+def test_suite_requires_real_process_metadata_for_every_required_pass():
+    files = [("index.php", "<?php\n")]
+    required = ["php_lint", "wpcs_php", "browser_smoke", "egress_probe"]
+    rows = [
+        {
+            "job": job,
+            "status": "passed",
+            "command": ["fixed-tool"],
+            "started_at": "2026-11-24T00:00:00+00:00",
+            "finished_at": "2026-11-24T00:00:01+00:00",
+            "exit_code": 0,
+            "executed": True,
+            "simulated": False,
+        }
+        for job in required
+    ]
+    assert suite_status("theme", files, "low", rows) == "tests_passed"
+    rows[0]["simulated"] = True
+    assert suite_status("theme", files, "low", rows) == "checks_incomplete"
+    rows[0]["simulated"] = False
+    rows[0].pop("exit_code")
+    assert suite_status("theme", files, "low", rows) == "checks_incomplete"
 
 
 def test_review_modules_do_not_import_a_process_runner():

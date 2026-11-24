@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.rbac import AccessDenied, Permission, resolve_actor
-from ecom_ops.wp_ops.file_changes import rest_reads_allowed, sensitive_relative
+from ecom_ops.wp_ops.file_changes import sensitive_relative
 from ecom_ops.wp_ops.files import PathRejected, component_dir
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.review_knowledge import ENQUEUE, HOOKS, hierarchy_candidates
@@ -37,6 +37,7 @@ class ReviewContext:
     availability: str = "unavailable"
     show_on_front: str = ""
     page_id: int = 0
+    page_for_posts: int = 0
     page_slug: str = ""
     stylesheet: str = ""
     template: str = ""
@@ -205,25 +206,11 @@ def prepare_context(
         from ecom_ops.integrations.wp_files_ssh import build_file_transport
 
         ctx.transport = build_file_transport(site, data_dir)
-    ctx.client = client if client is not None else _live_client(site.canonical_url)
+    ctx.client = client
     if ctx.client is None:
         ctx.reason = "not_bound"
         ctx.availability = "not_bound"
     return ctx
-
-
-def _live_client(canonical_url: str) -> Any:
-    """Open the configured WordPress client only when the host is already bound."""
-    from ecom_ops.wp_ops.agent_tools import component_rest_source
-
-    if component_rest_source(canonical_url) != "live" or not rest_reads_allowed():
-        return None
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
-    try:
-        return wp_client_from_env(use_mock=False)
-    except Exception:
-        return None
 
 
 def _theme_kind(ctx: ReviewContext, root: str) -> str:
@@ -280,8 +267,13 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
             page_id = 0
         if page_id <= 0:
             return _not_run(tool, ctx.site_id, "page_on_front_missing")
+    try:
+        page_for_posts = int(settings.get("page_for_posts") or 0)
+    except (TypeError, ValueError):
+        page_for_posts = 0
     ctx.show_on_front = front
     ctx.page_id = page_id
+    ctx.page_for_posts = max(0, page_for_posts)
     if front == "page":
         try:
             ctx.page = ctx.client.get_page(page_id, context="edit")
@@ -370,6 +362,21 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
                     verification="read",
                 )
             )
+    page_raw = ctx.page.raw if ctx.page is not None and isinstance(getattr(ctx.page, "raw", None), dict) else {}
+    assigned_template = str(page_raw.get("template") or "").strip()
+    selected = next((row for row in present if row.get("present")), None)
+    if assigned_template and assigned_template.lower() != "default":
+        template_origin = "database_assignment"
+        selected_template = assigned_template
+        template_path = None
+    elif selected is not None:
+        template_origin = "parent_theme" if selected.get("role") == "parent_read_only" else "child_theme" if ctx.relationship == "child" else "theme"
+        selected_template = str(selected.get("path") or "")
+        template_path = selected_template or None
+    else:
+        template_origin = "unresolved"
+        selected_template = None
+        template_path = None
     return {
         "tool": tool,
         "site_id": ctx.site_id,
@@ -379,9 +386,21 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
         "executed": True,
         "wrote": False,
         "detail": f"front:{front}",
+        "homepage_mode": "static_page" if front == "page" else "latest_posts",
         "layer": "database",
         "show_on_front": front,
         "page_id": page_id or None,
+        "page_for_posts": ctx.page_for_posts or None,
+        "front_page": {
+            "id": page_id or None,
+            "slug": ctx.page_slug or None,
+            "title": str(getattr(ctx.page, "title", "") or "") or None,
+            "status": str(getattr(ctx.page, "status", "") or "") or None,
+            "template": assigned_template or None,
+            "template_origin": template_origin,
+        } if front == "page" else None,
+        "selected_template": selected_template,
+        "selected_template_path": template_path,
         "stylesheet": stylesheet,
         "template": ctx.template or None,
         "theme_relationship": ctx.relationship,
@@ -412,7 +431,12 @@ def step_content(ctx: ReviewContext) -> dict[str, Any]:
             "executed": True,
             "wrote": False,
             "detail": "posts-index",
+            "homepage_mode": "latest_posts",
             "layer": "database",
+            "show_on_front": "posts",
+            "page_on_front": None,
+            "page_for_posts": ctx.page_for_posts or None,
+            "front_page": None,
             "database": {
                 "kind": "posts_index",
                 "editor_raw_present": False,
@@ -482,55 +506,104 @@ def step_sources(ctx: ReviewContext) -> dict[str, Any]:
     if names is None:
         return _not_run(tool, ctx.site_id, "source_unavailable")
     findings = []
-    interesting = [name for name in names if name.endswith(".php")]
-    interesting.extend(("functions.php", "header.php", "footer.php"))
-    woo = _list(ctx.transport, root + "/woocommerce") or []
-    for name in woo:
-        if name.endswith(".php"):
-            interesting.append(f"woocommerce/{name}")
-    seen: set[str] = set()
-    for relative in interesting:
-        if relative in seen:
+    allowed_suffixes = (".php", ".css", ".js", ".json", ".html")
+    theme_files = [name for name in names if name.lower().endswith(allowed_suffixes)]
+    theme_files.extend(("functions.php", "header.php", "footer.php", "style.css", "theme.json"))
+    for folder in ("templates", "parts", "styles", "assets", "woocommerce"):
+        children = _list(ctx.transport, root + "/" + folder)
+        if children is None:
             continue
-        seen.add(relative)
-        text = _read_relative(ctx, root, relative, role="stylesheet")
+        theme_files.extend(
+            f"{folder}/{name}" for name in children if name.lower().endswith(allowed_suffixes)
+        )
+
+    candidates: list[tuple[str, str, str]] = []
+    candidates.extend(("theme", ctx.stylesheet, relative) for relative in theme_files)
+    if ctx.relationship == "child" and ctx.template:
+        candidates.extend(("parent_theme", ctx.template, relative) for relative in theme_files)
+
+    active_plugins: list[str] | None = None
+    try:
+        plugins = ctx.client.list_plugins()
+        if isinstance(plugins, list):
+            active_plugins = []
+            for plugin in plugins:
+                if not isinstance(plugin, dict) or plugin.get("status") != "active":
+                    continue
+                plugin_path = str(plugin.get("plugin") or "")
+                slug, separator, main_file = plugin_path.partition("/")
+                if not separator or not _SLUG.fullmatch(slug):
+                    continue
+                active_plugins.append(slug)
+                if _safe_relative(main_file) and main_file.lower().endswith(".php"):
+                    candidates.append(("plugin", slug, main_file))
+                else:
+                    try:
+                        plugin_root = component_dir(ctx.site.files_root, "plugin", slug)
+                    except PathRejected:
+                        continue
+                    main_candidates = _list(ctx.transport, plugin_root) or []
+                    candidates.extend(
+                        ("plugin", slug, name)
+                        for name in main_candidates
+                        if name.lower().endswith(".php")
+                    )
+                if len(active_plugins) >= 4:
+                    break
+    except Exception:
+        active_plugins = None
+
+    inventory: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for kind, slug, relative in candidates:
+        key = (kind, slug, relative)
+        if key in seen or len(seen) >= _MAX_FILES:
+            continue
+        seen.add(key)
+        component_kind = "plugin" if kind == "plugin" else "theme"
+        try:
+            component_root = component_dir(ctx.site.files_root, component_kind, slug)
+        except PathRejected:
+            continue
+        role = "parent_read_only" if kind == "parent_theme" else "plugin_read_only" if kind == "plugin" else "theme"
+        text = _read_relative(ctx, component_root, relative, role=role)
         if text is None:
             continue
-        path = f"themes/{ctx.stylesheet}/{relative}"
+        component_name = "plugins" if component_kind == "plugin" else "themes"
+        path = f"{component_name}/{slug}/{relative}"
+        inventory.append({"path": path, "kind": kind, "role": role, "read": True})
         cited_hook = False
         for needle in (*HOOKS, *ENQUEUE):
             line = _line_of(text, needle)
             if line is None:
                 continue
             snippet = _line_text(text, line)
-            if not snippet:
-                continue
-            cited_hook = True
-            findings.append(
-                _finding(
-                    ctx,
-                    layer="source_file",
-                    path=path,
-                    line=line,
-                    text=snippet,
-                    verification="read",
+            if snippet:
+                cited_hook = True
+                findings.append(
+                    _finding(
+                        ctx,
+                        layer="source_file",
+                        path=path,
+                        line=line,
+                        text=snippet,
+                        verification="read",
+                    )
                 )
-            )
         if relative.startswith("woocommerce/") and not cited_hook:
             cited = _evidence_line(path, text)
-            if cited is None:
-                continue
-            line, snippet = cited
-            findings.append(
-                _finding(
-                    ctx,
-                    layer="source_file",
-                    path=path,
-                    line=line,
-                    text=snippet,
-                    verification="read",
+            if cited is not None:
+                line, snippet = cited
+                findings.append(
+                    _finding(
+                        ctx,
+                        layer="source_file",
+                        path=path,
+                        line=line,
+                        text=snippet,
+                        verification="read",
+                    )
                 )
-            )
     return {
         "tool": tool,
         "site_id": ctx.site_id,
@@ -542,6 +615,11 @@ def step_sources(ctx: ReviewContext) -> dict[str, Any]:
         "detail": f"themes/{ctx.stylesheet}",
         "layer": "source_file",
         "theme_relationship": ctx.relationship,
+        "active_theme": ctx.stylesheet,
+        "parent_theme": ctx.template if ctx.relationship == "child" else None,
+        "active_plugins": active_plugins,
+        "plugin_inventory_status": "read" if active_plugins is not None else "unavailable",
+        "source_inventory": inventory,
         "woo_plugin_edit_target": False,
         "findings": findings,
     }

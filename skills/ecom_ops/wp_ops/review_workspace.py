@@ -16,7 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ecom_ops.wp_ops.file_changes import sensitive_relative
-from ecom_ops.wp_ops.files import LocalTree, component_dir
+from ecom_ops.wp_ops.files import (
+    LocalTree,
+    PathRejected,
+    TransportError,
+    component_dir,
+    resolve_file,
+)
 
 PLAN_ID = re.compile(r"^wr-[a-f0-9]{12}$")
 SITE_ID = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -25,6 +31,8 @@ _MAX_FILE = 65536
 _MAX_FILES = 200
 _MAX_TOTAL = 8 * 1024 * 1024
 _MAX_ENTRIES = 256
+_TEXT_EXTENSIONS = frozenset({".php", ".css", ".js", ".json", ".txt", ".html"})
+_ENTRY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 _MANIFEST_KEYS = (
     "plan_id",
     "site_id",
@@ -143,6 +151,62 @@ def read_local_component(transport: object, files_root: str, kind: str, slug: st
             raise ReviewError("CopyLimit")
         files.append((relative, data))
     return files
+
+
+def read_site_component(transport: object, files_root: str, kind: str, slug: str) -> list[tuple[str, bytes]]:
+    """Copy one allowlisted text component from a LocalTree or read-only SFTP."""
+    if isinstance(transport, LocalTree):
+        return read_local_component(transport, files_root, kind, slug)
+    if not SLUG.fullmatch(slug):
+        raise ReviewError("SlugRejected")
+    component = component_dir(files_root, kind, slug)
+    pending = [("", component)]
+    files: list[tuple[str, bytes]] = []
+    total = 0
+    entries = 0
+    while pending:
+        relative_dir, absolute_dir = pending.pop()
+        try:
+            names = transport.list_dir(absolute_dir)
+        except Exception as exc:
+            raise ReviewError("CopyReadFailed") from exc
+        if not isinstance(names, list):
+            raise ReviewError("CopyReadFailed")
+        for raw_name in names:
+            name = str(raw_name or "")
+            entries += 1
+            if entries > _MAX_ENTRIES:
+                raise ReviewError("CopyLimit")
+            if not _ENTRY.fullmatch(name):
+                raise ReviewError("PathRejected")
+            relative = f"{relative_dir}/{name}" if relative_dir else name
+            if sensitive_relative(relative):
+                continue
+            suffix = Path(name).suffix.lower()
+            if suffix in _TEXT_EXTENSIONS:
+                try:
+                    absolute_file = resolve_file(files_root, kind, slug, relative)
+                    data = transport.read_bytes(absolute_file)
+                except (PathRejected, TransportError) as exc:
+                    raise ReviewError("CopyReadFailed") from exc
+                except Exception as exc:
+                    raise ReviewError("CopyReadFailed") from exc
+                if len(data) > _MAX_FILE:
+                    raise ReviewError("FileTooLarge")
+                try:
+                    data.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ReviewError("BinaryFileRefused") from exc
+                total += len(data)
+                if total > _MAX_TOTAL or len(files) >= _MAX_FILES:
+                    raise ReviewError("CopyLimit")
+                files.append((relative, bytes(data)))
+                continue
+            if name.startswith("."):
+                continue
+            child = absolute_dir.rstrip("/") + "/" + name
+            pending.append((relative, child))
+    return sorted(files)
 
 
 def write_tree(folder: Path, files: list[tuple[str, bytes]]) -> None:

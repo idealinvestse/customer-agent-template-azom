@@ -50,9 +50,12 @@ def run_page_review_job(
         return BotReply(
             text="Välj en WordPress-sajt med /wp use. Ingen sida och ingen order hämtades."
         )
+    from ecom_ops.bot.page_review_runtime import page_review_client
+
     outcome = run_bounded_page_review_loop(
         site_id=site_id,
         actor=actor,
+        client=page_review_client(site_id, actor),
         on_progress=progress,
     )
     return BotReply(text=outcome.text)

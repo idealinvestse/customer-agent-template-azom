@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from urllib.parse import urlencode
+import re
+from urllib.parse import urlencode, urlsplit
 
 
 def dashboard_public_base() -> str | None:
@@ -24,6 +25,33 @@ def dashboard_url(path: str = "/", *, query: dict[str, str] | None = None) -> st
     if query:
         url = f"{url}?{urlencode(query)}"
     return url
+
+
+def review_plan_url(site_id: str, plan_id: str) -> str | None:
+    """Build an authenticated review URL only from a configured HTTPS origin."""
+    site = str(site_id or "")
+    plan = str(plan_id or "")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", site):
+        return None
+    if not re.fullmatch(r"wr-[a-f0-9]{12}", plan):
+        return None
+    base = dashboard_public_base()
+    if not base:
+        return None
+    try:
+        parsed = urlsplit(base)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+    except ValueError:
+        return None
+    return dashboard_url(f"/wp/{site}/reviews/{plan}")
 
 
 def case_detail_url(case_id: str, *, from_messenger: bool = True) -> str | None:

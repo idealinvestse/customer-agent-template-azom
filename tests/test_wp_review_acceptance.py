@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ecom_ops.bot.dashboard_links import review_plan_url
 from ecom_ops.integrations.wordpress import InMemoryWpTransport, WordPressClient
 from ecom_ops.wp_ops.agent_tools import WpAgentTools, run_bounded_file_tool_loop
 from ecom_ops.wp_ops.page_review_loop import run_bounded_page_review_loop
-from ecom_ops.wp_ops.review_checks import SYNTAX_MARKER, run_job
+from ecom_ops.wp_ops.review_checks import run_job
 from ecom_ops.wp_ops.review_plan import ReviewPlans, review_risk
 from ecom_ops.wp_ops.review_runner import FORBIDDEN_ENV_NAMES, SandboxGate, synthetic_env
-from ecom_ops.wp_ops.review_workspace import VerifiedTheme, workspace_root
+from ecom_ops.wp_ops.review_workspace import VerifiedTheme, read_site_component, workspace_root
 from ecom_ops.wp_ops.service import WpOpsService
 
 ROOT = Path(__file__).resolve().parents[1]
+SYNTAX_MARKER = "AZOM_FAKE_PHP_SYNTAX_ERROR"
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 DASH = ROOT / "infrastructure" / "dashboard"
 SHOP = "SHOP_ONLY_SECRET"
@@ -264,6 +267,42 @@ def test_expiry_removes_work_and_keeps_the_row(tmp_path: Path):
     assert again.data["error_class"] == "Expired"
 
 
+def test_review_link_requires_https_and_contains_only_site_and_plan(monkeypatch):
+    monkeypatch.setenv("AZOM_DASHBOARD_PUBLIC_URL", "https://ops.example.test/base/")
+    url = review_plan_url("mock-staging", "wr-0123456789ab")
+    assert url == "https://ops.example.test/base/wp/mock-staging/reviews/wr-0123456789ab"
+    assert "token" not in url and "approve" not in url
+    monkeypatch.setenv("AZOM_DASHBOARD_PUBLIC_URL", "http://ops.example.test")
+    assert review_plan_url("mock-staging", "wr-0123456789ab") is None
+    monkeypatch.setenv("AZOM_DASHBOARD_PUBLIC_URL", "https://user:pass@ops.example.test")
+    assert review_plan_url("mock-staging", "wr-0123456789ab") is None
+
+
+def test_sftp_workspace_copy_is_bounded_and_skips_sensitive_paths():
+    root = "/var/www/mock-staging/wp-content/themes/twentytwentyfive"
+
+    class ReadOnlyTree:
+        def list_dir(self, path):
+            return {
+                root: ["style.css", "functions.php", "assets", "wp-config.php"],
+                f"{root}/assets": ["main.js"],
+            }.get(path, [])
+
+        def read_bytes(self, path):
+            return {
+                f"{root}/style.css": b"body { color: black; }",
+                f"{root}/functions.php": b"<?php\n",
+                f"{root}/assets/main.js": b"window.azom = true;",
+            }[path]
+
+    files = read_site_component(ReadOnlyTree(), "/var/www/mock-staging", "theme", "twentytwentyfive")
+    assert files == [
+        ("assets/main.js", b"window.azom = true;"),
+        ("functions.php", b"<?php\n"),
+        ("style.css", b"body { color: black; }"),
+    ]
+
+
 def test_static_jobs_and_skills_do_not_invent_a_pass(monkeypatch):
     monkeypatch.setenv("AZOM_WP_SANDBOX", "0")
     missing = run_job("woo_static", "plugin", [("azom.php", "<?php\nwc_get_order();\n")], "high")
@@ -278,21 +317,41 @@ def test_static_jobs_and_skills_do_not_invent_a_pass(monkeypatch):
     )
     assert direct["status"] == "failed"
     assert "shop_order" in direct["findings"]
-    tests = [("tests/OrderTest.php", SYNTAX_MARKER)]
-    assert run_job("phpunit", "plugin", tests, "low")["status"] == "not_run"
-    assert run_job("php_lint", "plugin", tests, "low")["status"] == "failed"
+    tests = [("tests/OrderTest.php", "<?php echo 'syntax is valid';")]
+    assert run_job("phpunit", "plugin", tests, "low")["status"] == "unavailable"
+    lint = run_job("php_lint", "plugin", tests, "low")
+    assert lint["status"] in {"unavailable", "passed"}
+    if lint["status"] == "unavailable":
+        assert lint["executed"] is False and lint["simulated"] is False
+    assert {"command", "started_at", "finished_at", "exit_code", "artifact_path", "executed", "simulated"} <= set(lint)
     env = synthetic_env()
     assert env.keys() == {"AZOM_REVIEW_SYNTHETIC"}
     assert FORBIDDEN_ENV_NAMES.isdisjoint(env)
     record = SandboxGate().start(type("S", (), {"php_version": "8.3", "wordpress_version": "6.7", "woocommerce": False})(), "wr-0123456789ab", high_risk=True)
-    assert record["database"] == "synthetic"
-    assert record["state"] == "not_run"
+    assert record["database"] == "not_created"
+    assert record["state"] == "unavailable"
     assert record["payments_enabled"] is False
     skill = (ROOT / "skills" / "wordpress-review" / "SKILL.md").read_text(encoding="utf-8")
     knowledge = (ROOT / "skills" / "ecom_ops" / "wp_ops" / "review_knowledge.py").read_text(encoding="utf-8")
     assert "WP_OPS_" not in skill
     assert "WP_OPS_" not in knowledge
     assert "import os" not in knowledge
+
+
+def test_backup_restored_plan_without_workspace_is_not_resumable(tmp_path: Path):
+    plans = _plans(tmp_path)
+    opened = _open_child(plans)
+    plan_id = opened.data["plan_id"]
+    root = workspace_root(tmp_path / "data", "mock-staging", plan_id)
+    import shutil
+
+    shutil.rmtree(root)
+    shown = plans.show("mock-staging", plan_id, actor="jonatan")
+    assert shown.ok
+    assert shown.data["plan"]["status"] == "not_resumable"
+    attempted = plans.run_checks("mock-staging", plan_id, actor="agent")
+    assert attempted.ok is False
+    assert attempted.data["error_class"] == "WorkspaceNotResumable"
 
 
 def test_page_review_stops_on_call_and_time_budgets(tmp_path: Path):
@@ -333,6 +392,7 @@ def test_page_review_stops_on_call_and_time_budgets(tmp_path: Path):
 
 def test_open_review_states_a_login_path_and_does_not_write(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DASHBOARD_PUBLIC_URL", "https://ops.example.test")
     monkeypatch.setenv("AZOM_WP_FILES_SSH", "0")
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
@@ -356,6 +416,7 @@ def test_open_review_states_a_login_path_and_does_not_write(tmp_path: Path, monk
     assert "Arbetsytan är skapad." in result.content
     assert "/wp/mock-staging/reviews/wr-" in result.content
     assert "risk " in result.content
+    assert "https://ops.example.test/wp/mock-staging/reviews/" in result.content
     assert "kräver inloggning" in result.content
     assert "inte en behörighet" in result.content
     assert not (
@@ -368,9 +429,9 @@ def test_dashboard_review_link_is_fail_closed(monkeypatch, tmp_path: Path):
     plans = _plans(tmp_path)
     opened = _open_child(plans)
     plan_id = opened.data["plan_id"]
-    plans.place("mock-staging", plan_id, "functions.php", f"<?php\n{SYNTAX_MARKER}\n".encode(), actor="oscar")
+    plans.place("mock-staging", plan_id, "functions.php", f"<?php function {SYNTAX_MARKER}( {{\n".encode(), actor="oscar")
     checked = plans.run_checks("mock-staging", plan_id, actor="oscar")
-    assert checked.data["status"] == "tests_failed"
+    assert checked.data["status"] == ("tests_failed" if shutil.which("php") else "checks_incomplete")
     shown = plans.show("mock-staging", plan_id, actor="oscar", include_diff=True)
     base = shown.data["plan"]["base_sha256"]
     work = shown.data["plan"]["work_sha256"]
@@ -407,7 +468,7 @@ def test_dashboard_review_link_is_fail_closed(monkeypatch, tmp_path: Path):
         data={"_csrf": "nope", "base_sha256": base, "work_sha256": work},
     )
     assert rejected.status_code == 400
-    assert plans.show("mock-staging", plan_id, actor="oscar").data["plan"]["status"] == "tests_failed"
+    assert plans.show("mock-staging", plan_id, actor="oscar").data["plan"]["status"] == checked.data["status"]
     mismatched = client.post(
         f"{path}/staging",
         headers=oscar,

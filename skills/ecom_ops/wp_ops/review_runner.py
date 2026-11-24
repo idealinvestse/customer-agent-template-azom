@@ -1,7 +1,7 @@
-"""Sandbox gate for a review plan.
+"""Honest sandbox availability gate for a review plan.
 
-Flag off records a fake lifecycle. Flag on still refuses on this machine.
-This module does not import a process runner or a container client.
+No WordPress container runtime is wired. This module never records a fake
+container or synthetic database as if one had been created.
 """
 
 from __future__ import annotations
@@ -52,14 +52,14 @@ def empty_record(plan_id: str) -> dict:
     if FORBIDDEN_ENV_NAMES.intersection(env):
         raise ReviewError("SandboxSecretRefused")
     return {
-        "engine": "fake",
-        "database": "synthetic",
-        "network": "none",
+        "engine": "unavailable",
+        "database": "not_created",
+        "network": "not_run",
         "env_names": sorted(env),
-        "state": "stopped",
+        "state": "unavailable",
         "port": None,
         "volume": None,
-        "container": "stopped",
+        "container": "unavailable",
         "payments_enabled": False,
         "checkout_enabled": False,
         "admin_password_stored": False,
@@ -79,8 +79,9 @@ class SandboxGate:
         # Flag off does not start a container. A later restart only stops
         # rows that a real runtime had already marked created or running.
         record["engine"] = "unavailable"
+        record["database"] = "not_created"
         record["network"] = "not_run"
-        record["state"] = "not_run"
+        record["state"] = "unavailable"
         record["volume"] = None
         record["container"] = "unavailable"
         record["availability"] = "unavailable"
@@ -91,6 +92,12 @@ class SandboxGate:
 
     def stop(self, record: dict) -> dict:
         stopped = dict(record)
+        if stopped.get("engine") == "unavailable" or stopped.get("state") in {"unavailable", "not_run"}:
+            stopped["engine"] = "unavailable"
+            stopped["state"] = "unavailable"
+            stopped["container"] = "unavailable"
+            stopped["port"] = None
+            return stopped
         stopped["state"] = "stopped"
         stopped["container"] = "stopped"
         stopped["port"] = None
@@ -103,6 +110,8 @@ class SandboxGate:
 
     def destroy(self, record: dict) -> dict:
         destroyed = self.stop(record)
+        if destroyed.get("engine") == "unavailable":
+            return destroyed
         destroyed["state"] = "destroyed"
         destroyed["volume"] = None
         return destroyed

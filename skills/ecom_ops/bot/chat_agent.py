@@ -1539,9 +1539,12 @@ def run_chat(
             conversation_id=conversation_id,
         ):
             site_id = str(bound.get("site_id") or "")
+        from ecom_ops.bot.page_review_runtime import page_review_client
+
         outcome = run_bounded_page_review_loop(
             site_id=site_id,
             actor=actor,
+            client=page_review_client(site_id, actor) if site_id else None,
             on_progress=on_progress,
         )
         text = outcome.text
