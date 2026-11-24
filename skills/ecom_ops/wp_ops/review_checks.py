@@ -298,6 +298,8 @@ def run_is_publishable(
     run_id = binding.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         return False
+    if binding.get("profile") != PROFILE or binding.get("profile_version") != PROFILE_VERSION:
+        return False
     needed = requirements(kind, files, risk)
     if binding.get("policy") != needed:
         return False

@@ -390,7 +390,7 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
             template_origin = "theme"
         selected_template = str(selected.get("path") or "")
         template_path = selected_template or None
-        selection = "verified"
+        selection = "candidate" if assignment_state == "unverified" else "verified"
     elif present:
         template_origin = "unresolved"
         selected_template = None

@@ -1,5 +1,7 @@
 # Sandbox and PHP lint runtime
 
+Correction after `351bfce`: `ReviewPlans.preview` returns `PreviewBlocked` unless the sandbox state is `running` and the engine is present. The preview-success gap later in this note is closed.
+
 throughput checkpoint: n/a, read-only investigation
 
 This note is from a read of the working tree on `feat/wp-ops-night-review`. `review_plan.py`, `review_checks.py`, and `wp_review_process.py` were already modified, and `tests/test_wp_review_evidence.py` was untracked. Pytest was not run, Docker was not run, and no PHP binary was started.

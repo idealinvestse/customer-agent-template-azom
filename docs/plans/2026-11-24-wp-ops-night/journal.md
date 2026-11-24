@@ -69,6 +69,19 @@ Ruff on the touched Python files: exit 0.
 
 Read this session: `verification-before-completion`. Earlier in the same task: `using-superpowers`, `test-driven-development`, `wordpress-review` skill. Reports from read-only subagents: `b-runtime.md`, `c-evidence.md`, `d-operator.md`, `e-ops.md`. `b-runtime.md` still describes the old preview success on an unavailable sandbox. `ReviewPlans.preview` now returns `PreviewBlocked` unless `state` is `running` and `engine` is not `unavailable`. `test_confirmed` in `test_published_evidence_does_not_open_an_unavailable_preview`.
 
+## Follow-up after the independent review
+
+The reviewer reported no blocking gate hole. These mistakes were still real:
+
+- `run_is_publishable` accepted any profile name when the rows matched the snapshot. It now requires `wp-review-catalog` version `1`.
+- An unread database template set `selection` to `verified`. It is `candidate` until that file is read.
+- `ReviewPlans._row` left a workspace root without `base` or `work` resumable. It now marks `not_resumable`.
+- Check audit recorded timeout and unavailable as success. Success is only status `passed`.
+- `POST /wp/<site_id>/reviews/<plan_id>/checks` is the catalog caller. It uses the existing CSRF check and `WP_OPS_OPERATE`. A real catalog on this host stays unpublished.
+- The homepage fixture imports `test_wp_page_review.py` by file path so another `tests` package on `PYTHONPATH` cannot shadow it.
+
+The same WP file list as the morning report, plus these tests, exited 0: `113 passed, 1 skipped in 7.45s`. The skip is still the unset `AZOM_WP_RUNTIME_E2E` flag. Ruff on the touched Python files exited 0.
+
 ## What stayed closed
 
 `AZOM_WP_SANDBOX` off. `AZOM_WP_FILES_SSH` not enabled. No image pull. No customer site. No Telegram. No production write. `request_production` still returns `BackupNotVerified`.

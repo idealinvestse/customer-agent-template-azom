@@ -7,6 +7,7 @@ open preview or local staging.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -129,6 +130,11 @@ def test_woo_static_pass_is_a_static_precheck_only():
         "policy": needed,
     }
     assert run_is_publishable("plugin", files, "high", rows + [static], binding) is True
+    forged_rows = [
+        {**row, "profile": "hand-edited", "profile_version": "9"} for row in rows + [static]
+    ]
+    forged_binding = {**binding, "profile": "hand-edited", "profile_version": "9"}
+    assert run_is_publishable("plugin", files, "high", forged_rows, forged_binding) is False
     binding["policy"] = {**needed, "woo_static": "not_applicable"}
     assert run_is_publishable("plugin", files, "high", rows + [static], binding) is False
 
@@ -354,3 +360,65 @@ def test_published_evidence_does_not_open_an_unavailable_preview(monkeypatch, tm
     shown = plans.show("mock-staging", plan_id, actor="oscar")
     assert shown.data["plan"]["sandbox"]["state"] != "running"
     assert shown.data["plan"]["sandbox"]["container"] != "running"
+
+
+def test_forged_profile_does_not_open_staging(monkeypatch, tmp_path: Path):
+    theme = _theme_files(tmp_path)
+    before = (theme / "style.css").read_text(encoding="utf-8")
+    plans = _plans(tmp_path)
+    opened = _open_copy(plans)
+    plan_id = opened.data["plan_id"]
+    placed = plans.place(
+        "mock-staging",
+        plan_id,
+        "style.css",
+        b"/* base */\n/* patch */\n",
+        actor="oscar",
+    )
+    assert placed.ok is True
+
+    def _pass(kind, files, risk, artifact_dir=None):
+        del files, artifact_dir
+        needed = requirements(kind, [("functions.php", "<?php\n"), ("style.css", "/* base */\n")], risk)
+        return [_passed(job, policy=level) for job, level in needed.items() if level == "required"]
+
+    monkeypatch.setattr("ecom_ops.wp_ops.review_plan.run_catalog", _pass)
+    checked = plans.run_checks("mock-staging", plan_id, actor="oscar")
+    assert checked.data["status"] == "tests_passed"
+    saved = json.loads((tmp_path / "data" / "wp_review_plans.json").read_text(encoding="utf-8"))
+    plan = saved["plans"][0]
+    plan["check_run"]["profile"] = "hand-edited"
+    plan["check_run"]["profile_version"] = "9"
+    for row in plan["checks"]:
+        row["profile"] = "hand-edited"
+        row["profile_version"] = "9"
+    (tmp_path / "data" / "wp_review_plans.json").write_text(json.dumps(saved), encoding="utf-8")
+    shown = plans.show("mock-staging", plan_id, actor="oscar")
+    staged = plans.approve_staging(
+        "mock-staging",
+        plan_id,
+        actor="oscar",
+        base_sha256=shown.data["plan"]["base_sha256"],
+        work_sha256=shown.data["plan"]["work_sha256"],
+    )
+    assert staged.ok is False
+    assert staged.data["error_class"] == "EvidenceMissing"
+    assert (theme / "style.css").read_text(encoding="utf-8") == before
+    preview = plans.preview("mock-staging", plan_id, actor="oscar")
+    assert preview.ok is False
+    assert preview.data["error_class"] == "EvidenceMissing"
+
+
+def test_missing_work_tree_is_not_resumable(tmp_path: Path):
+    _theme_files(tmp_path)
+    plans = _plans(tmp_path)
+    opened = _open_copy(plans)
+    plan_id = opened.data["plan_id"]
+    root = workspace_root(tmp_path / "data", "mock-staging", plan_id)
+    shutil.rmtree(root / "work")
+    checked = plans.run_checks("mock-staging", plan_id, actor="oscar")
+    assert checked.ok is False
+    assert checked.data["error_class"] == "WorkspaceNotResumable"
+    shown = plans.show("mock-staging", plan_id, actor="jonatan")
+    assert shown.ok is True
+    assert shown.data["plan"]["status"] == "not_resumable"

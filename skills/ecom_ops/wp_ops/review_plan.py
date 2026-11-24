@@ -413,7 +413,7 @@ class ReviewPlans:
                 actor,
                 plan,
                 "wp_review_check",
-                row.get("status") != "failed",
+                row.get("status") == "passed",
                 job=row.get("job"),
                 outcome=row.get("status"),
                 run_id=run_id,
@@ -860,7 +860,13 @@ class ReviewPlans:
                         root = workspace_root(self.data_dir, site_id, plan_id)
                     except ReviewError:
                         root = None
-                    if root is None or not root.is_dir():
+                    missing_tree = (
+                        root is None
+                        or not root.is_dir()
+                        or not (root / "base").is_dir()
+                        or not (root / "work").is_dir()
+                    )
+                    if missing_tree:
                         plan["status"] = "not_resumable"
                         plan["sandbox"] = {
                             **dict(plan.get("sandbox") or {}),

@@ -37,9 +37,15 @@ def _clock(values: list[float]):
 
 
 def _tree(tmp_path: Path):
-    from tests.test_wp_page_review import _tree as build
+    import importlib.util
 
-    return build(tmp_path)
+    source = Path(__file__).resolve().parent / "test_wp_page_review.py"
+    spec = importlib.util.spec_from_file_location("azom_wp_page_review_fixture", source)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("missing page review fixture")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._tree(tmp_path)
 
 
 def _client() -> tuple[WordPressClient, InMemoryWpTransport]:
@@ -70,7 +76,7 @@ def test_database_template_is_not_a_verified_selection(tmp_path: Path):
     assert home["site_editor"] == "unavailable"
     assert home["selected_template"] != "secret-landing.php"
     assert "secret-landing" not in str(home.get("selected_template") or "")
-    assert home["selection"] == "verified"
+    assert home["selection"] == "candidate"
     assert str(home["selected_template_path"]).endswith("front-page.html")
     assert home["page_for_posts"] == 9
     assert home["front_page"]["id"] == 2

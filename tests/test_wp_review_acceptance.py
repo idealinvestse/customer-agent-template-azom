@@ -489,6 +489,7 @@ def test_dashboard_review_link_is_fail_closed(monkeypatch, tmp_path: Path):
     assert SYNTAX_MARKER not in viewer_body
     assert client.post(f"{path}/comment", headers=jonatan, data={"text": "hej", "_csrf": jonatan["X-CSRF-Token"]}).status_code == 403
     assert client.post(f"{path}/extend", headers=jonatan, data={"_csrf": jonatan["X-CSRF-Token"]}).status_code == 403
+    assert client.post(f"{path}/checks", headers=jonatan, data={"_csrf": jonatan["X-CSRF-Token"]}).status_code == 403
 
     oscar = _auth(client, "oscar")
     page = client.get(path, headers=oscar)
@@ -498,6 +499,7 @@ def test_dashboard_review_link_is_fail_closed(monkeypatch, tmp_path: Path):
     assert 'data-rendered-preview="false"' in body
     assert 'data-check-published="false"' in body
     assert "Ingen renderad förhandsvisning." in body
+    assert 'data-review-action="checks"' in body
     assert "Spara synpunkt" in body
     assert "Förläng tolv timmar" in body
     bare = {key: value for key, value in oscar.items() if key != "X-CSRF-Token"}
@@ -507,6 +509,8 @@ def test_dashboard_review_link_is_fail_closed(monkeypatch, tmp_path: Path):
         data={"_csrf": "nope", "base_sha256": base, "work_sha256": work},
     )
     assert rejected.status_code == 400
+    rejected_checks = client.post(f"{path}/checks", headers=bare, data={"_csrf": "nope"})
+    assert rejected_checks.status_code == 400
     assert plans.show("mock-staging", plan_id, actor="oscar").data["plan"]["status"] == checked.data["status"]
     mismatched = client.post(
         f"{path}/staging",
@@ -521,6 +525,12 @@ def test_dashboard_review_link_is_fail_closed(monkeypatch, tmp_path: Path):
     assert SYNTAX_MARKER not in other.get_data(as_text=True)
     preview = client.post(f"{path}/preview", headers=oscar, data={"_csrf": oscar["X-CSRF-Token"]})
     assert 'data-error="PreviewBlocked"' in preview.get_data(as_text=True)
+    rerun = client.post(f"{path}/checks", headers=oscar, data={"_csrf": oscar["X-CSRF-Token"]})
+    rerun_body = rerun.get_data(as_text=True)
+    assert rerun.status_code == 200
+    assert 'data-check-published="false"' in rerun_body
+    assert 'data-status="tests_passed"' not in rerun_body
+    assert "php_lint" in rerun_body
     produced = client.post(
         f"{path}/production",
         headers=oscar,

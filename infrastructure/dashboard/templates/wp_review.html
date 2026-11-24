@@ -82,6 +82,14 @@
     </form>
   </section>
   <section class="az-card">
+    <h2 class="az-section-title">Kontroller</h2>
+    <p class="az-muted mt-2 text-sm">Körningen bokför serverns katalog. Ett saknat verktyg blir inte godkänt.</p>
+    <form class="mt-3" method="post" action="{{ url_for('wp_review_checks', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button class="az-btn-primary" type="submit" data-review-action="checks">Kör kontroller</button>
+    </form>
+  </section>
+  <section class="az-card">
     <h2 class="az-section-title">Förhandsvisning</h2>
     <form class="mt-3" method="post" action="{{ url_for('wp_review_preview', site_id=plan.site_id, plan_id=plan.plan_id) }}">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />

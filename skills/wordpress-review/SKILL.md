@@ -29,7 +29,7 @@ Use only those tools. Do not pass a URL, host, or path. Do not write shell, PHP,
 ## WordPress and WooCommerce review knowledge
 
 - For classic themes, use the server-returned candidate order. Common fallbacks include `front-page.php`, `home.php`, `page.php`, `singular.php`, and `index.php`; a static front page and the posts index have different entry points.
-- For block themes, inspect `templates/*.html`, `parts/*.html`, `theme.json`, and any database-assigned Site Editor template. Treat a database template name as unverified until the server read that file. `site_editor` stays `unavailable` when no database template was read. Do not promote the name to `selected_template`.
+- For block themes, inspect `templates/*.html`, `parts/*.html`, `theme.json`, and any database-assigned Site Editor template. Treat a database template name as unverified until the server read that file. `selection` stays `candidate` until that read. `site_editor` stays `unavailable` when no database template was read. Do not promote the name to `selected_template`.
 - A child theme inherits from its parent. Treat parent files as read-only evidence and report the active child and parent relationship only when the registered site data confirms it.
 - Inspect CSS and JavaScript only when a real source read identifies the file. Enqueue calls, template hooks, and plugin callbacks are evidence of possible influence, not proof that a hook ran on the page.
 - WooCommerce overrides belong under the active theme's `woocommerce/` directory. Do not patch WooCommerce core or infer an override from a file name alone.

@@ -198,6 +198,11 @@ def register_wp_routes(app: Flask) -> None:
     def wp_review_preview(site_id: str, plan_id: str):
         return _post_review_preview(site_id, plan_id)
 
+    @app.route("/wp/<site_id>/reviews/<plan_id>/checks", methods=["POST"])
+    @_auth_required
+    def wp_review_checks(site_id: str, plan_id: str):
+        return _post_review_checks(site_id, plan_id)
+
     @app.route("/wp/<site_id>/reviews/<plan_id>/extend", methods=["POST"])
     @_auth_required
     def wp_review_extend(site_id: str, plan_id: str):
@@ -610,6 +615,24 @@ def _post_review_extend(site_id: str, plan_id: str):
     if blocked is not None:
         return blocked
     return _render_review(site_id, plan_id, result=result.data or {})
+
+
+def _post_review_checks(site_id: str, plan_id: str):
+    if not _REVIEW_ID.fullmatch(plan_id):
+        return Response("Okänd plan", 404)
+    if not _can_drill():
+        return Response("Saknar behörighet", 403)
+    result = _review_ops().run_checks(site_id, plan_id, actor=g.actor["name"])
+    blocked = _review_http(result)
+    if blocked is not None:
+        return blocked
+    data = result.data or {}
+    return _render_review(
+        site_id,
+        plan_id,
+        error_class=str(data.get("error_class") or ""),
+        result=data,
+    )
 
 
 def _post_review_preview(site_id: str, plan_id: str):
