@@ -39,13 +39,16 @@
    - `OPENAI_MODEL` om du inte vill ha default `gpt-5.2`
 2. Starta om dashboard: `sudo systemctl restart azom-dashboard`.
 3. Logga in som Oscar. Öppna `/oscar`. Välj **Anslut ChatGPT**.
-4. Godkänn ChatGPT-plananvändning i webbläsaren. Callbacken sparar utfärdat `client_id` i `AZOM_DATA_DIR/model_oauth/openai_default.json` med läge `0600`.
-5. På `/oscar`: generation minst 1, needs_reauth nej, refresh owner `azom`, plananvändning beviljad.
-6. Tryck **Testa modell** på raden `chatgpt_oauth`. Förväntat: senaste test `ok`. Vid fel står `misslyckades` och felklass. OpenRouter anropas inte.
+4. Godkänn ChatGPT-plananvändning i webbläsaren. Callbacken sparar utfärdat `client_id` i `AZOM_DATA_DIR/model_oauth/openai_default.json` med läge `0600`. Om du använder loopback-`redirect_uri` (`http://127.0.0.1:8080/oauth/openai/callback`) mot en fjärr-VPS: öppna **Slutför manuell callback** i `/oscar` och klistra in hela adressfälts-URL:en inom 10 minuter (`POST /oauth/openai/complete-manual`).
+5. På `/oscar`: ansluten `ja`, generation minst 1, needs_reauth nej, refresh owner `azom`, plananvändning beviljad, och läsbar UTC-utgångstid (`expires_at_iso`). Azom tolkar OpenAI:s `earliest_refresh_at` som absolut Unix-sekundstidsstämpel och rensar automatiskt `OPEN_AUTH` vid lyckad (åter)anslutning.
+6. Välj vid behov **Katalog: ChatGPT Plus (OAuth)** i modellsöket på `/oscar` för att lista tillgängliga modeller på det anslutna kontot.
+7. Tryck **Testa modell** på raden `chatgpt_oauth`. Förväntat: senaste test `ok`. Vid fel står `misslyckades` och felklass. OpenRouter anropas inte.
 
 **Förväntat:** Ingen token syns i sidan, i redirecten efter callback, eller i telemetry.
 
 Återanslutning använder sparat utfärdat client id, inte `dynamic_agent_client`. **Koppla från** raderar sessionfilen.
+
+**Tips för Telegram (Oscar-only):** Oscar kan också länka och testa båda leverantörerna direkt i Telegram via `/oauth` (eller t.ex. *"länka chatgpt oauth"* / *"anslut x.ai"*). Pasted loopback-URL (`?code=...&state=...`) utbyts direkt i minnet, raderas från chatten (`deleteMessage`) och skrivs aldrig till `telegram_jobs.sqlite3`, konversationshistorik eller `audit.jsonl`.
 
 ## 2. Refresh ownership
 

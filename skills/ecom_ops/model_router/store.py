@@ -46,6 +46,7 @@ class ModelSession:
     account_id: str
     client_id: str = ""
     ext_agent_host_id: str = ""
+    redirect_uri: str = ""
     access_token: str = ""
     refresh_token: str = ""
     id_token: str = ""
@@ -198,6 +199,7 @@ class ModelSessionStore:
             account_id=str(raw.get("account_id") or self.account_id),
             client_id=str(raw.get("client_id") or ""),
             ext_agent_host_id=str(raw.get("ext_agent_host_id") or ""),
+            redirect_uri=str(raw.get("redirect_uri") or ""),
             access_token=str(raw.get("access_token") or ""),
             refresh_token=str(raw.get("refresh_token") or ""),
             id_token=str(raw.get("id_token") or ""),
@@ -220,6 +222,7 @@ class ModelSessionStore:
             "account_id": session.account_id,
             "client_id": session.client_id,
             "ext_agent_host_id": session.ext_agent_host_id,
+            "redirect_uri": session.redirect_uri,
             "access_token": session.access_token,
             "refresh_token": session.refresh_token,
             "id_token": session.id_token,

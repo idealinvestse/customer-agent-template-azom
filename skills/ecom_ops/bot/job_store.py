@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.bot.steer_router import decide_message_routing
+from ecom_ops.bot.telegram_oauth import is_ephemeral_oauth_message
 from ecom_ops.wp_ops.page_review_intent import is_page_review
 
 MAX_STEERS_PER_JOB = 3
@@ -304,11 +305,44 @@ class TelegramJobStore:
         encoded = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    def acknowledge_ephemeral_update(self, update_id: int) -> bool:
+        """Record an ephemeral OAuth update_id and advance offset without storing message text."""
+        now = _now()
+        with self._connection() as conn:
+            self._begin(conn)
+            existing = conn.execute(
+                "SELECT 1 FROM telegram_inbox WHERE update_id=? LIMIT 1",
+                (int(update_id),),
+            ).fetchone()
+            if existing:
+                conn.commit()
+                return False
+            conn.execute(
+                "INSERT INTO telegram_inbox(update_id,payload_json,state,disposition,created_at) "
+                "VALUES(?,?,?,?,?)",
+                (int(update_id), '{"kind":"ephemeral_oauth"}', "done", "ephemeral", now),
+            )
+            row = conn.execute(
+                "SELECT value FROM bot_meta WHERE key='telegram_update_offset'"
+            ).fetchone()
+            current = int(row["value"]) if row else 0
+            next_offset = max(current, int(update_id) + 1)
+            conn.execute(
+                "INSERT INTO bot_meta(key,value) VALUES('telegram_update_offset',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(next_offset),),
+            )
+            conn.commit()
+            return True
+
     def accept_update(self, update: dict[str, Any]) -> dict[str, Any]:
         """Durably store the update and advance the Telegram cursor atomically."""
         parsed = self._parse_update(update)
         if not parsed:
             return {"disposition": "ignored"}
+        if parsed["kind"] == "message" and is_ephemeral_oauth_message(str(parsed.get("text") or "")):
+            # Defense-in-depth: never write OAuth authorization codes or states into SQLite.
+            parsed["text"] = "/oauth callback"
         update_id = parsed["update_id"]
         now = _now()
         with self._connection() as conn:

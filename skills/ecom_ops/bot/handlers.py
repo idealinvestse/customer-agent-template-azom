@@ -65,6 +65,13 @@ from ecom_ops.bot.site_content import (
     execute_site_update,
 )
 from ecom_ops.bot.store import ConversationStore, clamp_messages
+from ecom_ops.bot.telegram_oauth import (
+    handle_ephemeral_oauth_callback,
+    handle_oauth_callback_query,
+    handle_oauth_command,
+    is_ephemeral_oauth_message,
+    match_natural_oauth_intent,
+)
 from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.rbac import Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import validate_order_id
@@ -578,6 +585,20 @@ class BotHandler:
         )
         return oc
 
+    def handle_ephemeral_oauth_callback(
+        self, chat_id: str | int, raw_text: str
+    ) -> BotReply:
+        """Exchange a pasted ChatGPT OAuth callback URL without storing conversation state."""
+        if not self._peer_allowed(chat_id):
+            return self._deny_allowlist()
+        try:
+            self._resolve_actor(chat_id)
+        except (TelegramActorDenied, ChannelActorDenied):
+            return self._deny_actor()
+        return handle_ephemeral_oauth_callback(
+            chat_id, raw_text, channel=self.channel
+        )
+
     def handle(
         self,
         chat_id: str | int,
@@ -601,6 +622,11 @@ class BotHandler:
         raw = (text or "").strip()
         if not raw:
             return BotReply(text="Skriv /help eller /commands — eller bara fråga.")
+
+        if is_ephemeral_oauth_message(raw):
+            return handle_ephemeral_oauth_callback(
+                chat_id, raw, channel=self.channel
+            )
 
         wp_command = self._wp_context_command(chat_id, raw, on_progress=on_progress)
         if wp_command is not None:
@@ -643,6 +669,11 @@ class BotHandler:
                     task_id=task_id,
                 )
             )
+
+        nat_oauth = match_natural_oauth_intent(raw)
+        if nat_oauth is not None:
+            sub = "" if nat_oauth == "panel" else nat_oauth
+            return handle_oauth_command(chat_id, sub, channel=self.channel)
 
         # Ultra-short order shortcut
         fast = ORDER_FAST_RE.match(raw)
@@ -909,6 +940,12 @@ class BotHandler:
             )
         if raw == "action:no":
             return self._confirm_pending_text(chat_id, yes=False)
+        if raw.startswith("oauth:"):
+            oauth_reply = handle_oauth_callback_query(
+                chat_id, raw, channel=self.channel
+            )
+            if oauth_reply is not None:
+                return oauth_reply
         return BotReply(
             text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK)
         )

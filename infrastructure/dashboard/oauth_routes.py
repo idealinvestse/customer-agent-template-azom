@@ -44,10 +44,53 @@ def register_oauth_routes(app: Flask) -> None:
                 state=state,
                 issued_client_id=issued_client_id or None,
             )
-        except ModelAuthError:
-            return redirect(url_for("oscar_home") + "?err=ChatGPT+OAuth+avvisades")
+        except ModelAuthError as exc:
+            err_msg_map = {
+                "incomplete_registration": "ChatGPT+OAuth+saknar+utfärdat+client_id",
+                "client_mismatch": "ChatGPT+OAuth+client_id+matchar+inte",
+                "invalid_grant": "ChatGPT+OAuth+koden+har+löpt+ut",
+                "missing_callback_params": "ChatGPT+OAuth+saknar+code",
+            }
+            msg = err_msg_map.get(exc.code, "ChatGPT+OAuth+avvisades")
+            return redirect(url_for("oscar_home") + f"?err={msg}")
         except ModelRouteError:
             return redirect(url_for("oscar_home") + "?err=ChatGPT+OAuth+misslyckades")
+        return redirect(url_for("oscar_home") + "?msg=ChatGPT+kopplad")
+
+    @app.route("/oauth/openai/complete-manual", methods=["POST"])
+    @_oscar_required
+    def oauth_openai_complete_manual():
+        from flask import g
+
+        from ecom_ops.audit import log_action
+        from ecom_ops.model_router.errors import ModelAuthError, ModelRouteError
+        from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
+
+        callback_url = (request.form.get("callback_url") or "").strip()
+        if not callback_url:
+            return redirect(url_for("oscar_home") + "?err=Klistra+in+hel+callback-URL")
+        try:
+            session = OpenAIChatGPTOAuthRoute().exchange_callback_url(callback_url)
+        except ModelAuthError as exc:
+            err_msg_map = {
+                "incomplete_registration": "ChatGPT+OAuth+saknar+utfärdat+client_id",
+                "client_mismatch": "ChatGPT+OAuth+client_id+matchar+inte",
+                "invalid_grant": "ChatGPT+OAuth+koden+har+löpt+ut",
+                "missing_callback_params": "ChatGPT+OAuth+saknar+code+eller+state",
+            }
+            msg = err_msg_map.get(exc.code, "ChatGPT+OAuth+avvisades")
+            return redirect(url_for("oscar_home") + f"?err={msg}")
+        except ModelRouteError:
+            return redirect(url_for("oscar_home") + "?err=ChatGPT+OAuth+misslyckades")
+        log_action(
+            actor=g.actor["name"],
+            action="chatgpt_oauth_manual_connect",
+            target="chatgpt_oauth",
+            details={
+                "generation": session.generation,
+                "plan_usage": "chatgpt.tokens.use.direct" in session.scopes,
+            },
+        )
         return redirect(url_for("oscar_home") + "?msg=ChatGPT+kopplad")
 
     @app.route("/oauth/google/start")

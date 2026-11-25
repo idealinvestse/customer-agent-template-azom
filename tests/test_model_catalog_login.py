@@ -150,3 +150,49 @@ def test_device_login_does_not_inherit_stdin(tmp_path, monkeypatch):
             reader.join(timeout=2)
         login._proc = None
         login._reader = None
+
+
+def test_openai_chatgpt_catalog_search_lists_connected_models(tmp_path, monkeypatch):
+    import responses as rsps_mod
+
+    from ecom_ops.model_router.openai_chatgpt import MODELS_URL, OpenAIChatGPTOAuthRoute
+    from ecom_ops.model_router.store import ModelSession
+
+    catalog._cache.clear()
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+
+    # Disconnected -> friendly error
+    disconnected = catalog.search_models("openai", "gpt")
+    assert disconnected["models"] == []
+    assert "ansluten" in disconnected["error"].lower()
+
+    route = OpenAIChatGPTOAuthRoute()
+    route.store.save(
+        ModelSession(
+            provider="openai",
+            account_id="default",
+            client_id="oaiapp_123",
+            access_token="plus-tok",
+            refresh_token="plus-ref",
+            expires_at=time.time() + 3600,
+            generation=1,
+            status="connected",
+            scopes=["openid", "offline_access", "chatgpt.tokens.use.direct"],
+        )
+    )
+    with rsps_mod.RequestsMock() as rsps:
+        rsps.add(
+            rsps_mod.GET,
+            MODELS_URL,
+            json={
+                "data": [
+                    {"id": "gpt-5.4-mini", "name": "GPT-5.4 mini", "visibility": "list"},
+                    {"id": "gpt-6.2-sol", "name": "GPT-6.2 Sol", "visibility": "list"},
+                    {"id": "internal-eval", "name": "Hidden", "visibility": "hidden"},
+                ]
+            },
+            status=200,
+        )
+        found = catalog.search_models("openai", "gpt")
+    assert found["error"] == ""
+    assert [m["id"] for m in found["models"]] == ["gpt-5.4-mini", "gpt-6.2-sol"]

@@ -97,7 +97,7 @@ def cmd_help(ctx: CommandContext) -> str:
         "/status · /whoami · /new · /reset · /stop\n"
         "Telegram har också /jobs, /cancel [job-id] och Oscars /reconcile.\n"
         "/tools · /tasks · /usage · /model · /context\n"
-        "/order · /cases · /wp · /health · /brief · /marketing · /commands"
+        "/order · /cases · /wp · /oauth · /health · /brief · /marketing · /commands"
     )
 
 
@@ -363,8 +363,18 @@ def cmd_usage(ctx: CommandContext) -> str:
     )
 
 
-def cmd_model(ctx: CommandContext) -> str:
+def cmd_oauth(ctx: CommandContext) -> BotReply:
+    from ecom_ops.bot.telegram_oauth import handle_oauth_command
+
+    return handle_oauth_command(ctx.chat_id, ctx.args, channel=ctx.channel)
+
+
+def cmd_model(ctx: CommandContext) -> str | BotReply:
     arg = ctx.args.strip()
+    if arg.lower().startswith("oauth"):
+        from ecom_ops.bot.telegram_oauth import handle_oauth_command
+
+        return handle_oauth_command(ctx.chat_id, arg[5:].strip(), channel=ctx.channel)
     if not arg or arg in {"status", "list"}:
         import os
 
@@ -781,6 +791,7 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("cases", "Ärenden: list|show|approve|close", cmd_cases),
     CommandSpec("order", "Orderstatus (read-only)", cmd_order),
     CommandSpec("wp", "WP: sites|use|plans|plan|clear", cmd_wp),
+    CommandSpec("oauth", "Oscar: länka ChatGPT Plus & xAI OAuth", cmd_oauth),
 ]
 
 _BY_NAME: dict[str, CommandSpec] = {}
@@ -812,6 +823,7 @@ TELEGRAM_MENU_COMMANDS: list[dict[str, str]] = [
         "brief",
         "skill",
         "wp",
+        "oauth",
     }
 ]
 

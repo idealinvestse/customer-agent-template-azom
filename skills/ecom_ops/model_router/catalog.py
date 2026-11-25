@@ -8,7 +8,7 @@ from typing import Any
 
 import requests
 
-from ecom_ops.model_router.errors import ModelConfigError
+from ecom_ops.model_router.errors import ModelConfigError, ModelRouteError
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 XAI_MODELS_URL = "https://api.x.ai/v1/models"
@@ -40,6 +40,18 @@ def _load(provider: str) -> list[dict[str, str]]:
     now = time.time()
     if cached and now - cached[0] < _CACHE_SEC:
         return cached[1]
+    if provider == "openai":
+        from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
+
+        route = OpenAIChatGPTOAuthRoute()
+        if not route.is_callable():
+            raise ModelConfigError("ChatGPT OAuth är inte ansluten")
+        try:
+            rows = route.list_models()
+        except ModelRouteError as exc:
+            raise ModelConfigError("Kunde inte hämta ChatGPT-modeller") from exc
+        _cache[provider] = (now, rows)
+        return rows
     headers = {"Accept": "application/json"}
     if provider == "openrouter":
         url = OPENROUTER_MODELS_URL

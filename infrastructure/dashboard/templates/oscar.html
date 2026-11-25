@@ -59,6 +59,7 @@
             <th>Route</th>
             <th>Modell</th>
             <th>Konfigurerad</th>
+            <th>Ansluten</th>
             <th>Breaker</th>
             <th>Refresh</th>
             <th>needs_reauth</th>
@@ -76,11 +77,12 @@
             <td>{{ route_id }}{% if route_id == model_preferred %} · aktiv{% endif %}{% if route_id not in model_order %} <span class="az-muted">(ej i ordning)</span>{% endif %}</td>
             <td><code class="az-code">{{ row.get("model", "") }}</code></td>
             <td>{% if row.get("configured") %}ja{% else %}nej{% endif %}</td>
+            <td>{% if row.get("connected") %}<span class="az-present">ja</span>{% else %}<span class="az-missing">nej</span>{% endif %}{% if route_id == 'chatgpt_oauth' %}<div class="az-muted text-xs">{% if row.get("plan_usage") %}Plananvändning: beviljad{% else %}Plananvändning: saknas{% endif %}</div>{% endif %}</td>
             <td>{% if br and br.get("state", "closed") != "closed" %}<span class="az-missing">{{ br.get("state") }} ({{ br.get("remaining_s", 0) }}s)</span>{% else %}<span class="az-present">closed</span>{% endif %}</td>
             <td>{{ row.get("refresh_owner", "") }}</td>
             <td>{% if row.get("needs_reauth") %}<span class="az-missing">ja</span>{% else %}nej{% endif %}</td>
             <td>{{ row.get("generation", "") }}</td>
-            <td>{{ row.get("expires_at", "") }}</td>
+            <td>{{ row.get("expires_at_iso") or row.get("expires_at") or "" }}</td>
             <td>
               <form method="post" action="/oscar/models/test" class="inline">
                 <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
@@ -135,7 +137,8 @@
       <div>
         <label class="az-label" for="catalog">Katalog</label>
         <select class="az-input" id="catalog" name="catalog">
-          <option value="openrouter" {% if model_catalog_provider != 'xai' %}selected{% endif %}>OpenRouter</option>
+          <option value="openrouter" {% if model_catalog_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
+          <option value="openai" {% if model_catalog_provider == 'openai' %}selected{% endif %}>ChatGPT Plus (OAuth)</option>
           <option value="xai" {% if model_catalog_provider == 'xai' %}selected{% endif %}>xAI</option>
         </select>
       </div>
@@ -148,7 +151,7 @@
     <ul class="mt-2 space-y-1">
       {% for row in model_catalog %}
       <li>
-        <button class="az-btn-secondary" type="button" data-model-id="{{ row.id }}" data-model-target="{{ 'XAI_MODEL' if model_catalog_provider == 'xai' else 'OPENROUTER_MODEL' }}">{{ row.name }}</button>
+        <button class="az-btn-secondary" type="button" data-model-id="{{ row.id }}" data-model-target="{{ 'OPENAI_MODEL' if model_catalog_provider == 'openai' else ('XAI_MODEL' if model_catalog_provider == 'xai' else 'OPENROUTER_MODEL') }}">{{ row.name }}</button>
         <code class="az-code">{{ row.id }}</code>
       </li>
       {% endfor %}
@@ -175,6 +178,15 @@
         <button class="az-btn-oscar" type="submit">Logga in med xAI</button>
       </form>
     </div>
+    <details class="mt-3 rounded border border-ink-700/60 bg-ink-950/40 p-3">
+      <summary class="cursor-pointer text-sm text-mist-200">Slutför manuell callback (remote VPS / 127.0.0.1)</summary>
+      <p class="az-muted mt-2 text-xs">Aktiv <code>redirect_uri</code>: <code class="az-code">{{ model_routes.get('chatgpt_oauth', {}).get('redirect_uri', '') }}</code>. Om OpenAI dirigerar till <code>127.0.0.1</code> i din webbläsare när dashboard körs på en fjärrserver, kopiera hela URL:en ur adressfältet och klistra in den nedan inom 10 minuter.</p>
+      <form method="post" action="/oauth/openai/complete-manual" class="mt-2 flex flex-wrap items-center gap-2">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input class="az-input flex-1" type="text" name="callback_url" placeholder="http://127.0.0.1:8080/oauth/openai/callback?code=...&state=..." autocomplete="off" />
+        <button class="az-btn-secondary" type="submit">Slutför ChatGPT-anslutning</button>
+      </form>
+    </details>
     {% set xai = xai_login or {} %}
     {% if xai.get("verification_uri") or xai.get("user_code") or xai.get("detail") or xai.get("status") not in [None, "", "idle"] %}
     <p id="xai-login-status" class="mt-2" data-status="{{ xai.get('status', '') }}">
