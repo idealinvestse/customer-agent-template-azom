@@ -1201,3 +1201,204 @@ def test_wpreview_approval_snapshot_ignores_volatile_session_keys(env_setup, mon
     assert "skrivna i staging" in res.text
 
 
+def test_swedish_new_page_requests_route_to_chat_wp_file(env_setup, monkeypatch):
+    seen_profiles: list[str | None] = []
+
+    def fake_completion(messages, **kwargs):
+        seen_profiles.append(kwargs.get("profile_id"))
+        return "Förbereder utkast i sandbox.", 0.0
+
+    monkeypatch.setattr(chat_agent, "chat_completion", fake_completion)
+    monkeypatch.setattr(
+        chat_agent,
+        "_run_fast_read_loop",
+        lambda *a, **k: pytest.fail("read loop must stay off for net-new page requests"),
+    )
+
+    for prompt in (
+        "designa en thankyou sida på azom.no",
+        "bygg en ny kampanjsida med exempelprodukter",
+    ):
+        res = run_chat(prompt, actor="oscar", clarification_confirmed=True)
+        assert "sandbox" in res.text.lower()
+
+    assert seen_profiles == ["wp_tool_router", "wp_tool_router"]
+
+
+def test_clarify_other_long_note_preserves_closing_bracket_dedups_and_survives_picks(
+    env_setup, monkeypatch
+):
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    long_note = (
+        "Lägg till tydliga orderdetaljer med köpta produkter, skötselråd och "
+        "installationsguider som passar både mobil och desktop utan att bryta temat."
+    )
+    calls: list[list[dict[str, Any]]] = []
+
+    def fake_completion(messages, **kwargs):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return _sample_clarify_json(mode="options", round_num=1), 0.0
+        if len(calls) == 2:
+            return _sample_clarify_json(mode="options", round_num=2, question="Vilka guider ska visas?"), 0.0
+        return "Bygger nu tacksidan i sandbox.", 0.0
+
+    monkeypatch.setattr(chat_agent, "chat_completion", fake_completion)
+    monkeypatch.setattr(chat_agent, "_use_read_tool_loop", lambda *a, **k: False)
+
+    r1 = bot.handle(100, "Designa en thankyou sida")
+    other_cb = next(
+        btn.payload
+        for row in r1.actions.rows
+        for btn in row
+        if str(btn.payload).startswith("clarify:other:")
+    )
+    r_other = bot.handle_callback(100, other_cb)
+    assert r_other.actions is None
+
+    # Turn with long free-text note triggers clarify round 2; note must survive into round 2 picks!
+    r2 = bot.handle(100, long_note)
+    assert r2.actions is not None
+    msgs = cstore.get(100)["messages"]
+    note_msgs = [
+        m["content"]
+        for m in msgs
+        if m.get("role") == "user" and str(m.get("content") or "").startswith("[Förtydligande:")
+    ]
+    assert len(note_msgs) == 1
+    assert note_msgs[0].endswith("]")
+    assert "bryta temat" not in note_msgs[0]
+
+    state_after_r2 = cstore.get(100)
+    round2_picks = list((state_after_r2.get("slots") or {}).get("picks") or [])
+    assert any(
+        p.get("id") == "note" and p.get("summary") == long_note
+        for p in round2_picks
+        if isinstance(p, dict)
+    )
+
+    # Picking round-2 option forwards the preserved note inside clarification_context
+    pick2_cb = next(
+        btn.payload
+        for row in r2.actions.rows
+        for btn in row
+        if str(btn.payload).startswith("clarify:pick:")
+    )
+    r3 = bot.handle_callback(100, pick2_cb)
+    assert "sandbox" in r3.text.lower()
+    sys_r3 = "\n".join(
+        str(m.get("content") or "") for m in calls[-1] if m.get("role") == "system"
+    )
+    assert "installationsguider" in sys_r3
+
+
+def test_active_wp_review_page_draft_metadata_and_render_followup(
+    env_setup, monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+    preview_desktop = _make_tiny_png(tmp_path / "preview-desktop.png")
+    preview_mobile = _make_tiny_png(tmp_path / "preview-mobile.png")
+
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    recorded_calls: list[list[dict[str, Any]]] = []
+    loop_calls: list[dict[str, Any]] = []
+
+    def fake_completion(messages, **kwargs):
+        recorded_calls.append(list(messages))
+        return (
+            '<tool_call>{"name": "wp_preview_page", "arguments": {"site_id": "mock-shop"}}</tool_call>',
+            0.0,
+        )
+
+    def fake_file_loop(content, messages, **kwargs):
+        loop_calls.append(dict(kwargs))
+        return SimpleNamespace(
+            handled=True,
+            content="Renderade tacksidan i wr-aa11bb22cc33.",
+            attachments=(preview_desktop, preview_mobile),
+            stage_plan_id=None,
+            review_stage_plan_id="wr-aa11bb22cc33",
+            site_id="mock-shop",
+            operation_ids=("op-draft",),
+            followup_cost_usd=0.0,
+            model_error=False,
+            calls=1,
+            tool_seconds=0.1,
+            active_review_meta={
+                "site_id": "mock-shop",
+                "plan_ids": ["wr-aa11bb22cc33"],
+                "latest_plan_id": "wr-aa11bb22cc33",
+                "variant_group": "vg-thankyou",
+                "preview_path": "/tack/",
+                "theme_slug": "azom-theme",
+                "changed_files": ["page_draft.json"],
+                "preview_images": [preview_desktop, preview_mobile],
+                "page_draft": {
+                    "slug": "thank-you-v1",
+                    "page_type": "thankyou",
+                    "preview_kind": "standalone_page",
+                },
+            },
+        )
+
+    monkeypatch.setattr(chat_agent, "chat_completion", fake_completion)
+    monkeypatch.setattr(chat_agent, "run_bounded_file_tool_loop", fake_file_loop)
+    monkeypatch.setattr(
+        chat_agent,
+        "_run_fast_read_loop",
+        lambda *a, **k: pytest.fail("fast read loop must not run for page_draft render follow-up"),
+    )
+    monkeypatch.setattr(
+        ReviewPlans,
+        "get",
+        lambda self, plan_id, site_id=None: {
+            "plan_id": plan_id,
+            "site_id": "mock-shop",
+            "slug": "azom-theme",
+            "variant_group": "vg-thankyou",
+            "changed_files": ["page_draft.json"],
+            "base_sha256": "a" * 64,
+            "work_sha256": "b" * 64,
+        },
+    )
+
+    r1 = bot.handle(
+        100,
+        "Bygg en ny tacksida med exempelprodukter på mock-shop.example.test",
+    )
+    assert "wr-aa11bb22cc33" in r1.text
+    review1 = cstore.get(100)["session"]["active_wp_review"]
+    assert review1["page_draft"] == {
+        "slug": "thank-you-v1",
+        "page_type": "thankyou",
+        "preview_kind": "standalone_page",
+    }
+
+    assess = detect_change_ambiguity(
+        "Rendera och visa screenshots från sandbox",
+        has_wp_site_context=True,
+        has_active_wp_review=True,
+    )
+    assert assess.is_ambiguous is False
+
+    r2 = bot.handle(100, "Rendera och visa screenshots från sandbox")
+    assert "wr-aa11bb22cc33" in r2.text
+    assert loop_calls[-1].get("allow_wp_first") is True
+    sys_r2 = "\n".join(
+        str(m.get("content") or "") for m in recorded_calls[-1] if m.get("role") == "system"
+    )
+    assert "page_draft_slug=thank-you-v1" in sys_r2
+    assert "page_type=thankyou" in sys_r2
+    assert "preview_kind=standalone_page" in sys_r2
+
+
+

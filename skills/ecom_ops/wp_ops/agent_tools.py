@@ -208,7 +208,11 @@ EXTRA_FILE_TOOLS = frozenset(
         "wp_preview_page",
         "wp_list_products",
         "wp_get_product",
+        "wp_list_pages",
+        "wp_get_page",
+        "wp_build_sample_data",
         "wp_workspace_product_edit",
+        "wp_workspace_page_draft",
     }
 )
 ALL_FILE_TOOLS = FILE_TOOL_NAMES | EXTRA_FILE_TOOLS
@@ -240,6 +244,7 @@ _WORKSPACE_TOOLS = frozenset(
         "wp_workspace_static_checks",
         "wp_workspace_run_checks",
         "wp_workspace_product_edit",
+        "wp_workspace_page_draft",
     }
 )
 _WORKSPACE_MUTATING_TOOLS = frozenset(
@@ -253,6 +258,7 @@ _WORKSPACE_MUTATING_TOOLS = frozenset(
         "wp_workspace_copy_from_parent",
         "wp_workspace_copy_woo_template",
         "wp_workspace_product_edit",
+        "wp_workspace_page_draft",
     }
 )
 _READ_BUDGET_TOOLS = frozenset(
@@ -282,10 +288,18 @@ FILE_LOOP_MAX_RECOVERY_RETRIES = 4
 FILE_LOOP_MAX_READS = 10
 FILE_LOOP_MAX_SEARCHES = 5
 FILE_LOOP_MAX_SECONDS = 60.0
-FILE_LOOP_MAX_RESULT_BYTES = 16_384
-FILE_LOOP_MAX_TOTAL_BYTES = 49_152
+FILE_LOOP_MAX_RESULT_BYTES = 28_672
+FILE_LOOP_MAX_TOTAL_BYTES = 81_920
 _FILE_READ_DEFAULT = 8192
-_FILE_READ_MAX = 12288
+_FILE_READ_MAX = 20480
+_PAGE_DRAFT_FILE = "page_draft.json"
+_PAGE_DRAFT_TYPES = frozenset({"thankyou", "landing", "campaign", "comparison", "upsell", "faq", "custom"})
+_SAMPLE_SCENARIOS = frozenset({"thankyou", "landing", "campaign", "comparison", "upsell", "custom"})
+_PAGE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
+_EMAIL_IN_TEXT_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,24}")
+_ALLOWED_SYNTHETIC_EMAIL_SUFFIXES = (".invalid", ".example", "@example.com", "@example.org", "@example.net")
+_PAGE_DRAFT_MAX_HTML_BYTES = 48 * 1024
+_PAGE_DRAFT_MAX_CSS_BYTES = 24 * 1024
 _RECOVERY_ERROR_CLASSES = frozenset(
     {"SiteRequired", "InvalidToolArguments", "InvalidSearch", "FileMissing", "InvalidPreviewPath"}
 )
@@ -842,6 +856,66 @@ FILE_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "required": ["plan_id", "product_path"],
         "additionalProperties": False,
     },
+    "wp_list_pages": {
+        "type": "object",
+        "properties": {
+            "site_id": {"type": "string"},
+            "search": {"type": "string"},
+            "post_type": {"type": "string", "enum": ["page", "post", "both"]},
+            "per_page": {"type": "integer", "minimum": 1, "maximum": 20},
+        },
+        "additionalProperties": False,
+    },
+    "wp_get_page": {
+        "type": "object",
+        "properties": {
+            "site_id": {"type": "string"},
+            "page_id": {"type": ["integer", "string"]},
+            "slug": {"type": "string"},
+            "post_type": {"type": "string", "enum": ["page", "post"]},
+        },
+        "additionalProperties": False,
+    },
+    "wp_build_sample_data": {
+        "type": "object",
+        "properties": {
+            "site_id": {"type": "string"},
+            "scenario": {
+                "type": "string",
+                "enum": ["thankyou", "landing", "campaign", "comparison", "upsell", "custom"],
+            },
+            "product_ids": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {"type": ["integer", "string"]},
+            },
+            "product_count": {"type": "integer", "minimum": 1, "maximum": 4},
+            "guide_search": {"type": "string"},
+            "currency": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+    "wp_workspace_page_draft": {
+        "type": "object",
+        "properties": {
+            "site_id": {"type": "string"},
+            "plan_id": {"type": "string"},
+            "slug": {"type": "string"},
+            "title": {"type": "string"},
+            "page_type": {
+                "type": "string",
+                "enum": ["thankyou", "landing", "campaign", "comparison", "upsell", "faq", "custom"],
+            },
+            "body_html": {"type": "string"},
+            "page_css": {"type": "string"},
+            "shell_path": {"type": "string"},
+            "template_file": {"type": "string"},
+            "focus_selector": {"type": "string"},
+            "synthetic_context": {"type": "object"},
+        },
+        "required": ["plan_id", "slug", "title", "body_html"],
+        "additionalProperties": False,
+    },
 }
 
 WP_DRIFT_TOOL_GUIDE = (
@@ -878,40 +952,29 @@ WP_TOOL_GUIDE = (
     "  (Status/backup/säkerhet kan vara mock eller unknown; planer är låsta förhandsgranskningar "
     "och kan aldrig godkännas/köras. Visa plan-id, sajt, miljö, operation, komponenter, "
     "versioner, backupstatus, förvillkor, stagingbevis, påverkan, återställning, utgångstid och digest.)\n"
-    "2. Översikt, HTML & förhandsvisning:\n"
-    "- wp_component_context(site_id?) — PHP/WP/Woo-versioner, teman, plugins, theme_relationship\n"
-    "- wp_list_components(site_id?, kind: theme|plugin)\n"
-    "- wp_theme_overview(site_id?, slug?) — aktivt tema, barntema-relation, theme_kind, Woo-overrides\n"
-    "- wp_plugin_overview(site_id?, slug) — Oscar-only; hooks, HPOS, policy (tredjepart = skrivskyddad; "
-    "lägg sajtutökningar i azom-site-<site_id>)\n"
-    "- wp_template_hierarchy(site_id?, context, slug?, post_type?, taxonomy?, theme_slug?) — "
-    "kandidatordning för mallar + befintliga kandidater\n"
-    "- wc_template_overrides_audit(site_id?, theme_slug?) — granskar @version-drift i woocommerce/-overrides\n"
-    "- wp_component_intel(kind: theme|plugin, slug, installed_version?) — strikt mock/env-styrd WP.org-metadata\n"
-    "- wp_fetch_page_html(site_id?, path?, selector?, include_styles?: bool) — live-HTML (GET; aldrig lokal /wp/.../preview-sökväg)\n"
-    "- wp_inspect_element(site_id?, path?, selector?, text?, plan_id?: wr-*) — DOM, computed_styles, matched_rules & health_checks (ikonkrock, trasiga bilder, overflow) på live eller sandlåda\n"
-    "- wp_list_products(site_id?, search?, limit?) / wp_get_product(site_id?, product_id?, slug?, path?) — skrivskyddad produktläsning (REST/HTML)\n"
+    "2. Översikt, HTML, sidor & förhandsvisning:\n"
+    "- wp_component_context(site_id?) / wp_list_components(site_id?, kind: theme|plugin)\n"
+    "- wp_theme_overview(site_id?, slug?) / wp_plugin_overview(site_id?, slug) (Oscar-only; tredjepart skrivskyddad; använd azom-site-<site_id>)\n"
+    "- wp_template_hierarchy(site_id?, context, slug?, post_type?, taxonomy?, theme_slug?) / wc_template_overrides_audit(site_id?, theme_slug?) / wp_component_intel(kind, slug, installed_version?)\n"
+    "- wp_fetch_page_html(site_id?, path?, selector?, include_styles?: bool) — live-HTML (aldrig /wp/.../preview eller /checkout)\n"
+    "- wp_inspect_element(site_id?, path?, selector?, text?, plan_id?: wr-*) — DOM, computed_styles, matched_rules & health_checks\n"
+    "- wp_list_products(site_id?, search?, limit?) / wp_get_product(site_id?, product_id?, slug?, path?) — produkter inkl. image_url, pris, upsells\n"
+    "- wp_list_pages(site_id?, search?, post_type?, per_page?) / wp_get_page(site_id?, page_id?, slug?, post_type?) — sidor/guider (/setup-guide/ m.fl.)\n"
+    "- wp_build_sample_data(site_id?, scenario?, product_ids?, product_count?, guide_search?, currency?) — riktiga produkter + guider + syntetisk order utan PII\n"
     "- wp_preview_page(site_id?, path?, plan_id?: wr-*, focus_section?: top|header|hero|main|footer|bottom, "
-    "focus_selector?, focus_text?, full_page?: bool, reuse_live_baseline?: bool) — PNG + visual_health + klickbar preview_url (inkludera alltid preview_url i svaret).\n"
-    "'HTML' → wp_fetch_page_html. 'CSS/stil/ikonkrock' → wp_inspect_element. 'Skärmdump' → wp_preview_page. "
-    "Flöde: wp_inspect_element → wp_open_review_workspace(variant_group?) / wp_workspace_fork → patch/product_edit → wp_preview_page.\n"
+    "focus_selector?, focus_text?, full_page?: bool, reuse_live_baseline?: bool) — PNG + visual_health + preview_url (renderar work/page_draft.json i sajtens skal).\n"
+    "Ny sida: wp_build_sample_data → wp_open_review_workspace → wp_workspace_page_draft (+ ev. PHP-mall) → wp_preview_page.\n"
     "3. Kodindex & sökning:\n"
-    "- wp_list_component_tree(site_id?, kind, slug, path?)\n"
-    "- wp_search_component(site_id?, query, kind?, slug?, path?, plan_id?: wr-*, mode?: literal|regex, "
-    "context_lines?: 0..3, extensions?, case_insensitive?) — Oscar-only; kombinera INTE plan_id med kind/slug "
-    "(plan_id söker i work/; utelämna plan_id + skicka kind+slug för föräldratemat)\n"
-    "- wp_code_index(site_id?, kind?, slug?, path?, plan_id?: wr-*, query?, symbols?) — Oscar-only\n"
-    "- wp_read_theme_plugin_file(site_id?, kind, slug, path, offset?, limit?: <=12288, start_line?, end_line?) — Oscar-only\n"
+    "- wp_list_component_tree(site_id?, kind, slug, path?) / wp_code_index(site_id?, kind?, slug?, path?, plan_id?, query?, symbols?)\n"
+    "- wp_search_component(site_id?, query, kind?, slug?, path?, plan_id?: wr-*, mode?, context_lines?, extensions?, case_insensitive?) — kombinera INTE plan_id med kind/slug\n"
+    "- wp_read_theme_plugin_file(site_id?, kind, slug, path, offset?, limit?: <=20480, start_line?, end_line?) — Oscar-only\n"
     "4. Isolerad arbetsyta (wr-[a-f0-9]{12}):\n"
-    "- wp_open_review_workspace(site_id?, kind: theme|plugin, slug?, summary?, variant_group?, base_plan_id?) — wr-*-kopia; dela variant_group vid flera parallella förslag\n"
-    "- wp_workspace_fork(site_id?, plan_id, summary?, variant_group?) — klonar work/ från ett wr-* till ett nytt wr-*\n"
-    "- wp_list_workspaces(site_id?) / wp_workspace_status(site_id?, plan_id) / wp_workspace_list_files(site_id?, plan_id, path?)\n"
-    "- wp_workspace_read_file(site_id?, plan_id, path, start_line?, end_line?) / wp_workspace_diff(site_id?, plan_id, path?) — Oscar-only\n"
-    "- wp_workspace_patch_file(site_id?, plan_id, path, old_text, new_text, base_sha256?) / wp_workspace_create_file(site_id?, plan_id, path, content)\n"
-    "- wp_workspace_product_edit(site_id?, plan_id, product_path, product_id?, title?, short_description?, description?, price?, regular_price?, sale_price?, button_text?, badge_text?, replacements?: [{old_text, new_text}]) — sparar produktändring i work/product_edits.json i sandlådan (aldrig live Woo)\n"
-    "- wp_workspace_apply_changes(site_id?, plan_id, changes) / wp_workspace_bulk_replace(site_id?, plan_id, find, replace, mode?, extensions?, path_prefix?, dry_run?) (dry_run=true först)\n"
-    "- wp_workspace_scaffold(site_id?, plan_id, template) / wp_workspace_theme_json(site_id?, plan_id, operations)\n"
-    "- wp_workspace_copy_from_parent(site_id?, plan_id, path) / wp_workspace_copy_woo_template(site_id?, plan_id, template) — Oscar + operate\n"
+    "- wp_open_review_workspace(site_id?, kind, slug?, summary?, variant_group?, base_plan_id?) / wp_workspace_fork(site_id?, plan_id, summary?, variant_group?)\n"
+    "- wp_list_workspaces(site_id?) / wp_workspace_status / wp_workspace_list_files / wp_workspace_read_file / wp_workspace_diff\n"
+    "- wp_workspace_patch_file / wp_workspace_create_file / wp_workspace_apply_changes / wp_workspace_bulk_replace (dry_run=true först)\n"
+    "- wp_workspace_page_draft(site_id?, plan_id, slug, title, page_type?, body_html, page_css?, shell_path?, template_file?, focus_selector?, synthetic_context?) — ny sida i work/page_draft.json\n"
+    "- wp_workspace_product_edit(site_id?, plan_id, product_path, ...) — produktändring i work/product_edits.json\n"
+    "- wp_workspace_scaffold / wp_workspace_theme_json / wp_workspace_copy_from_parent / wp_workspace_copy_woo_template\n"
     "5. Kvalitet & staging (wpreview:stage:wr-...):\n"
     "- wp_workspace_static_checks(site_id?, plan_id) — säkerhets-, JSON- och Woo-lint (kodutdrag kräver WP_OPS_ADMIN)\n"
     "- wp_workspace_run_checks(site_id?, plan_id) — kör serverns check-katalog (och sandbox när aktiverad); "
@@ -1330,6 +1393,12 @@ class WpAgentTools:
             return self._list_products(site_id, arguments, actor=actor)
         if name == "wp_get_product":
             return self._get_product(site_id, arguments, actor=actor)
+        if name == "wp_list_pages":
+            return self._list_pages(site_id, arguments, actor=actor)
+        if name == "wp_get_page":
+            return self._get_page(site_id, arguments, actor=actor)
+        if name == "wp_build_sample_data":
+            return self._build_sample_data(site_id, arguments, actor=actor)
         if name == "wc_template_overrides_audit":
             return self._woo_overrides_audit(site_id, arguments, actor=actor)
         if name in _WORKSPACE_TOOLS:
@@ -1547,6 +1616,8 @@ class WpAgentTools:
         ops = self._review_plans()
         if name == "wp_workspace_fork":
             return self._workspace_fork(site_id, plan_id, arguments, actor=actor, ops=ops)
+        if name == "wp_workspace_page_draft":
+            return self._workspace_page_draft(site_id, plan_id, arguments, actor=actor, ops=ops)
         if name == "wp_workspace_status":
             return self._file_result(ops.workspace_status(site_id, plan_id, actor=actor), site_id)
         if name == "wp_workspace_list_files":
@@ -3187,14 +3258,13 @@ class WpAgentTools:
         plan_id = arguments.get("plan_id")
         if plan_id is not None:
             ops = self._review_plans()
+            plan_row = ops.get(str(plan_id), site_id=site_id)
             if not path_provided:
                 inferred_path = self._workspace_product_path(site_id, str(plan_id))
-                if not inferred_path:
-                    plan_row = ops.get(str(plan_id), site_id=site_id)
-                    if isinstance(plan_row, dict) and isinstance(plan_row.get("preview_path"), str):
-                        stored_p = plan_row["preview_path"].strip()
-                        if stored_p and stored_p != "/":
-                            inferred_path = stored_p
+                if not inferred_path and isinstance(plan_row, dict) and isinstance(plan_row.get("preview_path"), str):
+                    stored_p = plan_row["preview_path"].strip()
+                    if stored_p and stored_p != "/" and not isinstance(plan_row.get("page_draft"), dict):
+                        inferred_path = stored_p
                 if inferred_path:
                     clean_path = inferred_path
             live_kwargs = {**focus_kwargs, "reuse_live_baseline": raw_reuse}
@@ -3219,14 +3289,22 @@ class WpAgentTools:
             note = str(pdata.get("note") or "")
             if preview_url_val:
                 note = (f"{note} " if note else "") + f"Interaktiv sandbox-URL: {preview_url_val}"
+            resolved_risk = (
+                str(pdata.get("risk") or "")
+                or (str(plan_row.get("risk") or "") if isinstance(plan_row, dict) else "")
+                or "okänd"
+            )
             payload = {
                 "ok": True,
                 "status": "preview",
                 "plan_id": str(plan_id),
                 "site_id": site_id,
+                "risk": resolved_risk,
                 "path": effective_path,
                 "preview_kind": pdata.get("preview_kind") or "live_overlay",
                 "reused_live_baseline": bool(pdata.get("reused_live_baseline")),
+                "synthetic_data": bool(pdata.get("synthetic_data")),
+                "page_draft": pdata.get("page_draft"),
                 "screenshots": list(pdata.get("screenshots") or []),
                 "attachments_count": len(validated_paths),
                 "focus_section": focus_section,
@@ -3465,6 +3543,58 @@ class WpAgentTools:
         except Exception:
             return None
 
+    def _safe_catalog_image_url(self, site_obj: Site, raw_url: Any) -> str:
+        from ecom_ops.integrations.wp_live_preview import _STATIC_ASSET_HOSTS, _allowed_site_hosts
+
+        if not isinstance(raw_url, str):
+            return ""
+        cand = raw_url.strip()
+        if not cand or len(cand) > 400 or any(ord(ch) < 32 or ord(ch) == 127 for ch in cand):
+            return ""
+        if cand.startswith("/") and not cand.startswith("//"):
+            base = str(site_obj.canonical_url or "").rstrip("/")
+            return f"{base}{cand}" if base else cand
+        parsed = urllib.parse.urlparse(cand)
+        if parsed.scheme != "https":
+            return ""
+        host = (parsed.hostname or "").strip().lower().rstrip(".")
+        if not host:
+            return ""
+        site_host = (urllib.parse.urlparse(str(site_obj.canonical_url or "")).hostname or "").lower()
+        allowed = _allowed_site_hosts(site_host) | _STATIC_ASSET_HOSTS
+        if host in allowed or (not rest_reads_allowed() and host.endswith(".example.test")):
+            return cand
+        return ""
+
+    @staticmethod
+    def _infer_site_currency(site_obj: Site, price_text: str = "") -> str:
+        text_up = str(price_text or "").upper()
+        for code in ("NOK", "SEK", "DKK", "EUR", "USD"):
+            if code in text_up:
+                return code
+        host = (urllib.parse.urlparse(str(site_obj.canonical_url or "")).hostname or "").lower()
+        if host.endswith(".no"):
+            return "NOK"
+        if host.endswith(".dk"):
+            return "DKK"
+        return "SEK"
+
+    @staticmethod
+    def _extract_id_list(raw: Any, *, limit: int = 6) -> list[int]:
+        if not isinstance(raw, list):
+            return []
+        out: list[int] = []
+        for item in raw:
+            if type(item) is int and item > 0 and item not in out:
+                out.append(item)
+            elif isinstance(item, str) and _PRODUCT_ID_RE.fullmatch(item.strip()):
+                val = int(item.strip())
+                if val not in out:
+                    out.append(val)
+            if len(out) >= limit:
+                break
+        return out
+
     def _normalize_product_summary(self, site_obj: Site, row: dict[str, Any]) -> dict[str, Any]:
         pid = self._parse_product_id(row.get("id"))
         raw_name = row.get("name")
@@ -3473,15 +3603,30 @@ class WpAgentTools:
         name = self._scrub_bounded(site_obj, self._strip_html_plain(raw_name), max_len=160)
         raw_slug = str(row.get("slug") or "").strip().lower()
         slug = raw_slug if _PRODUCT_SLUG_RE.fullmatch(raw_slug) else self._slug_from_text(name)
-        link = row.get("permalink") or row.get("link") or ""
+        link = str(row.get("permalink") or row.get("link") or "").strip()
         path = self._product_path_from_url(link, fallback_slug=slug)
         if not slug:
             slug = self._slug_from_product_path(path)
+        canonical_base = str(site_obj.canonical_url or "").rstrip("/")
+        permalink = link if link.startswith("https://") else (f"{canonical_base}{path}" if canonical_base else path)
         prices = row.get("prices") if isinstance(row.get("prices"), dict) else None
         if prices:
             price = self._format_store_price(prices, "price")
+            currency = str(prices.get("currency_code") or "").strip().upper() or self._infer_site_currency(site_obj, price)
         else:
             price = str(row.get("price") or row.get("regular_price") or "").strip()
+            currency = str(row.get("currency") or "").strip().upper() or self._infer_site_currency(site_obj, price)
+        raw_image = ""
+        images = row.get("images")
+        if isinstance(images, list) and images:
+            first_img = images[0]
+            if isinstance(first_img, dict):
+                raw_image = str(first_img.get("src") or first_img.get("thumbnail") or "")
+            elif isinstance(first_img, str):
+                raw_image = first_img
+        if not raw_image and isinstance(row.get("image_url"), str):
+            raw_image = row["image_url"]
+        image_url = self._safe_catalog_image_url(site_obj, raw_image)
         sku = self._scrub_bounded(site_obj, row.get("sku") or "", max_len=64)
         status = self._scrub_bounded(site_obj, row.get("status") or "publish", max_len=32)
         return {
@@ -3489,9 +3634,14 @@ class WpAgentTools:
             "name": name,
             "slug": slug[:120],
             "path": path,
+            "permalink": permalink[:300],
             "price": self._scrub_bounded(site_obj, price, max_len=40),
+            "currency": currency[:8],
+            "image_url": image_url,
             "sku": sku,
             "status": status or "publish",
+            "upsell_ids": self._extract_id_list(row.get("upsell_ids")),
+            "cross_sell_ids": self._extract_id_list(row.get("cross_sell_ids")),
         }
 
     def _normalize_product_detail(self, site_obj: Site, row: dict[str, Any]) -> dict[str, Any]:
@@ -3649,6 +3799,8 @@ class WpAgentTools:
         desc = ""
         sku = ""
         button_text = ""
+        image_url = ""
+        currency = ""
         categories: list[str] = []
 
         # 1. JSON-LD Product structured data (standard in WooCommerce / Yoast / RankMath)
@@ -3681,11 +3833,23 @@ class WpAgentTools:
                     sku = str(node["sku"]).strip()
                 if not desc and isinstance(node.get("description"), str):
                     desc = self._strip_html_plain(node["description"])
+                if not image_url:
+                    img_node = node.get("image")
+                    cand_img = ""
+                    if isinstance(img_node, str):
+                        cand_img = img_node
+                    elif isinstance(img_node, list) and img_node:
+                        cand_img = img_node[0] if isinstance(img_node[0], str) else (img_node[0].get("url", "") if isinstance(img_node[0], dict) else "")
+                    elif isinstance(img_node, dict):
+                        cand_img = str(img_node.get("url") or "")
+                    image_url = self._safe_catalog_image_url(site_obj, cand_img)
                 offers = node.get("offers")
                 offer = offers[0] if isinstance(offers, list) and offers else offers
                 if isinstance(offer, dict) and not price:
                     p_val = offer.get("price") or offer.get("lowPrice") or ""
-                    curr = offer.get("priceCurrency") or ""
+                    curr = str(offer.get("priceCurrency") or "").strip().upper()
+                    if curr:
+                        currency = curr
                     if p_val not in ("", None):
                         price = f"{p_val} {curr}".strip() if curr else str(p_val)
                 break
@@ -3769,19 +3933,35 @@ class WpAgentTools:
                 if c_txt and c_txt not in categories and len(categories) < 15:
                     categories.append(c_txt)
 
+        if not image_url:
+            og_img = re.search(
+                r'(?is)<meta\b[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']',
+                raw_html,
+            )
+            if og_img:
+                image_url = self._safe_catalog_image_url(site_obj, og_img.group(1))
+        canonical_base = str(site_obj.canonical_url or "").rstrip("/")
+        permalink = f"{canonical_base}{path}" if canonical_base else path
+        resolved_currency = currency or self._infer_site_currency(site_obj, price)
+
         return {
             "id": None,
             "name": self._scrub_bounded(site_obj, name, max_len=200),
             "slug": slug,
             "path": path,
+            "permalink": permalink[:300],
             "price": self._scrub_bounded(site_obj, price, max_len=64),
             "regular_price": self._scrub_bounded(site_obj, regular_price or price, max_len=64),
             "sale_price": self._scrub_bounded(site_obj, sale_price, max_len=64),
+            "currency": resolved_currency[:8],
+            "image_url": image_url,
             "short_description": self._scrub_bounded(site_obj, short_desc, max_len=1000),
             "description": self._scrub_bounded(site_obj, desc, max_len=3000),
             "sku": self._scrub_bounded(site_obj, sku, max_len=64),
             "button_text": self._scrub_bounded(site_obj, button_text, max_len=120),
             "categories": categories,
+            "upsell_ids": [],
+            "cross_sell_ids": [],
             "status": "publish",
         }
 
@@ -4328,7 +4508,717 @@ class WpAgentTools:
             site_id=site_id,
         )
 
+    def _normalize_wp_page(
+        self,
+        site_obj: Site,
+        row: dict[str, Any],
+        *,
+        post_type: str = "page",
+        include_content: bool = False,
+    ) -> dict[str, Any]:
+        pid = self._parse_product_id(row.get("id"))
+        raw_title = row.get("title")
+        if isinstance(raw_title, dict):
+            raw_title = raw_title.get("rendered") or ""
+        title = self._scrub_bounded(site_obj, self._strip_html_plain(raw_title), max_len=200)
+        raw_slug = str(row.get("slug") or "").strip().lower()
+        slug = raw_slug[:120] if raw_slug else self._slug_from_text(title)
+        link = str(row.get("link") or "").strip()
+        path = "/"
+        if link:
+            parsed = urllib.parse.urlparse(link)
+            if parsed.path:
+                path = parsed.path if parsed.path.startswith("/") else "/" + parsed.path
+        elif slug:
+            path = f"/{slug}/"
+        if not link and str(site_obj.canonical_url or "").strip():
+            link = str(site_obj.canonical_url).rstrip("/") + path
+        raw_excerpt = row.get("excerpt")
+        if isinstance(raw_excerpt, dict):
+            raw_excerpt = raw_excerpt.get("rendered") or ""
+        excerpt = self._scrub_bounded(site_obj, self._strip_html_plain(raw_excerpt), max_len=300)
+        status = self._scrub_bounded(site_obj, row.get("status") or "publish", max_len=32)
+        out: dict[str, Any] = {
+            "id": pid,
+            "type": str(row.get("type") or post_type),
+            "slug": slug,
+            "title": title,
+            "link": link[:300],
+            "path": path[:200],
+            "status": status or "publish",
+            "excerpt": excerpt,
+        }
+        if include_content:
+            raw_content = row.get("content")
+            if isinstance(raw_content, dict):
+                raw_content = raw_content.get("rendered") or ""
+            out["content_summary"] = self._scrub_bounded(
+                site_obj, self._strip_html_plain(raw_content), max_len=3600
+            )
+        return out
+
+    def _list_pages(self, site_id: str, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
+        from ecom_ops.integrations.wp_live_preview import (
+            _allowed_site_hosts,
+            fetch_live_html,
+            validate_preview_path,
+        )
+
+        site_obj, denied_out = self._site_for_preview(site_id, actor)
+        if denied_out is not None:
+            return denied_out
+        assert site_obj is not None
+
+        raw_search = arguments.get("search", "")
+        if raw_search is not None and (not isinstance(raw_search, str) or len(raw_search) > 80):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        search = (raw_search or "").strip()
+
+        raw_type = arguments.get("post_type", "page")
+        if raw_type not in {"page", "post", "both"}:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        post_type = str(raw_type)
+
+        raw_limit = arguments.get("per_page", 10)
+        if type(raw_limit) is not int or raw_limit < 1 or raw_limit > 20:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        per_page = raw_limit
+
+        if not rest_reads_allowed():
+            from ecom_ops.integrations import wp_client_from_env
+
+            wp = wp_client_from_env(use_mock=True)
+            items: list[dict[str, Any]] = []
+            if post_type in {"page", "both"}:
+                for p in wp.list_pages(per_page=per_page, search=search or None):
+                    row = dict(p.raw) if isinstance(p.raw, dict) else {"id": p.id, "title": p.title, "status": p.status, "link": p.link, "type": "page"}
+                    items.append(self._normalize_wp_page(site_obj, row, post_type="page"))
+            if post_type in {"post", "both"} and len(items) < per_page:
+                for p in wp.list_posts(per_page=per_page - len(items), search=search or None):
+                    row = dict(p.raw) if isinstance(p.raw, dict) else {"id": p.id, "title": p.title, "status": p.status, "link": p.link, "type": "post"}
+                    items.append(self._normalize_wp_page(site_obj, row, post_type="post"))
+            return ToolOutput(
+                {
+                    "ok": True,
+                    "status": "listed",
+                    "site_id": site_id,
+                    "source": "mock",
+                    "post_type": post_type,
+                    "count": len(items),
+                    "pages": items[:per_page],
+                    "live_calls": False,
+                },
+                site_id=site_id,
+            )
+
+        items = []
+        endpoints: list[tuple[str, str]] = []
+        if post_type in {"page", "both"}:
+            endpoints.append(("page", "/wp-json/wp/v2/pages"))
+        if post_type in {"post", "both"}:
+            endpoints.append(("post", "/wp-json/wp/v2/posts"))
+        source = "wp_rest"
+        for ptype, ep in endpoints:
+            if len(items) >= per_page:
+                break
+            params: dict[str, Any] = {"per_page": per_page - len(items), "status": "publish"}
+            if search:
+                params["search"] = search
+            rows = self._safe_site_get_json(site_obj, ep, params=params, use_wp_auth=False)
+            if not isinstance(rows, list):
+                rows = self._safe_site_get_json(site_obj, ep, params=params, use_wp_auth=True)
+            if isinstance(rows, list):
+                for row in rows:
+                    if isinstance(row, dict):
+                        items.append(self._normalize_wp_page(site_obj, row, post_type=ptype))
+
+        if not items:
+            # Sitemap / homepage link fallback when WP REST is restricted
+            site_host = (urllib.parse.urlparse(str(site_obj.canonical_url or "")).hostname or "").lower()
+            allowed_hosts = _allowed_site_hosts(site_host)
+            needle = search.lower()
+            seen_paths: set[str] = set()
+            for cand in ("/page-sitemap.xml", "/"):
+                try:
+                    fetched = fetch_live_html(site_obj, cand, use_cache=True)
+                except ReviewError:
+                    continue
+                raw_text = str(fetched.get("html") or "")
+                links: list[tuple[str, str]] = [
+                    (m.group(1).strip(), "")
+                    for m in re.finditer(r"(?is)<loc>\s*(https?://[^<\s]+)\s*</loc>", raw_text)
+                ]
+                if not links:
+                    for am in re.finditer(r'(?is)<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', raw_text):
+                        links.append((am.group(1).strip(), self._strip_html_plain(am.group(2))))
+                for href, label in links:
+                    parsed = urllib.parse.urlparse(href)
+                    if parsed.hostname and parsed.hostname.lower() not in allowed_hosts:
+                        continue
+                    raw_p = parsed.path or ""
+                    if not raw_p or raw_p == "/" or _PRODUCT_LINK_PATH_RE.fullmatch(raw_p):
+                        continue
+                    try:
+                        clean_p = validate_preview_path(raw_p)
+                    except ReviewError:
+                        continue
+                    if clean_p in seen_paths:
+                        continue
+                    slug = clean_p.strip("/").split("/")[-1].lower()
+                    title = self._scrub_bounded(site_obj, label, max_len=160) or slug.replace("-", " ").title()
+                    if needle and needle not in title.lower() and needle not in clean_p.lower():
+                        continue
+                    seen_paths.add(clean_p)
+                    items.append(
+                        {
+                            "id": None,
+                            "type": "page",
+                            "slug": slug[:120],
+                            "title": title,
+                            "link": str(site_obj.canonical_url or "").rstrip("/") + clean_p,
+                            "path": clean_p,
+                            "status": "publish",
+                            "excerpt": "",
+                        }
+                    )
+                    if len(items) >= per_page:
+                        break
+                if items:
+                    source = "live_html"
+                    break
+
+        return ToolOutput(
+            {
+                "ok": True,
+                "status": "listed",
+                "site_id": site_id,
+                "source": source if items else "unavailable",
+                "post_type": post_type,
+                "count": len(items),
+                "pages": items[:per_page],
+                "live_calls": True,
+            },
+            site_id=site_id,
+        )
+
+    def _get_page(self, site_id: str, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
+        from ecom_ops.integrations.wp_live_preview import fetch_live_html, validate_preview_path
+
+        site_obj, denied_out = self._site_for_preview(site_id, actor)
+        if denied_out is not None:
+            return denied_out
+        assert site_obj is not None
+
+        has_id = "page_id" in arguments
+        has_slug = "slug" in arguments
+        if not (has_id or has_slug):
+            err = _error("InvalidToolArguments")
+            err["hint"] = "Ange page_id eller slug (t.ex. slug='setup-guide') för wp_get_page."
+            return ToolOutput(err, site_id)
+
+        page_id: int | None = None
+        if has_id:
+            page_id = self._parse_product_id(arguments.get("page_id"))
+            if page_id is None:
+                return ToolOutput(_error("InvalidToolArguments"), site_id)
+
+        slug = ""
+        if has_slug:
+            raw_slug = arguments.get("slug")
+            if not isinstance(raw_slug, str) or not _PRODUCT_SLUG_RE.fullmatch(raw_slug.strip().strip("/").lower()):
+                return ToolOutput(_error("InvalidToolArguments"), site_id)
+            slug = raw_slug.strip().strip("/").lower()
+
+        post_type = str(arguments.get("post_type") or "page")
+        if post_type not in {"page", "post"}:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+
+        if not rest_reads_allowed():
+            from ecom_ops.integrations import wp_client_from_env
+
+            wp = wp_client_from_env(use_mock=True)
+            rows = wp.list_pages(per_page=20) if post_type == "page" else wp.list_posts(per_page=20)
+            matched: dict[str, Any] | None = None
+            for p in rows:
+                raw_row = dict(p.raw) if isinstance(p.raw, dict) else {"id": p.id, "title": p.title, "status": p.status, "link": p.link, "type": post_type}
+                norm = self._normalize_wp_page(site_obj, raw_row, post_type=post_type, include_content=True)
+                if (page_id is not None and norm["id"] == page_id) or (slug and (norm["slug"] == slug or norm["path"].strip("/").endswith(slug))):
+                    matched = norm
+                    break
+            if matched is None:
+                err = _error("PageNotFound")
+                err["recovery_tool"] = "wp_list_pages"
+                err["hint"] = "Sidan hittades inte. Kör wp_list_pages för att lista tillgängliga sidor och guider."
+                return ToolOutput(err, site_id)
+            return ToolOutput(
+                {"ok": True, "status": "read", "site_id": site_id, "source": "mock", "page": matched, "live_calls": False},
+                site_id=site_id,
+            )
+
+        ep_base = "/wp-json/wp/v2/pages" if post_type == "page" else "/wp-json/wp/v2/posts"
+        detail: dict[str, Any] | None = None
+        source = "wp_rest"
+        if page_id is not None:
+            row = self._safe_site_get_json(site_obj, f"{ep_base}/{page_id}", use_wp_auth=False)
+            if not isinstance(row, dict) or not row.get("id"):
+                row = self._safe_site_get_json(site_obj, f"{ep_base}/{page_id}", use_wp_auth=True)
+            if isinstance(row, dict) and row.get("id"):
+                detail = self._normalize_wp_page(site_obj, row, post_type=post_type, include_content=True)
+        elif slug:
+            rows = self._safe_site_get_json(site_obj, ep_base, params={"slug": slug, "per_page": 1}, use_wp_auth=False)
+            if not isinstance(rows, list) or not rows:
+                rows = self._safe_site_get_json(site_obj, ep_base, params={"slug": slug, "per_page": 1}, use_wp_auth=True)
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                detail = self._normalize_wp_page(site_obj, rows[0], post_type=post_type, include_content=True)
+
+        if detail is None and slug:
+            try:
+                cand_path = validate_preview_path(f"/{slug}/")
+                fetched = fetch_live_html(site_obj, cand_path, use_cache=True)
+                raw_html = str(fetched.get("html") or "")
+                h1_m = re.search(r"(?is)<h1\b[^>]*>(.*?)</h1>", raw_html)
+                title_m = re.search(r"(?is)<title\b[^>]*>(.*?)</title>", raw_html)
+                title = self._strip_html_plain(h1_m.group(1)) if h1_m else (self._strip_html_plain(title_m.group(1)) if title_m else slug)
+                clean_body = re.sub(r"(?is)<(?:script|style|noscript)\b[^>]*>.*?</(?:script|style|noscript)>", " ", raw_html)
+                detail = {
+                    "id": None,
+                    "type": post_type,
+                    "slug": slug,
+                    "title": self._scrub_bounded(site_obj, title, max_len=200),
+                    "link": str(fetched.get("final_url") or (str(site_obj.canonical_url or "").rstrip("/") + cand_path)),
+                    "path": cand_path,
+                    "status": "publish",
+                    "excerpt": self._scrub_bounded(site_obj, self._strip_html_plain(clean_body), max_len=300),
+                    "content_summary": self._scrub_bounded(site_obj, self._strip_html_plain(clean_body), max_len=3600),
+                }
+                source = "live_html"
+            except ReviewError:
+                detail = None
+
+        if detail is None:
+            err = _error("PageNotFound")
+            err["recovery_tool"] = "wp_list_pages"
+            err["hint"] = "Sidan hittades inte. Kör wp_list_pages för att se befintliga sidor och guider."
+            return ToolOutput(err, site_id)
+        return ToolOutput(
+            {"ok": True, "status": "read", "site_id": site_id, "source": source, "page": detail, "live_calls": True},
+            site_id=site_id,
+        )
+
+    @staticmethod
+    def _parse_numeric_price(raw_price: Any) -> float | None:
+        text = str(raw_price or "").strip()
+        if not text:
+            return None
+        cleaned = re.sub(r"[^0-9.,]", "", text)
+        if not cleaned:
+            return None
+        if "," in cleaned and "." in cleaned:
+            if cleaned.rfind(",") > cleaned.rfind("."):
+                cleaned = cleaned.replace(".", "").replace(",", ".")
+            else:
+                cleaned = cleaned.replace(",", "")
+        elif "," in cleaned:
+            parts = cleaned.split(",")
+            if len(parts[-1]) == 2:
+                cleaned = cleaned.replace(",", ".")
+            else:
+                cleaned = cleaned.replace(",", "")
+        try:
+            val = float(cleaned)
+            return val if val >= 0 else None
+        except ValueError:
+            return None
+
+    def _build_sample_data(self, site_id: str, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
+        site_obj, denied_out = self._site_for_preview(site_id, actor)
+        if denied_out is not None:
+            return denied_out
+        assert site_obj is not None
+
+        scenario = str(arguments.get("scenario") or "thankyou").strip().lower()
+        if scenario not in _SAMPLE_SCENARIOS:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        raw_count = arguments.get("product_count", 2)
+        if type(raw_count) is not int or raw_count < 1 or raw_count > 4:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        raw_pids = arguments.get("product_ids")
+        product_ids: list[int] = []
+        if raw_pids is not None:
+            if not isinstance(raw_pids, list) or len(raw_pids) > 4:
+                return ToolOutput(_error("InvalidToolArguments"), site_id)
+            for item in raw_pids:
+                pid = self._parse_product_id(item)
+                if pid is None:
+                    return ToolOutput(_error("InvalidToolArguments"), site_id)
+                if pid not in product_ids:
+                    product_ids.append(pid)
+        raw_guide_search = arguments.get("guide_search", "")
+        if raw_guide_search is not None and (not isinstance(raw_guide_search, str) or len(raw_guide_search) > 60):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        guide_search = (raw_guide_search or "").strip()
+        raw_currency = arguments.get("currency", "")
+        if raw_currency is not None and (not isinstance(raw_currency, str) or len(raw_currency) > 8):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+
+        products: list[dict[str, Any]] = []
+        live_calls = False
+        if product_ids:
+            for pid in product_ids:
+                res = self._get_product(site_id, {"product_id": pid}, actor=actor)
+                if res.data.get("ok") is True and isinstance(res.data.get("product"), dict):
+                    products.append(res.data["product"])
+                    if res.data.get("live_calls"):
+                        live_calls = True
+        if len(products) < raw_count:
+            listed = self._list_products(site_id, {"limit": max(6, raw_count * 2)}, actor=actor)
+            if listed.data.get("live_calls"):
+                live_calls = True
+            seen_keys = {(p.get("id"), p.get("slug")) for p in products}
+            for row in listed.data.get("products") or []:
+                if len(products) >= raw_count:
+                    break
+                if not isinstance(row, dict):
+                    continue
+                key = (row.get("id"), row.get("slug"))
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                # Enrich with full detail if image_url or price is missing
+                if not row.get("image_url") or not row.get("price"):
+                    lookup_arg: dict[str, Any] = {}
+                    if row.get("id"):
+                        lookup_arg["product_id"] = row["id"]
+                    elif row.get("path"):
+                        lookup_arg["path"] = row["path"]
+                    if lookup_arg:
+                        det = self._get_product(site_id, lookup_arg, actor=actor)
+                        if det.data.get("ok") is True and isinstance(det.data.get("product"), dict):
+                            row = det.data["product"]
+                products.append(row)
+
+        guides: list[dict[str, Any]] = []
+        search_terms = [guide_search] if guide_search else ["guide", "setup", "hjelp", "hjälp", "faq"]
+        seen_guide_paths: set[str] = set()
+        for term in search_terms:
+            if len(guides) >= 4:
+                break
+            pages_out = self._list_pages(site_id, {"search": term, "post_type": "page", "per_page": 6}, actor=actor)
+            if pages_out.data.get("live_calls"):
+                live_calls = True
+            for page_row in pages_out.data.get("pages") or []:
+                if not isinstance(page_row, dict):
+                    continue
+                ppath = str(page_row.get("path") or "")
+                if not ppath or ppath in seen_guide_paths:
+                    continue
+                seen_guide_paths.add(ppath)
+                guides.append(
+                    {
+                        "title": page_row.get("title") or "",
+                        "slug": page_row.get("slug") or "",
+                        "path": ppath,
+                        "link": page_row.get("link") or "",
+                        "excerpt": page_row.get("excerpt") or "",
+                    }
+                )
+                if len(guides) >= 4:
+                    break
+            if guide_search:
+                break
+
+        detected_currency = (
+            str(raw_currency or "").strip().upper()
+            or next((str(p.get("currency") or "").strip().upper() for p in products if p.get("currency")), "")
+            or self._infer_site_currency(site_obj)
+        )
+        line_items: list[dict[str, Any]] = []
+        subtotal = 0.0
+        for idx, prod in enumerate(products):
+            qty = 1
+            unit_num = self._parse_numeric_price(prod.get("price"))
+            if unit_num is None:
+                unit_num = 1490.0 if idx == 0 else 490.0
+            line_total = round(unit_num * qty, 2)
+            subtotal += line_total
+            line_items.append(
+                {
+                    "product_id": prod.get("id"),
+                    "name": prod.get("name") or f"Exempelprodukt {idx + 1}",
+                    "slug": prod.get("slug") or "",
+                    "sku": prod.get("sku") or "",
+                    "path": prod.get("path") or "",
+                    "permalink": prod.get("permalink") or "",
+                    "image_url": prod.get("image_url") or "",
+                    "quantity": qty,
+                    "unit_price": f"{int(unit_num) if unit_num.is_integer() else unit_num:.2f}".rstrip("0").rstrip(".") + f" {detected_currency}",
+                    "line_total": f"{int(line_total) if line_total.is_integer() else line_total:.2f}".rstrip("0").rstrip(".") + f" {detected_currency}",
+                }
+            )
+        shipping_num = 0.0 if subtotal >= 1000.0 else 99.0
+        total_num = round(subtotal + shipping_num, 2)
+
+        def _fmt_amt(val: float) -> str:
+            if val == 0.0:
+                return f"0 {detected_currency} (Fri frakt)"
+            s = f"{int(val)}" if float(val).is_integer() else f"{val:.2f}"
+            return f"{s} {detected_currency}"
+
+        is_no = detected_currency == "NOK"
+        sample_customer = {
+            "name": "Test Kund",
+            "email": "test@example.invalid",
+            "shipping_address": "Exempelgatan 1, 0150 Oslo" if is_no else "Exempelgatan 1, 111 22 Stockholm",
+            "contains_real_pii": False,
+        }
+        sample_order = {
+            "order_number": "AZ-TEST-1042",
+            "order_date": datetime.now(UTC).strftime("%Y-%m-%d"),
+            "status": "Behandlas (exempel)",
+            "payment_method": "Klarna / Kort (exempel)",
+            "shipping_method": "Standardleverans 2–4 vardagar (exempel)",
+            "currency": detected_currency,
+            "subtotal": _fmt_amt(subtotal),
+            "shipping": _fmt_amt(shipping_num),
+            "total": _fmt_amt(total_num),
+            "items": line_items,
+            "synthetic_data": True,
+            "contains_real_pii": False,
+        }
+        return ToolOutput(
+            {
+                "ok": True,
+                "status": "built",
+                "site_id": site_id,
+                "scenario": scenario,
+                "currency": detected_currency,
+                "products": products,
+                "guides": guides,
+                "sample_order": sample_order,
+                "sample_customer": sample_customer,
+                "synthetic_data": True,
+                "contains_real_pii": False,
+                "live_calls": live_calls,
+            },
+            site_id=site_id,
+        )
+
+    @staticmethod
+    def _contains_non_synthetic_email(value: Any) -> bool:
+        if isinstance(value, str):
+            for match in _EMAIL_IN_TEXT_RE.finditer(value):
+                addr = match.group(0).strip().lower()
+                if not any(addr.endswith(suffix) for suffix in _ALLOWED_SYNTHETIC_EMAIL_SUFFIXES):
+                    return True
+            return False
+        if isinstance(value, dict):
+            return any(WpAgentTools._contains_non_synthetic_email(v) for v in value.values())
+        if isinstance(value, list):
+            return any(WpAgentTools._contains_non_synthetic_email(v) for v in value)
+        return False
+
+    def _workspace_page_draft(
+        self,
+        site_id: str,
+        plan_id: str,
+        arguments: dict[str, Any],
+        *,
+        actor: str,
+        ops: Any,
+    ) -> ToolOutput:
+        from ecom_ops.integrations.wp_live_preview import (
+            validate_focus_options,
+            validate_preview_path,
+        )
+        from ecom_ops.wp_ops.file_changes import is_safe_pure_css_file
+        from ecom_ops.wp_ops.preview_overlay import sanitize_page_draft_html
+
+        try:
+            actor_obj = resolve_actor(actor)
+            require_permission(actor_obj, Permission.WP_OPS_OPERATE)
+        except AccessDenied:
+            denied = _error("AccessDenied")
+            denied["status"] = "denied"
+            return ToolOutput(denied, site_id)
+
+        raw_slug = arguments.get("slug")
+        raw_title = arguments.get("title")
+        raw_body = arguments.get("body_html")
+        raw_type = arguments.get("page_type", "custom")
+        raw_css = arguments.get("page_css", "")
+        raw_shell = arguments.get("shell_path", "/")
+        raw_template = arguments.get("template_file", "")
+        raw_focus = arguments.get("focus_selector")
+        raw_ctx = arguments.get("synthetic_context")
+
+        if not isinstance(raw_slug, str) or _PAGE_SLUG_RE.fullmatch(raw_slug.strip().strip("/").lower()) is None:
+            err = _error("InvalidToolArguments")
+            err["hint"] = "Ange ett giltigt slug (t.ex. 'tack', 'takk-for-bestillingen', 'sommarkampanj')."
+            return ToolOutput(err, site_id)
+        slug = raw_slug.strip().strip("/").lower()
+
+        if not isinstance(raw_title, str) or not raw_title.strip() or len(raw_title.strip()) > 200 or "\x00" in raw_title:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        title = " ".join(raw_title.split()).strip()
+
+        if not isinstance(raw_type, str) or raw_type not in _PAGE_DRAFT_TYPES:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+
+        if not isinstance(raw_body, str) or not raw_body.strip() or "\x00" in raw_body:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        if len(raw_body.encode("utf-8")) > _PAGE_DRAFT_MAX_HTML_BYTES:
+            err = _error("FileTooLarge")
+            err["hint"] = "body_html får vara högst 48 KiB."
+            return ToolOutput(err, site_id)
+        if _UNSAFE_PRODUCT_HTML_RE.search(raw_body):
+            err = _error("InvalidToolArguments")
+            err["hint"] = "body_html får inte innehålla <script>, <iframe>, <object>, <embed>, javascript: eller inline on*-attribut."
+            return ToolOutput(err, site_id)
+
+        page_css = ""
+        if raw_css is not None:
+            if not isinstance(raw_css, str) or "\x00" in raw_css:
+                return ToolOutput(_error("InvalidToolArguments"), site_id)
+            if len(raw_css.encode("utf-8")) > _PAGE_DRAFT_MAX_CSS_BYTES:
+                err = _error("FileTooLarge")
+                err["hint"] = "page_css får vara högst 24 KiB."
+                return ToolOutput(err, site_id)
+            if raw_css.strip() and not is_safe_pure_css_file("page-draft.css", raw_css):
+                err = _error("InvalidToolArguments")
+                err["hint"] = "page_css får endast innehålla säker CSS (ingen PHP, <script>, javascript: eller @import)."
+                return ToolOutput(err, site_id)
+            page_css = raw_css
+
+        try:
+            shell_path = validate_preview_path(raw_shell if isinstance(raw_shell, str) else "/")
+        except ReviewError as exc:
+            err = _error(exc.error_class)
+            err["hint"] = "shell_path måste vara en publik sida på sajten (t.ex. '/' eller '/butikk/'), aldrig /checkout eller /cart."
+            return ToolOutput(err, site_id)
+
+        template_file = ""
+        if raw_template is not None and raw_template != "":
+            if not isinstance(raw_template, str) or _FILE_PATH.fullmatch(raw_template.strip()) is None:
+                return ToolOutput(_error("InvalidFileTarget"), site_id)
+            template_file = raw_template.strip()
+
+        clean_focus: str | None = None
+        if raw_focus is not None:
+            if not isinstance(raw_focus, str):
+                return ToolOutput(_error("InvalidToolArguments"), site_id)
+            if raw_focus.strip():
+                try:
+                    _, clean_focus, _, _ = validate_focus_options(focus_selector=raw_focus)
+                except ReviewError as exc:
+                    return ToolOutput(_error(exc.error_class), site_id)
+
+        synthetic_ctx: dict[str, Any] = {}
+        if raw_ctx is not None:
+            if not isinstance(raw_ctx, dict):
+                return ToolOutput(_error("InvalidToolArguments"), site_id)
+            if self._contains_non_synthetic_email(raw_ctx):
+                err = _error("RealPiiRefused")
+                err["hint"] = (
+                    "synthetic_context får aldrig innehålla riktiga kundmejl/PII. "
+                    "Använd syntetiska adresser som 'test@example.invalid' (eller hämta via wp_build_sample_data)."
+                )
+                return ToolOutput(err, site_id)
+            synthetic_ctx = dict(raw_ctx)
+        if self._contains_non_synthetic_email(raw_body):
+            err = _error("RealPiiRefused")
+            err["hint"] = (
+                "body_html får inte innehålla riktiga e-postadresser/PII. "
+                "Använd syntetisk exempeldata (t.ex. 'test@example.invalid')."
+            )
+            return ToolOutput(err, site_id)
+        synthetic_ctx["contains_real_pii"] = False
+        synthetic_ctx["synthetic_data"] = True
+
+        sanitized_html = sanitize_page_draft_html(raw_body)
+        draft_obj: dict[str, Any] = {
+            "schema_version": 1,
+            "slug": slug,
+            "title": title,
+            "page_type": raw_type,
+            "shell_path": shell_path,
+            "template_file": template_file,
+            "focus_selector": clean_focus or "",
+            "body_html": sanitized_html,
+            "page_css": page_css,
+            "synthetic_context": synthetic_ctx,
+            "synthetic_data": True,
+            "contains_real_pii": False,
+        }
+        new_json = json.dumps(draft_obj, ensure_ascii=False, indent=2) + "\n"
+        if len(new_json.encode("utf-8")) > 65536:
+            err = _error("FileTooLarge")
+            err["hint"] = "Sammanlagd page_draft.json överskrider 64 KiB; korta ned body_html eller page_css."
+            return ToolOutput(err, site_id)
+
+        read_res = ops.workspace_read_file(site_id, plan_id, _PAGE_DRAFT_FILE, actor=actor)
+        file_exists = False
+        existing_raw = ""
+        if read_res.ok:
+            file_exists = True
+            try:
+                ws_file = workspace_root(self.service.data_dir, site_id, plan_id) / "work" / _PAGE_DRAFT_FILE
+                existing_raw = ws_file.read_text(encoding="utf-8")
+            except (ReviewError, OSError, UnicodeDecodeError):
+                existing_raw = ""
+        else:
+            err_cls = (read_res.data or {}).get("error_class")
+            if err_cls != "FileMissing":
+                return self._file_result(read_res, site_id)
+
+        if file_exists:
+            if new_json == existing_raw:
+                write_res = ops.refresh(site_id, plan_id, actor=actor)
+            else:
+                write_res = ops.patch_file(
+                    site_id, plan_id, _PAGE_DRAFT_FILE, existing_raw, new_json, actor=actor
+                )
+        else:
+            write_res = ops.create_file(site_id, plan_id, _PAGE_DRAFT_FILE, new_json, actor=actor)
+
+        if not write_res.ok:
+            return self._file_result(write_res, site_id)
+
+        wdata = dict(write_res.data or {})
+        draft_summary = {
+            "slug": slug,
+            "title": title,
+            "page_type": raw_type,
+            "shell_path": shell_path,
+            "template_file": template_file,
+            "synthetic_data": True,
+        }
+        return ToolOutput(
+            {
+                "ok": True,
+                "status": wdata.get("status") or "validated",
+                "plan_id": plan_id,
+                "site_id": site_id,
+                "path": _PAGE_DRAFT_FILE,
+                "page_draft": draft_summary,
+                "focus_selector": clean_focus,
+                "work_sha256": wdata.get("work_sha256"),
+                "base_sha256": wdata.get("base_sha256"),
+                "risk": wdata.get("risk"),
+                "review_path": f"/wp/{site_id}/reviews/{plan_id}",
+                "login_required": True,
+                "synthetic_data": True,
+                "contains_real_pii": False,
+                "executed": False,
+                "live_calls": False,
+                "note": "Sidutkast sparat i arbetsytans work/page_draft.json. Kör wp_preview_page(plan_id=...) för att rendera sidan i sajtens riktiga skal (desktop + mobil).",
+            },
+            site_id=site_id,
+        )
+
     def _woo_overrides_audit(self, site_id: str, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
+        from ecom_ops.wp_ops.review_workspace import ReviewError, read_theme_woo_files
+        from ecom_ops.wp_ops.woo_templates import audit_overrides as run_override_audit
+
         editor = self.service._file_editor()
         site_obj, denied = editor._site(site_id, actor, write=False)
         if denied is not None:
@@ -4347,15 +5237,29 @@ class WpAgentTools:
         )
         if not target_slug:
             return ToolOutput(_error("ComponentNotFound"), site_id)
-        res = self.service.audit_overrides(site_id, target_slug, actor=actor)
-        if res.ok and isinstance(res.data, dict):
-            payload = dict(res.data)
-            payload.setdefault("ok", True)
-            payload.setdefault("status", "audited")
-            if live_calls:
-                payload["live_calls"] = True
-            res = WpOpsResult(True, res.message, payload)
-        return self._file_result(res, site_id)
+        ssh = editor._ssh(site_obj)
+        transport = editor._transport(site_obj)
+        try:
+            scanned = read_theme_woo_files(transport, site_obj.files_root, target_slug)
+        except ReviewError as exc:
+            return self._file_result(editor._fail(exc.error_class, exc.error_class, site=site_obj, ssh=ssh), site_id)
+        report = run_override_audit(
+            scanned["woo_files"],
+            woo_version=site_obj.woo_version or None,
+        )
+        payload = {
+            "ok": True,
+            "status": "audited",
+            "site_id": site_obj.id,
+            "slug": target_slug,
+            "has_woocommerce_dir": bool(scanned["has_woocommerce_dir"]),
+            "root_wc_templates": list(scanned["root_wc_templates"]),
+            "skipped_files": int(scanned.get("skipped_files") or 0),
+            **report,
+            "ssh": ssh,
+            "live_calls": bool(ssh or live_calls),
+        }
+        return self._file_result(WpOpsResult(True, "woo overrides audited", payload), site_id)
 
     def _component_intel(self, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
         try:
@@ -5428,7 +6332,11 @@ _WP_TOOL_LABELS: dict[str, str] = {
     "wp_preview_page": "Skärmdump/förhandsvisning",
     "wp_list_products": "Lista produkter",
     "wp_get_product": "Hämta produktdetaljer",
+    "wp_list_pages": "Lista sidor & guider",
+    "wp_get_page": "Hämta sid-/guideinnehåll",
+    "wp_build_sample_data": "Bygg syntetisk exempeldata",
     "wp_workspace_product_edit": "Redigera produkt i sandlåda",
+    "wp_workspace_page_draft": "Skapa sidutkast i sandlåda",
 }
 
 
@@ -5668,6 +6576,26 @@ def _safe_tool_outcome(
         if isinstance(fields, list):
             return f"produktändring sparad ({len(fields)} fält)"
         return "produktändring sparad"
+    if name == "wp_list_pages":
+        pages = data.get("pages")
+        if isinstance(pages, list):
+            return f"{len(pages)} sidor/guider"
+        return "sidor listade"
+    if name == "wp_get_page":
+        page = data.get("page")
+        if isinstance(page, dict) and page.get("slug"):
+            return f"sida: {_short(page.get('slug'), 40)}"
+        return "sida hämtad"
+    if name == "wp_build_sample_data":
+        prods = data.get("products")
+        guides = data.get("guides")
+        np = len(prods) if isinstance(prods, list) else 0
+        ng = len(guides) if isinstance(guides, list) else 0
+        return f"exempeldata ({np} produkter, {ng} guider)"
+    if name == "wp_workspace_page_draft":
+        draft = data.get("page_draft")
+        slug = _short(draft.get("slug"), 40) if isinstance(draft, dict) else ""
+        return f"sidutkast /{slug}/ sparat" if slug else "sidutkast sparat"
     st = _short(data.get("status"), 24)
     return f"status: {st}" if st else "resultat mottaget"
 
@@ -6123,12 +7051,14 @@ _DEEP_PHASE_TOOLS = frozenset(
         "wp_open_review_workspace",
         "wp_workspace_fork",
         "wp_inspect_element",
+        "wp_build_sample_data",
         "wp_list_workspaces",
         "wp_workspace_read_file",
         "wp_workspace_diff",
         "wp_workspace_patch_file",
         "wp_workspace_create_file",
         "wp_workspace_product_edit",
+        "wp_workspace_page_draft",
         "wp_workspace_apply_changes",
         "wp_workspace_bulk_replace",
         "wp_workspace_scaffold",
@@ -6182,10 +7112,10 @@ def _read_cache_key(
 
 
 def _compact_older_file_messages(messages: list[dict[str, str]]) -> None:
-    """Trim older consumed file-tool payloads after step 6 to keep context bounded."""
-    if len(messages) <= 6:
+    """Trim older consumed file-tool payloads after step 10 while keeping the last 4 tool results intact."""
+    if len(messages) <= 10:
         return
-    cutoff = len(messages) - 4
+    cutoff = len(messages) - 8
     for idx in range(1, cutoff):
         msg = messages[idx]
         content = str(msg.get("content") or "")
@@ -6255,10 +7185,16 @@ def run_bounded_file_tool_loop(
     meta_focus_selector: str | None = None
     meta_theme_slug: str | None = None
     meta_changed_files: list[str] = []
+    meta_page_draft: dict[str, Any] | None = None
     steer_count = 0
     in_deep_phase = False
 
-    def _rebuild_attachments(latest_tool: str, latest_paths: tuple[str, ...]) -> None:
+    def _rebuild_attachments(
+        latest_tool: str,
+        latest_paths: tuple[str, ...],
+        *,
+        is_standalone_preview: bool = False,
+    ) -> None:
         nonlocal attachments
         if len(plan_attachments) > 1:
             merged: list[str] = []
@@ -6280,9 +7216,10 @@ def run_bounded_file_tool_loop(
             attachments = merged[:_MAX_MULTI_VARIANT_ATTACHMENTS]
             return
         if latest_tool == "wp_preview_page":
+            cap = _MAX_MULTI_VARIANT_ATTACHMENTS if is_standalone_preview else 4
             attachments = (
                 list(latest_paths) + [p for p in attachments if p not in latest_paths]
-            )[:4]
+            )[:cap]
             return
         for item in latest_paths:
             if len(attachments) >= 4:
@@ -6309,11 +7246,15 @@ def run_bounded_file_tool_loop(
             for item in new_paths:
                 if item not in other_attachments:
                     other_attachments.append(item)
-        _rebuild_attachments(tool_name, new_paths)
+        _rebuild_attachments(
+            tool_name,
+            new_paths,
+            is_standalone_preview=(data.get("preview_kind") == "standalone_page"),
+        )
 
     def _record_review_meta(tool_name: str, args: dict[str, Any], data: dict[str, Any]) -> None:
         nonlocal meta_latest_plan_id, meta_variant_group, meta_product_id
-        nonlocal meta_preview_path, meta_focus_selector, meta_theme_slug
+        nonlocal meta_preview_path, meta_focus_selector, meta_theme_slug, meta_page_draft
         if data.get("ok") is not True:
             return
         raw_pid = data.get("plan_id")
@@ -6375,11 +7316,18 @@ def run_bounded_file_tool_loop(
             mut_file = data.get("path") or args.get("path")
             if isinstance(mut_file, str) and mut_file and mut_file not in meta_changed_files:
                 meta_changed_files.append(mut_file)
+        raw_draft = data.get("page_draft")
+        if isinstance(raw_draft, dict) and raw_draft.get("slug"):
+            meta_page_draft = {
+                "slug": str(raw_draft.get("slug") or ""),
+                "page_type": str(raw_draft.get("page_type") or "custom"),
+                "preview_kind": str(data.get("preview_kind") or "standalone_page"),
+            }
 
     def _build_active_review_meta() -> dict[str, Any] | None:
         if not meta_plan_ids:
             return None
-        return {
+        meta_out: dict[str, Any] = {
             "site_id": site_id if isinstance(site_id, str) else None,
             "plan_ids": list(meta_plan_ids[-10:]),
             "latest_plan_id": meta_latest_plan_id or meta_plan_ids[-1],
@@ -6391,6 +7339,9 @@ def run_bounded_file_tool_loop(
             "changed_files": list(meta_changed_files[-20:]),
             "preview_images": list(attachments),
         }
+        if meta_page_draft is not None:
+            meta_out["page_draft"] = dict(meta_page_draft)
+        return meta_out
 
     def _completer(last_tool_name: str = "", *, is_final: bool = False) -> Callable[[list[dict[str, str]]], tuple[str, float]]:
         nonlocal in_deep_phase
@@ -6884,7 +7835,7 @@ def run_bounded_file_tool_loop(
                 f"max {int(FILE_LOOP_MAX_SECONDS)} sekunder",
                 is_timeout=True,
             )
-        if calls >= 6:
+        if calls >= 10:
             _compact_older_file_messages(messages)
         try:
             next_content, cost = _completer(name)(messages)

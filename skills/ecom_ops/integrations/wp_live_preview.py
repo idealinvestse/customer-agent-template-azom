@@ -1080,6 +1080,8 @@ def build_interactive_sandbox_html(
     highlight_token: str | None = None,
     focus_text: str | None = None,
     focus_selector: str | None = None,
+    standalone_page: bool = False,
+    synthetic_data: bool = False,
 ) -> str:
     """Build a standalone, read-only interactive sandbox HTML page for browser review."""
     html = _strip_sandbox_trackers(str(overlay_html or ""))
@@ -1139,14 +1141,22 @@ def build_interactive_sandbox_html(
     safe_site = html_lib.escape(str(site_id or ""), quote=True)
     safe_plan = html_lib.escape(str(plan_id or ""), quote=True)
     safe_path = html_lib.escape(str(path or "/"), quote=True)
-    banner_text = (
-        f"AZOM SANDBOX · {safe_plan} · {safe_path} · "
-        "Skrivskyddad förhandsvisning — inga ändringar på live"
-    )
+    if standalone_page:
+        pill_label = "SANDBOX · NY SIDA (EXEMPELDATA)" if synthetic_data else "SANDBOX · NY SIDA"
+        banner_text = (
+            f"AZOM SANDBOX · {safe_plan} · Ny sida ({safe_path}) · "
+            "Syntetisk exempeldata — inga ändringar på live"
+        )
+    else:
+        pill_label = "SANDBOX"
+        banner_text = (
+            f"AZOM SANDBOX · {safe_plan} · {safe_path} · "
+            "Skrivskyddad förhandsvisning — inga ändringar på live"
+        )
     toolbar_html = (
         f'<div id="azom-sandbox-toolbar" data-azom-sandbox-toolbar="1" data-site-id="{safe_site}" '
         f'data-plan-id="{safe_plan}" role="region" aria-label="Azom sandbox-förhandsvisning">'
-        f'<div class="az-sb-meta"><span class="az-sb-pill">SANDBOX</span>'
+        f'<div class="az-sb-meta"><span class="az-sb-pill">{pill_label}</span>'
         f"<span>{banner_text}</span></div>"
         f'<button type="button" id="azom-sandbox-jump">Hoppa till ändringen</button>'
         "</div>"
@@ -1360,6 +1370,7 @@ def capture_preview(
     timeout_s: float = 45.0,
     target_url: str | None = None,
     preview_kind_override: str | None = None,
+    extra_preview_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Render live / overlay HTML revisions in headless Chrome with read-only Fetch interception."""
     clean_path = validate_preview_path(path)
@@ -1685,13 +1696,15 @@ def capture_preview(
                                 (artifact_dir / focus_shot_name).write_bytes(crop_bytes)
                                 screenshots.append(focus_shot_name)
 
-                if label == "preview" and (clean_selector or clean_text or highlight_token):
+                if label == "preview" and (
+                    clean_selector or clean_text or highlight_token or preview_kind_override == "standalone_page"
+                ):
                     try:
                         vh_res = cdp.call(
                             "Runtime.evaluate",
                             {
                                 "expression": _inspect_element_script(
-                                    selector=clean_selector,
+                                    selector=clean_selector or (".azom-page-draft-root" if preview_kind_override == "standalone_page" else None),
                                     text=clean_text or highlight_token,
                                     include_matched_rules=False,
                                 ),
@@ -1807,10 +1820,23 @@ def capture_preview(
         }
     resolved_kind = (
         preview_kind_override
-        if preview_kind_override in {"live_overlay", "live_read_only"}
+        if preview_kind_override in {"live_overlay", "live_read_only", "standalone_page"}
         else ("live_overlay" if len(clean_revisions) > 1 else "live_read_only")
     )
-    summary = {
+    if resolved_kind == "standalone_page":
+        standalone_order = (
+            "preview-desktop.png",
+            "preview-mobile.png",
+            "focus-desktop.png",
+            "focus-mobile.png",
+            "change-desktop.png",
+            "change-mobile.png",
+        )
+        seen_s = set(ordered_screenshots)
+        ordered_screenshots = [s for s in standalone_order if s in seen_s] + [
+            s for s in ordered_screenshots if s not in standalone_order
+        ]
+    summary: dict[str, Any] = {
         "preview_kind": resolved_kind,
         "site_id": site.id,
         "target_url": resolved_target,
@@ -1829,6 +1855,10 @@ def capture_preview(
         "screenshots": ordered_screenshots,
         "visual_health": visual_health_summary,
     }
+    if isinstance(extra_preview_meta, dict):
+        for k, v in extra_preview_meta.items():
+            if k not in summary and isinstance(k, str):
+                summary[k] = v
     return _finalize_summary(site, summary, artifact_dir)
 
 

@@ -614,3 +614,127 @@ def test_wp_review_variant_switcher_forked_from_superseded_and_site_list(tmp_pat
     assert 'data-wp-reviews-section="true"' in j_html
     assert f'data-review-row="{pid2}"' in j_html
     assert "Förslag 1: kompakt grön knapp" not in j_html
+
+
+def test_wp_review_standalone_page_draft_gallery_metadata_and_site_badge(tmp_path, monkeypatch):
+    from ecom_ops.wp_ops.review_plan import ReviewPlans, VerifiedTheme
+    from ecom_ops.wp_ops.review_workspace import workspace_root
+
+    client = _setup_dashboard_env(tmp_path, monkeypatch)
+    plans = ReviewPlans(data_dir=tmp_path)
+    standalone = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        summary="Ny tacksida med syntetisk orderbekräftelse och produktrekommendationer.",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    overlay = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        summary="Befintlig overlay-ändring av knappen.",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    assert standalone.ok and overlay.ok
+    pid_new = standalone.data["plan_id"]
+    pid_ov = overlay.data["plan_id"]
+
+    # Populate standalone page_draft.json + preview.json + standalone-only screenshots (no live-*.png)
+    new_root = workspace_root(tmp_path, "mock-staging", pid_new)
+    (new_root / "work" / "page_draft.json").write_text(
+        json.dumps(
+            {
+                "slug": "tack-for-din-bestallning",
+                "title": "Tack för din beställning mock-staging-app-password-bbb",
+                "page_type": "thankyou",
+                "shell_path": "/",
+                "template_file": "woocommerce/checkout/thankyou.php",
+                "synthetic_data": True,
+                "body_html": "<section><h1>Tack</h1></section>",
+            }
+        ),
+        encoding="utf-8",
+    )
+    adir_new = new_root / "artifacts"
+    adir_new.mkdir(parents=True, exist_ok=True)
+    png = _make_png()
+    for name in ("focus-desktop.png", "preview-desktop.png", "preview-mobile.png"):
+        (adir_new / name).write_bytes(png)
+    (adir_new / "preview.json").write_text(
+        json.dumps(
+            {
+                "preview_kind": "standalone_page",
+                "path": "/tack-for-din-bestallning/",
+                "focus_target": "selector:.azom-ty-hero",
+                "focus_matched": True,
+                "synthetic_data": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (adir_new / "preview.html").write_text("<!doctype html><html><body>New Page</body></html>", encoding="utf-8")
+
+    # Populate normal overlay plan with live + preview pair
+    adir_ov = workspace_root(tmp_path, "mock-staging", pid_ov) / "artifacts"
+    adir_ov.mkdir(parents=True, exist_ok=True)
+    (adir_ov / "live-desktop.png").write_bytes(png)
+    (adir_ov / "preview-desktop.png").write_bytes(png)
+
+    oscar = _auth(client, "oscar")
+    resp_new = client.get(f"/wp/mock-staging/reviews/{pid_new}", headers=oscar)
+    assert resp_new.status_code == 200
+    body_new = resp_new.get_data(as_text=True)
+
+    assert 'data-standalone-page="true"' in body_new
+    assert 'data-standalone-gallery="true"' in body_new
+    assert "Ny sida · Sandbox (syntetisk exempeldata)" in body_new
+    assert 'data-page-draft-meta="true"' in body_new
+    assert "tack-for-din-bestallning" in body_new
+    assert "thankyou" in body_new
+    assert "woocommerce/checkout/thankyou.php" in body_new
+    assert "mock-staging-app-password-bbb" not in body_new
+    assert "Desktop-förhandsvisning" in body_new
+    assert "Mobil-förhandsvisning" in body_new
+    assert "Live (före)" not in body_new
+    assert "Live vs. Förhandsvisning" not in body_new
+    assert "Ingen renderad förhandsvisning." not in body_new
+    assert 'data-gallery-preview-link="true"' in body_new
+    assert f"/wp/mock-staging/reviews/{pid_new}/preview" in body_new
+    assert f"/wp/mock-staging/reviews/{pid_new}/artifact/preview-desktop.png" in body_new
+    assert f"/wp/mock-staging/reviews/{pid_new}/artifact/preview-mobile.png" in body_new
+    assert f"/wp/mock-staging/reviews/{pid_new}/artifact/focus-desktop.png" in body_new
+
+    # Existing normal overlay gallery stays intact
+    resp_ov = client.get(f"/wp/mock-staging/reviews/{pid_ov}", headers=oscar)
+    assert resp_ov.status_code == 200
+    body_ov = resp_ov.get_data(as_text=True)
+    assert 'data-standalone-page="true"' not in body_ov
+    assert "Live vs. Förhandsvisning" in body_ov
+    assert "Live (före)" in body_ov
+
+    # wp_site.html displays "Ny sida" badge on standalone row only
+    site_resp = client.get("/wp/mock-staging", headers=oscar)
+    assert site_resp.status_code == 200
+    site_html = site_resp.get_data(as_text=True)
+    row_new = site_html.split(f'data-review-row="{pid_new}"', 1)[1].split("</tr>", 1)[0]
+    row_ov = site_html.split(f'data-review-row="{pid_ov}"', 1)[1].split("</tr>", 1)[0]
+    assert 'data-standalone-badge="true"' in row_new
+    assert "Ny sida" in row_new
+    assert 'data-standalone-badge="true"' not in row_ov
+
+    # Viewer RBAC: sees standalone badge/banner, does NOT see admin page_draft metadata or gallery
+    jonatan = _auth(client, "jonatan")
+    j_rev = client.get(f"/wp/mock-staging/reviews/{pid_new}", headers=jonatan)
+    assert j_rev.status_code == 200
+    j_rev_html = j_rev.get_data(as_text=True)
+    assert 'data-standalone-page="true"' in j_rev_html
+    assert 'data-page-draft-meta="true"' not in j_rev_html
+    assert "woocommerce/checkout/thankyou.php" not in j_rev_html
+    assert 'data-live-overlay-gallery="true"' not in j_rev_html
+
+    j_site = client.get("/wp/mock-staging", headers=jonatan)
+    assert j_site.status_code == 200
+    j_site_html = j_site.get_data(as_text=True)
+    assert 'data-standalone-badge="true"' in j_site_html
+    assert "Ny tacksida med syntetisk orderbekräftelse" not in j_site_html

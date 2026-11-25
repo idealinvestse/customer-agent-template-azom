@@ -152,6 +152,9 @@
               <div class="flex flex-wrap items-center gap-1.5">
                 {{ ui.status_badge('info', item.status or '—') }}
                 {{ ui.status_badge('warn' if item.risk == 'high' else 'neutral', 'risk: ' ~ (item.risk or 'low')) }}
+                {% if item.is_standalone_page %}
+                <span data-standalone-badge="true">{{ ui.status_badge('info', 'Ny sida') }}</span>
+                {% endif %}
                 {% if item.variant_group %}
                 {{ ui.status_badge('info', item.variant_group) }}
                 {% endif %}

@@ -176,9 +176,13 @@ WP_CODE_INTENT_RE = re.compile(
     r"(?:[äa]ndra|redigera|uppdatera|byt(?:a)?|justera)\s+(?:en\s+|denna\s+|det\s+)?"
     r"(?:produkt(?:en|sida(?:n)?)?|k[öo]pknapp(?:en)?|inring\w*)|"
     r"component[\s_-]?intel|wp\.org|wordpress\.org|playbook|"
+    r"tacksid(?:a|an|or)?|thank[\s_-]?you|orderbekr[äa]ftelse(?:n)?|"
+    r"landningssid(?:a|an|or)?|kampanjsid(?:a|an|or)?|ny\s+sid(?:a|an)|"
+    r"(?:skapa|bygg|designa)\s+(?:en\s+|ny\s+|en\s+ny\s+)?(?:[a-zåäö0-9_-]+\s+)?sid(?:a|an)|"
+    r"exempelprodukt(?:er)?|exempeldata|"
     r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|theme_overview|plugin_overview|"
     r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file|"
-    r"list_products|get_product|fetch_page_html|preview_page)|"
+    r"list_products|get_product|list_pages|get_page|build_sample_data|fetch_page_html|preview_page|inspect_element)|"
     r"wc_template_overrides_audit|"
     r"(?:skapa|bygg|utveckla|granska|fels[öo]k|analysera|kod(?:a)?|skriv(?:a)?)\s+"
     r"(?:ett\s+|en\s+|nytt\s+|detta\s+)?(?:plugin(?:et)?|till[äa]gg(?:et)?|barntema(?:t)?)|"
@@ -289,9 +293,11 @@ _CHAT_CORE_POLICY = (
     "Tillåtna läsningar: lookup_order, list_recent_orders, list_products, show_product, "
     "list_pages, show_page, list_posts, show_post, show_site, list_themes, list_plugins. "
     "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text. "
-    "Oscar och WP-behöriga har WP-verktyg: läsa tema/plugins via SFTP, hämta renderad HTML (wp_fetch_page_html), "
-    "öppna isolerad arbetsyta wr-*, köra kontroller och ta skärmdumpar (wp_preview_page). "
-    "Påstå aldrig att dessa förmågor saknas; be om eller utför den konkreta WordPress-uppgiften.\n\n"
+    "Oscar och WP-behöriga har WP-verktyg: läsa tema/plugins via SFTP, upptäcka befintliga sidor/guider (wp_list_pages, wp_get_page), "
+    "hämta katalogprodukter (wp_list_products, wp_get_product) och syntetisk noll-PII exempeldata (wp_build_sample_data), "
+    "hämta renderad HTML (wp_fetch_page_html), öppna isolerad arbetsyta wr-*, bygga utkast till nya sidor/tacksidor (wp_workspace_page_draft / wp_workspace_create_file), "
+    "köra kontroller och ta fristående skärmdumpar i sajtens riktiga skal (wp_preview_page, wp_inspect_element). "
+    "Påstå aldrig att dessa förmågor saknas och förhandsgranska aldrig startsidan / i stället för en ny sida; be om eller utför den konkreta WordPress-uppgiften.\n\n"
     f"{CLARIFY_PROTOCOL_GUIDE}"
 )
 
@@ -316,9 +322,13 @@ CHAT_RUNTIME_POLICY = (
     "Tillåtna läsningar: lookup_order, list_recent_orders, list_products, show_product, "
     "list_pages, show_page, list_posts, show_post, show_site, list_themes, list_plugins. "
     "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text. "
-    "Oscar och WP-behöriga har WP-verktyg: läsa tema/plugins via SFTP, hämta renderad HTML (wp_fetch_page_html på publika URL:er), "
-    "inspektera element och computed styles (wp_inspect_element), öppna eller forka isolerad arbetsyta wr-* (wp_open_review_workspace / wp_workspace_fork med variant_group), "
-    "köra kontroller och verifiera skärmdumpar + visual_health (wp_preview_page). "
+    "Oscar och WP-behöriga har WP-verktyg: läsa tema/plugins via SFTP, upptäcka befintliga sidor/guider (wp_list_pages, wp_get_page), "
+    "hämta berikad produktdata (wp_list_products, wp_get_product) och syntetisk noll-PII exempeldata (wp_build_sample_data), "
+    "hämta renderad HTML (wp_fetch_page_html på publika URL:er), inspektera element och computed styles (wp_inspect_element), "
+    "öppna eller forka isolerad arbetsyta wr-* (wp_open_review_workspace / wp_workspace_fork med variant_group), "
+    "skapa nya sidutkast i sajtens skal (wp_workspace_page_draft / wp_workspace_create_file), "
+    "samt verifiera fristående skärmdumpar + visual_health (wp_preview_page). "
+    "Vid ny sida/tacksida: använd wp_build_sample_data + wp_workspace_page_draft och rendera fristående med wp_preview_page (förhandsgranska aldrig startsidan / i stället och påstå aldrig att exempeldata/sidverktyg saknas). "
     "Vid uppföljning på en aktiv wr-*-granskning, förtydliga inte i onödan (<clarify>) om målet redan är förankrat — inspektera och fortsätt direkt i arbetsytan. "
     "Påstå aldrig att dessa förmågor saknas; be om eller utför den konkreta WordPress-uppgiften.\n\n"
     f"{CLARIFY_PROTOCOL_GUIDE}"
@@ -2422,11 +2432,24 @@ _WP_UI_FOLLOWUP_RE = re.compile(
     r"ram(?:en)?|border|padding|marginal(?:er)?|margin|gap|spacing|hover|"
     r"text(?:en)?|rubrik(?:en)?|storlek(?:en)?|bredd(?:en)?|h[öo]jd(?:en)?|"
     r"f[öo]rslag(?:et|en)?|variant(?:er)?|f[öo]rhandsvisning(?:en)?|preview|"
+    r"rendera(?:d|t|r)?|screenshot(?:s)?|sk[äa]rmdump(?:ar|en)?|"
+    r"tacksid(?:a|an)?|sid(?:a|an)|sektion(?:en|er)?|exempeldata|orderdetaljer|guider?|"
     r"layout(?:en)?|stil(?:en)?|css|style|produkt(?:sida(?:n)?)?|block(?:et)?|"
     r"sandl[åa]da(?:n)?|sandbox"
     r")\b",
     re.I,
 )
+
+
+def _normalize_page_draft_meta(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    draft_meta = {
+        k: str(raw.get(k) or "").strip()[:80]
+        for k in ("slug", "page_type", "preview_kind")
+        if str(raw.get(k) or "").strip()
+    }
+    return draft_meta or None
 
 
 def _valid_active_wp_review(
@@ -2473,9 +2496,10 @@ def _valid_active_wp_review(
         plan_ids.append(latest)
     preview_path = str(review.get("preview_path") or "").strip()
     product_id = str(review.get("product_id") or "").strip()
-    if not (latest or preview_path or product_id):
+    page_draft = _normalize_page_draft_meta(review.get("page_draft"))
+    if not (latest or preview_path or product_id or page_draft):
         return None
-    return {
+    out: dict[str, Any] = {
         "actor_id": actor,
         "channel": channel,
         "conversation_id": conversation_id[:120],
@@ -2500,6 +2524,9 @@ def _valid_active_wp_review(
         ),
         "updated_at": updated_raw,
     }
+    if page_draft is not None:
+        out["page_draft"] = page_draft
+    return out
 
 
 def _merge_active_wp_review(
@@ -2540,7 +2567,10 @@ def _merge_active_wp_review(
 
     preview_path = str(m.get("preview_path") or base.get("preview_path") or "").strip()[:300]
     product_id = str(m.get("product_id") or base.get("product_id") or "").strip()[:24]
-    if not (latest or preview_path or product_id):
+    page_draft = _normalize_page_draft_meta(
+        m.get("page_draft") if isinstance(m.get("page_draft"), dict) else base.get("page_draft")
+    )
+    if not (latest or preview_path or product_id or page_draft):
         return prior
 
     variant_group = str(m.get("variant_group") or base.get("variant_group") or "").strip()[:80]
@@ -2558,7 +2588,7 @@ def _merge_active_wp_review(
     raw_preview_imgs = m.get("preview_images") or preview_attachments or base.get("preview_images")
     preview_images = _validate_chat_image_paths(raw_preview_imgs, limit=4)
 
-    return {
+    out: dict[str, Any] = {
         "actor_id": actor,
         "channel": channel,
         "conversation_id": conversation_id[:120],
@@ -2575,6 +2605,9 @@ def _merge_active_wp_review(
         "preview_images": preview_images,
         "updated_at": datetime.now(UTC).isoformat(),
     }
+    if page_draft is not None:
+        out["page_draft"] = page_draft
+    return out
 
 
 def _pick_followup_images(review: dict[str, Any] | None) -> list[str]:
@@ -2621,12 +2654,20 @@ def _format_active_wp_review_block(review: dict[str, Any] | None) -> str:
         bits.append(f"theme_slug={review['theme_slug']}")
     if review.get("changed_files"):
         bits.append("changed_files=" + ",".join(review["changed_files"]))
+    page_draft = review.get("page_draft")
+    if isinstance(page_draft, dict):
+        if page_draft.get("slug"):
+            bits.append(f"page_draft_slug={page_draft['slug']}")
+        if page_draft.get("page_type"):
+            bits.append(f"page_type={page_draft['page_type']}")
+        if page_draft.get("preview_kind"):
+            bits.append(f"preview_kind={page_draft['preview_kind']}")
     return (
         "Active WP review (fortsätt på denna i stället för att börja om): "
         + ", ".join(bits)
         + ". Använd wp_inspect_element(site_id=..., path=preview_path, plan_id=latest_plan_id) "
         "för att kontrollera renderad DOM/computed styles (skicka aldrig lokal /wp/.../preview-URL till wp_fetch_page_html), "
-        "och fortsätt/forka befintlig wr-* (wp_workspace_fork / wp_workspace_patch_file) utan redundant <clarify>."
+        "och fortsätt/forka befintlig wr-* (wp_workspace_fork / wp_workspace_page_draft / wp_workspace_patch_file) utan redundant <clarify>."
     )
 
 
@@ -2745,7 +2786,14 @@ def run_chat(
                 explicit_site_id = ""
         except Exception:
             explicit_site_id = ""
-    clarify_hist_tag = " ".join(str(clarification_history_label or "").split())[:120]
+    raw_hist_tag = " ".join(str(clarification_history_label or "").split())
+    if len(raw_hist_tag) > 160:
+        if raw_hist_tag.startswith("[") and raw_hist_tag.endswith("]"):
+            clarify_hist_tag = f"{raw_hist_tag[:158].rstrip()}…]"
+        else:
+            clarify_hist_tag = f"{raw_hist_tag[:159].rstrip()}…"
+    else:
+        clarify_hist_tag = raw_hist_tag
     listed_offset = _session_list_offset(session, hist)
     turn_user_messages = [user_message]
     clear_stream = on_stream_clear or on_text_reset
@@ -2784,8 +2832,14 @@ def run_chat(
     def _stored_user_text(value: str, idx: int) -> str:
         if idx == 0:
             prefixes: list[str] = []
+            skip_value = False
             if clarify_hist_tag:
                 prefixes.append(clarify_hist_tag)
+                if clarify_hist_tag.startswith("[Förtydligande:"):
+                    inner = clarify_hist_tag[len("[Förtydligande:") :].rstrip("]… ").strip()
+                    norm_val = " ".join(str(value or "").split())
+                    if inner and norm_val.lower().startswith(inner.lower()):
+                        skip_value = True
             if inbound_images:
                 names = ", ".join(Path(p).name for p in inbound_images)
                 prefixes.append(
@@ -2794,6 +2848,8 @@ def run_chat(
                     else f"[Bifogade skärmdumpar: {names}]"
                 )
             if prefixes:
+                if skip_value:
+                    return " ".join(prefixes).strip()
                 return f"{' '.join(prefixes)} {value}".strip()
         return value
 

@@ -250,6 +250,140 @@ def read_site_component(transport: object, files_root: str, kind: str, slug: str
     return sorted(files)
 
 
+def read_theme_woo_files(transport: object, files_root: str, slug: str) -> dict[str, Any]:
+    """Safely inspect only WooCommerce override files (``woocommerce/``) + root ``wc-*.php`` templates.
+
+    Unlike ``read_site_component``, this never fails when a theme lacks a ``woocommerce/`` folder
+    (e.g. Webflow/Udesly themes) or contains large non-WooCommerce asset files (>64KB).
+    """
+    if not SLUG.fullmatch(slug):
+        raise ReviewError("SlugRejected")
+    component = component_dir(files_root, "theme", slug)
+    root_wc_templates: list[str] = []
+    woo_files: list[tuple[str, str]] = []
+    skipped_files = 0
+    has_woocommerce_dir = False
+
+    if isinstance(transport, LocalTree):
+        base = transport._local(component)
+        if not base.exists() or base.is_symlink() or not base.is_dir():
+            return {
+                "has_woocommerce_dir": False,
+                "root_wc_templates": [],
+                "woo_files": [],
+                "skipped_files": 0,
+            }
+        for child in sorted(base.iterdir()):
+            if child.is_symlink():
+                continue
+            name = child.name
+            if child.is_file() and name.lower().startswith("wc-") and name.lower().endswith(".php"):
+                root_wc_templates.append(name)
+            elif child.is_dir() and name == "woocommerce":
+                has_woocommerce_dir = True
+        if has_woocommerce_dir:
+            woo_dir = base / "woocommerce"
+            count = 0
+            for path in sorted(woo_dir.rglob("*")):
+                count += 1
+                if count > _MAX_ENTRIES:
+                    break
+                if path.is_symlink() or not path.is_file():
+                    continue
+                rel = path.relative_to(base).as_posix()
+                if sensitive_relative(rel) or path.suffix.lower() not in _TEXT_EXTENSIONS:
+                    continue
+                try:
+                    data = path.read_bytes()
+                    if len(data) > _MAX_FILE or b"\x00" in data:
+                        skipped_files += 1
+                        continue
+                    woo_files.append((rel, data.decode("utf-8", errors="replace")))
+                except OSError:
+                    skipped_files += 1
+        return {
+            "has_woocommerce_dir": has_woocommerce_dir,
+            "root_wc_templates": sorted(root_wc_templates),
+            "woo_files": woo_files,
+            "skipped_files": skipped_files,
+        }
+
+    batch_ctx = (
+        transport.open_batch()
+        if hasattr(transport, "open_batch") and callable(transport.open_batch)
+        else contextlib.nullcontext()
+    )
+    has_entries = hasattr(transport, "list_entries") and callable(transport.list_entries)
+
+    def _list_dir(abs_dir: str) -> list[tuple[str, bool]]:
+        if has_entries:
+            raw = transport.list_entries(abs_dir)
+            return [(str(n or ""), bool(is_d)) for n, is_d in raw] if isinstance(raw, list) else []
+        names = transport.list_dir(abs_dir)
+        if not isinstance(names, list):
+            return []
+        return [
+            (str(n or ""), Path(str(n or "")).suffix.lower() not in _TEXT_EXTENSIONS)
+            for n in names
+        ]
+
+    with batch_ctx:
+        try:
+            root_entries = _list_dir(component)
+        except Exception as exc:
+            raise ReviewError("CopyReadFailed") from exc
+        for name, is_dir in root_entries:
+            if not _ENTRY.fullmatch(name):
+                continue
+            if is_dir and name == "woocommerce":
+                has_woocommerce_dir = True
+            elif not is_dir and name.lower().startswith("wc-") and name.lower().endswith(".php"):
+                root_wc_templates.append(name)
+
+        if has_woocommerce_dir:
+            pending = [("woocommerce", component.rstrip("/") + "/woocommerce")]
+            seen = 0
+            while pending and seen < _MAX_ENTRIES:
+                rel_dir, abs_dir = pending.pop()
+                try:
+                    sub_entries = _list_dir(abs_dir)
+                except Exception:
+                    skipped_files += 1
+                    continue
+                for name, is_dir in sub_entries:
+                    seen += 1
+                    if seen > _MAX_ENTRIES:
+                        break
+                    if not _ENTRY.fullmatch(name):
+                        continue
+                    rel = f"{rel_dir}/{name}"
+                    if sensitive_relative(rel):
+                        continue
+                    if is_dir:
+                        if not name.startswith("."):
+                            pending.append((rel, abs_dir.rstrip("/") + "/" + name))
+                        continue
+                    if Path(name).suffix.lower() not in _TEXT_EXTENSIONS:
+                        continue
+                    try:
+                        abs_file = resolve_file(files_root, "theme", slug, rel)
+                        raw_bytes = transport.read_bytes(abs_file)
+                    except Exception:
+                        skipped_files += 1
+                        continue
+                    if len(raw_bytes) > _MAX_FILE or b"\x00" in raw_bytes:
+                        skipped_files += 1
+                        continue
+                    woo_files.append((rel, raw_bytes.decode("utf-8", errors="replace")))
+
+    return {
+        "has_woocommerce_dir": has_woocommerce_dir,
+        "root_wc_templates": sorted(root_wc_templates),
+        "woo_files": sorted(woo_files),
+        "skipped_files": skipped_files,
+    }
+
+
 def write_tree(folder: Path, files: list[tuple[str, bytes]]) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     root = folder.resolve()
@@ -590,7 +724,7 @@ def read_work_file(
     e_line = end_line if end_line is not None else min(total_lines, s_line + 199)
     out_lines: list[str] = []
     used_bytes = 0
-    max_page_bytes = 12288
+    max_page_bytes = 20480
     actual_end = total_lines if s_line > total_lines else s_line - 1
     for idx in range(s_line, min(e_line, total_lines) + 1):
         formatted = f"{idx}: {lines[idx - 1]}"

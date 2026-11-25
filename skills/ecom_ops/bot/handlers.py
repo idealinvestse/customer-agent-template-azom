@@ -404,6 +404,38 @@ def telegram_chat_allowed(chat_id: str | int) -> bool:
     return channel_peer_allowed("telegram", chat_id)
 
 
+def _append_clarify_note(
+    picks: list[dict[str, Any]], note: str
+) -> list[dict[str, Any]]:
+    cleaned = " ".join(str(note or "").split())[:240]
+    if not cleaned:
+        return list(picks)
+    return [
+        *picks,
+        {"id": "note", "label": "Eget tillägg", "summary": cleaned},
+    ]
+
+
+def _format_clarify_history_tag(
+    *,
+    extra_note: str = "",
+    pick_labels: Iterable[str] = (),
+    confirmed: bool = False,
+) -> str:
+    if extra_note.strip():
+        clean = " ".join(extra_note.split())
+        snippet = f"{clean[:95].rstrip()}…" if len(clean) > 96 else clean
+        return f"[Förtydligande: {snippet}]"
+    labels = list(pick_labels)
+    if labels:
+        clean_picks = " / ".join(labels[-2:])
+        snippet = f"{clean_picks[:99].rstrip()}…" if len(clean_picks) > 100 else clean_picks
+        return f"[Valt förtydligande: {snippet}]"
+    if confirmed:
+        return "[Bekräftat förtydligande]"
+    return ""
+
+
 class BotHandler:
     """OpenClaw-compatible commands + hybrid chat + site write confirms."""
 
@@ -1455,7 +1487,7 @@ class BotHandler:
                     chat_id,
                     message=text,
                     original_request=original_request,
-                    picks=prior_picks,
+                    picks=_append_clarify_note(prior_picks, text),
                     round_num=round_num + 1,
                     confirmed=round_num >= MAX_CLARIFY_ROUNDS,
                     extra_note=text,
@@ -1527,7 +1559,7 @@ class BotHandler:
                     chat_id,
                     message=text,
                     original_request=original_request,
-                    picks=prior_picks,
+                    picks=_append_clarify_note(prior_picks, text),
                     round_num=round_num + 1,
                     confirmed=round_num >= MAX_CLARIFY_ROUNDS,
                     extra_note=text,
@@ -1547,7 +1579,7 @@ class BotHandler:
                     chat_id,
                     message=text,
                     original_request=original_request,
-                    picks=prior_picks,
+                    picks=_append_clarify_note(prior_picks, text),
                     round_num=round_num + 1,
                     confirmed=round_num >= MAX_CLARIFY_ROUNDS,
                     extra_note=text,
@@ -2392,14 +2424,11 @@ class BotHandler:
             for p in picks
             if isinstance(p, dict) and str(p.get("label") or p.get("id") or "").strip()
         ]
-        if extra_note.strip():
-            history_label = f"[Förtydligande: {extra_note.strip()[:120]}]"
-        elif pick_labels:
-            history_label = f"[Valt förtydligande: {' / '.join(pick_labels[-2:])[:140]}]"
-        elif confirmed:
-            history_label = "[Bekräftat förtydligande]"
-        else:
-            history_label = ""
+        history_label = _format_clarify_history_tag(
+            extra_note=extra_note,
+            pick_labels=pick_labels,
+            confirmed=confirmed,
+        )
         reply = self._run_llm_chat(
             chat_id,
             message,

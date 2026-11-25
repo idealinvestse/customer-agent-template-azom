@@ -12,7 +12,7 @@ version: "3.0.0"
 
 **Purpose:** Ensure AzomOps double-checks ambiguous change requests, visual/annotated screenshot descriptions, and multi-path edits with focused counter-questions and recommended choices before opening workspaces, proposing patches, or mutating store data.  
 **Audience:** Coding agents, prompt maintainers, and the OpenClaw chat agent (`Messenger` and `Telegram`).  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `docs/CURRENT_STATE.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `docs/CURRENT_STATE.md`.
 
 ## When clarification triggers
 
@@ -31,7 +31,8 @@ Do **not** ask a clarifying counter-question when:
 - The message is a slash command (`/...`), short greeting/acknowledgement (`hej`, `tack`, `ok`), or hits an explicit `site_content` refusal (such as installing/deleting plugins, switching themes, or deleting/creating posts).
 - The request is already explicit and unambiguous (for example `"sätt order 1001 till completed"`, `"ändra produkt 501 pris till 999"`, `"ändra sidan 2 titel till Kontakt"`, `"ändra sajttitel till Butiken"`).
 - The user has already confirmed the clarification scope (`clarification_confirmed=True`).
-- An active `wr-*` workspace/preview already anchors the target (`has_active_wp_review=True`) and the follow-up message requests a clear adjustment or visual bug-fix on that proposal (for example `"gör knappen större"`, `"byt till mörkblå"`, or `"fixa ikonöverlappet"`). Continue directly via `skills/wordpress-ui-iteration/SKILL.md` unless the follow-up switches to a new ambiguous target or contradicts itself.
+- An active `wr-*` workspace/preview already anchors the target (`has_active_wp_review=True`) and the follow-up message requests a clear adjustment, visual bug-fix, or preview/screenshot render on that proposal (for example `"gör knappen större"`, `"byt till mörkblå"`, `"fixa ikonöverlappet"`, or `"rendera och visa screenshots"`). Continue directly via `skills/wordpress-ui-iteration/SKILL.md` or `skills/wordpress-page-builder/SKILL.md` unless the follow-up switches to a new ambiguous target or contradicts itself.
+- A net-new page request already provides detailed layout, content, and section requirements (rather than an open-ended `"designa en tacksida"`): proceed directly to building and previewing inside `wr-*` via `skills/wordpress-page-builder/SKILL.md` using real catalog products and synthetic zero-PII example data. Open-ended new-page requests may use at most one crisp `<clarify>` round (`mode="options"`) to pick architecture/scope (for example WooCommerce template override vs. standalone post-purchase page + guide strategy).
 - An annotated screenshot together with the user's message already uniquely identifies both the target element and the requested change.
 
 ## `<clarify>{...}</clarify>` contract

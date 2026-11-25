@@ -12,7 +12,9 @@ version: "3.0.0"
 
 **Purpose:** Guide visual and iterative WordPress/WooCommerce UI edits inside isolated `wr-*` workspaces so changes are grounded in real rendered DOM/CSS, build cleanly on top of prior sandbox revisions, support multiple coexisting variants, and pass visual health verification without weakening HITL or RBAC gates.  
 **Audience:** Coding agents and the OpenClaw chat agent (`Messenger` and `Telegram`) operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+
+> **Net-new pages & templates:** If the user asks to design or build a brand-new page or WooCommerce template (for example a thank-you / `order-received` page, landing page, campaign page, or guide page) rather than tweaking an existing public page, follow `skills/wordpress-page-builder/SKILL.md` (`wp_list_pages`, `wp_build_sample_data`, `wp_workspace_page_draft`, and standalone live-shell `wp_preview_page`).
 
 ## 1. Visual intake and DOM/CSS grounding
 
@@ -20,7 +22,7 @@ version: "3.0.0"
 2. **Ground in real rendered DOM and computed styles before patching:**
    - Call `wp_inspect_element(site_id=..., path=..., selector=..., text=..., plan_id=...)` to capture bounded `outer_html` (≤ 3 KB), `bounding_box`, `computed_styles` (`display`, `padding`, `margin`, `width`, `height`, `backgroundImage`, `backgroundPosition`, `backgroundSize`, `backgroundRepeat`, `fontSize`, `color`, `border`, `borderRadius`), `pseudo_before` / `pseudo_after`, bounded `matched_rules`, and `health_checks` (`background_icon_overlap_risk`, `broken_images`, `horizontal_overflow`, `small_tap_target`, `warnings`).
    - Call `wp_fetch_page_html(site_id=..., path=..., selector=..., include_styles=...)` when you need targeted rendered HTML/styles from a **public** page.
-3. **Public-page URL boundary:** `wp_fetch_page_html` and `wp_preview_page` only fetch **public** site paths (checkout, cart, and account paths such as `/cart`, `/checkout`, `/my-account`, `/handlekurv`, `/kasse`, `/min-konto` are blocked). **Never** pass a local dashboard review URL (`/wp/<site_id>/reviews/wr-.../preview`) to `wp_fetch_page_html` — use `wp_inspect_element(plan_id=...)` or `wp_workspace_read_file(plan_id=...)` to inspect a sandbox preview or workspace file.
+2. **Public-page URL boundary:** `wp_fetch_page_html` and live-overlay `wp_preview_page` only fetch **public** existing site paths (checkout, cart, and account paths such as `/cart`, `/checkout`, `/my-account`, `/handlekurv`, `/kasse`, `/min-konto` are blocked). **Never** pass a local dashboard review URL (`/wp/<site_id>/reviews/wr-.../preview`) to `wp_fetch_page_html` — use `wp_inspect_element(plan_id=...)` or `wp_workspace_read_file(plan_id=...)` to inspect a sandbox preview or workspace file. For net-new pages (`work/page_draft.json`), `wp_preview_page` and `wp_inspect_element` automatically run in standalone live-shell mode (`preview_kind="standalone_page"`).
 
 ## 2. Iterative continuation and multi-variant proposals
 
@@ -32,7 +34,7 @@ version: "3.0.0"
 
 ## 3. Overlay mechanics and CSS discipline
 
-1. **Understand `apply_overlay()` behavior:** In read-only live previews, `apply_overlay()` injects workspace `style.css` (`<style data-azom-preview="child-css">`) and applies whitespace-tolerant static HTML fragment diffs, while **PHP logic hunks stay `php_skipped`**. Put visual adjustments in `style.css` or static HTML fragments whenever they must render in `wp_preview_page` overlays.
+1. **Understand `apply_overlay()` behavior:** In read-only live previews, `apply_overlay()` injects all modified/created `.css` files in `work/` (`<style data-azom-preview="child-css">`) and applies whitespace-tolerant static HTML fragment diffs (or standalone `work/page_draft.json` inside the cached site shell), while **PHP logic hunks stay `php_skipped`**. Put visual adjustments in `.css` files, static HTML fragments, or `wp_workspace_page_draft` whenever they must render in `wp_preview_page`.
 2. **Prevent icon/text collisions and broken layout rules:**
    - Before narrowing a button (`width: auto`) or reducing `padding`, inspect parent CSS and `wp_inspect_element` for `background-image` + `background-position` icons, `::before` / `::after` pseudo-elements, or container `flex` / `trustbadge` rules so text never overlaps icons or leaves broken `<img>` gaps.
    - Read and update existing rules in the workspace `style.css` (`wp_workspace_read_file`) instead of appending conflicting duplicate selectors across iterations.

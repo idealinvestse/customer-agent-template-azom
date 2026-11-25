@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Guide surgical edits and multi-file theme refactors using the registered WordPress file/workspace toolchain without touching parent themes, WooCommerce core, or production directly.  
 **Audience:** Coding agents and the OpenClaw chat agent operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
 ## File-loop caps and safety boundaries
 
@@ -37,8 +37,9 @@ version: "3.0.0"
 3. **Open or continue/fork an isolated `wr-*` workspace:**
    - Use `wp_open_review_workspace(kind="theme", ..., base_plan_id=..., variant_group=...)` to open an isolated `wr-...` workspace under `AZOM_DATA_DIR/wp_workspaces/`, or `wp_workspace_fork` to branch on top of an existing `wr-*` plan without discarding prior edits. Use a shared `variant_group` when creating 2–3 comparable proposals so they do not supersede each other. This never writes the site.
    - Copy parent theme files cleanly into the child workspace with `wp_workspace_copy_from_parent`, or scaffold a baseline child structure with `wp_workspace_scaffold(template="child_theme_basics")`.
-4. **Apply surgical, product-sandbox, or overarching edits:**
+4. **Apply surgical, product-sandbox, net-new page, or overarching edits:**
    - **Surgical & product copy edits:** `wp_workspace_patch_file`, `wp_workspace_create_file`, `wp_workspace_product_edit` (`product_edits.json`), or atomic multi-file `wp_workspace_apply_changes`.
+   - **Net-new pages & templates (`thankyou.php`, `page-<slug>.php`, landing/campaign/guide pages):** Follow `skills/wordpress-page-builder/SKILL.md` — discover existing pages/guides (`wp_list_pages`, `wp_get_page`), pull real catalog products + synthetic zero-PII order fixtures (`wp_build_sample_data`), author `work/page_draft.json` (`wp_workspace_page_draft`) alongside any HPOS-safe (`wc_get_order()`) PHP template (`wp_workspace_create_file`), and verify standalone live-shell `wp_preview_page`. Checkout/order-confirmation templates stay `high` risk and escalate to Oscar.
    - **`theme.json` v2/v3 design edits:** Use `wp_workspace_theme_json` (`set` / `remove` with exact JSON pointers) instead of fragile regex or raw string replacement.
    - **WooCommerce overrides:** Run `wc_template_overrides_audit` first to detect `@version` drift and existing overrides, then pull clean templates via `wp_workspace_copy_woo_template`. Exercise extra caution on cart, checkout, and email templates (high-risk paths escalate to Oscar and block staging).
    - **Overarching refactors:** Run `wp_workspace_bulk_replace` with `dry_run=True` first to verify matches, then apply with `dry_run=False` (or `wp_workspace_apply_changes`) and inspect `wp_workspace_diff` + `wp_workspace_status`.

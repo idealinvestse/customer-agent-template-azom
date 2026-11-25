@@ -121,6 +121,8 @@ _WP_CODE_FALLTHROUGH_RE = re.compile(
     r"register_rest_route|register_block_type|wp_enqueue_(?:script|style)|"
     r"shortcodes?|snippets?|overrides?|templates?|mall(?:ar|en)?|produktmall(?:ar|en)?|"
     r"produktsid(?:a|an|or|orna|e|en|er)|product[\s_-]?page|k[öo]pknapp(?:en|ar|arna)?|"
+    r"tacksid(?:a|an)|thank[- ]?you|orderbekr[äa]ftelse|landningssid(?:a|an)|kampanjsid(?:a|an)|"
+    r"ny\s+sida|(?:skapa|bygg(?:a)?)\s+(?:en\s+|ny\s+)?sida|exempelprodukt(?:er|erna)?|exempeldata|hj[äa]lpguide(?:r|n|rna)?|"
     r"knapp(?:en|ar|arna)?|ikon(?:en|er|erna)?|kundvagnsikon(?:en)?|add[\s_-]?to[\s_-]?cart|"
     r"f[äa]rg(?:en|er|erna)?|padding|marginal(?:en|er|erna)?|ram(?:en|ar|arna)?|hover|"
     r"inring(?:a|ad|at|ade|ning|ningen)?|bifogad\s+bild|sandboxsid(?:a|an)|"
@@ -134,7 +136,7 @@ _WP_CODE_FALLTHROUGH_RE = re.compile(
     r"component[\s_-]?intel|wp\.org|wordpress\.org|playbook|"
     r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|theme_overview|plugin_overview|"
     r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file|"
-    r"list_products|get_product|fetch_page_html|preview_page|inspect_element)|"
+    r"list_products|get_product|list_pages|get_page|build_sample_data|fetch_page_html|preview_page|inspect_element)|"
     r"wc_template_overrides_audit|"
     r"skapa\s+(?:ett\s+)?(?:nytt\s+)?(?:plugin|till[äa]gg|barntema)|"
     r"granska\s+(?:plugin(?:et)?|till[äa]gg(?:et)?|tema(?:t)?|koden)|"
@@ -146,6 +148,8 @@ _WP_WORKSPACE_INTENT_RE = re.compile(
     r"single-product\.php|content-single-product\.php|"
     r"\b(?:arbetsyta(?:n)?|workspace|sandl[åa]da(?:n)?|sandbox|sandboxsid(?:a|an)|"
     r"produktsid(?:a|an|or|orna)|product[\s_-]?page|"
+    r"tacksid(?:a|an)|thank[- ]?you|orderbekr[äa]ftelse|landningssid(?:a|an)|kampanjsid(?:a|an)|"
+    r"ny\s+sida|(?:skapa|bygg(?:a)?)\s+(?:en\s+|ny\s+)?sida|exempelprodukt(?:er|erna)?|exempeldata|hj[äa]lpguide(?:r|n|rna)?|"
     r"knapp(?:en|ar|arna)?|k[öo]pknapp(?:en|ar|arna)?|ikon(?:en|er|erna)?|kundvagnsikon(?:en)?|"
     r"css|f[äa]rg(?:en|er|erna)?|padding|marginal(?:en|er|erna)?|ram(?:en|ar|arna)?|hover|"
     r"f[öo]rhandsvisning(?:en|ar)?|"
@@ -153,7 +157,8 @@ _WP_WORKSPACE_INTENT_RE = re.compile(
     r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|"
     r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|"
     r"theme_overview|plugin_overview|code_index|template_hierarchy|"
-    r"read_theme_plugin_file|list_products|get_product|fetch_page_html|preview_page|inspect_element))\b",
+    r"read_theme_plugin_file|list_products|get_product|list_pages|get_page|"
+    r"build_sample_data|fetch_page_html|preview_page|inspect_element))\b",
     re.I,
 )
 _CRITICAL_PLUGIN_SLUGS = frozenset(

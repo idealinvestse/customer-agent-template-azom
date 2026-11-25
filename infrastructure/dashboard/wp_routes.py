@@ -604,7 +604,7 @@ def _load_raw_plan_extras(ops: object, site_id: str) -> dict[str, dict[str, str]
 
 
 def _read_preview_meta(ops: object, site_id: str, plan_id: str) -> dict[str, object]:
-    """Read bounded non-secret live-overlay metadata from artifacts/preview.json."""
+    """Read bounded non-secret live-overlay or standalone-page metadata from artifacts/preview.json."""
     from ecom_ops.wp_ops.review_workspace import ReviewError, workspace_root
 
     data_dir = getattr(ops, "data_dir", None)
@@ -629,38 +629,131 @@ def _read_preview_meta(ops: object, site_id: str, plan_id: str) -> dict[str, obj
         return {}
     if not isinstance(parsed, dict):
         return {}
+    preview_kind = str(parsed.get("preview_kind") or "")[:40]
+    synthetic_data = parsed.get("synthetic_data") is True or preview_kind == "standalone_page"
     return {
-        "preview_kind": str(parsed.get("preview_kind") or "")[:40],
+        "preview_kind": preview_kind,
         "path": _scrub_posted(site_id, str(parsed.get("path") or ""))[:200],
         "focus_target": _scrub_posted(site_id, str(parsed.get("focus_target") or ""))[:160],
         "focus_matched": parsed.get("focus_matched") is True,
+        "synthetic_data": synthetic_data,
     }
 
 
-def _build_live_overlay_comparison(live_overlay_shots: list[str]) -> dict[str, list[dict[str, str]]]:
-    """Group live-overlay screenshots into Fokus, Desktop (Live vs Preview), and Mobil pairs."""
+def _read_page_draft_meta(ops: object, site_id: str, plan_id: str) -> dict[str, object]:
+    """Read bounded, secret-scrubbed summary metadata from work/page_draft.json."""
+    from ecom_ops.wp_ops.review_workspace import ReviewError, workspace_root
+
+    data_dir = getattr(ops, "data_dir", None)
+    if data_dir is None:
+        return {}
+    try:
+        root = workspace_root(data_dir, site_id, plan_id)
+    except ReviewError:
+        return {}
+    work_dir = (root / "work").resolve()
+    raw_file = work_dir / "page_draft.json"
+    if raw_file.is_symlink() or not raw_file.is_file():
+        return {}
+    candidate = raw_file.resolve()
+    if candidate.parent != work_dir or candidate.is_symlink():
+        return {}
+    try:
+        if candidate.stat().st_size > 256 * 1024:
+            return {}
+        parsed = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    synth_ctx = parsed.get("synthetic_context")
+    synth_flag = parsed.get("synthetic_data")
+    if synth_flag is None and isinstance(synth_ctx, dict):
+        synth_flag = synth_ctx.get("synthetic_data")
+    shell_raw = str(parsed.get("shell_path") or "/").strip() or "/"
+    return {
+        "slug": _scrub_posted(site_id, str(parsed.get("slug") or "").strip())[:120],
+        "title": _scrub_posted(site_id, str(parsed.get("title") or "").strip())[:160],
+        "page_type": _scrub_posted(site_id, str(parsed.get("page_type") or "").strip())[:60],
+        "shell_path": _scrub_posted(site_id, shell_raw)[:200],
+        "template_file": _scrub_posted(site_id, str(parsed.get("template_file") or "").strip())[:160],
+        "synthetic_data": synth_flag is not False,
+    }
+
+
+def _is_standalone_plan(ops: object, site_id: str, plan_id: str) -> bool:
+    """Detect whether a wr-* plan is a standalone net-new page draft without leaking content."""
+    from ecom_ops.wp_ops.review_workspace import ReviewError, workspace_root
+
+    data_dir = getattr(ops, "data_dir", None)
+    if data_dir is None:
+        return False
+    try:
+        root = workspace_root(data_dir, site_id, plan_id)
+    except ReviewError:
+        return False
+    work_dir = (root / "work").resolve()
+    draft_file = work_dir / "page_draft.json"
+    if not draft_file.is_symlink() and draft_file.is_file():
+        try:
+            if draft_file.resolve().parent == work_dir:
+                return True
+        except OSError:
+            pass
+    meta = _read_preview_meta(ops, site_id, plan_id)
+    return meta.get("preview_kind") == "standalone_page"
+
+
+def _build_live_overlay_comparison(
+    live_overlay_shots: list[str],
+    *,
+    standalone: bool = False,
+) -> dict[str, list[dict[str, str]]]:
+    """Group live-overlay or standalone-page screenshots into Fokus, Desktop, and Mobil sections."""
     present = set(live_overlay_shots)
     focus_items: list[dict[str, str]] = []
-    for name, label in (
-        ("change-desktop.png", "Dator — markerad ändring"),
-        ("focus-desktop.png", "Dator — fokus på ändringen"),
-        ("change-mobile.png", "Mobil — markerad ändring"),
-        ("focus-mobile.png", "Mobil — fokus på ändringen"),
-    ):
+    focus_labels = (
+        (
+            ("change-desktop.png", "Dator — fokus"),
+            ("focus-desktop.png", "Dator — fokus"),
+            ("change-mobile.png", "Mobil — fokus"),
+            ("focus-mobile.png", "Mobil — fokus"),
+        )
+        if standalone
+        else (
+            ("change-desktop.png", "Dator — markerad ändring"),
+            ("focus-desktop.png", "Dator — fokus på ändringen"),
+            ("change-mobile.png", "Mobil — markerad ändring"),
+            ("focus-mobile.png", "Mobil — fokus på ändringen"),
+        )
+    )
+    for name, label in focus_labels:
         if name in present:
             focus_items.append({"name": name, "label": label, "role": "focus"})
 
     desktop_items: list[dict[str, str]] = []
-    if "live-desktop.png" in present:
+    if not standalone and "live-desktop.png" in present:
         desktop_items.append({"name": "live-desktop.png", "label": "Live (före)", "role": "live"})
     if "preview-desktop.png" in present:
-        desktop_items.append({"name": "preview-desktop.png", "label": "Förhandsvisning (efter)", "role": "preview"})
+        desktop_items.append(
+            {
+                "name": "preview-desktop.png",
+                "label": "Desktop-förhandsvisning" if standalone else "Förhandsvisning (efter)",
+                "role": "preview",
+            }
+        )
 
     mobile_items: list[dict[str, str]] = []
-    if "live-mobile.png" in present:
+    if not standalone and "live-mobile.png" in present:
         mobile_items.append({"name": "live-mobile.png", "label": "Live (före)", "role": "live"})
     if "preview-mobile.png" in present:
-        mobile_items.append({"name": "preview-mobile.png", "label": "Förhandsvisning (efter)", "role": "preview"})
+        mobile_items.append(
+            {
+                "name": "preview-mobile.png",
+                "label": "Mobil-förhandsvisning" if standalone else "Förhandsvisning (efter)",
+                "role": "preview",
+            }
+        )
 
     return {
         "focus": focus_items,
@@ -703,6 +796,7 @@ def _site_review_plans(site_id: str, *, actor: str, admin: bool, limit: int = 20
                 "variant_group": _safe_variant_group(item.get("variant_group") or ex.get("variant_group")),
                 "summary": summary,
                 "has_interactive_preview": ops.has_preview_html(site_id, pid, actor=actor),
+                "is_standalone_page": _is_standalone_plan(ops, site_id, pid),
             }
         )
     rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
@@ -777,7 +871,21 @@ def _render_review(
         if admin and (has_live_overlay_preview or has_interactive_preview)
         else {}
     )
-    live_overlay_comparison = _build_live_overlay_comparison(live_overlay_screenshots)
+    page_draft = _read_page_draft_meta(ops, site_id, plan_id) if admin else {}
+    is_standalone_page = (
+        bool(page_draft or preview_meta.get("preview_kind") == "standalone_page")
+        if admin
+        else _is_standalone_plan(ops, site_id, plan_id)
+    )
+    synthetic_data = bool(
+        preview_meta.get("synthetic_data")
+        or page_draft.get("synthetic_data")
+        or is_standalone_page
+    )
+    live_overlay_comparison = _build_live_overlay_comparison(
+        live_overlay_screenshots,
+        standalone=is_standalone_page,
+    )
     outcome = result or {}
     effective_err = error_class or str(outcome.get("error_class") or "")
     review_feedback = None
@@ -808,6 +916,9 @@ def _render_review(
             live_overlay_screenshots=live_overlay_screenshots,
             live_overlay_comparison=live_overlay_comparison,
             preview_meta=preview_meta,
+            page_draft=page_draft,
+            is_standalone_page=is_standalone_page,
+            synthetic_data=synthetic_data,
             has_sandbox_smoke=has_sandbox_smoke,
             has_live_overlay_preview=has_live_overlay_preview,
             has_rendered_preview=has_rendered_preview,

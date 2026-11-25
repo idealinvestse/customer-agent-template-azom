@@ -699,6 +699,31 @@ def test_wp_review_live_overlay_and_site_workspaces_csp_clean(rebuild_env):
     (adir / "preview-desktop.png").write_bytes(png)
     (adir / "preview.html").write_text("<!doctype html><html><body>ok</body></html>", encoding="utf-8")
 
+    # Add a standalone page draft on pid2 to verify CSP cleanliness on standalone gallery + meta card
+    root2 = workspace_root(data_dir, "mock-staging", pid2)
+    (root2 / "work" / "page_draft.json").write_text(
+        json.dumps(
+            {
+                "slug": "tack-sida",
+                "title": "Tack för din order",
+                "page_type": "thankyou",
+                "shell_path": "/",
+                "template_file": "woocommerce/checkout/thankyou.php",
+                "synthetic_data": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    adir2 = root2 / "artifacts"
+    adir2.mkdir(parents=True, exist_ok=True)
+    (adir2 / "preview-desktop.png").write_bytes(png)
+    (adir2 / "preview-mobile.png").write_bytes(png)
+    (adir2 / "preview.json").write_text(
+        json.dumps({"preview_kind": "standalone_page", "path": "/tack-sida/", "synthetic_data": True}),
+        encoding="utf-8",
+    )
+    (adir2 / "preview.html").write_text("<!doctype html><html><body>standalone</body></html>", encoding="utf-8")
+
     for url in ("/wp/mock-staging", f"/wp/mock-staging/reviews/{pid1}", f"/wp/mock-staging/reviews/{pid2}"):
         resp = client.get(url, headers=oscar_hdrs)
         assert resp.status_code == 200

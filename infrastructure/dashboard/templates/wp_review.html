@@ -72,6 +72,15 @@
     </div>
   {% endif %}
 
+  {% if is_standalone_page %}
+    <div class="az-callout az-callout-info" role="status" data-standalone-page="true">
+      <span class="mt-0.5 shrink-0">{{ icon('info', 'sm') }}</span>
+      <div class="min-w-0 flex-1">
+        <strong>Ny sida · Sandbox (syntetisk exempeldata)</strong> — Fristående förhandsvisning i sajtens verkliga skal. Ingen ny sida har publicerats på livesajten.
+      </div>
+    </div>
+  {% endif %}
+
   {% if sibling_variants %}
   <section class="az-card space-y-3" data-variant-switcher="true" data-variant-group="{{ variant_group }}">
     <div class="flex flex-wrap items-center justify-between gap-2">
@@ -111,7 +120,50 @@
       {% if variant_group %}
       {{ ui.status_badge('info', 'Variantgrupp: ' ~ variant_group) }}
       {% endif %}
+      {% if is_standalone_page %}
+      {{ ui.status_badge('info', 'Ny sida · Sandbox (syntetisk exempeldata)') }}
+      {% endif %}
     </div>
+
+    {% if can_review and page_draft and (page_draft.get('slug') or page_draft.get('title') or page_draft.get('page_type') or page_draft.get('template_file')) %}
+    <div class="rounded-xl border border-steel-500/30 bg-ink-950/70 p-3.5 space-y-2" data-page-draft-meta="true">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <span class="text-xs font-semibold uppercase tracking-wider text-steel-300">Sidutkast (fristående sida)</span>
+        {% if page_draft.get('synthetic_data') %}
+        <span class="az-badge az-badge-neutral">syntetisk exempeldata</span>
+        {% endif %}
+      </div>
+      {% if page_draft.get('title') %}
+      <p class="text-sm font-semibold text-mist-100">{{ page_draft.get('title') }}</p>
+      {% endif %}
+      <dl class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+        {% if page_draft.get('slug') %}
+        <div>
+          <dt class="text-mist-400">Slug</dt>
+          <dd class="font-mono text-mist-100 break-all">{{ page_draft.get('slug') }}</dd>
+        </div>
+        {% endif %}
+        {% if page_draft.get('page_type') %}
+        <div>
+          <dt class="text-mist-400">Sidtyp</dt>
+          <dd class="font-mono text-mist-100">{{ page_draft.get('page_type') }}</dd>
+        </div>
+        {% endif %}
+        {% if page_draft.get('shell_path') %}
+        <div>
+          <dt class="text-mist-400">Skal (shell_path)</dt>
+          <dd class="font-mono text-mist-100 break-all">{{ page_draft.get('shell_path') }}</dd>
+        </div>
+        {% endif %}
+        {% if page_draft.get('template_file') %}
+        <div>
+          <dt class="text-mist-400">Mallfil</dt>
+          <dd class="font-mono text-mist-100 break-all">{{ page_draft.get('template_file') }}</dd>
+        </div>
+        {% endif %}
+      </dl>
+    </div>
+    {% endif %}
 
     {% if can_review and plan.get('summary') %}
     <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 px-3.5 py-2.5 text-sm text-mist-100" data-plan-summary="true">
@@ -178,6 +230,8 @@
 
     {% if has_live_overlay_preview and has_sandbox_smoke %}
     <p class="az-muted text-sm">Inloggad granskning. Live-overlay-förhandsvisning och isolerad lokal sandlåderendering tillgängliga.</p>
+    {% elif has_live_overlay_preview and is_standalone_page %}
+    <p class="az-muted text-sm">Inloggad granskning. Fristående sidförhandsvisning i sajtens skal med syntetisk exempeldata (inga ändringar på live).</p>
     {% elif has_live_overlay_preview %}
     <p class="az-muted text-sm">Inloggad granskning. Live-overlay-förhandsvisning från skrivskyddad publik live-GET (inga ändringar på live).</p>
     {% elif has_sandbox_smoke %}
@@ -350,9 +404,25 @@
   {% endif %}
 
   {% if has_live_overlay_preview and live_overlay_screenshots %}
-  <section class="az-card space-y-5" data-live-overlay-gallery="true">
+  <section
+    class="az-card space-y-5"
+    data-live-overlay-gallery="true"
+    {% if is_standalone_page %}data-standalone-gallery="true"{% endif %}
+  >
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div class="space-y-1">
+        {% if is_standalone_page %}
+        <h2 class="font-display text-base font-semibold text-mist-100">Förhandsvisning — Ny sida (Sandbox)</h2>
+        <p class="az-muted text-sm">
+          Fristående förhandsvisning i sajtens verkliga skal med syntetisk exempeldata. Livesajten är oförändrad.
+          {% if preview_meta and preview_meta.get('path') %}
+          · Sökväg: <code class="az-code font-mono">{{ preview_meta.get('path') }}</code>
+          {% endif %}
+          {% if preview_meta and preview_meta.get('focus_target') %}
+          · Fokus: <code class="az-code font-mono">{{ preview_meta.get('focus_target') }}</code>
+          {% endif %}
+        </p>
+        {% else %}
         <h2 class="font-display text-base font-semibold text-mist-100">Live vs. Förhandsvisning</h2>
         <p class="az-muted text-sm">
           Skrivskyddad live-overlay med arbetsytans CSS och malländringar. Livesajten är oförändrad.
@@ -363,6 +433,7 @@
           · Fokus: <code class="az-code font-mono">{{ preview_meta.get('focus_target') }}</code>
           {% endif %}
         </p>
+        {% endif %}
       </div>
       {% if has_interactive_preview %}
       <a
@@ -377,7 +448,7 @@
 
     {% if live_overlay_comparison.focus %}
     <div class="space-y-2.5" data-preview-group="focus">
-      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Fokus på ändringen</h3>
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">{% if is_standalone_page %}Fokus{% else %}Fokus på ändringen{% endif %}</h3>
       <div class="grid gap-4 md:grid-cols-2">
         {% for shot in live_overlay_comparison.focus %}
         <figure class="space-y-1.5 rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
@@ -406,8 +477,8 @@
 
     {% if live_overlay_comparison.desktop %}
     <div class="space-y-2.5" data-preview-group="desktop">
-      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Desktop (1280×800)</h3>
-      <div class="grid gap-4 md:grid-cols-2">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">{% if is_standalone_page %}Desktop-förhandsvisning (1280×800){% else %}Desktop (1280×800){% endif %}</h3>
+      <div class="grid gap-4 {% if live_overlay_comparison.desktop | length > 1 %}md:grid-cols-2{% endif %}">
         {% for shot in live_overlay_comparison.desktop %}
         <figure class="space-y-1.5 rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
           <figcaption class="flex items-center justify-between gap-2 text-xs">
@@ -435,8 +506,8 @@
 
     {% if live_overlay_comparison.mobile %}
     <div class="space-y-2.5" data-preview-group="mobile">
-      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Mobil (390×844)</h3>
-      <div class="grid gap-4 md:grid-cols-2">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">{% if is_standalone_page %}Mobil-förhandsvisning (390×844){% else %}Mobil (390×844){% endif %}</h3>
+      <div class="grid gap-4 {% if live_overlay_comparison.mobile | length > 1 %}md:grid-cols-2{% else %}max-w-sm{% endif %}">
         {% for shot in live_overlay_comparison.mobile %}
         <figure class="space-y-1.5 rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
           <figcaption class="flex items-center justify-between gap-2 text-xs">

@@ -76,9 +76,12 @@ CLARIFY_PROTOCOL_GUIDE = (
     "tydliga skrivningar (t.ex. 'sätt order 1001 till completed', "
     "'ändra produkt 501 pris till 999', 'ändra sidan 2 titel till Kontakt', "
     "'ändra sajttitel till Butiken', 'aktivera plugin akismet') samt "
-    "förankrade uppföljningsjusteringar eller buggfixar på ett aktivt wr-*-förslag "
+    "förankrade uppföljningsjusteringar, renderingar eller buggfixar på ett aktivt wr-*-förslag "
     "(t.ex. 'gör knappen större', 'byt till mörkblå', 'ta bort ramen', "
-    "'kundvagnsikonen är intryckt — fixa det'). "
+    "'rendera och visa screenshots', 'kundvagnsikonen är intryckt — fixa det'). "
+    "När användaren redan har angett tydliga sidkrav för en ny sida/tacksida, gå direkt "
+    "vidare till att bygga och förhandsvisa i wr-* med riktiga katalogprodukter + "
+    "syntetisk zero-PII exempeldata utan onödiga extra rundor. "
     "När <clarify> skickas för en WP-/visuell ändring, behåll alltid kända "
     "site_id, plan_id, path och focus_selector i target_summary och action_hint "
     "så att nästa runda aldrig tappar kontext. "
@@ -428,9 +431,9 @@ _EXPLICIT_CHANGE_VERB_RE = re.compile(
     r"[äa]ndra|uppdatera|byt|byta|justera|fixa|g[öo]r\s+om|g[öo]r\s+s[åa]|"
     r"l[äa]gg\s+till|l[äa]gga\s+till|ta\s+bort|flytta|d[öo]lj|g[öo]m|"
     r"designa|styla|f[öo]rb[äa]ttra|f[öo]rstora|f[öo]rminska|centrera|skriv\s+om|"
-    r"s[äa]tt|markera|aktivera|inaktivera|avaktivera|deaktivera|sl[åa]\s+p[åa]|sl[åa]\s+av|st[äa]ng\s+av|"
+    r"bygg(?:a)?|skapa|s[äa]tt|markera|aktivera|inaktivera|avaktivera|deaktivera|sl[åa]\s+p[åa]|sl[åa]\s+av|st[äa]ng\s+av|"
     r"redigera|refaktorera|patcha|generera|"
-    r"change|update|modify|edit|adjust|fix|redesign|move|hide|remove|add|resize|center|rewrite|set|enable|disable|style"
+    r"change|update|modify|edit|adjust|fix|redesign|move|hide|remove|add|resize|center|rewrite|build|create|set|enable|disable|style"
     r")\b",
     re.I,
 )
@@ -518,7 +521,8 @@ _ANCHORED_UI_CUE_RE = re.compile(
     r"typsnitt|font(?:en)?|rubrik(?:en)?|text(?:en)?|storlek(?:en)?|st[öo]rre|mindre|"
     r"rundad(?:e)?|h[öo]rn(?:en)?|bredd(?:en)?|h[öo]jd(?:en)?|kompakt|"
     r"layout(?:en)?|design(?:en)?|css|style\.css|"
-    r"f[öo]rslag(?:et|en)?|f[öo]rhandsvisning(?:en)?|sandl[åa]da(?:n)?|sandbox|"
+    r"f[öo]rslag(?:et|en)?|f[öo]rhandsvisning(?:en|ar)?|sandl[åa]da(?:n)?|sandbox|"
+    r"rendera|preview|screenshot(?:s)?|sk[äa]rmdump(?:ar|en)?|"
     r"[öo]verlapp\w*|intryckt|wr-[a-f0-9]{4,12}"
     r")\b",
     re.I,
@@ -575,7 +579,8 @@ _PLUGIN_ACTION_WITH_ID_RE = re.compile(
     re.I,
 )
 _PAGE_CONTENT_WORD_RE = re.compile(
-    r"\b(?:sid(?:an|a|or|orna)|page|startsida(?:n)?|hemsida(?:n)?|landningssida(?:n)?|"
+    r"\b(?:sid(?:an|a|or|orna)|page|startsida(?:n)?|hemsida(?:n)?|landningssid(?:a|an)|"
+    r"kampanjsid(?:a|an)|tacksid(?:a|an)|thank[- ]?you|orderbekr[äa]ftelse|"
     r"kassasida(?:n)?|kontaktsida(?:n)?|inl[äa]gg(?:et|en)?|blogginl[äa]gg(?:et)?|post|"
     r"rubrik(?:en)?|titel|br[öo]dtext|inneh[åa]ll(?:et)?|text(?:en)?)\b",
     re.I,

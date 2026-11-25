@@ -23,8 +23,86 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _TOKEN_RE = re.compile(r"\w[\w\-]{3,}")
 _TAG_SPLIT_RE = re.compile(r"(?<=>)|(?=<)")
 _HEAD_CLOSE_RE = re.compile(r"</head\s*>", re.IGNORECASE)
+_TITLE_TAG_RE = re.compile(r"<title\b[^>]*>[\s\S]*?</title\s*>", re.IGNORECASE)
 _BODY_OPEN_RE = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
+_BODY_CLOSE_RE = re.compile(r"</body\s*>", re.IGNORECASE)
 _STYLE_CLOSE_RE = re.compile(r"</style", re.IGNORECASE)
+_MAIN_OPEN_RE = re.compile(r"<main\b[^>]*>", re.IGNORECASE)
+_CONTENT_CONTAINER_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"<(?:div|section)\b[^>]*\brole\s*=\s*[\"']main[\"'][^>]*>", re.IGNORECASE),
+    re.compile(r"<(?:div|section)\b[^>]*\bid\s*=\s*[\"'](?:primary|content|main-content|main)[\"'][^>]*>", re.IGNORECASE),
+    re.compile(r"<(?:div|section)\b[^>]*\bclass\s*=\s*[\"'](?:[^\"']*\s)?(?:site-main|content-area|page-content|main-content)(?:\s[^\"']*)?[\"'][^>]*>", re.IGNORECASE),
+)
+_HEADER_OPEN_RE = re.compile(r"<header\b[^>]*>", re.IGNORECASE)
+_FOOTER_OPEN_RE = re.compile(r"<footer\b[^>]*>", re.IGNORECASE)
+_PAGE_DRAFT_ALLOWED_TAGS = frozenset(
+    {
+        "section",
+        "div",
+        "article",
+        "header",
+        "footer",
+        "main",
+        "aside",
+        "nav",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "p",
+        "span",
+        "a",
+        "img",
+        "ul",
+        "ol",
+        "li",
+        "dl",
+        "dt",
+        "dd",
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "th",
+        "td",
+        "figure",
+        "figcaption",
+        "strong",
+        "b",
+        "em",
+        "i",
+        "small",
+        "mark",
+        "br",
+        "hr",
+        "button",
+        "blockquote",
+        "code",
+        "pre",
+        "time",
+        "label",
+    }
+)
+_PAGE_DRAFT_VOID_TAGS = frozenset({"br", "hr", "img"})
+_PAGE_DRAFT_DROP_TAGS = frozenset(
+    {"script", "style", "iframe", "object", "embed", "svg", "noscript", "template", "form", "input", "textarea", "select", "meta", "link", "base"}
+)
+_PAGE_DRAFT_GLOBAL_ATTRS = frozenset(
+    {"class", "id", "role", "title", "aria-label", "aria-hidden", "aria-describedby"}
+)
+_PAGE_DRAFT_TAG_ATTRS: dict[str, frozenset[str]] = {
+    "a": frozenset({"href", "target", "rel"}),
+    "img": frozenset({"src", "alt", "width", "height", "loading", "decoding"}),
+    "th": frozenset({"colspan", "rowspan", "scope"}),
+    "td": frozenset({"colspan", "rowspan"}),
+    "time": frozenset({"datetime"}),
+    "button": frozenset({"type", "disabled"}),
+}
+_SAFE_DATA_ATTR_RE = re.compile(r"^data-[a-z0-9_-]{1,40}$")
+_UNSAFE_INLINE_STYLE_RE = re.compile(r"(?:javascript:|vbscript:|expression\s*\(|url\s*\(|@import|behavior\s*:)", re.IGNORECASE)
 _PHP_I18N_TAG_RE = re.compile(
     r"<\?(?:php|=)?\s*(?:echo\s+)?(?P<fn>__|esc_html__|esc_attr__|_e|esc_html_e|esc_attr_e)\s*\(\s*"
     r"(?P<q>['\"])(?P<msg>(?:\\.|(?!(?P=q))[^\\])*?)(?P=q)"
@@ -224,15 +302,28 @@ def _find_anchor_line(before_lines: list[str], insert_idx: int) -> str | None:
     return None
 
 
-def _inject_child_css(html: str, child_css: str | None) -> tuple[str, int]:
-    if not child_css:
-        return html, 0
-    cleaned = strip_css_header(child_css)
-    if not cleaned:
+def _inject_css_blocks(
+    html: str,
+    blocks: list[tuple[str, str]],
+    *,
+    marker: str = "child-css",
+) -> tuple[str, int]:
+    cleaned_parts: list[str] = []
+    for label, raw_css in blocks:
+        cleaned = strip_css_header(raw_css or "")
+        if not cleaned:
+            continue
+        safe_css = _STYLE_CLOSE_RE.sub(r"<\/style", cleaned)
+        if label:
+            safe_label = re.sub(r"[^A-Za-z0-9._/\- ]+", "", str(label))[:80]
+            cleaned_parts.append(f"/* {safe_label} */\n{safe_css}")
+        else:
+            cleaned_parts.append(safe_css)
+    if not cleaned_parts:
         return html, 0
 
-    safe_css = _STYLE_CLOSE_RE.sub(r"<\/style", cleaned)
-    style_tag = f'<style data-azom-preview="child-css">\n{safe_css}\n</style>'
+    joined = "\n\n".join(cleaned_parts)
+    style_tag = f'<style data-azom-preview="{html_lib.escape(marker, quote=True)}">\n{joined}\n</style>'
     injected_bytes = len(style_tag.encode("utf-8"))
 
     head_match = _HEAD_CLOSE_RE.search(html)
@@ -248,6 +339,281 @@ def _inject_child_css(html: str, child_css: str | None) -> tuple[str, int]:
     if html:
         return style_tag + "\n" + html, injected_bytes
     return style_tag, injected_bytes
+
+
+def _inject_child_css(html: str, child_css: str | None) -> tuple[str, int]:
+    if not child_css:
+        return html, 0
+    return _inject_css_blocks(html, [("", child_css)], marker="child-css")
+
+
+@dataclass(frozen=True)
+class SiteShell:
+    """Extracted site chrome (head, header/nav, footer) around a replaceable main slot."""
+
+    before_main: str
+    after_main: str
+    strategy: str
+    original_title: str = ""
+
+
+def extract_site_shell(live_html: str) -> SiteShell:
+    """Extract real site ``<head>``, ``<header>``, and ``<footer>`` chrome for standalone page preview."""
+    _check_html_size(live_html)
+    title_m = _TITLE_TAG_RE.search(live_html)
+    orig_title = html_lib.unescape(_TAG_RE.sub("", title_m.group(0))).strip() if title_m else ""
+
+    # 1. Explicit <main> element
+    main_span = _find_element_span(live_html, _MAIN_OPEN_RE)
+    if main_span is not None:
+        _ts, c_start, c_end, _te = main_span
+        return SiteShell(
+            before_main=live_html[:c_start],
+            after_main=live_html[c_end:],
+            strategy="main_tag",
+            original_title=orig_title,
+        )
+
+    # 2. Standard WordPress/WooCommerce primary content container
+    cont_span = _find_first_element_span(live_html, _CONTENT_CONTAINER_RES)
+    if cont_span is not None:
+        _ts, c_start, c_end, _te = cont_span
+        return SiteShell(
+            before_main=live_html[:c_start],
+            after_main=live_html[c_end:],
+            strategy="content_container",
+            original_title=orig_title,
+        )
+
+    # 3. Between </header> and <footer ...> (works well on Webflow / Udesly classic themes)
+    header_span = _find_element_span(live_html, _HEADER_OPEN_RE)
+    footer_matches = list(_FOOTER_OPEN_RE.finditer(live_html))
+    if header_span is not None and footer_matches:
+        header_end = header_span[3]
+        footer_start = footer_matches[-1].start()
+        if footer_start >= header_end:
+            return SiteShell(
+                before_main=live_html[:header_end],
+                after_main=live_html[footer_start:],
+                strategy="header_footer",
+                original_title=orig_title,
+            )
+
+    # 4. Fallback inside <body>...</body>
+    body_open = _BODY_OPEN_RE.search(live_html)
+    body_close = _BODY_CLOSE_RE.search(live_html)
+    if body_open is not None and body_close is not None and body_close.start() >= body_open.end():
+        return SiteShell(
+            before_main=live_html[: body_open.end()],
+            after_main=live_html[body_close.start() :],
+            strategy="body_fallback",
+            original_title=orig_title,
+        )
+    return SiteShell(
+        before_main="<!doctype html><html><head><meta charset=\"utf-8\"><title></title></head><body>",
+        after_main="</body></html>",
+        strategy="minimal_fallback",
+        original_title=orig_title,
+    )
+
+
+def _is_safe_url(url: str, *, allowed_hosts: frozenset[str], is_image: bool) -> bool:
+    from urllib.parse import urlparse
+
+    raw = str(url or "").strip()
+    if not raw or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        return False
+    low = raw.lower()
+    if low.startswith(("javascript:", "vbscript:", "data:", "blob:")):
+        return False
+    if raw.startswith(("/", "#")) and not raw.startswith("//"):
+        return True
+    parsed = urlparse(raw)
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host or host in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    if is_image and allowed_hosts:
+        return host in allowed_hosts
+    return True
+
+
+class _PageDraftHtmlSanitizer(HTMLParser):
+    """Strict allowlist HTML sanitizer for standalone page drafts."""
+
+    def __init__(self, *, allowed_hosts: frozenset[str]) -> None:
+        super().__init__(convert_charrefs=True)
+        self._allowed_hosts = allowed_hosts
+        self.parts: list[str] = []
+        self._stack: list[str] = []
+        self._skip_depth = 0
+
+    def _clean_attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> str:
+        allowed_for_tag = _PAGE_DRAFT_TAG_ATTRS.get(tag, frozenset())
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw_key, raw_val in attrs:
+            key = str(raw_key or "").strip().lower()
+            if not key or key.startswith("on") or key in seen:
+                continue
+            val = "" if raw_val is None else str(raw_val).strip()
+            if key == "style":
+                if not val or len(val) > 500 or _UNSAFE_INLINE_STYLE_RE.search(val):
+                    continue
+                seen.add(key)
+                out.append(f'style="{html_lib.escape(val, quote=True)}"')
+                continue
+            is_allowed = (
+                key in _PAGE_DRAFT_GLOBAL_ATTRS
+                or key in allowed_for_tag
+                or _SAFE_DATA_ATTR_RE.fullmatch(key) is not None
+            )
+            if not is_allowed:
+                continue
+            if key == "href":
+                if not _is_safe_url(val, allowed_hosts=self._allowed_hosts, is_image=False):
+                    continue
+            elif key == "src":
+                if not _is_safe_url(val, allowed_hosts=self._allowed_hosts, is_image=True):
+                    continue
+            elif key == "target":
+                if val not in {"_blank", "_self"}:
+                    continue
+            elif key == "type" and tag == "button":
+                val = "button"
+            elif len(val) > 500:
+                val = val[:500]
+            seen.add(key)
+            out.append(f'{key}="{html_lib.escape(val, quote=True)}"')
+        if tag == "button" and "type" not in seen:
+            out.append('type="button"')
+        return (" " + " ".join(out)) if out else ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        low = tag.lower()
+        if low in _PAGE_DRAFT_DROP_TAGS:
+            if low not in {"meta", "link", "base", "input"}:
+                self._skip_depth += 1
+            return
+        if self._skip_depth > 0:
+            return
+        if low in _PAGE_DRAFT_ALLOWED_TAGS:
+            attr_str = self._clean_attrs(low, attrs)
+            self.parts.append(f"<{low}{attr_str}>")
+            if low not in _PAGE_DRAFT_VOID_TAGS:
+                self._stack.append(low)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        low = tag.lower()
+        if self._skip_depth > 0 or low in _PAGE_DRAFT_DROP_TAGS:
+            return
+        if low in _PAGE_DRAFT_ALLOWED_TAGS:
+            attr_str = self._clean_attrs(low, attrs)
+            if low in _PAGE_DRAFT_VOID_TAGS:
+                self.parts.append(f"<{low}{attr_str}>")
+            else:
+                self.parts.append(f"<{low}{attr_str}></{low}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        low = tag.lower()
+        if low in _PAGE_DRAFT_DROP_TAGS:
+            if self._skip_depth > 0 and low not in {"meta", "link", "base", "input"}:
+                self._skip_depth -= 1
+            return
+        if self._skip_depth > 0:
+            return
+        if low in _PAGE_DRAFT_ALLOWED_TAGS and low not in _PAGE_DRAFT_VOID_TAGS and low in self._stack:
+            while self._stack:
+                top = self._stack.pop()
+                self.parts.append(f"</{top}>")
+                if top == low:
+                    break
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
+        self.parts.append(html_lib.escape(data, quote=False))
+
+    def result(self) -> str:
+        while self._stack:
+            self.parts.append(f"</{self._stack.pop()}>")
+        return "".join(self.parts)
+
+
+def sanitize_page_draft_html(
+    body_html: str,
+    *,
+    allowed_hosts: frozenset[str] = frozenset(),
+) -> str:
+    """Sanitize standalone page draft HTML using a strict semantic tag & URL allowlist."""
+    raw = str(body_html or "").strip()
+    if not raw:
+        return ""
+    parser = _PageDraftHtmlSanitizer(allowed_hosts=frozenset(h.lower() for h in allowed_hosts if h))
+    parser.feed(raw)
+    parser.close()
+    return parser.result().strip()
+
+
+def compose_standalone_page(
+    shell_html: str,
+    *,
+    title: str,
+    body_html: str,
+    page_css: str = "",
+    extra_css_files: list[tuple[str, str]] | tuple[tuple[str, str], ...] = (),
+    allowed_hosts: frozenset[str] = frozenset(),
+    synthetic_banner: str = "",
+) -> OverlayResult:
+    """Wrap sanitized net-new page HTML + CSS inside a real site's live header/footer/CSS shell."""
+    _check_html_size(shell_html)
+    shell = extract_site_shell(shell_html)
+    clean_title = " ".join(str(title or "").split()).strip()[:200]
+    before = shell.before_main
+    if clean_title:
+        escaped_title = html_lib.escape(clean_title, quote=False)
+        if _TITLE_TAG_RE.search(before):
+            before = _TITLE_TAG_RE.sub(f"<title>{escaped_title}</title>", before, count=1)
+
+    sanitized_body = sanitize_page_draft_html(body_html, allowed_hosts=allowed_hosts)
+    banner_html = ""
+    if synthetic_banner:
+        safe_banner = html_lib.escape(str(synthetic_banner).strip()[:240], quote=False)
+        banner_html = (
+            '<div class="azom-page-draft-synthetic-note" data-azom-synthetic-note="1" '
+            'style="max-width:1120px;margin:16px auto 0;padding:10px 14px;border-radius:8px;'
+            'background:#fef9c3;color:#713f12;border:1px solid #facc15;font-size:13px;font-weight:600;">'
+            f"{safe_banner}</div>\n"
+        )
+    wrapped_main = (
+        '<div class="azom-page-draft-root" data-azom-page-draft="1">\n'
+        f"{banner_html}{sanitized_body}\n"
+        "</div>"
+    )
+    composed = before + "\n" + wrapped_main + "\n" + shell.after_main
+    _check_html_size(composed)
+
+    css_blocks: list[tuple[str, str]] = list(extra_css_files)
+    if page_css and page_css.strip():
+        css_blocks.append(("page_draft.css", page_css))
+    composed, injected_css_bytes = _inject_css_blocks(composed, css_blocks, marker="page-css")
+    _check_html_size(composed)
+
+    hunks = (
+        OverlayHunk(
+            "page_draft.json",
+            "applied",
+            f"shell:{shell.strategy}",
+            _excerpt([clean_title or "standalone_page"]),
+        ),
+    )
+    return OverlayResult(
+        html=composed,
+        hunks=hunks,
+        injected_css_bytes=injected_css_bytes,
+        highlight_token=None,
+    )
 
 
 class _SafeRichHtmlSanitizer(HTMLParser):
@@ -644,6 +1010,7 @@ def apply_overlay(
     changes: list[tuple[str, str, str]],
     *,
     child_css: str | None = None,
+    extra_css_files: list[tuple[str, str]] | tuple[tuple[str, str], ...] = (),
     product_edits: dict[str, Any] | None = None,
 ) -> OverlayResult:
     """Apply HTML fragments from ``changes``, optional ``child_css``, and optional ``product_edits``."""
@@ -713,7 +1080,13 @@ def apply_overlay(
             if first_applied_pair is None:
                 first_applied_pair = (old_block, new_block)
 
-    html, injected_css_bytes = _inject_child_css(html, child_css)
+    css_blocks: list[tuple[str, str]] = []
+    if child_css:
+        css_blocks.append(("", child_css))
+    for css_label, css_body in extra_css_files:
+        if css_body:
+            css_blocks.append((css_label, css_body))
+    html, injected_css_bytes = _inject_css_blocks(html, css_blocks, marker="child-css")
     _check_html_size(html)
 
     highlight = (
