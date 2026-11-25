@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from ecom_ops.bot.progress_events import ProgressCallback, ProgressEvent, emit_progress
 from ecom_ops.bot.reply import BotReply
 from ecom_ops.wp_ops.agent_tools import context_matches
 from ecom_ops.wp_ops.page_review_loop import run_bounded_page_review_loop
@@ -17,7 +18,7 @@ def run_page_review_job(
     handler: Any,
     job: dict[str, Any],
     *,
-    progress: Callable[[str], None],
+    progress: ProgressCallback,
     on_checkpoint: Callable[[], list[str]] | None = None,
 ) -> BotReply:
     chat_id = str(job.get("chat_id") or "")
@@ -31,12 +32,19 @@ def run_page_review_job(
     if callable(merge):
         merge(chat_id, tool_digest="")
     if on_checkpoint:
-        try:
-            steers = on_checkpoint() or []
-        except Exception:
-            raise
+        steers = on_checkpoint() or []
         if steers:
-            progress("Följdfrågan stannar i sidgranskningen. Orderverktyg kördes inte.")
+            emit_progress(
+                progress,
+                ProgressEvent(
+                    step_id="page-review-steer-0",
+                    tool="page_review",
+                    label="Följdfråga mottagen",
+                    phase="steer",
+                    outcome="Följdfrågan stannar i sidgranskningen. Orderverktyg kördes inte.",
+                    legacy_text="Följdfrågan stannar i sidgranskningen. Orderverktyg kördes inte.",
+                ),
+            )
     state = handler.store.get(chat_id) or {}
     session = state.get("session") if isinstance(state, dict) else None
     context = session.get("wp_ops_context") if isinstance(session, dict) else None
@@ -60,5 +68,6 @@ def run_page_review_job(
         actor=actor,
         client=page_review_client(site_id, actor),
         on_progress=progress,
+        on_checkpoint=on_checkpoint,
     )
     return BotReply(text=outcome.text)

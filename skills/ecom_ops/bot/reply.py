@@ -123,6 +123,15 @@ def yes_no_actions(*, yes_data: str, no_data: str) -> ActionMarkup:
     )
 
 
+def proposal_confirm_actions(proposal_id: str) -> ActionMarkup:
+    """Build Ja/Nej buttons bound to a durable proposal id."""
+    pid = str(proposal_id or "").strip()
+    return yes_no_actions(
+        yes_data=f"proposal:yes:{pid}",
+        no_data=f"proposal:no:{pid}",
+    )
+
+
 def yes_no_keyboard(*, yes_data: str, no_data: str) -> dict[str, Any]:
     return actions_to_telegram_markup(
         yes_no_actions(yes_data=yes_data, no_data=no_data)

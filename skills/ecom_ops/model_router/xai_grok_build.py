@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.model_router.base import ModelRequest, ModelResult
+from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
     ModelConfigError,
@@ -131,32 +132,33 @@ def _event_files(work: Path) -> list[Path]:
     return found
 
 
-def _count_active(path: Path, state: dict[str, tuple[int, str]]) -> int:
-    """Count new streaming_reasoning or streaming_text phases.
+def _read_active_phases(path: Path, state: dict[str, tuple[int, str]]) -> list[str]:
+    """Return new active phase names from ``events.jsonl``.
 
-    Only the phase name is inspected. Prompt text is not kept.
+    Only the ``phase`` string from ``phase_changed`` events is inspected.
+    Prompt, text, and reasoning content are never read or returned.
     """
     key = str(path)
     offset, partial = state.get(key, (0, ""))
     try:
         size = path.stat().st_size
     except OSError:
-        return 0
+        return []
     if size < offset:
         offset, partial = 0, ""
     if size == offset:
-        return 0
+        return []
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             handle.seek(offset)
             chunk = handle.read()
             offset = handle.tell()
     except OSError:
-        return 0
+        return []
     text = partial + chunk
     lines = text.split("\n")
     state[key] = (offset, lines[-1][-4000:])
-    count = 0
+    phases: list[str] = []
     for line in lines[:-1]:
         row_text = line.strip()
         if not row_text:
@@ -170,8 +172,16 @@ def _count_active(path: Path, state: dict[str, tuple[int, str]]) -> int:
             and row.get("type") == "phase_changed"
             and row.get("phase") in _ACTIVE_PHASES
         ):
-            count += 1
-    return count
+            phases.append(str(row["phase"]))
+    return phases
+
+
+def _count_active(path: Path, state: dict[str, tuple[int, str]]) -> int:
+    """Count new streaming_reasoning or streaming_text phases.
+
+    Only the phase name is inspected. Prompt text is not kept.
+    """
+    return len(_read_active_phases(path, state))
 
 
 def spawn_grok(
@@ -336,22 +346,88 @@ class XaiGrokBuildRoute:
         command: list[str],
         work: str,
         request: ModelRequest,
+        *,
+        model: str | None = None,
     ) -> str:
         idle = request.timeout if request.timeout and request.timeout > 0 else 30
         hard = _hard_limit(idle, request.hard_timeout)
+        chosen_model = model or (
+            command[command.index("--model") + 1]
+            if "--model" in command and command.index("--model") + 1 < len(command)
+            else (request.model or self._model())
+        )
         started = _now()
         deadline = started + idle
         hard_at = started + hard
         phase_state: dict[str, tuple[int, str]] = {}
+        phase_lock = threading.Lock()
+        current_phase = "waiting"
+
+        def _emit_if_changed(new_phase: str, payload: dict[str, Any]) -> None:
+            nonlocal current_phase
+            with phase_lock:
+                if current_phase == new_phase:
+                    return
+                current_phase = new_phase
+            _emit_phase(request, payload)
+
+        _emit_phase(
+            request,
+            {
+                "phase": "waiting",
+                "route_id": self.route_id,
+                "model": chosen_model,
+                "hard_timeout": hard,
+            },
+        )
+        on_delta = request.on_text_delta
+        if request.on_phase_change is not None:
+            orig_delta = request.on_text_delta
+
+            def _wrapped_delta(chunk: str) -> None:
+                _emit_if_changed(
+                    "streaming",
+                    {
+                        "phase": "streaming",
+                        "route_id": self.route_id,
+                        "model": chosen_model,
+                    },
+                )
+                if orig_delta is not None:
+                    orig_delta(chunk)
+
+            on_delta = _wrapped_delta
+
         try:
-            process = spawn_grok(command, work, request.on_text_delta)
+            process = spawn_grok(command, work, on_delta)
         except FileNotFoundError as exc:
             raise ModelConfigError("Grok Build CLI binary was not found") from exc
         while True:
             code = process.poll()
             active = 0
             for events in _event_files(Path(work)):
-                active += _count_active(events, phase_state)
+                phases = _read_active_phases(events, phase_state)
+                active += len(phases)
+                for phase_name in phases:
+                    if phase_name == "streaming_reasoning":
+                        _emit_if_changed(
+                            "reasoning",
+                            {
+                                "phase": "reasoning",
+                                "route_id": self.route_id,
+                                "model": chosen_model,
+                                "hard_timeout": hard,
+                            },
+                        )
+                    elif phase_name == "streaming_text":
+                        _emit_if_changed(
+                            "streaming",
+                            {
+                                "phase": "streaming",
+                                "route_id": self.route_id,
+                                "model": chosen_model,
+                            },
+                        )
             if active:
                 # Still reasoning or writing the answer: grant another idle window.
                 deadline = min(_now() + idle, hard_at)
@@ -421,12 +497,20 @@ class XaiGrokBuildRoute:
             for index, chosen in enumerate(candidates):
                 command = self._grok_command(binary, chosen, prompt_path, effort)
                 try:
-                    content = self._run_cli(command, work, request)
+                    content = self._run_cli(command, work, request, model=chosen)
                     served = chosen
                     break
                 except ModelUnavailableError as exc:
                     unknown = bool(getattr(exc, "unknown_model", False))
                     if unknown and index == 0 and len(candidates) > 1:
+                        _emit_phase(
+                            request,
+                            {
+                                "phase": "model_fallback",
+                                "from_model": chosen,
+                                "to_model": candidates[index + 1],
+                            },
+                        )
                         continue
                     raise
 

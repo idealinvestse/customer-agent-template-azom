@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.bot.progress_events import ProgressCallback, ProgressEvent, emit_progress
 from ecom_ops.wp_ops.page_review import (
     ReviewContext,
     prepare_context,
@@ -49,6 +50,16 @@ _STEPS = {
     "wp_page_review_sources": step_sources,
     "wp_page_review_preview": step_preview,
 }
+_STEP_LABELS = {
+    "wp_page_review_home": "Startsida & mallhierarki",
+    "wp_page_review_content": "Editor- & databasinnehåll",
+    "wp_page_review_sources": "Källkodsanalys (tema/plugins)",
+    "wp_page_review_preview": "Browser-preview",
+}
+_FAILED_REASONS = frozenset(
+    {"actor_denied", "unknown_site", "rest_failed", "transport_failed"}
+)
+_STEER_NOTICE = "Följdfrågan stannar i sidgranskningen. Orderverktyg kördes inte."
 
 
 @dataclass
@@ -97,7 +108,8 @@ def run_bounded_page_review_loop(
     transport: Any = None,
     registry_path: Path | None = None,
     data_dir: Path | None = None,
-    on_progress: Callable[[str], None] | None = None,
+    on_progress: ProgressCallback | None = None,
+    on_checkpoint: Callable[[], list[str]] | None = None,
     attempted: list[tuple[str, dict[str, Any]]] | None = None,
     clock: Callable[[], float] | None = None,
     max_calls: int = PAGE_REVIEW_MAX_CALLS,
@@ -120,7 +132,40 @@ def run_bounded_page_review_loop(
         refused.append(_refuse_attempt(str(name), arguments, ctx))
     steps: list[dict[str, Any]] = []
     calls = 0
-    for name in PAGE_REVIEW_TOOLS:
+    steer_events = 0
+    step_total = len(PAGE_REVIEW_TOOLS)
+    for step_index, name in enumerate(PAGE_REVIEW_TOOLS, start=1):
+        if on_checkpoint is not None:
+            steers = on_checkpoint() or []
+            if steers:
+                steer_events += 1
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=f"page-review-steer-{steer_events}",
+                        tool="page_review",
+                        label="Följdfråga mottagen",
+                        phase="steer",
+                        detail=ctx.site_id or site_id or None,
+                        outcome=_STEER_NOTICE,
+                        legacy_text=_STEER_NOTICE,
+                    ),
+                )
+        step_id = f"page-review-{step_index}-{name}"
+        target_site = ctx.site_id or site_id or None
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=_STEP_LABELS.get(name, name),
+                phase="started",
+                step_index=step_index,
+                step_total=step_total,
+                detail=target_site,
+            ),
+        )
+        step_started = time.monotonic()
         if calls >= max_calls or now() - started > max_seconds:
             reason = "call_budget" if calls >= max_calls else "time_budget"
             row = {
@@ -147,9 +192,17 @@ def run_bounded_page_review_loop(
         else:
             row = _STEPS[name](ctx)
             calls += 1
+        elapsed_ms = int((time.monotonic() - step_started) * 1000)
         row["site_id"] = ctx.site_id or site_id
         steps.append(row)
-        _report(on_progress, row)
+        _report(
+            on_progress,
+            row,
+            step_id=step_id,
+            step_index=step_index,
+            step_total=step_total,
+            elapsed_ms=elapsed_ms,
+        )
     text = _format(ctx.site_id or site_id, steps)
     return PageReviewOutcome(
         text=text,
@@ -171,20 +224,98 @@ def _refuse_attempt(name: str, arguments: dict[str, Any], ctx: ReviewContext) ->
     return _refused(name, reason="task_owns_the_call")
 
 
-def _report(on_progress: Callable[[str], None] | None, row: dict[str, Any]) -> None:
+def _step_outcome(row: dict[str, Any]) -> tuple[str, str, str | None, str | None]:
+    """Return ``(phase, outcome, provenance, error_class)`` for a completed review step."""
+    tool = str(row.get("tool") or "")
+    status = str(row.get("status") or "")
+    availability = str(row.get("availability") or "")
+    reason = str(row.get("reason") or "")
+    if status == "read":
+        if tool == "wp_page_review_home":
+            mode = str(row.get("homepage_mode") or "")
+            if mode == "static_page":
+                return "completed", "statisk startsida läst", None, None
+            if mode == "latest_posts":
+                return "completed", "senaste inlägg läst", None, None
+            return "completed", "startsida & mallhierarki läst", None, None
+        if tool == "wp_page_review_content":
+            db = row.get("database")
+            if isinstance(db, dict) and db.get("editor_raw_present"):
+                return "completed", "editorinnehåll läst", None, None
+            return "completed", "databasmetadata läst", None, None
+        if tool == "wp_page_review_sources":
+            inv = row.get("source_inventory")
+            findings = row.get("findings")
+            if isinstance(inv, list):
+                n_findings = len(findings) if isinstance(findings, list) else 0
+                return "completed", f"{len(inv)} källfiler, {n_findings} fynd", None, None
+            return "completed", "källfiler lästa", None, None
+        return "completed", "renderad DOM läst", "preview", None
+
+    if status == "not_run":
+        phase = "failed" if reason in _FAILED_REASONS else "skipped"
+        err_cls = reason if phase == "failed" else None
+        prov = "unavailable" if availability in {"", "unavailable", "not_bound"} else None
+        reason_labels = {
+            "not_bound": "ej kopplad till REST (not_bound)",
+            "browser_unavailable": "ej tillgänglig (not_run/unavailable)",
+            "call_budget": "anropsgräns nådd",
+            "time_budget": "tidsgräns nådd",
+            "actor_denied": "behörighet saknas",
+            "unknown_site": "okänd sajt",
+            "site_unselected": "ingen sajt vald",
+            "settings_incomplete": "startsideinställning saknas",
+        }
+        outcome = reason_labels.get(
+            reason,
+            "ej tillgänglig (not_run/unavailable)"
+            if tool == "wp_page_review_preview"
+            else f"ej körd ({reason or availability or 'unavailable'})",
+        )
+        return phase, outcome, prov, err_cls
+
+    err_cls = reason or status or "step_failed"
+    return "failed", f"misslyckades ({err_cls})", None, err_cls
+
+
+def _report(
+    on_progress: ProgressCallback | None,
+    row: dict[str, Any],
+    *,
+    step_id: str | None = None,
+    step_index: int | None = None,
+    step_total: int | None = None,
+    elapsed_ms: int | None = None,
+) -> None:
     if on_progress is None:
         return
+    tool = str(row.get("tool") or "")
+    site_id = str(row.get("site_id") or "")
     status = str(row.get("status") or "")
     availability = str(row.get("availability") or "")
     if status == "not_run":
         tail = "not_run/unavailable" if availability in {"", "unavailable"} else f"not_run/{availability}"
     else:
         tail = str(row.get("detail") or status)
-    line = " ".join(part for part in (str(row.get("tool") or ""), str(row.get("site_id") or ""), tail) if part)
-    try:
-        on_progress(line[:180])
-    except Exception:
-        return
+    legacy_line = " ".join(part for part in (tool, site_id, tail) if part)[:180]
+    phase, outcome, provenance, error_class = _step_outcome(row)
+    emit_progress(
+        on_progress,
+        ProgressEvent(
+            step_id=step_id or f"page-review-{tool}",
+            tool=tool or "page_review",
+            label=_STEP_LABELS.get(tool, tool or "Sidgranskning"),
+            phase=phase,
+            step_index=step_index,
+            step_total=step_total,
+            elapsed_ms=elapsed_ms,
+            provenance=provenance,
+            detail=site_id or None,
+            outcome=outcome,
+            error_class=error_class,
+            legacy_text=legacy_line,
+        ),
+    )
 
 
 def _layers(steps: list[dict[str, Any]]) -> dict[str, Any]:

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.audit import log_action
+from ecom_ops.bot.progress_events import ProgressCallback, ProgressEvent, emit_progress
 from ecom_ops.rbac import resolve_actor
 from ecom_ops.wp_ops.file_changes import FILE_TOOL_NAMES, rest_reads_allowed
 from ecom_ops.wp_ops.service import WpOpsResult, WpOpsService
@@ -1054,6 +1055,135 @@ class WpAgentTools:
         return [row for row in rows if isinstance(row, dict) and _valid_plan(row)]
 
 
+_WP_TOOL_LABELS: dict[str, str] = {
+    "wp_list_sites": "Lista WordPress-sajter",
+    "wp_site_status": "Kontrollera sajtstatus",
+    "wp_backup_status": "Kontrollera backupstatus",
+    "wp_security_findings": "Säkerhetsöversikt",
+    "wp_prepare_update_plan": "Förbered uppdateringsplan",
+    "wp_prepare_restore_plan": "Förbered återställningsplan",
+    "wp_list_open_operations": "Lista öppna driftärenden",
+    "wp_read_theme_plugin_file": "Läs tema-/pluginfil",
+    "wp_component_context": "Hämta komponentkontext",
+    "wp_list_component_tree": "Lista katalogstruktur",
+    "wp_search_component": "Sök i komponent",
+    "wp_propose_file_diff": "Skapa filändringsplan",
+    "wp_propose_new_file": "Skapa ny-fil-plan",
+    "wp_validate_plan": "Validera filplan",
+    "wp_apply_staging": "Förhandsgranska staging-applicering",
+    "wp_request_production": "Begär produktionsgranskning",
+    "wp_deploy_production": "Produktionsdeploy (spärrad)",
+    "wp_verify_change": "Verifiera filändring",
+    "wp_rollback_file": "Återställ fil (spärrad)",
+    "wp_open_review_workspace": "Öppna granskningsyta",
+}
+
+
+def _safe_tool_detail(
+    name: str,
+    arguments: dict[str, Any],
+    site_id: str | None,
+) -> str | None:
+    """Build a safe status detail (site_id + validated relative path). Never files_root or code."""
+    parts: list[str] = []
+    raw_site = arguments.get("site_id") if isinstance(arguments.get("site_id"), str) else site_id
+    if isinstance(raw_site, str) and _SITE_ID.fullmatch(raw_site):
+        parts.append(raw_site)
+    if name in FILE_TOOL_NAMES or name == "wp_read_theme_plugin_file":
+        raw_path = arguments.get("path")
+        if isinstance(raw_path, str) and _FILE_PATH.fullmatch(raw_path):
+            parts.append(raw_path[:60])
+        else:
+            kind = arguments.get("kind")
+            slug = arguments.get("slug")
+            if (
+                kind in {"theme", "plugin"}
+                and isinstance(slug, str)
+                and re.fullmatch(r"^[a-z0-9][a-z0-9-]{0,60}$", slug)
+            ):
+                parts.append(f"{kind}/{slug}")
+    return " · ".join(parts) if parts else None
+
+
+def _safe_tool_outcome(
+    name: str,
+    data: dict[str, Any],
+    *,
+    reads: int | None = None,
+) -> str:
+    """Summarize a tool result in safe Swedish without source excerpts or secrets."""
+    if not isinstance(data, dict):
+        return "resultat mottaget"
+    if data.get("ok") is not True:
+        return _error_class(data.get("error_class")) or "ToolFailed"
+    if name == "wp_list_sites":
+        sites = data.get("sites")
+        if isinstance(sites, list):
+            return f"{len(sites)} sajter"
+        return "sajter listade"
+    if name == "wp_site_status":
+        st = _short(data.get("status"), 24) or "ok"
+        incidents = data.get("open_incidents")
+        if isinstance(incidents, int):
+            return f"status: {st}, {incidents} öppna driftärenden"
+        return f"status: {st}"
+    if name == "wp_backup_status":
+        backups = data.get("backups")
+        if isinstance(backups, list):
+            return f"{len(backups)} backups"
+        return "backupstatus läst"
+    if name == "wp_security_findings":
+        if data.get("coverage") == "not_configured":
+            return "ingen skanner konfigurerad"
+        return f"status: {_short(data.get('status'), 24) or 'unknown'}"
+    if name in {"wp_prepare_update_plan", "wp_prepare_restore_plan"}:
+        plan = data.get("plan")
+        pid = _short(plan.get("plan_id"), 32) if isinstance(plan, dict) else ""
+        return f"förhandsgranskning {pid} (ej körbar)" if pid else "låst förhandsgranskning"
+    if name == "wp_list_open_operations":
+        ops = data.get("operations")
+        if isinstance(ops, list):
+            return f"{len(ops)} öppna driftärenden"
+        return "driftärenden listade"
+    if name == "wp_read_theme_plugin_file":
+        base = f"läsning {reads}/{FILE_LOOP_MAX_READS}" if reads is not None else "fil läst"
+        if data.get("truncated") is True:
+            base += " (avkortad)"
+        return base
+    if name == "wp_component_context":
+        wp = _short(data.get("wordpress_version"), 16)
+        php = _short(data.get("php_version"), 16)
+        bits = [bit for bit in (f"WP {wp}" if wp else "", f"PHP {php}" if php else "") if bit]
+        return " · ".join(bits) if bits else "kontext hämtad"
+    if name == "wp_list_component_tree":
+        entries = data.get("entries")
+        if isinstance(entries, list):
+            suffix = " (avkortad)" if data.get("truncated") is True else ""
+            return f"{len(entries)} katalogposter{suffix}"
+        return "katalog listad"
+    if name == "wp_search_component":
+        hits = data.get("hits")
+        if isinstance(hits, list):
+            suffix = " (avkortad)" if data.get("truncated") is True else ""
+            return f"{len(hits)} sökträffar{suffix}"
+        return "sökning klar"
+    if name in {"wp_propose_file_diff", "wp_propose_new_file"}:
+        plan = data.get("plan")
+        pid = _short(data.get("plan_id") or (plan.get("plan_id") if isinstance(plan, dict) else ""), 32)
+        return f"plan {pid} skapad" if pid else "filplan skapad"
+    if name == "wp_validate_plan":
+        st = _short(data.get("status"), 24) or "validerad"
+        return f"validering: {st}"
+    if name == "wp_apply_staging":
+        pid = _short(data.get("plan_id"), 32)
+        return f"staging-förhandsvisning {pid}" if pid else "staging-förhandsvisning"
+    if name == "wp_open_review_workspace":
+        pid = _short(data.get("plan_id"), 32)
+        return f"granskningsyta {pid}" if pid else "granskningsyta öppnad"
+    st = _short(data.get("status"), 24)
+    return f"status: {st}" if st else "resultat mottaget"
+
+
 def run_bounded_wp_tool_loop(
     initial_content: str,
     messages: list[dict[str, str]],
@@ -1066,6 +1196,7 @@ def run_bounded_wp_tool_loop(
     tools: WpAgentTools | None = None,
     wp_intent: bool,
     on_tool_status: Callable[[str, str], None] | None = None,
+    on_progress: ProgressCallback | None = None,
     before_tool: Callable[[], list[str]] | None = None,
 ) -> ToolLoopResult:
     """Execute at most three exact named tool calls, with bounded results."""
@@ -1092,17 +1223,15 @@ def run_bounded_wp_tool_loop(
                 pass
 
     while "<tool_call>" in next_content.lower():
-        if before_tool and steer_count < 3:
-            try:
-                steers = before_tool() or []
-            except Exception:
-                raise
-            if steers:
-                steer_count += len(steers)
+        if before_tool:
+            steers = before_tool() or []
+            if steers and steer_count < 3:
+                accepted = steers[: max(0, 3 - steer_count)]
+                steer_count += len(accepted)
                 messages.append({"role": "assistant", "content": next_content[:4000]})
                 messages.extend(
                     {"role": "user", "content": str(text)[:8000]}
-                    for text in steers[:3]
+                    for text in accepted
                 )
                 try:
                     next_content, cost = complete(messages)
@@ -1142,7 +1271,24 @@ def run_bounded_wp_tool_loop(
             except Exception:
                 return ToolLoopResult(True, _format_results_sv(results, "Verktygsgränsen är nådd."), tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost, True)
 
+        step_num = calls + 1
+        step_id = f"wp-{step_num}-{name}"
+        tool_label = _WP_TOOL_LABELS.get(name, name)
+        start_detail = _safe_tool_detail(name, arguments, site_id)
         report_tool_status(name, "started")
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=tool_label,
+                phase="started",
+                step_index=step_num,
+                step_total=WP_TOOL_MAX_CALLS,
+                detail=start_detail,
+            ),
+        )
+        elapsed = 0.0
         try:
             resolve_actor(actor)
         except Exception:
@@ -1168,6 +1314,22 @@ def run_bounded_wp_tool_loop(
                 output = ToolOutput(_error("ToolTimeBudgetExceeded"), site_id=site_id)
                 results.append(output.data)
                 report_tool_status(name, "failed")
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool=name,
+                        label=tool_label,
+                        phase="failed",
+                        step_index=step_num,
+                        step_total=WP_TOOL_MAX_CALLS,
+                        elapsed_ms=int(elapsed * 1000),
+                        provenance="mock",
+                        detail=start_detail,
+                        outcome="ToolTimeBudgetExceeded",
+                        error_class="ToolTimeBudgetExceeded",
+                    ),
+                )
                 return ToolLoopResult(True, _format_results_sv(results, "Tidsgränsen för WordPress-verktyg nåddes."), tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost)
 
         encoded = json.dumps(output.data, ensure_ascii=False, separators=(",", ":"))
@@ -1186,7 +1348,27 @@ def run_bounded_wp_tool_loop(
             site_id = output.site_id
         if output.operation_ids:
             operation_ids = list(output.operation_ids[:20])
-        report_tool_status(name, "result" if output.data.get("ok") is True else "failed")
+        ok = output.data.get("ok") is True
+        err_cls = None if ok else (_error_class(output.data.get("error_class")) or "ToolFailed")
+        done_detail = _safe_tool_detail(name, arguments, output.site_id or site_id)
+        provenance = "live" if bool((output.data or {}).get("live_calls")) else "mock"
+        report_tool_status(name, "result" if ok else "failed")
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=tool_label,
+                phase="completed" if ok else "failed",
+                step_index=step_num,
+                step_total=WP_TOOL_MAX_CALLS,
+                elapsed_ms=int(elapsed * 1000),
+                provenance=provenance,
+                detail=done_detail,
+                outcome=_safe_tool_outcome(name, output.data),
+                error_class=err_cls,
+            ),
+        )
 
         messages.append({"role": "assistant", "content": next_content[:4000]})
         if name == "wp_read_theme_plugin_file":
@@ -1333,6 +1515,7 @@ def run_bounded_file_tool_loop(
     context: dict[str, Any] | None = None,
     tools: WpAgentTools | None = None,
     on_tool_status: Callable[[str, str], None] | None = None,
+    on_progress: ProgressCallback | None = None,
     before_tool: Callable[[], list[str]] | None = None,
 ) -> ToolLoopResult:
     """Run file tools outside the drift loop. The model never receives a write."""
@@ -1363,15 +1546,13 @@ def run_bounded_file_tool_loop(
             return
 
     while "<tool_call>" in next_content.lower():
-        if before_tool and steer_count < 3:
-            try:
-                steers = before_tool() or []
-            except Exception:
-                raise
-            if steers:
-                steer_count += len(steers)
+        if before_tool:
+            steers = before_tool() or []
+            if steers and steer_count < 3:
+                accepted = steers[: max(0, 3 - steer_count)]
+                steer_count += len(accepted)
                 messages.append({"role": "assistant", "content": next_content[:4000]})
-                messages.extend({"role": "user", "content": str(text)[:8000]} for text in steers[:3])
+                messages.extend({"role": "user", "content": str(text)[:8000]} for text in accepted)
                 try:
                     next_content, cost = complete(messages)
                     followup_cost += float(cost or 0.0)
@@ -1432,8 +1613,26 @@ def run_bounded_file_tool_loop(
                 False,
                 stage_plan_id,
             )
-        detail = _file_status_detail(arguments, site_id if isinstance(site_id, str) else None)
+        step_num = calls + 1
+        step_id = f"wp-file-{step_num}-{name}"
+        tool_label = _WP_TOOL_LABELS.get(name, name)
+        safe_site = site_id if isinstance(site_id, str) else None
+        start_detail = _safe_tool_detail(name, arguments, safe_site)
+        detail = _file_status_detail(arguments, safe_site)
         report(name, f"started|{detail}" if detail else "started")
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=tool_label,
+                phase="started",
+                step_index=step_num,
+                step_total=FILE_LOOP_MAX_CALLS,
+                detail=start_detail,
+            ),
+        )
+        elapsed = 0.0
         try:
             resolve_actor(actor)
         except Exception:
@@ -1445,22 +1644,39 @@ def run_bounded_file_tool_loop(
                     name,
                     arguments,
                     actor=actor,
-                    sticky_site_id=site_id if isinstance(site_id, str) else None,
+                    sticky_site_id=safe_site,
                     channel=channel,
                     conversation_id=conversation_id,
                 )
             except Exception:
                 output = ToolOutput(_error("ToolFailed"))
-            tool_seconds += time.monotonic() - started
+            elapsed = time.monotonic() - started
+            tool_seconds += elapsed
             calls += 1
             if name == "wp_read_theme_plugin_file":
                 reads += 1
             if name == "wp_search_component":
                 searches += 1
             if tool_seconds > FILE_LOOP_MAX_SECONDS:
-                output = ToolOutput(_error("ToolTimeBudgetExceeded"), site_id=site_id if isinstance(site_id, str) else None)
+                output = ToolOutput(_error("ToolTimeBudgetExceeded"), site_id=safe_site)
                 results.append(output.data)
                 report(name, "failed")
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool=name,
+                        label=tool_label,
+                        phase="failed",
+                        step_index=step_num,
+                        step_total=FILE_LOOP_MAX_CALLS,
+                        elapsed_ms=int(elapsed * 1000),
+                        provenance="mock",
+                        detail=start_detail,
+                        outcome="ToolTimeBudgetExceeded",
+                        error_class="ToolTimeBudgetExceeded",
+                    ),
+                )
                 return ToolLoopResult(
                     True,
                     _format_file_results_sv(results, "Tidsgränsen för filverktyg nåddes. Ingen fil ändrades."),
@@ -1480,7 +1696,7 @@ def run_bounded_file_tool_loop(
             encoded = json.dumps(output.data, separators=(",", ":"))
             size = len(encoded.encode("utf-8"))
         if total_bytes + size > FILE_LOOP_MAX_TOTAL_BYTES:
-            output = ToolOutput(_error("ToolResultBudgetExceeded"), site_id=site_id if isinstance(site_id, str) else None)
+            output = ToolOutput(_error("ToolResultBudgetExceeded"), site_id=safe_site)
             encoded = json.dumps(output.data, separators=(",", ":"))
             size = len(encoded.encode("utf-8"))
         total_bytes += size
@@ -1490,7 +1706,32 @@ def run_bounded_file_tool_loop(
             stage_plan_id = chosen
         if output.site_id:
             site_id = output.site_id
-        report(name, "result" if output.data.get("ok") is True else "failed")
+        ok = output.data.get("ok") is True
+        err_cls = None if ok else (_error_class(output.data.get("error_class")) or "ToolFailed")
+        done_site = output.site_id or (site_id if isinstance(site_id, str) else None)
+        done_detail = _safe_tool_detail(name, arguments, done_site)
+        provenance = "live" if bool((output.data or {}).get("live_calls")) else "mock"
+        report(name, "result" if ok else "failed")
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=tool_label,
+                phase="completed" if ok else "failed",
+                step_index=step_num,
+                step_total=FILE_LOOP_MAX_CALLS,
+                elapsed_ms=int(elapsed * 1000),
+                provenance=provenance,
+                detail=done_detail,
+                outcome=_safe_tool_outcome(
+                    name,
+                    output.data,
+                    reads=reads if name == "wp_read_theme_plugin_file" else None,
+                ),
+                error_class=err_cls,
+            ),
+        )
         messages.append({"role": "assistant", "content": next_content[:4000]})
         messages.append(
             {

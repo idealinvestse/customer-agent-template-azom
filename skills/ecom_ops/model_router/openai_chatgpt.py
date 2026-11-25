@@ -25,6 +25,7 @@ from urllib.parse import unquote, urlencode
 import requests
 
 from ecom_ops.model_router.base import ModelRequest, ModelResult
+from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
     ModelConfigError,
@@ -575,11 +576,14 @@ class OpenAIChatGPTOAuthRoute:
         self,
         response: requests.Response,
         on_text_delta=None,
+        *,
+        on_first_delta=None,
     ) -> tuple[str, dict[str, Any]]:
         parts: list[str] = []
         done_text = ""
         completed_text = ""
         usage: dict[str, Any] = {}
+        saw_delta = False
         try:
             for line in response.iter_lines(decode_unicode=True):
                 if not line or not str(line).startswith("data:"):
@@ -597,6 +601,13 @@ class OpenAIChatGPTOAuthRoute:
                 if event_type == "response.output_text.delta":
                     delta = event.get("delta")
                     if isinstance(delta, str):
+                        if not saw_delta:
+                            saw_delta = True
+                            if on_first_delta:
+                                try:
+                                    on_first_delta()
+                                except Exception:
+                                    pass
                         parts.append(delta)
                         if on_text_delta:
                             try:
@@ -628,12 +639,20 @@ class OpenAIChatGPTOAuthRoute:
             raise ModelConfigError("ChatGPT OAuth configuration is incomplete")
         model = request.model or _env("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL
         payload = build_responses_payload(request, model)
+        _emit_phase(
+            request,
+            {"phase": "waiting", "route_id": self.route_id, "model": model},
+        )
         access_token = self._ensure_access_token()
         used = self.store.load()
         rejected_generation = used.generation if used else -1
         response = self._post_responses(access_token, payload, request.timeout)
         if response.status_code == 401:
             response.close()
+            _emit_phase(
+                request,
+                {"phase": "oauth_refresh", "route_id": self.route_id},
+            )
             refreshed = self._refresh_session(rejected_generation=rejected_generation)
             response = self._post_responses(refreshed.access_token, payload, request.timeout)
             if response.status_code == 401:
@@ -650,7 +669,21 @@ class OpenAIChatGPTOAuthRoute:
             response.close()
             raise ModelUnavailableError(f"ChatGPT Responses request rejected ({status})")
 
-        content, usage = self._read_sse(response, request.on_text_delta)
+        on_first_delta = (
+            (
+                lambda: _emit_phase(
+                    request,
+                    {"phase": "streaming", "route_id": self.route_id, "model": model},
+                )
+            )
+            if request.on_phase_change is not None
+            else None
+        )
+        content, usage = self._read_sse(
+            response,
+            request.on_text_delta,
+            on_first_delta=on_first_delta,
+        )
         if not content:
             raise ModelUnavailableError("ChatGPT Responses returned no content")
         prompt_tokens, completion_tokens, total_tokens = _usage_ints(usage)

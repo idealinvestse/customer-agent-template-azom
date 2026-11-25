@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import inspect
 import os
 import re
 import signal
@@ -10,16 +10,30 @@ import sys
 import threading
 import time
 import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
+from typing import Any
 
 from ecom_ops.bot.chat_agent import ChatCancelled
 from ecom_ops.bot.handlers import BotHandler
 from ecom_ops.bot.job_store import JOB_LEASE_SECONDS, TelegramJobStore
 from ecom_ops.bot.openclaw_commands import TELEGRAM_MENU_COMMANDS
+from ecom_ops.bot.progress_events import (
+    LiveStatusBoard,
+    ProgressEvent,
+    format_progress_line,
+    mark_event_consumer,
+    sanitize_status_fragment,
+    utf16_length,
+)
 from ecom_ops.bot.reply import BotReply, as_reply, telegram_markup_to_actions
 from ecom_ops.bot.store import TelegramConversationStore
+from ecom_ops.bot.telegram_transport import (
+    PerChatRateLimiter,
+    TelegramApiError,
+    call_telegram_api,
+    is_missing_message_error,
+    telegram_api_post,
+)
 
 _ACTION_MESSAGE = re.compile(
     r"^/cases\s+(?:approve|send|close|regenerate|regen|redraft)\b", re.I
@@ -28,20 +42,35 @@ _ACTION_CALLBACK = re.compile(
     r"^(?:cases:approve:[0-9a-f]{8}|cases:regen:[0-9a-f]{8}|"
     r"order:set:\d{1,12}:[a-z][a-z-]{0,31}|"
     r"product:desc:(?:0|[1-9]\d{0,11}):[01]|action:yes|escalate:yes|"
-    r"wpfile:stage:fe-[a-f0-9]{12})$",
+    r"wpfile:stage:fe-[a-f0-9]{12}|proposal:yes:pr-[0-9a-f]{12})$",
     re.I,
 )
+_PROPOSAL_CALLBACK = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
+
+_DEFAULT_RATE_LIMITER = PerChatRateLimiter()
+
+
+def _valid_message_id(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def _call_supported(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Invoke ``fn`` with only the keyword arguments accepted by its signature."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return fn(*args, **kwargs)
+    params = sig.parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return fn(*args, **kwargs)
+    supported = {k: v for k, v in kwargs.items() if k in params}
+    return fn(*args, **supported)
 
 
 def _api(token: str, method: str, **params: object) -> dict:
-    request_timeout = params.pop("_http_timeout", 60)
-    api_base = f"https://api.telegram.org/bot{token}"
-    data = urllib.parse.urlencode(
-        {k: (json.dumps(v) if isinstance(v, (list, dict)) else v) for k, v in params.items()}
-    ).encode()
-    req = urllib.request.Request(f"{api_base}/{method}", data=data, method="POST")
-    with urllib.request.urlopen(req, timeout=float(request_timeout)) as resp:
-        return json.loads(resp.read().decode())
+    return telegram_api_post(token, method, **params)
 
 
 def _register_commands(token: str) -> None:
@@ -49,6 +78,8 @@ def _register_commands(token: str) -> None:
         commands = [
             *TELEGRAM_MENU_COMMANDS,
             {"command": "jobs", "description": "Telegram background jobs"},
+            {"command": "steer", "description": "Steer a running task"},
+            {"command": "task", "description": "Start a parallel task"},
             {"command": "cancel", "description": "Cancel a background job"},
             {"command": "reconcile", "description": "Oscar: reconcile uncertain action"},
         ]
@@ -58,22 +89,32 @@ def _register_commands(token: str) -> None:
         print(f"setMyCommands skipped ({type(exc).__name__})", file=sys.stderr)
 
 
-def _send_reply(token: str, chat_id: object, reply: BotReply) -> None:
+def _send_reply(
+    token: str,
+    chat_id: object,
+    reply: BotReply,
+    *,
+    reply_to_message_id: int | None = None,
+) -> None:
     chunks = _telegram_safe_chunks(reply.text)
+    reply_to = _valid_message_id(reply_to_message_id)
     for i, part in enumerate(chunks):
         params: dict[str, object] = {
             "chat_id": chat_id,
             "text": part or "(tomt svar)",
             "_http_timeout": 10,
         }
+        if i == 0 and reply_to is not None:
+            params["reply_to_message_id"] = reply_to
+            params["allow_sending_without_reply"] = True
         # Attach keyboard only on the last chunk
         if reply.reply_markup and i == len(chunks) - 1:
             params["reply_markup"] = reply.reply_markup
-        _api(token, "sendMessage", **params)
+        call_telegram_api(_api, token, "sendMessage", **params)
 
 
 def _utf16_length(text: str) -> int:
-    return sum(2 if ord(char) > 0xFFFF else 1 for char in text)
+    return utf16_length(text)
 
 
 def _take_telegram_chunk(text: str, limit: int) -> tuple[str, str]:
@@ -115,6 +156,7 @@ class _LiveTelegramTurn:
     _EDIT_INTERVAL = 0.75
     _CHUNK_LIMIT = 3900
     _STATUS_CLIP = 420
+    _PARALLEL_STREAM_SUFFIX = "\n\n⏳ (fortsättning levereras när svaret är klart…)"
 
     def __init__(
         self,
@@ -125,17 +167,41 @@ class _LiveTelegramTurn:
         job_id: str | None = None,
         status_message_id: int | None = None,
         answer_message_ids: list[int] | None = None,
+        task_id: str | None = None,
+        kind: str = "read_turn",
+        title: str | None = None,
+        reply_to_message_id: int | None = None,
+        rate_limiter: PerChatRateLimiter | None = None,
+        heartbeat_interval: float = 8.0,
     ) -> None:
         self.token = token
         self.chat_id = chat_id
         self.job_store = job_store
         self.job_id = job_id
+        self.task_id = task_id
+        self.kind = kind or "read_turn"
+        self.title = title
+        self.reply_to_message_id = _valid_message_id(reply_to_message_id)
+        self.rate_limiter = (
+            rate_limiter if rate_limiter is not None else _DEFAULT_RATE_LIMITER
+        )
+        self.heartbeat_interval = float(heartbeat_interval)
         self.lock = threading.RLock()
         self.started_at = time.monotonic()
         self.finished = False
+        self.on_progress_accepts_event = True
+        self.board = LiveStatusBoard(
+            job_id=job_id,
+            task_id=task_id,
+            kind=self.kind,
+            title=title,
+            started_at=self.started_at,
+        )
         self.status_lines = ["⏳ Tar hand om din fråga…"]
         self.status_message_id = status_message_id
         self.last_status_edit = 0.0
+        self._last_rendered_status = ""
+        self._route_switch_reported = False
         self.stream_text = ""
         self.stream_chunks: list[str] = []
         self.stream_current = ""
@@ -143,6 +209,8 @@ class _LiveTelegramTurn:
         self.answer_chunk_texts: list[str] = [""] * len(self.answer_message_ids)
         self.last_answer_edit = 0.0
         self.last_answer_length = 0
+        self._flush_timer: threading.Timer | None = None
+        self._heartbeat_timer: threading.Timer | None = None
         self.timer = threading.Timer(self._STATUS_DELAY, self._show_initial_status)
         self.timer.daemon = True
         self.timer.start()
@@ -155,23 +223,51 @@ class _LiveTelegramTurn:
 
     def _safe_api(self, method: str, **params: object) -> dict:
         try:
-            result = _api(
+            result = call_telegram_api(
+                _api,
                 self.token,
                 method,
                 _http_timeout=4,
                 **params,
             )
+        except TelegramApiError as exc:
+            if exc.status_code == 429 and exc.retry_after:
+                self.rate_limiter.record_retry_after(self.chat_id, exc.retry_after)
+            if method == "editMessageText" and is_missing_message_error(
+                exc.status_code, exc.description
+            ):
+                return {"ok": False, "missing_message": True}
+            return {}
         except Exception:
             return {}
+
         if isinstance(result, dict) and result.get("ok"):
             return result
-        description = str(result.get("description") or "").lower() if isinstance(result, dict) else ""
-        if "message is not modified" in description:
-            return {"ok": True, "result": {}}
+        if isinstance(result, dict):
+            raw_code = result.get("error_code")
+            code = (
+                int(raw_code)
+                if isinstance(raw_code, int) and not isinstance(raw_code, bool)
+                else None
+            )
+            description = str(result.get("description") or "")
+            if code == 429:
+                parameters = result.get("parameters")
+                retry_after = (
+                    parameters.get("retry_after")
+                    if isinstance(parameters, dict)
+                    else None
+                )
+                if isinstance(retry_after, (int, float)) and retry_after > 0:
+                    self.rate_limiter.record_retry_after(self.chat_id, float(retry_after))
+            if method == "editMessageText" and is_missing_message_error(
+                code if code is not None else 400, description
+            ):
+                return {"ok": False, "missing_message": True}
         return {}
 
     def _status_text(self) -> str:
-        return "\n".join(self.status_lines[-10:])[:4200]
+        return self.board.render()
 
     def _persist_ids(self) -> None:
         if self.job_store and self.job_id:
@@ -184,35 +280,141 @@ class _LiveTelegramTurn:
             except Exception:
                 pass
 
+    def _cancel_timers_locked(self) -> None:
+        self.timer.cancel()
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+            self._flush_timer = None
+        if self._heartbeat_timer is not None:
+            self._heartbeat_timer.cancel()
+            self._heartbeat_timer = None
+
+    def _schedule_flush_locked(self, delay: float) -> None:
+        if self.finished or self._flush_timer is not None:
+            return
+        wait = max(float(delay), 0.15)
+        timer = threading.Timer(wait, self._run_flush)
+        timer.daemon = True
+        self._flush_timer = timer
+        timer.start()
+
+    def _run_flush(self) -> None:
+        with self.lock:
+            self._flush_timer = None
+            if self.finished:
+                return
+            self._refresh_status(force=False)
+
+    def _ensure_heartbeat_locked(self) -> None:
+        if self.finished or self.heartbeat_interval <= 0:
+            return
+        if self._heartbeat_timer is not None:
+            return
+        timer = threading.Timer(self.heartbeat_interval, self._heartbeat_tick)
+        timer.daemon = True
+        self._heartbeat_timer = timer
+        timer.start()
+
+    def _heartbeat_tick(self) -> None:
+        with self.lock:
+            self._heartbeat_timer = None
+            if self.finished:
+                return
+            if not self.answer_message_ids:
+                self._safe_api("sendChatAction", chat_id=self.chat_id, action="typing")
+            self._refresh_status()
+            if not self.finished:
+                self._ensure_heartbeat_locked()
+
     def _show_initial_status(self) -> None:
         with self.lock:
             if not self.finished:
                 self._refresh_status(force=True)
+                self._ensure_heartbeat_locked()
+
+    def _send_status_message_locked(self, text: str, now: float) -> None:
+        params: dict[str, object] = {
+            "chat_id": self.chat_id,
+            "text": text,
+        }
+        if self.reply_to_message_id is not None:
+            params["reply_to_message_id"] = self.reply_to_message_id
+            params["allow_sending_without_reply"] = True
+        result = self._safe_api("sendMessage", **params)
+        self.status_message_id = self._message_id(result)
+        self.last_status_edit = now
+        if self.status_message_id is not None:
+            self._last_rendered_status = text
+            self.rate_limiter.record_edit(self.chat_id)
+            self._persist_ids()
+            if not self.finished:
+                self._ensure_heartbeat_locked()
 
     def _refresh_status(self, *, force: bool = False) -> None:
         now = time.monotonic()
         if self.status_message_id is None:
-            if not force and now - self.started_at < self._STATUS_DELAY:
-                return
-            result = self._safe_api(
-                "sendMessage", chat_id=self.chat_id, text=self._status_text()
+            if not force:
+                if now - self.started_at < self._STATUS_DELAY:
+                    return
+                rate_delay = self.rate_limiter.retry_delay(self.chat_id, force=False)
+                if rate_delay > 0:
+                    self._schedule_flush_locked(rate_delay)
+                    return
+            if self._flush_timer is not None:
+                self._flush_timer.cancel()
+                self._flush_timer = None
+            self._send_status_message_locked(self._status_text(), now)
+            return
+
+        if not force:
+            edit_wait = (
+                max(0.0, self._EDIT_INTERVAL - (now - self.last_status_edit))
+                if self.last_status_edit > 0.0
+                else 0.0
             )
-            self.status_message_id = self._message_id(result)
-            self.last_status_edit = now
-            self._persist_ids()
+            rate_wait = self.rate_limiter.retry_delay(self.chat_id, force=False)
+            wait = max(edit_wait, rate_wait)
+            if wait > 0:
+                self._schedule_flush_locked(wait)
+                return
+
+        if self._flush_timer is not None:
+            self._flush_timer.cancel()
+            self._flush_timer = None
+
+        text = self._status_text()
+        if not force and text == self._last_rendered_status:
             return
-        if not force and now - self.last_status_edit < self._EDIT_INTERVAL:
-            return
-        self._safe_api(
+
+        result = self._safe_api(
             "editMessageText",
             chat_id=self.chat_id,
             message_id=self.status_message_id,
-            text=self._status_text(),
+            text=text,
         )
+        if result.get("missing_message"):
+            self.status_message_id = None
+            self._send_status_message_locked(text, now)
+            return
         self.last_status_edit = now
+        if result.get("ok"):
+            self._last_rendered_status = text
+            self.rate_limiter.record_edit(self.chat_id)
+        if not self.finished:
+            self._ensure_heartbeat_locked()
 
-    def on_progress(self, message: str) -> None:
-        value = " ".join(str(message or "").split())[: self._STATUS_CLIP]
+    @mark_event_consumer
+    def on_progress(self, item: ProgressEvent | str) -> None:
+        if isinstance(item, ProgressEvent):
+            with self.lock:
+                if self.finished:
+                    return
+                line = self.board.record(item)
+                if line and (not self.status_lines or self.status_lines[-1] != line):
+                    self.status_lines.append(line)
+                self._refresh_status()
+            return
+        value = " ".join(str(item or "").split())[: self._STATUS_CLIP]
         if not value:
             return
         with self.lock:
@@ -220,6 +422,7 @@ class _LiveTelegramTurn:
                 return
             if not self.status_lines or self.status_lines[-1] != value:
                 self.status_lines.append(value)
+            self.board.record(value)
             self._refresh_status()
 
     def _append_stream_delta(self, delta: str) -> None:
@@ -236,6 +439,30 @@ class _LiveTelegramTurn:
         if self.stream_current:
             chunks.append(self.stream_current)
         return chunks
+
+    def _has_parallel_siblings(self) -> bool:
+        active_jobs = getattr(self.job_store, "active_jobs", None)
+        if not callable(active_jobs):
+            return False
+        try:
+            return len(active_jobs(self.chat_id)) > 1
+        except Exception:
+            return False
+
+    def _send_answer_chunk_locked(
+        self, index: int, chunk: str, *, markup: dict | None = None
+    ) -> int | None:
+        params: dict[str, object] = {
+            "chat_id": self.chat_id,
+            "text": chunk or "(tomt svar)",
+        }
+        if index == 0 and self.reply_to_message_id is not None:
+            params["reply_to_message_id"] = self.reply_to_message_id
+            params["allow_sending_without_reply"] = True
+        if markup:
+            params["reply_markup"] = markup
+        result = self._safe_api("sendMessage", **params)
+        return self._message_id(result)
 
     def _sync_answer_chunks(
         self, chunks: list[str], *, reply_markup: dict | None = None
@@ -255,16 +482,23 @@ class _LiveTelegramTurn:
                 if markup:
                     params["reply_markup"] = markup
                 result = self._safe_api("editMessageText", **params)
-                if result:
+                if result.get("ok"):
                     self.answer_chunk_texts[index] = chunk
-                else:
-                    synced = False
+                    continue
+                if result.get("missing_message"):
+                    replacement_id = self._send_answer_chunk_locked(
+                        index, chunk, markup=markup
+                    )
+                    if replacement_id is not None:
+                        self.answer_message_ids[index] = replacement_id
+                        self.answer_chunk_texts[index] = chunk
+                        self._persist_ids()
+                    else:
+                        synced = False
+                    continue
+                synced = False
                 continue
-            params = {"chat_id": self.chat_id, "text": chunk or "(tomt svar)"}
-            if markup:
-                params["reply_markup"] = markup
-            result = self._safe_api("sendMessage", **params)
-            message_id = self._message_id(result)
+            message_id = self._send_answer_chunk_locked(index, chunk, markup=markup)
             if message_id is not None:
                 self.answer_message_ids.append(message_id)
                 self.answer_chunk_texts.append(chunk)
@@ -281,10 +515,25 @@ class _LiveTelegramTurn:
         self._persist_ids()
         return synced
 
+    def _clear_stream_locked(self) -> None:
+        for message_id in self.answer_message_ids:
+            self._safe_api(
+                "deleteMessage", chat_id=self.chat_id, message_id=message_id
+            )
+        self.answer_message_ids.clear()
+        self.answer_chunk_texts.clear()
+        self._persist_ids()
+        self.stream_text = ""
+        self.stream_chunks.clear()
+        self.stream_current = ""
+        self.last_answer_length = 0
+
     def clear_answer_drafts(self) -> None:
         with self.lock:
             for message_id in self.answer_message_ids:
-                self._safe_api("deleteMessage", chat_id=self.chat_id, message_id=message_id)
+                self._safe_api(
+                    "deleteMessage", chat_id=self.chat_id, message_id=message_id
+                )
             self.answer_message_ids.clear()
             self.answer_chunk_texts.clear()
             self._persist_ids()
@@ -299,42 +548,82 @@ class _LiveTelegramTurn:
             if not self.stream_text.strip():
                 return
             now = time.monotonic()
+            if self.answer_message_ids and self.rate_limiter.blocked_until(self.chat_id) > now:
+                return
             if (
                 self.answer_message_ids
                 and now - self.last_answer_edit < self._EDIT_INTERVAL
                 and len(self.stream_text) - self.last_answer_length < 80
             ):
                 return
-            self._sync_answer_chunks(self._visible_stream_chunks())
+            chunks = self._visible_stream_chunks()
+            if len(chunks) > 1 and self._has_parallel_siblings():
+                suffix = self._PARALLEL_STREAM_SUFFIX
+                max_head = max(1, self._CHUNK_LIMIT - _utf16_length(suffix))
+                head, _ = _take_telegram_chunk(chunks[0], max_head)
+                chunks = [head.rstrip() + suffix]
+            self._sync_answer_chunks(chunks)
             self.last_answer_edit = now
             self.last_answer_length = len(self.stream_text)
+
+    def on_stream_clear(self) -> None:
+        with self.lock:
+            if self.finished:
+                return
+            self._clear_stream_locked()
+
+    def on_phase_change(self, info: dict[str, Any]) -> None:
+        if not isinstance(info, dict):
+            return
+        with self.lock:
+            if self.finished:
+                return
+            line = self.board.set_model_phase(info)
+            phase = str(info.get("phase") or "").strip().lower()
+            if phase == "route_switch":
+                self._route_switch_reported = True
+                if line and (not self.status_lines or self.status_lines[-1] != line):
+                    self.status_lines.append(line)
+            elif phase == "model_fallback" and line:
+                if not self.status_lines or self.status_lines[-1] != line:
+                    self.status_lines.append(line)
+            self._refresh_status()
 
     def on_text_reset(self) -> None:
         with self.lock:
             if self.finished:
                 return
-            for message_id in self.answer_message_ids:
-                self._safe_api(
-                    "deleteMessage", chat_id=self.chat_id, message_id=message_id
-                )
-            self.answer_message_ids.clear()
-            self.answer_chunk_texts.clear()
-            self._persist_ids()
-            self.stream_text = ""
-            self.stream_chunks.clear()
-            self.stream_current = ""
-            self.last_answer_length = 0
-            self.status_lines.append("↻ Byter modellrutt och börjar om…")
+            self._clear_stream_locked()
+            if not self._route_switch_reported:
+                msg = "↻ Byter modellrutt och börjar om…"
+                self.status_lines.append(msg)
+                self.board.record(msg)
+            self._route_switch_reported = False
             self._refresh_status()
 
-    def finish(self, reply: BotReply) -> bool:
+    def finish(
+        self,
+        reply: BotReply,
+        *,
+        ok: bool = True,
+        cancelled: bool = False,
+        error_class: str | None = None,
+    ) -> bool:
         with self.lock:
             if self.finished:
                 return False
             self.finished = True
-            self.timer.cancel()
-            if self.status_message_id is not None:
+            self._cancel_timers_locked()
+            self.board.mark_finished(
+                ok=ok, cancelled=cancelled, error_class=error_class
+            )
+            if cancelled:
+                self.status_lines.append("🛑 Arbetet avbröts")
+            elif not ok:
+                self.status_lines.append("⚠️ Arbetet avbröts av ett tekniskt fel")
+            else:
                 self.status_lines.append("✓ Svar klart")
+            if self.status_message_id is not None:
                 self._refresh_status(force=True)
             canonical_chunks = _telegram_safe_chunks(
                 reply.text, limit=self._CHUNK_LIMIT
@@ -343,12 +632,13 @@ class _LiveTelegramTurn:
                 canonical_chunks, reply_markup=reply.reply_markup
             )
 
-    def fail(self) -> None:
+    def fail(self, *, error_class: str | None = None) -> None:
         with self.lock:
             if self.finished:
                 return
             self.finished = True
-            self.timer.cancel()
+            self._cancel_timers_locked()
+            self.board.mark_finished(ok=False, error_class=error_class)
             self.status_lines.append("⚠️ Arbetet avbröts av ett tekniskt fel")
             if self.status_message_id is not None:
                 self._refresh_status(force=True)
@@ -378,6 +668,25 @@ def _action_lock(key: str) -> threading.Lock:
         return _ACTION_LOCKS.setdefault(key, threading.Lock())
 
 
+def _invoke_resource_lock_fn(fn: Any, lock_key: str, job_id: str) -> Any:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return fn(lock_key, job_id)
+    positional = [
+        p
+        for p in sig.parameters.values()
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(positional) >= 2:
+        return fn(lock_key, job_id)
+    if "job_id" in sig.parameters:
+        return fn(lock_key, job_id=job_id)
+    if "owner" in sig.parameters:
+        return fn(lock_key, owner=job_id)
+    return fn(lock_key)
+
+
 def _result_for_reply(reply: BotReply) -> dict:
     return {
         "text": reply.text,
@@ -400,6 +709,10 @@ def _reply_from_result(value: dict | None) -> BotReply:
 
 def _deliver_job_result(token: str, store: TelegramJobStore, job: dict) -> bool:
     reply = _reply_from_result(job.get("result"))
+    payload = job.get("payload") or {}
+    title = sanitize_status_fragment(
+        payload.get("text") or payload.get("data") or "", max_len=72
+    )
     live = _LiveTelegramTurn(
         token,
         job["chat_id"],
@@ -407,14 +720,43 @@ def _deliver_job_result(token: str, store: TelegramJobStore, job: dict) -> bool:
         job_id=job["job_id"],
         status_message_id=job.get("status_message_id"),
         answer_message_ids=job.get("answer_message_ids") or [],
+        task_id=job.get("task_id"),
+        kind=str(job.get("kind") or "read_turn"),
+        title=title,
+        reply_to_message_id=payload.get("source_message_id"),
+        rate_limiter=_DEFAULT_RATE_LIMITER,
     )
-    synced = live.finish(reply)
+    try:
+        for ev in store.events(job["job_id"], limit=10):
+            summary = str(ev.get("summary") or "").strip()
+            if summary:
+                live.board.record(summary)
+    except Exception:
+        pass
+    job_state = str(job.get("state") or "completed")
+    synced = live.finish(
+        reply,
+        ok=(job_state == "completed"),
+        cancelled=(job_state == "cancelled"),
+        error_class=job.get("failure_class"),
+    )
     if synced:
         store.mark_delivered(job["job_id"])
+    else:
+        record_attempt = getattr(store, "record_delivery_attempt", None)
+        if callable(record_attempt):
+            try:
+                _call_supported(record_attempt, job["job_id"])
+            except Exception:
+                pass
     return synced
 
 
-def _preflight_action_job(handler: BotHandler, job: dict) -> str | None:
+def _preflight_action_job(
+    handler: BotHandler,
+    job: dict,
+    store: TelegramJobStore | None = None,
+) -> str | None:
     """Fail closed on malformed, stale, or unauthorized queued actions."""
     payload = job.get("payload")
     if not isinstance(payload, dict):
@@ -425,11 +767,19 @@ def _preflight_action_job(handler: BotHandler, job: dict) -> str | None:
 
     payload_type = payload.get("type")
     requires_snapshot = False
+    proposal_id: str | None = None
     if payload_type == "callback":
         data = str(payload.get("data") or "").strip()
         if not _ACTION_CALLBACK.fullmatch(data):
             return "Åtgärdsknappen kunde inte valideras. Ingen ändring utfördes."
-        requires_snapshot = data in {"action:yes", "escalate:yes"} or data.startswith("wpfile:stage:")
+        prop_match = _PROPOSAL_CALLBACK.fullmatch(data)
+        if prop_match:
+            proposal_id = prop_match.group(1).lower()
+        else:
+            requires_snapshot = (
+                data in {"action:yes", "escalate:yes"}
+                or data.startswith("wpfile:stage:")
+            )
     elif payload_type == "message":
         if not _ACTION_MESSAGE.match(str(payload.get("text") or "").strip()):
             return "Åtgärdskommandot kunde inte valideras. Ingen ändring utfördes."
@@ -442,6 +792,22 @@ def _preflight_action_job(handler: BotHandler, job: dict) -> str | None:
         handler._resolve_actor(chat_id)
     except Exception:
         return "Actor-behörigheten kunde inte verifieras. Ingen ändring utfördes."
+
+    if proposal_id is not None:
+        get_proposal = getattr(store, "get_proposal", None) if store is not None else None
+        if callable(get_proposal):
+            try:
+                proposal = _call_supported(get_proposal, proposal_id, chat_id=chat_id)
+            except Exception:
+                proposal = None
+            if not isinstance(proposal, dict):
+                return "Förslaget hittades inte eller är inaktuellt. Ingen ändring utfördes."
+            prop_chat = proposal.get("chat_id")
+            if prop_chat is not None and str(prop_chat) != chat_id:
+                return "Förslaget tillhör en annan chatt. Ingen ändring utfördes."
+            if str(proposal.get("state") or "") != "open":
+                return "Förslaget är inte längre öppet. Ingen ändring utfördes."
+        return None
 
     snapshot_required = payload.get("approval_snapshot_required") is True
     if requires_snapshot and not snapshot_required:
@@ -459,12 +825,20 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
     job_id = str(job["job_id"])
     chat_id = job["chat_id"]
     payload = job.get("payload") or {}
+    title = sanitize_status_fragment(
+        payload.get("text") or payload.get("data") or "", max_len=72
+    )
     live = _LiveTelegramTurn(
         token,
         chat_id,
         job_store=store,
         job_id=job_id,
         status_message_id=job.get("status_message_id"),
+        task_id=job.get("task_id"),
+        kind=str(job.get("kind") or "read_turn"),
+        title=title,
+        reply_to_message_id=payload.get("source_message_id"),
+        rate_limiter=_DEFAULT_RATE_LIMITER,
     )
     # A read job recovered after a crash is safe to replay. Remove its partial
     # answer draft and retain the status message so the user sees one resumed job.
@@ -473,15 +847,19 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
         live.answer_chunk_texts = [""] * len(live.answer_message_ids)
         live.clear_answer_drafts()
 
-    def progress(message: str) -> None:
-        safe = " ".join(str(message or "").split())[:_LiveTelegramTurn._STATUS_CLIP]
-        if not safe:
+    @mark_event_consumer
+    def progress(item: ProgressEvent | str) -> None:
+        if isinstance(item, ProgressEvent):
+            safe_text = format_progress_line(item)[: _LiveTelegramTurn._STATUS_CLIP]
+        else:
+            safe_text = " ".join(str(item or "").split())[: _LiveTelegramTurn._STATUS_CLIP]
+        if not safe_text:
             return
         try:
-            store.add_event(job_id, "progress", safe)
+            store.add_event(job_id, "progress", safe_text)
         except Exception:
             pass
-        live.on_progress(safe)
+        live.on_progress(item)
 
     def checkpoint() -> list[str]:
         steers, cancelled = store.consume_steers(job_id)
@@ -489,6 +867,9 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
             raise ChatCancelled()
         return steers
 
+    finish_ok = True
+    finish_cancelled = False
+    finish_error_class: str | None = None
     try:
         try:
             _api(token, "sendChatAction", _http_timeout=4, chat_id=chat_id, action="typing")
@@ -500,23 +881,70 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
             # Respect cancellation while the action is queued or waiting for
             # its serialization lock; after this checkpoint it is too late.
             checkpoint()
-            with _action_lock(_action_lock_key(job, handler)):
+            lock_key = _action_lock_key(job, handler)
+            acquire_lock = getattr(store, "acquire_resource_lock", None)
+            release_lock = getattr(store, "release_resource_lock", None)
+            with _action_lock(lock_key):
                 checkpoint()
-                progress("Kontrollerar åtgärd, behörighet och aktuell bekräftelse.")
-                preflight_failure = _preflight_action_job(handler, job)
-                if preflight_failure:
-                    reply = BotReply(text=preflight_failure)
-                else:
-                    if not store.mark_side_effect_started(job_id):
-                        raise ChatCancelled()
-                    action_started = True
-                    progress("Godkänd åtgärd körs.")
-                    if payload.get("type") == "callback":
-                        reply = as_reply(
-                            handler.handle_callback(chat_id, str(payload.get("data") or ""))
+                db_lock_acquired = False
+                if callable(acquire_lock):
+                    deadline = time.monotonic() + 30.0
+                    while not db_lock_acquired:
+                        checkpoint()
+                        db_lock_acquired = bool(
+                            _invoke_resource_lock_fn(acquire_lock, lock_key, job_id)
+                        )
+                        if db_lock_acquired or time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.1)
+                try:
+                    if callable(acquire_lock) and not db_lock_acquired:
+                        reply = BotReply(
+                            text=(
+                                "En annan godkänd åtgärd på samma resurs pågår redan. "
+                                "Försök igen om en stund."
+                            )
                         )
                     else:
-                        reply = as_reply(handler.handle(chat_id, str(payload.get("text") or "")))
+                        progress("Kontrollerar åtgärd, behörighet och aktuell bekräftelse.")
+                        preflight_failure = _preflight_action_job(
+                            handler, job, store=store
+                        )
+                        if preflight_failure:
+                            reply = BotReply(text=preflight_failure)
+                        else:
+                            if not store.mark_side_effect_started(job_id):
+                                raise ChatCancelled()
+                            action_started = True
+                            progress("Godkänd åtgärd körs.")
+                            if payload.get("type") == "callback":
+                                reply = as_reply(
+                                    _call_supported(
+                                        handler.handle_callback,
+                                        chat_id,
+                                        str(payload.get("data") or ""),
+                                        on_progress=progress,
+                                        task_id=job.get("task_id"),
+                                    )
+                                )
+                            else:
+                                reply = as_reply(
+                                    _call_supported(
+                                        handler.handle,
+                                        chat_id,
+                                        str(payload.get("text") or ""),
+                                        on_progress=progress,
+                                        on_stream_clear=live.on_stream_clear,
+                                        on_phase_change=live.on_phase_change,
+                                        task_id=job.get("task_id"),
+                                    )
+                                )
+                finally:
+                    if db_lock_acquired and callable(release_lock):
+                        try:
+                            _invoke_resource_lock_fn(release_lock, lock_key, job_id)
+                        except Exception:
+                            pass
         elif job.get("kind") == "page_review":
             from ecom_ops.bot.page_review_job import run_page_review_job
 
@@ -529,30 +957,48 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
                 )
             )
         elif payload.get("type") == "callback":
-            reply = as_reply(handler.handle_callback(chat_id, str(payload.get("data") or "")))
+            reply = as_reply(
+                _call_supported(
+                    handler.handle_callback,
+                    chat_id,
+                    str(payload.get("data") or ""),
+                    on_progress=progress,
+                    task_id=job.get("task_id"),
+                )
+            )
         else:
             reply = as_reply(
-                handler.handle(
+                _call_supported(
+                    handler.handle,
                     chat_id,
                     str(payload.get("text") or ""),
                     on_progress=progress,
                     on_text_delta=live.on_text_delta,
                     on_text_reset=live.on_text_reset,
+                    on_stream_clear=live.on_stream_clear,
+                    on_phase_change=live.on_phase_change,
                     on_checkpoint=checkpoint,
+                    task_id=job.get("task_id"),
                 )
             )
         cancelled = store.cancel_requested(job_id)
         if cancelled:
             reply = BotReply(text="Arbetet avbröts vid en säker kontrollpunkt.")
             state = "cancelled"
+            finish_ok = False
+            finish_cancelled = True
         elif job.get("kind") == "action" and reply.text.strip().lower().startswith("misslyckades"):
             state = "needs_reconciliation"
+            finish_ok = False
         else:
             state = "completed"
+            finish_ok = True
         store.complete_job(job_id, _result_for_reply(reply), state=state)
     except ChatCancelled:
         reply = BotReply(text="Arbetet avbröts vid en säker kontrollpunkt.")
         store.complete_job(job_id, _result_for_reply(reply), state="cancelled")
+        finish_ok = False
+        finish_cancelled = True
     except Exception as exc:
         # Keep provider response bodies, arguments, and credentials out of logs.
         print(f"Telegram job {job_id[:8]} failed ({type(exc).__name__})", file=sys.stderr)
@@ -565,15 +1011,31 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
                 else "Ett tekniskt fel stoppade jobbet. Försök igen eller kontakta Oscar."
             )
         )
+        finish_ok = False
+        finish_cancelled = False
+        finish_error_class = type(exc).__name__[:80]
         store.complete_job(
             job_id,
             _result_for_reply(reply),
             state="needs_reconciliation" if uncertain else "failed",
-            failure_class=type(exc).__name__[:80],
+            failure_class=finish_error_class,
         )
     try:
-        if live.finish(reply):
+        synced = live.finish(
+            reply,
+            ok=finish_ok,
+            cancelled=finish_cancelled,
+            error_class=finish_error_class,
+        )
+        if synced:
             store.mark_delivered(job_id)
+        else:
+            record_attempt = getattr(store, "record_delivery_attempt", None)
+            if callable(record_attempt):
+                try:
+                    _call_supported(record_attempt, job_id)
+                except Exception:
+                    pass
     except Exception:
         # Result and Telegram message ids remain in SQLite for outbox retry.
         print(f"Telegram job {job_id[:8]} delivery deferred", file=sys.stderr)
@@ -602,6 +1064,14 @@ def _authorized_control(handler: BotHandler, chat_id: str) -> BotReply | None:
     return None
 
 
+def _active_jobs_for_chat(store: TelegramJobStore, chat_id: str) -> list[dict[str, Any]]:
+    active_jobs_fn = getattr(store, "active_jobs", None)
+    if callable(active_jobs_fn):
+        return list(active_jobs_fn(chat_id) or [])
+    active = store.active_job(chat_id)
+    return [active] if active else []
+
+
 def _control_reply(
     token: str, handler: BotHandler, store: TelegramJobStore, control: dict
 ) -> None:
@@ -613,14 +1083,21 @@ def _control_reply(
     if denied:
         reply = denied
     elif action == "status":
-        active = store.active_job(chat_id)
+        active_list = _active_jobs_for_chat(store, chat_id)
         jobs = store.conversation_jobs(chat_id)
-        if active:
-            events = store.events(active["job_id"], limit=3)
-            phase = events[-1]["summary"] if events else "Arbetet pågår"
-            reply = BotReply(
-                text=f"Pågående jobb {active['job_id'][:8]} ({active['kind']}): {phase}."
-            )
+        queued_count = sum(1 for item in jobs if item.get("state") == "queued")
+        if active_list:
+            lines = [f"Pågående jobb ({len(active_list)}):"]
+            for item in active_list:
+                jid = str(item.get("job_id") or "")
+                events = store.events(jid, limit=3)
+                phase = events[-1]["summary"] if events else "Arbetet pågår"
+                lines.append(
+                    f"• #{jid[:8]} ({item.get('kind', 'read_turn')}): {phase}"
+                )
+            if queued_count:
+                lines.append(f"Köade jobb: {queued_count}")
+            reply = BotReply(text="\n".join(lines))
         elif jobs:
             blocked = next((item for item in jobs if item["state"] == "needs_reconciliation"), None)
             if blocked:
@@ -653,7 +1130,14 @@ def _control_reply(
             "not_found": "Inget körande eller väntande jobb hittades.",
             "ambiguous": "Flera jobb matchar id:t. Ange ett längre jobb-id.",
         }
-        if result == "not_found" and not args:
+        if result == "ambiguous_running":
+            active_list = _active_jobs_for_chat(store, chat_id)
+            lines = ["Flera jobb kör samtidigt. Ange vilket du vill avbryta:"]
+            for item in active_list:
+                jid = str(item.get("job_id") or "")
+                lines.append(f"• /cancel {jid[:8]} ({item.get('kind', 'read_turn')})")
+            reply = BotReply(text="\n".join(lines))
+        elif result == "not_found" and not args:
             reply = as_reply(handler.handle(chat_id, "/stop"))
         else:
             reply = BotReply(text=messages.get(result, "Avbrytning kunde inte registreras."))
@@ -746,7 +1230,11 @@ def main() -> int:
             f"queued={recovered['queued']} reconciliation={recovered['reconciliation']}"
         )
         legacy_path = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data")) / "telegram_state.json"
-        handler = BotHandler(store=TelegramConversationStore(store.path, legacy_path=legacy_path))
+        handler = _call_supported(
+            BotHandler,
+            store=TelegramConversationStore(store.path, legacy_path=legacy_path),
+            proposal_store=store,
+        )
         _register_commands(token)
         try:
             worker_count = int(os.environ.get("AZOM_TELEGRAM_WORKERS", "2") or 2)
@@ -771,6 +1259,7 @@ def main() -> int:
     print(f"Telegram poller started with {worker_count} background workers")
     _service_pending_controls(token, handler, store)
     last_maintenance = 0.0
+
     def request_shutdown(_signum, _frame) -> None:
         stopped.set()
 
@@ -805,16 +1294,39 @@ def main() -> int:
                         _control_reply(token, handler, store, accepted["control"])
                     elif accepted.get("disposition") == "steer":
                         try:
+                            id8 = str(accepted.get("job_id") or "")[:8]
                             _send_reply(
                                 token,
                                 accepted["chat_id"],
-                                BotReply(text="Följdfrågan är köad till nästa säkra punkt i jobbet."),
+                                BotReply(
+                                    text=(
+                                        f"↪ Styrning köad till pågående uppgift #{id8} "
+                                        "(nästa säkra kontrollpunkt)."
+                                    )
+                                ),
+                                reply_to_message_id=accepted.get("source_message_id"),
+                            )
+                        except Exception:
+                            pass
+                    elif accepted.get("disposition") == "queued" and accepted.get("parallel"):
+                        try:
+                            id8 = str(accepted.get("job_id") or "")[:8]
+                            _send_reply(
+                                token,
+                                accepted["chat_id"],
+                                BotReply(
+                                    text=(
+                                        f"⚡ Startar ny parallell uppgift #{id8} "
+                                        "bredvid pågående körning."
+                                    )
+                                ),
+                                reply_to_message_id=accepted.get("source_message_id"),
                             )
                         except Exception:
                             pass
                     elif accepted.get("disposition") == "overloaded":
                         msg = update.get("message") or {}
-                        chat_id = ((msg.get("chat") or {}).get("id"))
+                        chat_id = (msg.get("chat") or {}).get("id")
                         if chat_id is not None:
                             _send_reply(
                                 token,

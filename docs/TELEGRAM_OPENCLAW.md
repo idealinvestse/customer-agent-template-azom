@@ -12,8 +12,10 @@
 | **Fail-closed** | Tom `TELEGRAM_ALLOWED_CHAT_IDS` eller tom `TELEGRAM_ACTOR_MAP` i live (`AZOM_USE_MOCK=0`) nekar. Icke-tom map nekar unmapped chat_id. |
 | **Confirm UX only** | NL “godkänn …” visar bekräftelse — skickar **inte** mail. |
 | **tool_digest** | Kort sammanfattning av senast körda read-only tools för följdfrågor. |
-| **Statusutkast** | Redigerbart Telegram-meddelande med senaste arbetssteg och verktygsstatus. |
+| **Statusutkast** | Redigerbart Telegram-meddelande (`LiveStatusBoard`) med aktiv uppgift (`#id8`), steg (`[RUN]`/`[OK]`/`[ERR]`/`[SKIP]`), tid, datakälla (`live`/`mock`) och modellfas. |
 | **Svarutkast** | Assistentens text medan den kommer in; ersätts med det slutliga svaret när turen är klar. |
+| **Hybrid styrning / parallell task** | Reply på ett status- eller svarskort styr alltid den uppgiften; otrådad fritext klassas smart som styrning eller ny parallell task (upp till 3 samtidiga läsuppgifter per chatt). |
+| **Förslagsbunden knapp** | `proposal:yes:pr-<id>` / `proposal:no:pr-<id>` låser payload, domän och sajt vid förslagstillfället (engångskonsumtion). |
 
 **Kod:** `skills/ecom_ops/bot/`  
 **Identitet:** [`SOUL.md`](../SOUL.md)  
@@ -49,34 +51,44 @@ En filplansnotis kan länka till dashboardens planvy när `AZOM_DASHBOARD_PUBLIC
 
 ### Live-status och strömmande svar
 
-Längre textturer visar två separata Telegram-meddelanden:
+Längre textturer, slash-kommandon och godkända åtgärder visar ett strukturerat live-statuskort (`ProgressEvent` → `LiveStatusBoard`) och vid fritext även ett separat svarutkast:
 
-1. Om turen tar mer än ungefär tre sekunder visas ett kort statusutkast. Vid första aktivitet uppdateras det med säkra steg som `WordPress-status pågår…`, `Backupstatus: resultat mottaget` eller `Formulerar svar…`.
-2. När modelltext kommer in skapas ett separat svarutkast. Botten redigerar det med begränsad takt i stället för att skicka ett nytt meddelande för varje textbit.
-3. När turen är klar ersätts svarutkastet med den slutliga texten och eventuella knappar. Statusutkastet behåller de senaste verktygsstegen och avslutas med `Svar klart`.
+1. Om turen tar mer än ungefär tre sekunder skickas ett statuskort som svar på användarens ursprungsmeddelande (`reply_to_message_id` + `allow_sending_without_reply`). Varje steg uppdateras på plats från `[RUN]` till `[OK]`, `[ERR]` eller `[SKIP]` med stegnummer (`1/4`), körtid, källa (`live`/`mock`) och ett kort, sanerat utfall.
+2. Under längre modell- eller verktygskörningar (t.ex. 30–180 s Grok-resonemang) håller en periodisk heartbeat (var 8:e sekund) både `typing`-indikatorn och statuskortets förflutna tid + aktiva modellfas (`väntar`, `resonerar`, `strömmar`, `förnyar OAuth`, `byter rutt`) levande.
+3. Transportlagret (`telegram_transport.py`) normaliserar Telegram HTTP 400 `message is not modified` som idempotent `ok`, respekterar HTTP 429 `retry_after` via en per-chatt-rate-limiter (privat 1,0 s / grupp 3,2 s), schemalägger trailing-edge flush och håller alltid statuskortet under 3 800 UTF-16-kodpunkter.
+4. När modelltext kommer in skapas ett separat svarutkast. Om flera uppgifter körs parallellt i samma chatt buffras chunk 2+ tills `finish()` för att undvika sönderhackad sammanblandning i chatten.
+5. När turen är klar avslutas statuskortet tydligt efter verkligt utfall: `✓ Svar klart`, `🛑 Avbrutet` eller `⚠️ Misslyckades (<felklass>)`. Alla timers stängs ned direkt.
 
-Det här följer samma användbara mönster som Datalasse/OpenClaw: synligt arbete, verktygsstatus och redigerat svar. Azom använder sin egen Telegram Bot API-handler (`sendMessage` + `editMessageText`), inte OpenClaws inbyggda streamingläge. Statusen visar bara vilket steg eller namngivet verktyg som körs; den visar inte intern kedja-av-tankar, argument, kunddata eller credentials. Verktygsstatus är avsiktligt neutral: `resultat mottaget` säger inte att sajten är frisk.
+Statuskortet visar bara steg, namngivet verktyg, källa och kort säkert utfall; det visar aldrig intern kedja-av-tankar, belopp/PII, argument, tokens, källkodscitat eller råa provider-svar. En ren strömrensning vid nästa läsrunda eller styrning (`on_stream_clear`) visar inte längre falskt ruttbyte — endast verkliga modellruttbyten via `ModelRouter` visar `↻ Byter modellrutt`.
 
-Modellens textström kommer från ChatGPT OAuth, OpenRouter, xAI API key eller Grok Build när respektive route stöder strömning. Om en route fallerar och routern provar en annan tas det partiella svarutkastet bort och börjar om. Om strömning eller Telegram-redigering inte fungerar skickas det slutliga svaret på normalt sätt.
+Modellens textström kommer från ChatGPT OAuth, OpenRouter, xAI API key eller Grok Build när respektive route stöder strömning. Om en route fallerar och routern provar en annan tas det partiella svarutkastet bort och börjar om. Om strömning eller Telegram-redigering inte fungerar (eller ett utkast raderats i chatten) faller botten automatiskt tillbaka till `sendMessage`.
 
-Snabba svar som blir klara före statusfördröjningen skickar bara slutsvaret. Messenger använder fortsatt den delade `BotHandler` utan dessa Telegram-callbacks; detta ändrar inte Messenger-webhookens svarsbeteende.
+Snabba svar som blir klara före statusfördröjningen skickar bara slutsvaret (kopplat till användarens meddelande). Messenger använder fortsatt den delade `BotHandler` utan dessa Telegram-callbacks; detta ändrar inte Messenger-webhookens svarsbeteende.
 
 **Modell:** när `AZOM_TELEGRAM_MODEL_ROUTE` är `xai_grok_build` använder fritext den routen och `XAI_MODEL`. Ett fel faller inte vidare till nästa route. Om Grok fortfarande resonerar eller skriver svaret nollställs vilotiden på 30 sekunder. `AZOM_XAI_GROK_HARD_TIMEOUT` stoppar anropet ändå, normalt efter 180 sekunder. `/model` sparar en session-pin, men pin skickas bara när Telegram-routen är `openrouter`. Övriga anrop följer `AZOM_MODEL_ROUTE_ORDER`.
 
-Läsvarv för flera ordrar hämtar högst åtta kända ordernummer först och låter sedan `grok-4.3` med `--reasoning-effort low` be om upp till fem läsningar, med 20 sekunders vila, 45 sekunders tak per runda och 90 sekunder för hela fasen; statusraden säger vilket steg som pågår, och ett avbrutet modellsteg behåller redan hämtad text.
+Läsvarv för flera ordrar hämtar högst åtta kända ordernummer först och låter sedan `grok-4.3` med `--reasoning-effort low` be om upp till fem läsningar, med 20 sekunders vila, 45 sekunders tak per runda och 90 sekunder för hela fasen; kooperativa checkpoints kontrollerar `/cancel` och styrningar före varje orderhämtning och varje modellrunda, och ett avbrutet modellsteg behåller redan hämtad text.
 
 ---
 
-### Bakgrundsjobb och fortsatt dialog
+### Bakgrundsjobb, parallella uppgifter och hybrid styrning
 
-Telegram tar emot uppdateringar oberoende av modell- och verktygsjobb. En SQLite-inbox sparar varje `update_id` innan poll-cursorn flyttas. Två arbetare kör som standard (`AZOM_TELEGRAM_WORKERS`, tillåtet 1–4); en databaslease hindrar en andra process från att poll:a samma bot. Jobb körs i ordning per chatt, medan olika chattar kan köras parallellt.
+Telegram tar emot uppdateringar oberoende av modell- och verktygsjobb. En SQLite-inbox sparar varje `update_id` innan poll-cursorn flyttas. Två arbetare kör som standard (`AZOM_TELEGRAM_WORKERS`, tillåtet 1–4); en databaslease hindrar en andra process från att poll:a samma bot. Varje jobb har ett eget `task_id` och upp till **3 läsuppgifter** (`read_turn`, `page_review`, läs-callbacks) kan köras parallellt i samma chatt, medan godkända skrivåtgärder (`kind='action'`) alltid serialiseras både per chatt och via SQLite-resurslås (`bot_resource_locks`).
 
-- Vanlig text under ett läsjobb blir en följdfråga. Den läggs i en mailbox och vägs in vid nästa säkra kontrollpunkt; högst tre följdfrågor tas in per jobb. Ett modell- eller verktygsanrop avbryts inte mitt i ett nätverksanrop.
-- Text och knappar under en godkänd åtgärd köas som nästa tur. De kan inte ändra den redan godkända åtgärden. Godkända åtgärder serialiseras; WordPress-ändringar låses per vald sajt.
-- `/status` visar aktivt jobb och senaste steg. `/jobs` visar väntande jobb. `/stop` eller `/cancel [job-id]` begär kooperativ avbrytning; en åtgärd kan inte avbrytas när sidoeffekten har startat.
+- **Hybrid styrning vs ny parallell uppgift (`steer_router.py`):**
+  1. `/task <text>` startar alltid en ny parallell uppgift.
+  2. `/steer [<id8>] <text>` styr uttryckligen angivet (eller enda) körande läsjobb.
+  3. Övriga slash-kommandon (t.ex. `/order 1001`, `/cases`, `/brief`) startar som nya parallella uppgifter.
+  4. **Telegram-reply** på ett statuskort, svarskort eller ursprungsmeddelande styr alltid just den pågående uppgiften.
+  5. Under en aktiv `page_review` stannar otrådad fritext alltid i sidgranskningen (orderverktyg körs aldrig).
+  6. Otrådad fritext under `read_turn` klassas smart efter ny-task-fras, domänskifte (`order`/`cases`/`marketing`/`wp`/`catalog`), nytt ordernummer eller korta bekräftelse-/stilfraser. Om 2+ läsuppgifter körs samtidigt och inget entydigt mål finns startas hellre en ny uppgift än en gissad styrning.
+- Högst tre följdfrågor (`steer`) injiceras per jobb vid nästa säkra kontrollpunkt; `/cancel` respekteras alltid vid varje checkpoint även efter tre styrningar.
+- **Förslagsbundna HITL-knappar (`bot_proposals`):** Skriv- och eskaleringsförslag i Telegram skapar en hållbar rad i `bot_proposals` med fryst payload, `domain`, `site_id` och `task_id`, samt unika engångsknappar (`proposal:yes:pr-<id>` / `proposal:no:pr-<id>`). Två parallella uppgifter kan därmed aldrig krocka över en gemensam `action:yes`, och fritext `"ja"` kör inte tyst en väntande Telegram-åtgärd.
+- **Atomisk kontext-merge (`append_turn_atomic`):** Parallella läsuppgifter slår samman sina meddelandedeltan och `tool_digest` atomiskt inuti SQLite-transaktion utan att skriva över en annan uppgifts väntande flow/förslag.
+- `/status` visar samtliga pågående jobb (`#id8`, typ, senaste steg) och ködjup. `/jobs` visar väntande jobb. `/stop` eller `/cancel [job-id]` begär kooperativ avbrytning (och ber om `<id8>` om flera jobb körs samtidigt).
 - Ett läsjobb kan köas om efter processomstart. En godkänd åtgärd som kan ha startat får `needs_reconciliation` och körs inte om. Endast Oscar kan stämma av den med `/reconcile <job-id> done|not_applied` efter kontroll av externa system. Kommandot utför ingen åtgärd.
-- Direkt före sidoeffekten gör arbetaren en förkontroll av åtgärdsformat, chattens allowlist, actor-mappning och aktuell bekräftelsesnapshot. Förkontrollen stoppar en felaktig eller inaktuell köpost; handlern kontrollerar därefter behörighet, mål och kill-switch igen innan tjänsteanropet.
-- Slutliga svar och Telegram-meddelande-id sparas för leveransförsök. Leverans är minst en gång; vid fel kan ett svar komma dubbelt.
+- Direkt före sidoeffekten gör arbetaren en förkontroll av åtgärdsformat, chattens allowlist, actor-mappning och öppet förslag (`bot_proposals`) respektive bekräftelsesnapshot. Handlern kontrollerar därefter behörighet, mål och kill-switch igen innan tjänsteanropet.
+- Slutliga svar och Telegram-meddelande-id sparas för leveransförsök med exponentiell backoff (`delivery_attempts`, `next_delivery_at`). Leverans är minst en gång; vid fel kan ett svar komma dubbelt.
 
 Inbox, jobb, leveransmetadata och Telegram-samtalshistorik ligger i `AZOM_DATA_DIR/telegram_jobs.sqlite3`. Vid första start migreras `telegram_state.json` en gång och den gamla filen lämnas kvar. Databasfilerna har begränsade filrättigheter; avslutade jobb behålls i sju dagar och olösta avstämningar tills de löses. Backup-jobbet tar en onlinekopia av jobbkön och utesluter Node/Python-bibliotek från tarballen. Messenger fortsätter använda sin befintliga synkrona lagring.
 
@@ -118,8 +130,10 @@ Token byts under `/oscar/secrets`. Allowlist och actor map sätts i processmilj�
 |----------|-------------|
 | `/help` | Kort intro (även `/start`) |
 | `/commands` | Full katalog |
-| `/status` | Aktivt bakgrundsjobb och senaste steg, annars runtime-status |
+| `/status` | Alla pågående bakgrundsjobb (`#id8`, senaste steg, kö), annars runtime-status |
 | `/jobs` | Köade och avstämningskrävande jobb i chatten |
+| `/steer [<id8>] <text>` | Styr ett pågående läsjobb vid nästa säkra kontrollpunkt |
+| `/task <text>` | Starta en ny parallell uppgift bredvid pågående körning |
 | `/whoami` (`/id`) | chat_id + resolved actor |
 | `/new [model]` | Rensa dialog; valfri model pin |
 | `/reset` · `/reset soft` | Full reset eller behåll session settings |
