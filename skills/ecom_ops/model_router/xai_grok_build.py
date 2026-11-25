@@ -22,11 +22,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ecom_ops.model_router.base import ModelRequest, ModelResult
+from ecom_ops.model_router.base import ModelRequest, ModelResult, RouteCapabilities
 from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
     ModelConfigError,
+    ModelRateLimitError,
     ModelUnavailableError,
 )
 from ecom_ops.telemetry import Telemetry, default_telemetry
@@ -46,6 +47,12 @@ _UNKNOWN_MODEL_MARKERS = (
     "unrecognized model",
     "no such model",
     "unsupported model",
+)
+_RATE_LIMIT_MARKERS = (
+    "429",
+    "rate limit",
+    "too many requests",
+    "quota exceeded",
 )
 # Phases that mean this turn is still producing text. waiting_for_model does not.
 _ACTIVE_PHASES = frozenset({"streaming_reasoning", "streaming_text"})
@@ -72,6 +79,12 @@ def _stderr_says_unknown_model(stderr: str) -> bool:
     """True when the CLI rejected the model id. The text is not returned."""
     lowered = (stderr or "").lower()
     return any(marker in lowered for marker in _UNKNOWN_MODEL_MARKERS)
+
+
+def _stderr_says_rate_limited(stderr: str) -> bool:
+    """True when the CLI hit a 429 / rate limit. The text is not returned."""
+    lowered = (stderr or "").lower()
+    return any(marker in lowered for marker in _RATE_LIMIT_MARKERS)
 
 
 def _accepted_effort(request: ModelRequest) -> str | None:
@@ -192,6 +205,7 @@ def spawn_grok(
     """Start grok and drain pipes so a long answer cannot block the child."""
     proc = subprocess.Popen(
         command,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -279,9 +293,12 @@ def grok_build_enabled() -> bool:
     """True only when an operator explicitly opts in.
 
     A ``grok`` binary on PATH is not enough. Otherwise every LLM call on a
-    developer machine would spawn the CLI.
+    developer machine would spawn the CLI. Explicit ``0/false/no/off`` disables
+    even if ``XAI_GROK_BIN`` is set.
     """
     flag = (os.environ.get("AZOM_XAI_GROK_BUILD") or "").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False
     if flag in {"1", "true", "yes", "on"}:
         return True
     return bool((os.environ.get("XAI_GROK_BIN") or "").strip())
@@ -290,6 +307,14 @@ def grok_build_enabled() -> bool:
 class XaiGrokBuildRoute:
     provider = "xai"
     route_id = "xai_grok_build"
+    capabilities = RouteCapabilities(
+        supports_temperature=False,
+        supports_reasoning_effort=True,
+        supports_json_schema=False,
+        supports_streaming=True,
+        cost_kind="subscription",
+        subject_to_openrouter_cap=False,
+    )
 
     def _binary(self) -> str:
         return (os.environ.get("XAI_GROK_BIN") or "grok").strip() or "grok"
@@ -448,8 +473,14 @@ class XaiGrokBuildRoute:
                     "Grok Build is not authenticated. Run grok login --device-auth",
                     code=exit_code,
                 )
-            failed = ModelUnavailableError("Grok Build CLI failed", code=exit_code)
-            if _stderr_says_unknown_model(stderr):
+            if _stderr_says_rate_limited(stderr):
+                raise ModelRateLimitError("Grok Build rate limit reached", code=exit_code)
+            is_unknown = _stderr_says_unknown_model(stderr)
+            failed = ModelUnavailableError(
+                "Grok Build CLI failed",
+                code="unknown_model" if is_unknown else exit_code,
+            )
+            if is_unknown:
                 failed.unknown_model = True  # type: ignore[attr-defined]
             raise failed
 

@@ -68,8 +68,14 @@ Direkt xAI OAuth är inte implementerat. Vänta tills xAI:s klientregistrering, 
 
 ## 4. xAI API-nyckel
 
-1. Sätt `XAI_API_KEY` i `.env`. Sätt inte nyckeln i git.
-2. Testa raden `xai_api_key`. 401 betyder ogiltig nyckel. 429 är rate limit.
+1. Sätt `XAI_API_KEY` i `.env` (används som opt-in fallback i `config/model_profiles.yaml`, inte som primär före abonnemang eller billig OpenRouter). Sätt inte nyckeln i git.
+2. Testa raden `xai_api_key`. 401 betyder ogiltig nyckel, 403 är `forbidden`, 429 är rate limit. Kostnaden loggas som `cost_kind="estimated_external"` i telemetry (räknas inte mot OpenRouter-cap).
+
+## 4b. Modellprofiler & Circuit Breaker
+
+1. På `/oscar` under **Modellprofiler & Monterade modeller** kan Oscar montera rekommenderade modeller per uppgift (`cases_classify`, `cases_draft`, `product_copy`, `chat_fast_tools`, `chat_general`, `wp_tool_router`, `wp_code_deep`) utan att röra kod. Ändringar sparas i `AZOM_DATA_DIR/model_profiles.override.yaml` och laddas automatiskt i `azom-bot` och `azom-cases-poll`.
+2. **Testa slot (utan fallback)** kör alltid exakt den valda slotten utan fallback och förbi circuit breaker.
+3. Vid tillfälligt fel eller `needs_reauth` öppnas en delad cooldown i `AZOM_DATA_DIR/model_router_health.json` så en 50-ärendes poll inte fastnar. När credentialen är åtgärdad rensas `OPEN_AUTH` automatiskt, eller manuellt med **Nollställ circuit breaker** på `/oscar`.
 
 ## 5. OpenRouter-fallback
 

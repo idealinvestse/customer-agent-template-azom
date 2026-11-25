@@ -80,6 +80,7 @@ def run_poll(
     created = 0
     skipped = 0
     errors = 0
+    mailbox_errors = 0
     created_cases: list[dict[str, Any]] = []
     error_details: list[dict[str, str]] = []
     per_mailbox: list[dict[str, Any]] = []
@@ -100,6 +101,7 @@ def run_poll(
             )
         except Exception as exc:
             errors += 1
+            mailbox_errors += 1
             err_text = str(exc)[:200]
             error_details.append({"mailbox_id": mb.id, "error": err_text})
             per_mailbox.append({
@@ -144,7 +146,7 @@ def run_poll(
             "skipped": mb_skipped,
         })
 
-    all_failed = errors > 0 and errors == len(mailboxes)
+    all_failed = mailbox_errors > 0 and mailbox_errors == len(mailboxes)
     partial = errors > 0 and not all_failed
     svc.telemetry.record(
         action="case_poll",
@@ -244,19 +246,42 @@ def ingest_message(
 
     preview_order_id = extract_order_id(f"{subject}\n\n{body}")
     woo_domain = woo_domain_from_market(mb.market)
-    order_ctx = resolve_order_context(
-        preview_order_id, use_mock=use_mock, domain=woo_domain
-    )
+    # Overlap Woo order context fetch (HTTP) with LLM classify when an order id is present.
+    from concurrent.futures import ThreadPoolExecutor
 
-    support = svc.support.handle(
-        f"{subject}\n\n{body}",
-        customer_email=from_addr if "@" in from_addr else None,
-        language=mb.language,
-        site=mb.site,
-        actor=load_profile().operator_actor,
-        use_mock=use_mock,
-        order_context=order_ctx,
-    )
+    if preview_order_id:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            order_future = pool.submit(
+                resolve_order_context,
+                preview_order_id,
+                use_mock=use_mock,
+                domain=woo_domain,
+            )
+            support = svc.support.handle(
+                f"{subject}\n\n{body}",
+                customer_email=from_addr if "@" in from_addr else None,
+                language=mb.language,
+                site=mb.site,
+                actor=load_profile().operator_actor,
+                use_mock=use_mock,
+                order_context_getter=order_future.result,
+                batch_mode=True,
+            )
+            order_ctx = order_future.result()
+    else:
+        order_ctx = resolve_order_context(
+            preview_order_id, use_mock=use_mock, domain=woo_domain
+        )
+        support = svc.support.handle(
+            f"{subject}\n\n{body}",
+            customer_email=from_addr if "@" in from_addr else None,
+            language=mb.language,
+            site=mb.site,
+            actor=load_profile().operator_actor,
+            use_mock=use_mock,
+            order_context=order_ctx,
+            batch_mode=True,
+        )
     draft = _enrich_draft_with_order(
         support.reply,
         support.order_id,

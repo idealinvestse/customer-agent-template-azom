@@ -70,6 +70,7 @@ def regenerate_draft(
     *,
     actor: Any = None,
     use_mock: bool | None = None,
+    skip_classify: bool = True,
 ) -> CaseActionResult:
     """Re-run support draft + order context; never sends mail."""
     from ecom_ops.cases.service import (
@@ -127,15 +128,27 @@ def regenerate_draft(
             order_id, use_mock=use_mock, domain=woo_domain
         )
 
-        support = svc.support.handle(
-            text,
-            customer_email=case.from_addr if "@" in (case.from_addr or "") else None,
-            language=case.language or "sv",
-            site=case.site or load_profile().customer,
-            actor=load_profile().operator_actor,
-            use_mock=use_mock,
-            order_context=order_ctx,
+        known_cat = (case.category or "").strip().lower()
+        can_skip_classify = bool(
+            skip_classify
+            and known_cat
+            and known_cat not in {"uncategorized", "other", "unknown"}
+            and getattr(case, "classify_confidence", None) is not None
         )
+        handle_kwargs: dict[str, Any] = {
+            "customer_email": case.from_addr if "@" in (case.from_addr or "") else None,
+            "language": case.language or "sv",
+            "site": case.site or load_profile().customer,
+            "actor": load_profile().operator_actor,
+            "use_mock": use_mock,
+            "order_context": order_ctx,
+            "case_id": case.id,
+        }
+        if can_skip_classify:
+            handle_kwargs["known_category"] = known_cat
+            handle_kwargs["known_confidence"] = case.classify_confidence
+            handle_kwargs["known_method"] = getattr(case, "classify_method", None) or "existing"
+        support = svc.support.handle(text, **handle_kwargs)
         draft = _enrich_draft_with_order(
             support.reply,
             support.order_id or order_id,

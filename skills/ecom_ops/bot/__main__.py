@@ -225,6 +225,7 @@ class _LiveTelegramTurn:
     """Keep a short status draft and a separately streamed answer draft."""
 
     _STATUS_DELAY = 3.0
+    _STATUS_DELAY_LLM = 1.5
     _EDIT_INTERVAL = 0.75
     _CHUNK_LIMIT = 3900
     _STATUS_CLIP = 420
@@ -262,6 +263,11 @@ class _LiveTelegramTurn:
         self.started_at = time.monotonic()
         self.finished = False
         self.on_progress_accepts_event = True
+        self.status_delay = (
+            self._STATUS_DELAY_LLM
+            if self.kind in {"read_turn", "page_review"}
+            else self._STATUS_DELAY
+        )
         self.board = LiveStatusBoard(
             job_id=job_id,
             task_id=task_id,
@@ -283,7 +289,7 @@ class _LiveTelegramTurn:
         self.last_answer_length = 0
         self._flush_timer: threading.Timer | None = None
         self._heartbeat_timer: threading.Timer | None = None
-        self.timer = threading.Timer(self._STATUS_DELAY, self._show_initial_status)
+        self.timer = threading.Timer(self.status_delay, self._show_initial_status)
         self.timer.daemon = True
         self.timer.start()
 
@@ -426,7 +432,7 @@ class _LiveTelegramTurn:
         now = time.monotonic()
         if self.status_message_id is None:
             if not force:
-                if now - self.started_at < self._STATUS_DELAY:
+                if now - self.started_at < getattr(self, "status_delay", self._STATUS_DELAY):
                     return
                 rate_delay = self.rate_limiter.retry_delay(self.chat_id, force=False)
                 if rate_delay > 0:
@@ -617,9 +623,13 @@ class _LiveTelegramTurn:
             if self.finished:
                 return
             self._append_stream_delta(delta)
-            if not self.stream_text.strip():
+            stripped = self.stream_text.strip()
+            if not stripped:
                 return
             now = time.monotonic()
+            # Wait briefly for a readable first snippet (>=20 chars or newline) before initial send.
+            if not self.answer_message_ids and len(stripped) < 20 and "\n" not in self.stream_text:
+                return
             if self.answer_message_ids and self.rate_limiter.blocked_until(self.chat_id) > now:
                 return
             if (

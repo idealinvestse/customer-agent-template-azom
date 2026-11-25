@@ -131,13 +131,14 @@ def evaluate_drafts(
     *,
     fixtures: list[dict[str, Any]] | None = None,
     directory: Path | str | None = None,
+    allow_llm: bool = False,
 ) -> dict[str, Any]:
     """Evaluate drafts against fixtures. If ``drafts`` is None, uses template fallback."""
     fx = fixtures if fixtures is not None else load_draft_fixtures(directory)
     if not fx:
         return {"ok": True, "n": 0, "message": "No draft fixtures found — skipping"}
     if drafts is None:
-        # Use template fallback path to generate drafts
+        # Use template fallback path by default; pass allow_llm=True to benchmark live routes.
         from ecom_ops.actions.support import SupportService
 
         svc = SupportService()
@@ -150,6 +151,7 @@ def evaluate_drafts(
                 msg,
                 language=str(item.get("language") or "sv"),
                 actor="agent",
+                allow_llm=allow_llm,
             )
             drafts.append(result.reply or "")
     results = []

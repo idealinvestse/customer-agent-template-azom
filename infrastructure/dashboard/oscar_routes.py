@@ -27,10 +27,13 @@ from support import (
 
 
 def _model_panel() -> dict:
-    from ecom_ops.model_router.router import get_model_router, load_last_test
+    from ecom_ops.model_router import circuit_breaker
+    from ecom_ops.model_router.profiles import load_profiles
+    from ecom_ops.model_router.router import ROUTE_IDS, get_model_router, load_last_test
     from ecom_ops.model_router.xai_device_login import device_login_status
 
     router = get_model_router()
+    catalog_profiles = load_profiles()
     query = (request.args.get("model_q") or "").strip()[:80]
     catalog_provider = (request.args.get("catalog") or "openrouter").strip().lower()
     catalog_rows: list[dict[str, str]] = []
@@ -43,9 +46,13 @@ def _model_panel() -> dict:
         catalog_error = str(found.get("error") or "")
     return {
         "model_routes": router.routes(),
+        "model_all_routes": list(ROUTE_IDS),
         "model_order": router.ordered_route_ids(),
         "model_preferred": router.preferred_route_id(),
         "model_last_test": load_last_test(),
+        "model_breaker": circuit_breaker.status_snapshot(),
+        "model_profiles": catalog_profiles.profiles,
+        "model_recommended": catalog_profiles.recommended_models,
         "xai_login": device_login_status(),
         "model_query": query,
         "model_catalog": catalog_rows,
@@ -129,8 +136,9 @@ def register_oscar_routes(app: Flask) -> None:
         if result.cost_usd:
             from ecom_ops.telemetry import default_telemetry
 
-            default_telemetry().record(
+            default_telemetry.record(
                 action="llm_model_test",
+                site="azom",
                 cost_usd=float(result.cost_usd),
                 actor="oscar",
                 meta={
@@ -194,6 +202,148 @@ def register_oscar_routes(app: Flask) -> None:
         msg = "Modellval sparat" if saved else "Inga ändringar"
         return redirect(url_for("oscar_home", msg=msg))
 
+    @app.route("/oscar/models/profiles/save", methods=["POST"])
+    @_oscar_required
+    def oscar_model_profile_save():
+        from ecom_ops.audit import log_action
+        from ecom_ops.model_router.profiles import save_profile_override
+
+        profile_id = (request.form.get("profile_id") or "").strip()
+        slot_ids = request.form.getlist("slot_id")
+        route_ids = request.form.getlist("route_id")
+        model_ids = request.form.getlist("model_id")
+        mounts = []
+        for idx, (sid, rid, mid) in enumerate(zip(slot_ids, route_ids, model_ids, strict=False)):
+            enabled_val = request.form.get(f"enabled_{idx}")
+            mounts.append(
+                {
+                    "slot_id": sid,
+                    "route_id": rid,
+                    "model_id": mid,
+                    "enabled": enabled_val in {"1", "true", "on", "yes"},
+                }
+            )
+        payload: dict = {
+            "prompt_ref": (request.form.get("prompt_ref") or "").strip(),
+            "generation": {
+                "max_output_tokens": request.form.get("max_output_tokens"),
+                "temperature": request.form.get("temperature"),
+                "reasoning_effort": (request.form.get("reasoning_effort") or "").strip(),
+            },
+            "timeouts": {
+                "idle_s": request.form.get("idle_s"),
+                "hard_s": request.form.get("hard_s"),
+            },
+        }
+        if mounts:
+            payload["mounts"] = mounts
+        try:
+            saved = save_profile_override(profile_id, payload)
+        except (ValueError, TypeError) as exc:
+            return redirect(url_for("oscar_home", err=str(exc)) + "#model-profiles")
+        log_action(
+            actor=g.actor["name"],
+            action="model_profile_save",
+            target=f"profile:{saved.profile_id}",
+            details={
+                "prompt_ref": saved.prompt_ref,
+                "slots": [f"{m.slot_id}={m.route_id}:{m.model_id}" for m in saved.mounts],
+            },
+        )
+        return redirect(url_for("oscar_home", msg=f"Profil {saved.profile_id} sparad") + "#model-profiles")
+
+    @app.route("/oscar/models/profiles/test", methods=["POST"])
+    @_oscar_required
+    def oscar_model_profile_test():
+        from ecom_ops.model_router.base import ModelRequest
+        from ecom_ops.model_router.errors import ModelRouteError
+        from ecom_ops.model_router.router import TEST_PROMPT, get_model_router, save_last_test
+
+        profile_id = (request.form.get("profile_id") or "").strip()
+        slot_id = (request.form.get("slot_id") or "").strip()
+        router = get_model_router()
+        try:
+            result = router.complete_slot(
+                profile_id,
+                slot_id,
+                ModelRequest(
+                    messages=[{"role": "user", "content": TEST_PROMPT}],
+                    max_output_tokens=512,
+                    temperature=0.0,
+                    timeout=30,
+                    actor="oscar",
+                ),
+            )
+        except (KeyError, ModelRouteError) as exc:
+            save_last_test(
+                route_id=f"{profile_id}/{slot_id}",
+                ok=False,
+                error_class=type(exc).__name__,
+                error_code=getattr(exc, "code", "") or "",
+                model="",
+                provider="",
+            )
+            return redirect(url_for("oscar_home", err="Slottest misslyckades") + "#model-profiles")
+        save_last_test(
+            route_id=result.route_id,
+            ok=True,
+            error_class="",
+            error_code="",
+            model=result.model,
+            provider=result.provider,
+        )
+        if result.cost_usd:
+            from ecom_ops.telemetry import default_telemetry
+
+            default_telemetry.record(
+                action="llm_model_test",
+                site="azom",
+                cost_usd=float(result.cost_usd),
+                actor="oscar",
+                meta={
+                    "route_id": result.route_id,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "profile_id": profile_id,
+                    "slot_id": slot_id,
+                    "cost_kind": "estimated",
+                },
+            )
+        return redirect(url_for("oscar_home", msg=f"Slot {profile_id}/{slot_id} ok utan fallback") + "#model-profiles")
+
+    @app.route("/oscar/models/profiles/reset", methods=["POST"])
+    @_oscar_required
+    def oscar_model_profile_reset():
+        from ecom_ops.audit import log_action
+        from ecom_ops.model_router.profiles import reset_profile_override
+
+        profile_id = (request.form.get("profile_id") or "").strip()
+        target = None if profile_id in {"", "all"} else profile_id
+        reset_profile_override(target)
+        log_action(
+            actor=g.actor["name"],
+            action="model_profile_reset",
+            target=f"profile:{target or 'all'}",
+            details={},
+        )
+        return redirect(url_for("oscar_home", msg="Profilstandard återställd") + "#model-profiles")
+
+    @app.route("/oscar/models/breaker/reset", methods=["POST"])
+    @_oscar_required
+    def oscar_model_breaker_reset():
+        from ecom_ops.audit import log_action
+        from ecom_ops.model_router.circuit_breaker import reset_breaker
+
+        key = (request.form.get("breaker_key") or "").strip() or None
+        reset_breaker(key)
+        log_action(
+            actor=g.actor["name"],
+            action="model_breaker_reset",
+            target=key or "all",
+            details={},
+        )
+        return redirect(url_for("oscar_home", msg="Circuit breaker nollställd"))
+
     @app.route("/oscar/behavior", methods=["GET", "POST"])
     @_oscar_required
     def oscar_behavior():
@@ -203,14 +353,12 @@ def register_oscar_routes(app: Flask) -> None:
         error = None
         if request.method == "POST":
             try:
-                changed = save_prompt_texts(
-                    {
-                        "chat": request.form.get("chat", ""),
-                        "classify": request.form.get("classify", ""),
-                        "draft": request.form.get("draft", ""),
-                        "product_desc": request.form.get("product_desc", ""),
-                    }
-                )
+                updates = {
+                    name: request.form.get(name, "")
+                    for name in ("chat", "classify", "draft", "product_desc", "wp_coder")
+                    if name in request.form
+                }
+                changed = save_prompt_texts(updates)
             except ValueError as exc:
                 error = str(exc)
             else:
@@ -224,7 +372,7 @@ def register_oscar_routes(app: Flask) -> None:
                 msg = "Beteende sparat" if changed else "Inga ändringar"
                 return redirect(url_for("oscar_behavior", msg=msg))
         prompts = {}
-        for name in ("chat", "classify", "draft", "product_desc"):
+        for name in ("chat", "classify", "draft", "product_desc", "wp_coder"):
             system, version = get_prompt(name)
             prompts[name] = {"system": system, "version": version}
         return render_template(

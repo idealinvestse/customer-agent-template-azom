@@ -150,13 +150,41 @@ def actions_to_messenger_buttons(actions: ActionMarkup | None) -> list[dict[str,
     return buttons
 
 
+_MESSENGER_CHUNK_LIMIT = 1950
+
+
+def _chunk_messenger_text(text: str, *, limit: int = _MESSENGER_CHUNK_LIMIT) -> list[str]:
+    """Split Messenger reply into readable chunks <= ``limit`` without cutting words."""
+    clean = (text or "").strip()
+    if not clean:
+        return []
+    if len(clean) <= limit:
+        return [clean]
+    chunks: list[str] = []
+    rest = clean
+    while len(rest) > limit:
+        window = rest[:limit]
+        split_at = window.rfind("\n\n")
+        if split_at < limit // 3:
+            split_at = window.rfind("\n")
+        if split_at < limit // 3:
+            split_at = window.rfind(" ")
+        if split_at <= 0:
+            split_at = limit
+        chunks.append(rest[:split_at].rstrip())
+        rest = rest[split_at:].lstrip()
+    if rest:
+        chunks.append(rest)
+    return chunks
+
+
 def reply_to_messenger_messages(reply: BotReply | str) -> list[dict[str, Any]]:
-    """Build Send API message objects from BotReply."""
+    """Build Send API message objects from BotReply with paragraph-aware chunking."""
     from ecom_ops.bot.dashboard_links import link_footer
     from ecom_ops.bot.reply import telegram_markup_to_actions
 
     br = as_reply(reply)
-    text = (br.text or "")[:2000]
+    text = (br.text or "").strip()
     actions = br.actions
     if not actions and br.reply_markup:
         actions = telegram_markup_to_actions(br.reply_markup)
@@ -169,27 +197,77 @@ def reply_to_messenger_messages(reply: BotReply | str) -> list[dict[str, Any]]:
             if u and u not in shown_urls:
                 foot = link_footer(u)
                 if foot and foot not in text:
-                    text = f"{text.rstrip()}\n\n{foot}"
+                    text = f"{text.rstrip()}\n\n{foot}".strip()
                 break
-    messages: list[dict[str, Any]] = []
-    if buttons:
-        messages.append(
+    chunks = _chunk_messenger_text(text)
+    if not buttons:
+        return [{"text": chunk} for chunk in chunks] or [{"text": "(tomt svar)"}]
+
+    if not chunks:
+        return [
             {
                 "attachment": {
                     "type": "template",
                     "payload": {
                         "template_type": "button",
-                        "text": text[:640] or "Välj:",
+                        "text": "Välj:",
                         "buttons": buttons,
                     },
                 }
             }
-        )
-        if len(text) > 640:
-            messages.insert(0, {"text": text})
+        ]
+    messages: list[dict[str, Any]] = [{"text": chunk} for chunk in chunks[:-1]]
+    last_chunk = chunks[-1]
+    if len(last_chunk) > 640:
+        messages.append({"text": last_chunk})
+        button_text = "Åtgärd:"
     else:
-        messages.append({"text": text or "(tomt svar)"})
+        button_text = last_chunk or "Välj:"
+    messages.append(
+        {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "button",
+                    "text": button_text,
+                    "buttons": buttons,
+                },
+            }
+        }
+    )
     return messages
+
+
+def send_sender_action(
+    peer_id: str,
+    action: str = "typing_on",
+    *,
+    page_token: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Best-effort Messenger sender_action (e.g. typing_on). Never raises."""
+    token = (page_token or os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip()
+    body = {"recipient": {"id": str(peer_id)}, "sender_action": str(action)}
+    if dry_run or not token:
+        return {"ok": False, "dry_run": True, "body": body}
+    url = f"{GRAPH_API}/me/messages"
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {"ok": True}
+    except Exception as exc:
+        log.debug("Messenger sender_action failed: %s", exc)
+        return {"ok": False, "error": str(exc)[:200]}
 
 
 def send_messenger_message(

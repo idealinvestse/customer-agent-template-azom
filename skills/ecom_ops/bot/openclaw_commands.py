@@ -368,26 +368,40 @@ def cmd_model(ctx: CommandContext) -> str:
     if not arg or arg in {"status", "list"}:
         import os
 
-        route = (os.environ.get("AZOM_TELEGRAM_MODEL_ROUTE") or "").strip()
-        if route == "xai_grok_build":
+        from ecom_ops.model_router import get_model_router
+
+        tg_route = (os.environ.get("AZOM_TELEGRAM_MODEL_ROUTE") or "").strip()
+        router = get_model_router()
+        preferred = router.preferred_route_id() if hasattr(router, "preferred_route_id") else ""
+        active = tg_route or preferred or "openrouter"
+        if active in {"xai_grok_build", "xai_api_key"}:
             model = (os.environ.get("XAI_MODEL") or "grok-4").strip()
             return (
                 f"Model\n"
                 f"Session: {ctx.session.get('model', 'default')}\n"
-                f"Telegram: {route} · {model} (LLM-chat på fritext)\n"
-                "Session-pin används bara när Telegram-routen är OpenRouter."
+                f"Aktiv rutt: {active} · {model} (LLM-chat på fritext)\n"
+                "Session-pin används bara när aktiv/OpenRouter-rutt körs."
             )
+        if active == "chatgpt_oauth":
+            model = (os.environ.get("OPENAI_MODEL") or "gpt-5.2").strip()
+            return (
+                f"Model\n"
+                f"Session: {ctx.session.get('model', 'default')}\n"
+                f"Aktiv rutt: chatgpt_oauth · {model} (LLM-chat på fritext)\n"
+                "Session-pin används bara på OpenRouter-slots."
+            )
+        or_model = (os.environ.get("OPENROUTER_MODEL") or "deepseek/deepseek-v4.1-flash-1017").strip()
         return (
             f"Model\n"
             f"Session: {ctx.session.get('model', 'default')}\n"
-            f"Default: OPENROUTER_MODEL / deepseek/deepseek-v4.1-flash-1017 (LLM-chat på fritext)\n"
+            f"Aktiv rutt: openrouter · {or_model} (LLM-chat på fritext)\n"
             f"Sätt: /model <name> · /model default"
         )
     if arg == "default":
         ctx.save_session(model="default")
         return "Model pin cleared (default)."
     ctx.save_session(model=arg)
-    return f"Model pin: {arg} (används i LLM-chat)."
+    return f"Model pin: {arg} (används på OpenRouter-slots i LLM-chat)."
 
 
 def cmd_verbose(ctx: CommandContext) -> str:

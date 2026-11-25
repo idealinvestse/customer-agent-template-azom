@@ -67,8 +67,9 @@ AZOM_DASHBOARD_PUBLIC_URL=https://agent.azom.se
 - **Ingen** dashboard Basic Auth på webhooken.
 - Skydd: Meta verify-token (GET) + HMAC med `MESSENGER_APP_SECRET` (POST).
 - Prenumerera i Meta: `messages`, `messaging_postbacks`.
-- Dedup: per Messenger `mid`.
-- Svar: HTTP **200** efter per-event-hantering så Meta inte retry:ar hela batchen i onödan.
+- Dedup: atomisk per Messenger `mid` i SQLite (`AZOM_DATA_DIR/messenger_jobs.sqlite3`).
+- Asynkron kö & UX: `POST /webhooks/messenger` lägger eventet i `MessengerJobQueue` (`WAL`, max 2 bakgrundsarbetare, återställer `running` → `pending` vid omstart) och svarar HTTP **200** direkt i drift. Bakgrundsarbetaren skickar `sender_action: typing_on` och delar svar vid ≤1950 tecken per meddelande (knappar på sista chunken). (Under synkrona Flask-tester töms kön inline om inte `AZOM_MESSENGER_ASYNC_IN_TESTS=1` sätts.)
+- `AZOM_TELEGRAM_MODEL_ROUTE` påverkar bara Telegram (valfri `AZOM_MESSENGER_MODEL_ROUTE` för Messenger).
 
 ### Verifiera lokalt / på host
 

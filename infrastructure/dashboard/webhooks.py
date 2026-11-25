@@ -42,13 +42,11 @@ def register_webhook_routes(app: Flask) -> None:
 
         from ecom_ops.bot.handlers import BotHandler
         from ecom_ops.bot.messenger_adapter import (
-            mid_already_seen,
             parse_webhook_payload,
-            process_inbound,
-            send_bot_reply,
             verify_signature,
             verify_webhook_challenge,
         )
+        from ecom_ops.bot.messenger_queue import get_messenger_queue
         from ecom_ops.bot.store import ConversationStore
 
         if request.method == "GET":
@@ -71,33 +69,57 @@ def register_webhook_routes(app: Flask) -> None:
             payload = {}
         events = parse_webhook_payload(payload if isinstance(payload, dict) else {})
         data_dir = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
-        store = ConversationStore(path=data_dir / "messenger_state.json")
-        handler = BotHandler(store=store, channel="messenger")
         page_token = (os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip()
         dry = not page_token
         if dry:
             app.logger.error(
                 "MESSENGER_PAGE_ACCESS_TOKEN missing — outbound Messenger replies suppressed"
             )
-        handled = 0
-        errors = 0
+
+        def _make_handler() -> BotHandler:
+            store = ConversationStore(path=data_dir / "messenger_state.json")
+            return BotHandler(store=store, channel="messenger")
+
+        queue = get_messenger_queue(data_dir)
+        queued = 0
         skipped = 0
         for ev in events:
-            try:
-                if mid_already_seen(data_dir, ev.mid):
-                    skipped += 1
-                    continue
-                reply = process_inbound(ev, handler)
-                send_bot_reply(ev.peer_id, reply, dry_run=dry, page_token=page_token or None)
-                handled += 1
-            except Exception as exc:
-                errors += 1
-                app.logger.warning("Messenger event error: %s", exc)
+            enqueued, _ = queue.enqueue(ev)
+            if enqueued:
+                queued += 1
+            else:
+                skipped += 1
+
+        run_sync = bool(app.config.get("TESTING")) and os.environ.get(
+            "AZOM_MESSENGER_ASYNC_IN_TESTS"
+        ) != "1"
+        if run_sync:
+            handled, errors = queue.drain_pending_sync(
+                handler_factory=_make_handler,
+                page_token=page_token or None,
+                dry_run=dry,
+            )
+            return jsonify(
+                {
+                    "ok": errors == 0,
+                    "handled": handled,
+                    "errors": errors,
+                    "skipped": skipped,
+                }
+            ), 200
+
+        if queued:
+            queue.ensure_started(
+                handler_factory=_make_handler,
+                page_token=page_token or None,
+                dry_run=dry,
+            )
         return jsonify(
             {
-                "ok": errors == 0,
-                "handled": handled,
-                "errors": errors,
+                "ok": True,
+                "handled": queued,
+                "queued": queued,
+                "errors": 0,
                 "skipped": skipped,
             }
         ), 200

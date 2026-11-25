@@ -153,17 +153,40 @@ def sanitize_text(text: str, *, max_len: int = 8000) -> str:
     return cleaned
 
 
+_SAFE_TOKEN_COUNTER_KEYS = frozenset(
+    {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
+        "input_tokens",
+        "output_tokens",
+    }
+)
+
+
 def redact_secrets(payload: Any) -> Any:
     """Recursively redact known secret keys from logs/telemetry.
 
     Matches both substring patterns (SECRET/PASSWORD/TOKEN/API_KEY/PRIVATE_KEY)
     and the explicit ``SECRET_ENV_KEYS`` allowlist (covers keys like
-    ``WOO_CONSUMER_KEY`` that lack the substring markers).
+    ``WOO_CONSUMER_KEY`` that lack the substring markers). Exact numeric LLM
+    usage counters (e.g. ``prompt_tokens``) are preserved so token telemetry is
+    observable without exposing credential tokens.
     """
     if isinstance(payload, dict):
         out = {}
         for k, v in payload.items():
-            key_upper = str(k).upper()
+            key_str = str(k)
+            if (
+                key_str in _SAFE_TOKEN_COUNTER_KEYS
+                and isinstance(v, (int, float))
+                and not isinstance(v, bool)
+            ):
+                out[k] = v
+                continue
+            key_upper = key_str.upper()
             if any(
                 s in key_upper
                 for s in (
@@ -178,7 +201,7 @@ def redact_secrets(payload: Any) -> Any:
                 )
             ):
                 out[k] = "***REDACTED***"
-            elif str(k) in SECRET_ENV_KEYS:
+            elif key_str in SECRET_ENV_KEYS:
                 out[k] = "***REDACTED***"
             else:
                 out[k] = redact_secrets(v)

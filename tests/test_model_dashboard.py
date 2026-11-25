@@ -198,3 +198,166 @@ def test_xai_login_status_updates_without_reload(tmp_path, monkeypatch):
     )
     assert bad.status_code == 200
     assert "Ogiltigt" in bad.get_data(as_text=True)
+
+
+def test_oscar_openrouter_model_test_records_telemetry(tmp_path, monkeypatch):
+    import json
+
+    from ecom_ops.model_router.base import ModelResult
+    from ecom_ops.model_router.router import ModelRouter
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    monkeypatch.chdir(DASH_DIR)
+    app = _load_dashboard_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    def _fake_complete_route(self, route_id, request, *, telemetry=None):
+        return ModelResult(
+            content="PONG",
+            provider="openrouter",
+            route_id=route_id,
+            model="openai/gpt-4o-mini",
+            cost_usd=0.0012,
+            usage_known=True,
+            prompt_tokens=10,
+            completion_tokens=2,
+            total_tokens=12,
+        )
+
+    monkeypatch.setattr(ModelRouter, "complete_route", _fake_complete_route)
+
+    resp = client.post(
+        "/oscar/models/test",
+        headers=_auth(client=client),
+        data={"route_id": "openrouter"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert "Modelltest ok utan fallback" in resp.get_data(as_text=True)
+
+    tel_file = tmp_path / "data" / "telemetry.jsonl"
+    assert tel_file.is_file()
+    rows = [json.loads(line) for line in tel_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    test_rows = [r for r in rows if r["action"] == "llm_model_test"]
+    assert test_rows
+    assert test_rows[-1]["site"] == "azom"
+    assert test_rows[-1]["cost_usd"] == 0.0012
+
+
+def test_oscar_profile_mounts_save_test_reset_and_breaker_reset(tmp_path, monkeypatch):
+    import json
+
+    from ecom_ops.model_router.base import ModelResult
+    from ecom_ops.model_router.circuit_breaker import record_failure
+    from ecom_ops.model_router.errors import ModelUnavailableError
+    from ecom_ops.model_router.router import ModelRouter
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.chdir(DASH_DIR)
+    app = _load_dashboard_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    # Jonatan cannot mutate profiles or reset breaker
+    j_hdrs = _auth("jonatan", "jonatan")
+    with client.session_transaction() as sess:
+        sess["csrf_token"] = "j-csrf"
+    j_hdrs["X-CSRF-Token"] = "j-csrf"
+    for path in (
+        "/oscar/models/profiles/save",
+        "/oscar/models/profiles/test",
+        "/oscar/models/profiles/reset",
+        "/oscar/models/breaker/reset",
+    ):
+        assert client.post(path, headers=j_hdrs, data={"profile_id": "cases_draft"}).status_code == 403
+
+    # Oscar saves a profile override
+    save_resp = client.post(
+        "/oscar/models/profiles/save",
+        headers=_auth(client=client),
+        data={
+            "profile_id": "cases_draft",
+            "prompt_ref": "draft",
+            "max_output_tokens": "900",
+            "temperature": "0.25",
+            "reasoning_effort": "medium",
+            "idle_s": "20",
+            "hard_s": "50",
+            "slot_id": "primary",
+            "route_id": "openrouter",
+            "model_id": "openai/gpt-4o-mini",
+            "enabled_0": "on",
+        },
+        follow_redirects=True,
+    )
+    assert save_resp.status_code == 200
+    assert "Profil cases_draft sparad" in save_resp.get_data(as_text=True)
+    assert (tmp_path / "data" / "model_profiles.override.yaml").is_file()
+
+    # Isolated slot test
+    seen = {}
+
+    def _fake_complete_slot(self, profile_id, slot_id, request, *, telemetry=None):
+        seen["profile_id"] = profile_id
+        seen["slot_id"] = slot_id
+        return ModelResult(
+            content="PONG",
+            provider="openrouter",
+            route_id="openrouter",
+            model="openai/gpt-4o-mini",
+            cost_usd=0.0005,
+        )
+
+    monkeypatch.setattr(ModelRouter, "complete_slot", _fake_complete_slot)
+    slot_resp = client.post(
+        "/oscar/models/profiles/test",
+        headers=_auth(client=client),
+        data={"profile_id": "cases_draft", "slot_id": "primary"},
+        follow_redirects=True,
+    )
+    assert slot_resp.status_code == 200
+    assert seen == {"profile_id": "cases_draft", "slot_id": "primary"}
+    assert "Slot cases_draft/primary ok utan fallback" in slot_resp.get_data(as_text=True)
+
+    # Circuit breaker visible and resettable (2 unavailable errors trip threshold=2)
+    record_failure("openrouter", "openai/gpt-4o-mini", ModelUnavailableError("down"))
+    record_failure("openrouter", "openai/gpt-4o-mini", ModelUnavailableError("down"))
+    before_reset = client.get("/oscar", headers=_auth())
+    assert "open (" in before_reset.get_data(as_text=True)
+
+    brk_resp = client.post(
+        "/oscar/models/breaker/reset",
+        headers=_auth(client=client),
+        data={"breaker_key": "route:openrouter"},
+        follow_redirects=True,
+    )
+    assert brk_resp.status_code == 200
+    assert "Circuit breaker nollställd" in brk_resp.get_data(as_text=True)
+    after_reset = client.get("/oscar", headers=_auth())
+    assert "open (" not in after_reset.get_data(as_text=True)
+
+    # Profile reset
+    rst_resp = client.post(
+        "/oscar/models/profiles/reset",
+        headers=_auth(client=client),
+        data={"profile_id": "cases_draft"},
+        follow_redirects=True,
+    )
+    assert rst_resp.status_code == 200
+    assert "Profilstandard återställd" in rst_resp.get_data(as_text=True)
+
+    audit_lines = [
+        json.loads(line)
+        for line in (tmp_path / "data" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    actions = {row["action"] for row in audit_lines}
+    assert {"model_profile_save", "model_breaker_reset", "model_profile_reset"} <= actions

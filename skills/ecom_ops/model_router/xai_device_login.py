@@ -72,16 +72,13 @@ def _read_status() -> dict[str, str]:
 
 
 def _write_status(status: dict[str, str]) -> None:
+    from ecom_ops.model_router.store import atomic_write_text
+
     path = _status_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     safe = _blank()
     for key in safe:
         safe[key] = str(status.get(key) or "")[:300]
-    path.write_text(json.dumps(safe), encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    atomic_write_text(path, json.dumps(safe), mode=0o600)
 
 
 def device_login_status() -> dict[str, str]:
@@ -90,6 +87,8 @@ def device_login_status() -> dict[str, str]:
 
 
 def _enable_grok_build() -> None:
+    from ecom_ops.model_router.store import atomic_write_text
+
     os.environ["AZOM_XAI_GROK_BUILD"] = "1"
     path = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data")) / "runtime.env"
     lines: list[str] = []
@@ -99,12 +98,7 @@ def _enable_grok_build() -> None:
                 continue
             lines.append(line)
     lines.append("AZOM_XAI_GROK_BUILD=1")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    atomic_write_text(path, "\n".join(lines).strip() + "\n", mode=0o600)
     from ecom_ops.runtime_env import apply_overlays
 
     apply_overlays()

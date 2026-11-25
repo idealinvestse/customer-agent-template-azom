@@ -26,6 +26,20 @@ class ModelAuthError(ModelRouteError):
 class ModelRateLimitError(ModelRouteError):
     """Provider rejected the request because of quota or rate limiting."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "",
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.retry_after = retry_after
+
 
 class ModelUnavailableError(ModelRouteError):
     """Provider is temporarily unavailable or returned an unexpected response."""
+
+
+class ModelSchemaError(ModelRouteError):
+    """Model returned output that failed structured validation."""

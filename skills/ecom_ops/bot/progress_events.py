@@ -323,6 +323,29 @@ class LiveStatusBoard:
             )
             return self.record(ev, now=ts)
 
+        if phase == "profile_switch":
+            from_p = sanitize_status_fragment(info.get("from_profile") or "", max_len=40)
+            to_p = sanitize_status_fragment(info.get("to_profile") or "", max_len=40)
+            ev = ProgressEvent(
+                step_id=f"profile-switch-{len(self.step_order) + 1}",
+                tool="model_router",
+                label="Byter modellprofil",
+                phase="route_switch",
+                outcome=f"{from_p} → {to_p}",
+            )
+            return self.record(ev, now=ts)
+
+        if phase == "circuit_skipped":
+            br_state = sanitize_status_fragment(info.get("breaker_state") or "open", max_len=24)
+            ev = ProgressEvent(
+                step_id=f"circuit-skip-{route_id or 'route'}",
+                tool="model_router",
+                label=f"Hoppade över {route_id or 'rutt'}",
+                phase="skipped",
+                outcome=f"viloläge ({br_state})",
+            )
+            return self.record(ev, now=ts)
+
         if phase == "completed":
             self.model_phase = ""
             self.model_phase_started_at = None

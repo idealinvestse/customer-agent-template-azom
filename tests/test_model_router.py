@@ -137,3 +137,80 @@ def test_unknown_complete_route():
     router = ModelRouter()
     with pytest.raises(ModelConfigError):
         router.complete_route("nope", _request())
+
+
+def test_xai_api_key_logs_estimated_external_cost_without_openrouter_cap(monkeypatch, tmp_path):
+    import responses as rsps_mod
+
+    from ecom_ops.model_router.xai_api_key import XAI_CHAT_URL, XaiApiKeyRoute
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+    monkeypatch.setenv("XAI_MODEL", "grok-4.1-fast")
+    tel = Telemetry(tmp_path / "telemetry.jsonl")
+    route = XaiApiKeyRoute()
+
+    with rsps_mod.RequestsMock() as rsps:
+        rsps.add(
+            rsps_mod.POST,
+            XAI_CHAT_URL,
+            json={
+                "choices": [{"message": {"content": "Svar"}}],
+                "usage": {"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
+            },
+            status=200,
+        )
+        res = route.complete(
+            ModelRequest(messages=[{"role": "user", "content": "hej"}]),
+            telemetry=tel,
+        )
+
+    assert res.cost_usd == 0.0
+    assert res.estimated_external_cost_usd > 0.0
+    events = [json.loads(line) for line in (tmp_path / "telemetry.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert events[-1]["action"] == "model_xai_api"
+    assert events[-1]["cost_usd"] == 0.0
+    assert events[-1]["meta"]["cost_kind"] == "estimated_external"
+    assert events[-1]["meta"]["estimated_cost_usd"] > 0.0
+    assert events[-1]["meta"]["prompt_tokens"] == 1000
+
+
+def test_complete_route_emits_router_telemetry_and_normalizes_openrouter_alias(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    tel = Telemetry(tmp_path / "telemetry.jsonl")
+    router = ModelRouter()
+    router.openrouter = _Ok("openrouter", "openrouter", content="hej")
+
+    res = router.complete_route("openrouter_api_key", _request(), telemetry=tel)
+    assert res.content == "hej"
+    assert router.openrouter.calls == 1
+    events = [json.loads(line) for line in (tmp_path / "telemetry.jsonl").read_text(encoding="utf-8").splitlines()]
+    router_events = [e for e in events if e["action"] == "model_route_selected"]
+    assert router_events
+    assert router_events[-1]["meta"]["selected_route"] == "openrouter"
+    assert router_events[-1]["meta"]["route_id"] == "openrouter"
+
+
+def test_redact_secrets_preserves_numeric_token_counters():
+    from ecom_ops.security import redact_secrets
+
+    cleaned = redact_secrets(
+        {
+            "prompt_tokens": 120,
+            "completion_tokens": 30,
+            "total_tokens": 150,
+            "cached_tokens": 10,
+            "reasoning_tokens": 5,
+            "access_token": "secret-val",
+            "token_secret": "another-secret",
+            "ok": True,
+        }
+    )
+    assert cleaned["prompt_tokens"] == 120
+    assert cleaned["completion_tokens"] == 30
+    assert cleaned["total_tokens"] == 150
+    assert cleaned["cached_tokens"] == 10
+    assert cleaned["reasoning_tokens"] == 5
+    assert cleaned["access_token"] == "***REDACTED***"
+    assert cleaned["token_secret"] == "***REDACTED***"
+    assert cleaned["ok"] is True

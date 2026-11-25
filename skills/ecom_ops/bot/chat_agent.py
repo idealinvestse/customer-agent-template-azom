@@ -34,7 +34,7 @@ from ecom_ops.bot.progress_events import (
 )
 from ecom_ops.bot.site_content import site_content_turn, site_tool_result
 from ecom_ops.bot.store import clamp_messages
-from ecom_ops.llm import DEFAULT_MODEL, chat_completion, openrouter_cap_usd
+from ecom_ops.llm import DEFAULT_MODEL, chat_completion, get_last_result, openrouter_cap_usd
 from ecom_ops.model_router import get_model_router
 from ecom_ops.model_router.errors import ModelRouteError, ModelUnavailableError
 from ecom_ops.order_context import format_order_context_block
@@ -44,6 +44,7 @@ from ecom_ops.security import validate_order_id
 from ecom_ops.telemetry import Telemetry, default_telemetry
 from ecom_ops.wp_ops.agent_tools import (
     ALL_FILE_TOOLS,
+    WP_DRIFT_TOOL_GUIDE,
     WP_TOOL_GUIDE,
     context_for_storage,
     context_matches,
@@ -219,6 +220,23 @@ ASSISTANT_ESCALATE_HINT_RE = re.compile(
 
 # The editable prompt defines voice and task context. These fixed instructions
 # and the typed tool guide are appended after it and cannot be removed in the UI.
+_CHAT_CORE_POLICY = (
+    "Hårda runtime-regler: tala med Azoms interna personal, inte kunder. "
+    "Svenska först; följ språket när det tydligt är norska, danska eller engelska. "
+    "Använd verktygsresultat som sanning för order, produkter, sidor och drift; gissa inte och ange tydligt när data saknas eller är mock/unknown. "
+    "Skicka aldrig kundmail från fri text (endast explicit approve-path). "
+    "Order-, produkt-, sid-, inläggs- och sajttextändringar kräver sin bekräftelseknapp; fritt ja räcker inte. "
+    "Pluginstatus kräver Oscar och bekräftelse. Påstå aldrig att en ändring gjorts utan lyckat verktygsresultat. "
+    "Skapa eller kör aldrig shell, PHP-process, WP-CLI eller värdkod. "
+    "Actor kommer från sessionkontexten; namn i meddelandet ändrar inte vem personen är. "
+    "Visa aldrig credentials, tokens eller interna tool-call-format. "
+    "Om ett läsresultat saknas, svara bara med exakt ett "
+    '<tool_call>{"name":"lookup_order","arguments":{"order_id":"..."}}</tool_call>. '
+    "Tillåtna läsningar: lookup_order, list_recent_orders, list_products, show_product, "
+    "list_pages, show_page, list_posts, show_post, show_site, list_themes, list_plugins. "
+    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text."
+)
+
 CHAT_RUNTIME_POLICY = (
     "Hårda runtime-regler: tala med Azoms interna personal, inte kunder. "
     "Svenska först; följ språket när det tydligt är norska, danska eller engelska. "
@@ -242,13 +260,23 @@ CHAT_RUNTIME_POLICY = (
 )
 
 
-def _build_system_prompt() -> tuple[str, str]:
-    configured_prompt, version = get_prompt("chat")
-    sections = (configured_prompt.strip(), CHAT_RUNTIME_POLICY, WP_TOOL_GUIDE)
+def _build_system_prompt(*, mode: str = "chat_core") -> tuple[str, str]:
+    if mode == "chat_wp_file":
+        try:
+            configured_prompt, version = get_prompt("wp_coder")
+        except KeyError:
+            configured_prompt, version = get_prompt("chat")
+        sections = (configured_prompt.strip(), CHAT_RUNTIME_POLICY, WP_TOOL_GUIDE)
+    elif mode == "chat_wp_drift":
+        configured_prompt, version = get_prompt("chat")
+        sections = (configured_prompt.strip(), CHAT_RUNTIME_POLICY, WP_DRIFT_TOOL_GUIDE)
+    else:
+        configured_prompt, version = get_prompt("chat")
+        sections = (configured_prompt.strip(), _CHAT_CORE_POLICY)
     return "\n\n".join(section for section in sections if section), version
 
 
-SYSTEM_PROMPT, _SYSTEM_PROMPT_VERSION = _build_system_prompt()
+SYSTEM_PROMPT, _SYSTEM_PROMPT_VERSION = _build_system_prompt(mode="chat_wp_file")
 
 
 class _SafeTextStream:
@@ -846,6 +874,46 @@ def _max_tokens(session: dict[str, Any]) -> int:
     return 650
 
 
+def _think_effort(session: dict[str, Any]) -> str | None:
+    think = str(session.get("think") or "default").lower()
+    if think in {"high", "max", "deep"}:
+        return "high"
+    if think in {"low", "min", "off"}:
+        return "low"
+    return None
+
+
+def _clip_history_for_profile(
+    hist: list[dict[str, str]],
+    *,
+    max_turns: int = 16,
+    max_chars: int = 16000,
+    max_assistant_chars: int = 2000,
+) -> list[dict[str, str]]:
+    """Trim conversation history by turn count and character budget for LLM calls."""
+    if not hist or max_turns <= 0 or max_chars <= 0:
+        return []
+    sliced = hist[-max_turns:]
+    prepared: list[dict[str, str]] = []
+    for item in sliced:
+        role = str(item.get("role") or "user")
+        content = str(item.get("content") or "")
+        if role == "assistant" and len(content) > max_assistant_chars:
+            half = max(100, (max_assistant_chars - 24) // 2)
+            content = f"{content[:half]}\n...[kortad]...\n{content[-half:]}"
+        prepared.append({"role": role, "content": content})
+    kept: list[dict[str, str]] = []
+    total = 0
+    for item in reversed(prepared):
+        cost = len(item["content"])
+        if kept and total + cost > max_chars:
+            break
+        kept.append(item)
+        total += cost
+    kept.reverse()
+    return kept
+
+
 def _extract_order_id(text: str) -> str | None:
     from ecom_ops.actions.support import extract_order_id
 
@@ -994,8 +1062,10 @@ def _prefetch_listed_orders(
     total = len(chosen)
     last_id: str | None = None
     prov = _provenance()
-    for index, oid in enumerate(chosen, start=1):
-        if on_checkpoint is not None:
+
+    if on_checkpoint is not None:
+        # Cooperative cancel/steer path: check between each order so /cancel aborts immediately.
+        for index, oid in enumerate(chosen, start=1):
             incoming = on_checkpoint() or []
             accepted = [str(v).strip()[:8000] for v in incoming if str(v).strip()][:3]
             if accepted:
@@ -1011,6 +1081,63 @@ def _prefetch_listed_orders(
                         legacy_text="Följdfråga infogad vid säker kontrollpunkt.",
                     ),
                 )
+            if _phase_expired(started_at):
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id="prefetch-timeout",
+                        tool="lookup_order",
+                        label="Verktygsrunda",
+                        phase="failed",
+                        outcome="tidsgränsen 90s nådd",
+                        error_class="timeout",
+                        legacy_text=(
+                            "Verktygsrundan avbröts. Tidsgränsen på 90 sekunder är nådd. "
+                            "Hämtade resultat behålls."
+                        ),
+                    ),
+                )
+                break
+            step_id = f"prefetch-order-{oid}-{index}"
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="lookup_order",
+                    label="Orderuppslag",
+                    phase="started",
+                    step_index=index,
+                    step_total=total,
+                    provenance=prov,
+                    detail=f"order {oid}",
+                    legacy_text=f"Hämtar order {oid} ({index}/{total}) från Woo.",
+                ),
+            )
+            t0 = time.monotonic()
+            body = tool_lookup_order(oid, domain=domain)
+            elapsed_ms = int(round((time.monotonic() - t0) * 1000))
+            ok, outcome = _inspect_tool_outcome("lookup_order", str(body))
+            state = "Woo svarade" if ok else "Woo svarade inte"
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="lookup_order",
+                    label="Orderuppslag",
+                    phase="completed" if ok else "failed",
+                    step_index=index,
+                    step_total=total,
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    detail=f"order {oid}",
+                    outcome=outcome,
+                    error_class=None if ok else "order_lookup_failed",
+                    legacy_text=f"Order {oid} ({index}/{total}): {state}.",
+                ),
+            )
+            pref.results.append(("lookup_order", body))
+            last_id = oid
+    else:
         if _phase_expired(started_at):
             emit_progress(
                 on_progress,
@@ -1027,46 +1154,64 @@ def _prefetch_listed_orders(
                     ),
                 ),
             )
-            break
-        step_id = f"prefetch-order-{oid}-{index}"
-        emit_progress(
-            on_progress,
-            ProgressEvent(
-                step_id=step_id,
-                tool="lookup_order",
-                label="Orderuppslag",
-                phase="started",
-                step_index=index,
-                step_total=total,
-                provenance=prov,
-                detail=f"order {oid}",
-                legacy_text=f"Hämtar order {oid} ({index}/{total}) från Woo.",
-            ),
-        )
-        t0 = time.monotonic()
-        body = tool_lookup_order(oid, domain=domain)
-        elapsed_ms = int(round((time.monotonic() - t0) * 1000))
-        ok, outcome = _inspect_tool_outcome("lookup_order", str(body))
-        state = "Woo svarade" if ok else "Woo svarade inte"
-        emit_progress(
-            on_progress,
-            ProgressEvent(
-                step_id=step_id,
-                tool="lookup_order",
-                label="Orderuppslag",
-                phase="completed" if ok else "failed",
-                step_index=index,
-                step_total=total,
-                elapsed_ms=elapsed_ms,
-                provenance=prov,
-                detail=f"order {oid}",
-                outcome=outcome,
-                error_class=None if ok else "order_lookup_failed",
-                legacy_text=f"Order {oid} ({index}/{total}): {state}.",
-            ),
-        )
-        pref.results.append(("lookup_order", body))
-        last_id = oid
+            return steers[:3]
+
+        for index, oid in enumerate(chosen, start=1):
+            step_id = f"prefetch-order-{oid}-{index}"
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="lookup_order",
+                    label="Orderuppslag",
+                    phase="started",
+                    step_index=index,
+                    step_total=total,
+                    provenance=prov,
+                    detail=f"order {oid}",
+                    legacy_text=f"Hämtar order {oid} ({index}/{total}) från Woo.",
+                ),
+            )
+
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _fetch_one(oid_val: str) -> tuple[str, int]:
+            t0 = time.monotonic()
+            res = tool_lookup_order(oid_val, domain=domain)
+            return res, int(round((time.monotonic() - t0) * 1000))
+
+        workers = min(4, max(1, total))
+        if workers == 1:
+            fetched = [_fetch_one(chosen[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(_fetch_one, oid) for oid in chosen]
+                fetched = [fut.result() for fut in futures]
+
+        for index, (oid, (body, elapsed_ms)) in enumerate(zip(chosen, fetched, strict=True), start=1):
+            step_id = f"prefetch-order-{oid}-{index}"
+            ok, outcome = _inspect_tool_outcome("lookup_order", str(body))
+            state = "Woo svarade" if ok else "Woo svarade inte"
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="lookup_order",
+                    label="Orderuppslag",
+                    phase="completed" if ok else "failed",
+                    step_index=index,
+                    step_total=total,
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    detail=f"order {oid}",
+                    outcome=outcome,
+                    error_class=None if ok else "order_lookup_failed",
+                    legacy_text=f"Order {oid} ({index}/{total}): {state}.",
+                ),
+            )
+            pref.results.append(("lookup_order", body))
+            last_id = oid
+
     if last_id:
         pref.sticky_order_id = last_id
         pref.digest = _make_digest(pref.results)
@@ -2467,61 +2612,104 @@ def run_chat(
             return {"on_phase_change": on_phase_change}
         return {}
 
+    def _profile_kwargs(pid: str, *, pin: str | None = None) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if _accepts_kwarg(chat_completion, "profile_id"):
+            out["profile_id"] = pid
+        if pin and _accepts_kwarg(chat_completion, "model_pin"):
+            out["model_pin"] = pin
+        return out
+
+    # Channel-scoped route pin: AZOM_TELEGRAM_MODEL_ROUTE applies to Telegram only;
+    # optional AZOM_MESSENGER_MODEL_ROUTE applies to Messenger only.
+    if channel == "telegram":
+        channel_route = (os.environ.get("AZOM_TELEGRAM_MODEL_ROUTE") or "").strip()
+    elif channel == "messenger":
+        channel_route = (os.environ.get("AZOM_MESSENGER_MODEL_ROUTE") or "").strip()
+    else:
+        channel_route = ""
+    if channel_route not in {"chatgpt_oauth", "xai_grok_build", "xai_api_key", "openrouter"}:
+        channel_route = ""
+    route_id = channel_route or None
+    session_pin = _session_model(session)
+    if channel_route == "openrouter" or (
+        not channel_route and router.preferred_route_id() == "openrouter"
+    ):
+        model = session_pin or os.environ.get("OPENROUTER_MODEL") or DEFAULT_MODEL
+    elif channel_route in {"xai_grok_build", "xai_api_key"}:
+        model = (os.environ.get("XAI_MODEL") or "").strip() or None
+    elif channel_route == "chatgpt_oauth":
+        model = (os.environ.get("OPENAI_MODEL") or "").strip() or None
+    else:
+        model = None
+
+    has_wp_code_intent = bool(WP_CODE_INTENT_RE.search(user_message))
+    has_wp_drift_intent = bool(WP_OPS_INTENT_RE.search(user_message))
+    if has_wp_code_intent:
+        prompt_mode = "chat_wp_file"
+        default_profile_id = "wp_tool_router"
+    elif has_wp_site_context or has_wp_drift_intent:
+        prompt_mode = "chat_wp_drift"
+        default_profile_id = "wp_tool_router"
+    else:
+        prompt_mode = "chat_core"
+        default_profile_id = "chat_general"
+
     def _complete_stream(
         prompt_messages: list[dict[str, str]],
         *,
         timeout: int = 30,
         max_tokens: int | None = None,
+        temperature: float | None = None,
+        reasoning_effort: str | None = None,
+        hard_timeout: int | None = None,
+        profile_id: str | None = None,
     ) -> tuple[str, float]:
+        chosen_profile = profile_id or default_profile_id
+        chosen_max = max_tokens if max_tokens is not None else _max_tokens(session)
+        if channel == "messenger" and chosen_profile == "chat_general" and max_tokens is None:
+            chosen_max = min(chosen_max, 650)
+        eff = reasoning_effort if reasoning_effort is not None else _think_effort(session)
+        extra_eff = {"reasoning_effort": eff} if eff and _accepts_kwarg(chat_completion, "reasoning_effort") else {}
+        extra_ht = {"hard_timeout": hard_timeout} if hard_timeout and _accepts_kwarg(chat_completion, "hard_timeout") else {}
         stream = _SafeTextStream(on_text_delta, on_text_reset, clear_stream)
         content, cost = chat_completion(
             prompt_messages,
             model=model,
             route_id=route_id,
-            max_tokens=max_tokens if max_tokens is not None else _max_tokens(session),
-            temperature=_think_temperature(session),
+            max_tokens=chosen_max,
+            temperature=temperature if temperature is not None else _think_temperature(session),
             timeout=timeout,
             telemetry=tel,
             site=site,
             actor=actor,
             on_text_delta=stream.push if on_text_delta else None,
             on_text_reset=stream.reset if on_text_delta else None,
+            **extra_eff,
+            **extra_ht,
+            **_profile_kwargs(chosen_profile, pin=session_pin),
             **_phase_kwargs(),
         )
         stream.finish(content)
         return content, cost
 
-    system_prompt, prompt_version = _build_system_prompt()
+    system_prompt, prompt_version = _build_system_prompt(mode=prompt_mode)
+    if prompt_mode == "chat_wp_file":
+        clipped_hist = _clip_history_for_profile(hist, max_turns=10, max_chars=6000, max_assistant_chars=1500)
+    else:
+        clipped_hist = _clip_history_for_profile(hist, max_turns=16, max_chars=16000, max_assistant_chars=2000)
+
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    messages.extend(hist)
+    messages.extend(clipped_hist)
     if tool_block:
         messages.append({"role": "system", "content": tool_block})
     _checkpoint()
     messages.extend({"role": "user", "content": value} for value in turn_user_messages)
 
-    # OpenRouter slugs must not be sent to ChatGPT or xAI. Those routes
-    # pick OPENAI_MODEL / XAI_MODEL when model is omitted. A session pin
-    # applies only when the Telegram route, or the first configured route,
-    # is OpenRouter. AZOM_TELEGRAM_MODEL_ROUTE calls that one route.
-    telegram_route = (os.environ.get("AZOM_TELEGRAM_MODEL_ROUTE") or "").strip()
-    if telegram_route not in {"chatgpt_oauth", "xai_grok_build", "xai_api_key", "openrouter"}:
-        telegram_route = ""
-    route_id = telegram_route or None
-    if telegram_route == "openrouter" or (
-        not telegram_route and router.preferred_route_id() == "openrouter"
-    ):
-        model = _session_model(session) or os.environ.get("OPENROUTER_MODEL") or DEFAULT_MODEL
-    elif telegram_route in {"xai_grok_build", "xai_api_key"}:
-        model = (os.environ.get("XAI_MODEL") or "").strip() or None
-    elif telegram_route == "chatgpt_oauth":
-        model = (os.environ.get("OPENAI_MODEL") or "").strip() or None
-    else:
-        model = None
-
     def _xai_round() -> bool:
-        if telegram_route in {"xai_grok_build", "xai_api_key"}:
+        if channel_route in {"xai_grok_build", "xai_api_key"}:
             return True
-        if telegram_route:
+        if channel_route:
             return False
         return router.preferred_route_id() in {"xai_grok_build", "xai_api_key"}
 
@@ -2540,8 +2728,9 @@ def run_chat(
             actor=actor,
             on_text_delta=stream.push if on_text_delta else None,
             on_text_reset=stream.reset if on_text_delta else None,
-            reasoning_effort=_FAST_TOOL_EFFORT if _xai_round() else None,
+            reasoning_effort=_FAST_TOOL_EFFORT if _xai_round() else (_think_effort(session) or "low"),
             hard_timeout=_TOOL_ROUND_HARD if _xai_round() else None,
+            **_profile_kwargs("chat_fast_tools", pin=session_pin),
             **_phase_kwargs(),
         )
         stream.finish(content)
@@ -2580,7 +2769,7 @@ def run_chat(
                 action="llm_telegram_chat_error",
                 site=site,
                 cost_usd=0.0,
-                meta={"error": type(exc).__name__, "error_code": exc.code},
+                meta={"error": type(exc).__name__, "error_code": exc.code, "profile_id": "chat_fast_tools"},
             )
             text = _no_llm_text(
                 "error",
@@ -2590,13 +2779,12 @@ def run_chat(
     else:
         wp_tokens = max(_max_tokens(session), 2048)
         file_tokens = 4096
-        has_wp_code_intent = bool(WP_CODE_INTENT_RE.search(user_message))
         initial_max_tokens = (
             file_tokens
             if (has_wp_site_context and has_wp_code_intent)
             else (
                 wp_tokens
-                if has_wp_site_context or WP_OPS_INTENT_RE.search(user_message) or has_wp_code_intent
+                if has_wp_site_context or has_wp_drift_intent or has_wp_code_intent
                 else None
             )
         )
@@ -2611,13 +2799,28 @@ def run_chat(
                     legacy_text="💭 Formulerar svar…",
                 ),
             )
-            content, cost = _complete_stream(messages, max_tokens=initial_max_tokens)
+            content, cost = _complete_stream(
+                messages,
+                max_tokens=initial_max_tokens,
+                profile_id=default_profile_id,
+            )
         except ModelRouteError as exc:
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id="model-draft",
+                    tool="model_router",
+                    label="Formulerar svar",
+                    phase="failed",
+                    outcome="LLM ej nåbar · visar verktygsdata" if tool_bits else "LLM ej nåbar",
+                    error_class=type(exc).__name__,
+                ),
+            )
             tel.record(
                 action="llm_telegram_chat_error",
                 site=site,
                 cost_usd=0.0,
-                meta={"error": type(exc).__name__, "error_code": exc.code},
+                meta={"error": type(exc).__name__, "error_code": exc.code, "profile_id": default_profile_id},
             )
             text = _no_llm_text(
                 "error",
@@ -2635,14 +2838,29 @@ def run_chat(
                 {"role": "user", "content": value} for value in initial_steers
             )
             try:
-                content, added_cost = _complete_stream(messages, max_tokens=initial_max_tokens)
+                content, added_cost = _complete_stream(
+                    messages,
+                    max_tokens=initial_max_tokens,
+                    profile_id=default_profile_id,
+                )
                 cost += added_cost
             except ModelRouteError as exc:
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id="model-draft",
+                        tool="model_router",
+                        label="Formulerar svar",
+                        phase="failed",
+                        outcome="LLM ej nåbar · visar verktygsdata" if tool_bits else "LLM ej nåbar",
+                        error_class=type(exc).__name__,
+                    ),
+                )
                 tel.record(
                     action="llm_telegram_chat_error",
                     site=site,
                     cost_usd=0.0,
-                    meta={"error": type(exc).__name__, "error_code": exc.code},
+                    meta={"error": type(exc).__name__, "error_code": exc.code, "profile_id": default_profile_id},
                 )
                 text = _no_llm_text("error", tools_suffix="\n\n(LLM nere - visar verktygsdata.)")
                 return ChatResult(text=text, messages=_with_turn(text), **_base())
@@ -2657,7 +2875,12 @@ def run_chat(
         if _use_file_tool_loop(content):
             file_loop_kwargs: dict[str, Any] = {
                 "complete": lambda followup_messages: _complete_stream(
-                    followup_messages, timeout=30, max_tokens=file_tokens
+                    followup_messages,
+                    timeout=30,
+                    max_tokens=file_tokens,
+                    temperature=0.1,
+                    reasoning_effort="low",
+                    profile_id="wp_tool_router",
                 ),
                 "actor": actor,
                 "channel": channel,
@@ -2665,6 +2888,18 @@ def run_chat(
                 "context": loop_context,
                 "before_tool": lambda: _steers_before_tool(),
             }
+            if _accepts_kwarg(run_bounded_file_tool_loop, "complete_deep"):
+                file_loop_kwargs["complete_deep"] = lambda followup_messages: _complete_stream(
+                    followup_messages,
+                    timeout=35,
+                    max_tokens=file_tokens,
+                    temperature=0.12,
+                    reasoning_effort=_think_effort(session) or "medium",
+                    hard_timeout=120,
+                    profile_id="wp_code_deep",
+                )
+            if on_phase_change is not None and _accepts_kwarg(run_bounded_file_tool_loop, "on_phase_change"):
+                file_loop_kwargs["on_phase_change"] = on_phase_change
             if on_progress is not None and _accepts_kwarg(
                 run_bounded_file_tool_loop, "on_progress"
             ):
@@ -2684,19 +2919,31 @@ def run_chat(
         else:
             wp_loop_kwargs: dict[str, Any] = {
                 "complete": lambda followup_messages: _complete_stream(
-                    followup_messages, timeout=30, max_tokens=wp_tokens
+                    followup_messages,
+                    timeout=30,
+                    max_tokens=wp_tokens,
+                    temperature=0.15,
+                    profile_id="wp_tool_router",
                 ),
                 "actor": actor,
                 "channel": channel,
                 "conversation_id": conversation_id,
                 "context": loop_context,
                 "wp_intent": bool(
-                    WP_OPS_INTENT_RE.search(user_message)
+                    has_wp_drift_intent
                     or has_wp_code_intent
                 )
                 or has_wp_site_context,
                 "before_tool": lambda: _steers_before_tool(),
             }
+            if _accepts_kwarg(run_bounded_wp_tool_loop, "complete_final"):
+                wp_loop_kwargs["complete_final"] = lambda followup_messages: _complete_stream(
+                    followup_messages,
+                    timeout=30,
+                    max_tokens=wp_tokens,
+                    temperature=0.15,
+                    profile_id="chat_general",
+                )
             if on_progress is not None and _accepts_kwarg(
                 run_bounded_wp_tool_loop, "on_progress"
             ):
@@ -2725,7 +2972,12 @@ def run_chat(
                     action="wp_agent_followup_error",
                     site=site,
                     cost_usd=0.0,
-                    meta={"tool_calls": wp_loop.calls, "tool_seconds": round(wp_loop.tool_seconds, 3)},
+                    meta={
+                        "tool_calls": wp_loop.calls,
+                        "tool_seconds": round(wp_loop.tool_seconds, 3),
+                        "error_class": getattr(wp_loop, "model_error_class", None) or "",
+                        "error_code": getattr(wp_loop, "model_error_code", None) or "",
+                    },
                 )
         else:
             tool_match = _TOOL_CALL_RE.search(content or "")
@@ -2820,14 +3072,25 @@ def run_chat(
             meta={"kind": "telegram_chat"},
         )
 
+    last_res = get_last_result()
+    served_model = (last_res.model if last_res else None) or model or ""
+    served_route = last_res.route_id if last_res else (route_id or "")
+    served_profile = (last_res.profile_id if last_res else None) or default_profile_id
+    fallback_used = bool(last_res.fallback_used) if last_res else False
+
     tel.record(
         action="llm_telegram_chat",
         site=site,
+        actor=actor,
         unit_type="tokens",
         units=1.0,
         cost_usd=cost,
         meta={
-            "model": model,
+            "model": served_model,
+            "route_id": served_route,
+            "profile_id": served_profile,
+            "fallback_used": fallback_used,
+            "channel": channel,
             "prompt_version": prompt_version,
             "tools": [n for n, _ in tool_bits],
             "offer_escalate": offer_escalate,
@@ -2859,7 +3122,7 @@ def run_chat(
                 "Bekräfta knappen för att generera produktbeskrivningen."
             )
     if verbose:
-        reply = f"[model={model}]\n{reply}"
+        reply = f"[model={served_model or model}]\n{reply}"
     usage_mode = str(session.get("usage") or "off").lower()
     if usage_mode in {"cost", "full", "tokens", "on"}:
         reply = f"{reply}\n\n— usage ~${cost:.4f}"

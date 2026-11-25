@@ -16,6 +16,25 @@ from support import (
 )
 
 _SECRET_META = ("token", "secret", "password", "authorization", "api_key", "apikey")
+_SAFE_COUNTER_KEYS = frozenset(
+    {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "reasoning_tokens",
+        "input_tokens",
+        "output_tokens",
+    }
+)
+
+
+def _is_safe_counter(key: str, value: object) -> bool:
+    return (
+        key in _SAFE_COUNTER_KEYS
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    )
 
 
 def _telemetry_rows(
@@ -45,7 +64,8 @@ def _telemetry_rows(
         safe_meta = {
             key: value
             for key, value in meta.items()
-            if not any(part in str(key).lower() for part in _SECRET_META)
+            if _is_safe_counter(str(key), value)
+            or not any(part in str(key).lower() for part in _SECRET_META)
         }
         row = dict(raw)
         row["route_id"] = route_id

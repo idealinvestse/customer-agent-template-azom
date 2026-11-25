@@ -557,3 +557,92 @@ def test_upstream_5xx_is_unavailable(monkeypatch):
     with pytest.raises(ModelUnavailableError) as exc:
         route.complete(ModelRequest(messages=[{"role": "user", "content": "ping"}]))
     assert "boom" not in str(exc.value)
+
+
+def test_is_callable_requires_session_and_status_no_disk_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    for k in (
+        "OPENAI_SIWC_CLIENT_ID",
+        "OPENAI_SIWC_REDIRECT_URI",
+        "OPENAI_SIWC_AUTHORIZATION_URL",
+        "OPENAI_SIWC_TOKEN_URL",
+        "OPENAI_SIWC_HOST_ID",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    route = OpenAIChatGPTOAuthRoute()
+    assert route.siwc_endpoints_ready() is True
+    assert route.is_configured() is True
+    assert route.is_callable() is False
+    st = route.status()
+    assert st["connected"] is False
+    assert not (tmp_path / "openai_siwc_host_id").exists()
+
+    _connected(route, fresh=True)
+    assert route.is_callable() is True
+
+
+def test_sse_midstream_request_exception_triggers_router_fallback(monkeypatch, tmp_path):
+    import requests as req_mod
+
+    from ecom_ops.model_router.router import ModelRouter
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    _configure(monkeypatch)
+    router = ModelRouter()
+    _connected(router.chatgpt, fresh=True)
+
+    class _FakeStreamResp:
+        status_code = 200
+        headers = {}
+
+        def iter_lines(self, decode_unicode=True):
+            yield 'data: {"type":"response.output_text.delta","delta":"partial"}'
+            raise req_mod.ConnectionError("mid-stream drop")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("ecom_ops.model_router.openai_chatgpt.requests.post", lambda *a, **kw: _FakeStreamResp())
+    with pytest.raises(ModelUnavailableError) as exc:
+        router.chatgpt.complete(ModelRequest(messages=[{"role": "user", "content": "hej"}]))
+    assert exc.value.code == "stream_error"
+
+    class _FallbackOpenRouter:
+        provider = "openrouter"
+        route_id = "openrouter"
+
+        def is_configured(self):
+            return True
+
+        def status(self):
+            return {"route_id": "openrouter"}
+
+        def complete(self, request, *, telemetry=None):
+            from ecom_ops.model_router.base import ModelResult
+
+            return ModelResult(content="fallback-ok", provider="openrouter", route_id="openrouter", model="m")
+
+    monkeypatch.setenv("AZOM_MODEL_ROUTE_ORDER", "chatgpt_oauth,openrouter")
+    router.openrouter = _FallbackOpenRouter()
+    res = router.complete(ModelRequest(messages=[{"role": "user", "content": "hej"}]))
+    assert res.content == "fallback-ok"
+    assert res.route_id == "openrouter"
+
+
+def test_store_lock_timeout_raises_model_unavailable(monkeypatch, tmp_path):
+    from contextlib import contextmanager
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    _configure(monkeypatch)
+    route = OpenAIChatGPTOAuthRoute()
+    _connected(route, fresh=False)
+
+    @contextmanager
+    def _timeout_lock(*a, **kw):
+        raise TimeoutError("lock busy")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(route.store, "lock", _timeout_lock)
+    with pytest.raises(ModelUnavailableError):
+        route.complete(ModelRequest(messages=[{"role": "user", "content": "hej"}]))

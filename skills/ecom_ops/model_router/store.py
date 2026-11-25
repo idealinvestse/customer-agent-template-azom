@@ -120,6 +120,51 @@ def _release_lock(fh: Any) -> None:
         return
 
 
+def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
+    """Write ``text`` atomically via temp file + fsync + os.replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmp_name, mode)
+        except OSError:
+            pass
+        os.replace(tmp_name, path)
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(tmp_name):
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+
+@contextmanager
+def file_lock(lock_path: Path, *, timeout: float = 15.0, label: str = "file") -> Iterator[None]:
+    """Acquire an advisory cross-process lock on ``lock_path``."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = lock_path.open("a+b")
+    try:
+        _acquire_lock(fh, timeout=timeout, label=label)
+        try:
+            yield
+        finally:
+            _release_lock(fh)
+    finally:
+        fh.close()
+
+
 class ModelSessionStore:
     """Atomic JSON session persistence with an advisory cross-process lock."""
 
@@ -133,16 +178,8 @@ class ModelSessionStore:
     @contextmanager
     def lock(self, *, timeout: float = 15.0) -> Iterator[None]:
         """Serialize refresh for one provider and account across processes."""
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fh = self.lock_path.open("a+b")
-        try:
-            _acquire_lock(fh, timeout=timeout, label=self.provider)
-            try:
-                yield
-            finally:
-                _release_lock(fh)
-        finally:
-            fh.close()
+        with file_lock(self.lock_path, timeout=timeout, label=self.provider):
+            yield
 
     def load(self) -> ModelSession | None:
         if not self.session_path.is_file():

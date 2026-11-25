@@ -693,6 +693,21 @@ FILE_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
 }
 
+WP_DRIFT_TOOL_GUIDE = (
+    "WordPress-drift besvaras med exakt ett namngivet verktygsanrop per steg: "
+    '<tool_call>{"name":"...","arguments":{...}}</tool_call>. Invänta alltid resultatet.\n'
+    f"Driftloop (max {WP_TOOL_MAX_CALLS} anrop, {int(WP_TOOL_MAX_SECONDS)}s, "
+    f"{WP_TOOL_MAX_RESULT_BYTES} B/svar, {WP_TOOL_MAX_TOTAL_BYTES} B totalt):\n"
+    "- wp_list_sites() — registrerade sajter (site_id måste komma härifrån eller kontexten)\n"
+    "- wp_site_status(site_id?) / wp_backup_status(site_id?) / wp_security_findings(site_id?)\n"
+    "- wp_list_open_operations(site_id?)\n"
+    "- wp_prepare_update_plan(site_id?, component_filter?: [core|plugins|themes])\n"
+    "- wp_prepare_restore_plan(site_id?, backup_id: bk-12hex)\n"
+    "Status/backup/säkerhet kan vara mock eller unknown; planer är låsta förhandsgranskningar "
+    "och kan aldrig godkännas/köras. Visa plan-id, sajt, miljö, operation, komponenter, "
+    "versioner, backupstatus, förvillkor, stagingbevis, påverkan, återställning, utgångstid och digest."
+)
+
 WP_TOOL_GUIDE = (
     "WordPress-drift och filarbete besvaras med exakt ett namngivet verktygsanrop per steg: "
     '<tool_call>{"name":"...","arguments":{...}}</tool_call>. Invänta alltid resultatet.\n'
@@ -786,6 +801,8 @@ class ToolLoopResult:
     stage_plan_id: str | None = None
     attachments: tuple[str, ...] = ()
     review_stage_plan_id: str | None = None
+    model_error_class: str | None = None
+    model_error_code: str | None = None
 
 
 class WpAgentTools:
@@ -3427,6 +3444,7 @@ def run_bounded_wp_tool_loop(
     messages: list[dict[str, str]],
     *,
     complete: Callable[[list[dict[str, str]]], tuple[str, float]],
+    complete_final: Callable[[list[dict[str, str]]], tuple[str, float]] | None = None,
     actor: str,
     channel: str,
     conversation_id: str,
@@ -3487,8 +3505,20 @@ def run_bounded_wp_tool_loop(
                 try:
                     next_content, cost = complete(messages)
                     followup_cost += float(cost or 0.0)
-                except Exception:
-                    return ToolLoopResult(True, _format_results_sv(results, "Modellen kunde inte väga in följdfrågan."), tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost, True)
+                except Exception as exc:
+                    return ToolLoopResult(
+                        True,
+                        _format_results_sv(results, "Modellen kunde inte väga in följdfrågan."),
+                        tuple(results),
+                        site_id,
+                        tuple(operation_ids),
+                        calls,
+                        tool_seconds,
+                        followup_cost,
+                        True,
+                        model_error_class=type(exc).__name__,
+                        model_error_code=str(getattr(exc, "code", "") or "") or None,
+                    )
                 continue
         parsed = _parse_tool_call(next_content)
         if parsed is None:
@@ -3513,14 +3543,27 @@ def run_bounded_wp_tool_loop(
             return ToolLoopResult(True, "Jag kör bara WordPress-verktyg när du frågar om en registrerad sajts drift.", tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost)
         if calls >= WP_TOOL_MAX_CALLS:
             messages.append({"role": "system", "content": "Verktygsgränsen är nådd. Svara med resultaten hittills och ange tydligt vad som återstår okänt. Inga fler verktygsanrop."})
+            synth_fn = complete_final or complete
             try:
-                final, cost = complete(messages)
+                final, cost = synth_fn(messages)
                 followup_cost += cost
                 if "<tool_call>" in (final or "").lower():
                     return ToolLoopResult(True, _format_results_sv(results, "Tool call limit reached; no further tool ran."), tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost)
                 return ToolLoopResult(True, final, tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost)
-            except Exception:
-                return ToolLoopResult(True, _format_results_sv(results, "Verktygsgränsen är nådd."), tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost, True)
+            except Exception as exc:
+                return ToolLoopResult(
+                    True,
+                    _format_results_sv(results, "Verktygsgränsen är nådd."),
+                    tuple(results),
+                    site_id,
+                    tuple(operation_ids),
+                    calls,
+                    tool_seconds,
+                    followup_cost,
+                    True,
+                    model_error_class=type(exc).__name__,
+                    model_error_code=str(getattr(exc, "code", "") or "") or None,
+                )
 
         step_num = calls + 1
         step_id = f"wp-{step_num}-{name}"
@@ -3638,8 +3681,20 @@ def run_bounded_wp_tool_loop(
         try:
             next_content, cost = complete(messages)
             followup_cost += float(cost or 0.0)
-        except Exception:
-            return ToolLoopResult(True, _format_results_sv(results, "Modellen kunde inte sammanfatta resultatet."), tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost, True)
+        except Exception as exc:
+            return ToolLoopResult(
+                True,
+                _format_results_sv(results, "Modellen kunde inte sammanfatta resultatet."),
+                tuple(results),
+                site_id,
+                tuple(operation_ids),
+                calls,
+                tool_seconds,
+                followup_cost,
+                True,
+                model_error_class=type(exc).__name__,
+                model_error_code=str(getattr(exc, "code", "") or "") or None,
+            )
 
     return ToolLoopResult(True, next_content, tuple(results), site_id, tuple(operation_ids), calls, tool_seconds, followup_cost)
 
@@ -3771,11 +3826,51 @@ def _stage_plan_id(data: dict[str, Any]) -> str | None:
     return None
 
 
+_DEEP_PHASE_TOOLS = frozenset(
+    {
+        "wp_open_review_workspace",
+        "wp_workspace_patch_file",
+        "wp_workspace_create_file",
+        "wp_workspace_apply_changes",
+        "wp_workspace_bulk_replace",
+        "wp_workspace_scaffold",
+        "wp_workspace_theme_json",
+        "wp_workspace_copy_from_parent",
+        "wp_workspace_copy_woo_template",
+        "wp_workspace_run_checks",
+        "wp_propose_file_diff",
+        "wp_propose_new_file",
+        "wp_validate_plan",
+        "wp_apply_staging",
+    }
+)
+
+
+def _compact_older_file_messages(messages: list[dict[str, str]]) -> None:
+    """Trim older consumed file-tool payloads after step 6 to keep context bounded."""
+    if len(messages) <= 6:
+        return
+    cutoff = len(messages) - 4
+    for idx in range(1, cutoff):
+        msg = messages[idx]
+        content = str(msg.get("content") or "")
+        if len(content) <= 1200:
+            continue
+        if content.startswith("Untrusted file-tool data."):
+            head, _, tail = content.partition("{")
+            summary = f"{head.strip()} [komprimerad tidigare läsning: {{{tail[:450]}...]"
+            msg["content"] = summary
+        elif msg.get("role") == "assistant":
+            msg["content"] = content[:800] + "\n...[kortad historik]"
+
+
 def run_bounded_file_tool_loop(
     initial_content: str,
     messages: list[dict[str, str]],
     *,
     complete: Callable[[list[dict[str, str]]], tuple[str, float]],
+    complete_deep: Callable[[list[dict[str, str]]], tuple[str, float]] | None = None,
+    on_phase_change: Callable[[dict[str, Any]], None] | None = None,
     actor: str,
     channel: str,
     conversation_id: str,
@@ -3808,6 +3903,31 @@ def run_bounded_file_tool_loop(
     review_stage_plan_id: str | None = None
     attachments: list[str] = []
     steer_count = 0
+    in_deep_phase = False
+
+    def _completer(last_tool_name: str = "", *, is_final: bool = False) -> Callable[[list[dict[str, str]]], tuple[str, float]]:
+        nonlocal in_deep_phase
+        if complete_deep is None:
+            return complete
+        should_promote = (
+            is_final
+            or last_tool_name in _DEEP_PHASE_TOOLS
+            or (reads >= 1 and calls >= 2)
+        )
+        if should_promote and not in_deep_phase:
+            in_deep_phase = True
+            if on_phase_change is not None:
+                try:
+                    on_phase_change(
+                        {
+                            "phase": "profile_switch",
+                            "from_profile": "wp_tool_router",
+                            "to_profile": "wp_code_deep",
+                        }
+                    )
+                except Exception:
+                    pass
+        return complete_deep if in_deep_phase else complete
 
     def report(name: str, status: str) -> None:
         if on_tool_status is None:
@@ -3861,9 +3981,9 @@ def run_bounded_file_tool_loop(
             }
         )
         try:
-            final, cost = complete(messages)
+            final, cost = _completer(is_final=True)(messages)
             followup_cost += float(cost or 0.0)
-        except Exception:
+        except Exception as exc:
             return ToolLoopResult(
                 True,
                 _with_review_notice(_format_file_results_sv(results, reason), results),
@@ -3877,6 +3997,8 @@ def run_bounded_file_tool_loop(
                 stage_plan_id,
                 attachments=tuple(attachments),
                 review_stage_plan_id=review_stage_plan_id,
+                model_error_class=type(exc).__name__,
+                model_error_code=str(getattr(exc, "code", "") or "") or None,
             )
         summary_text = _format_file_results_sv(results, reason) if "<tool_call>" in (final or "").lower() else final
         return ToolLoopResult(
@@ -3914,9 +4036,9 @@ def run_bounded_file_tool_loop(
                 messages.append({"role": "assistant", "content": next_content[:16000]})
                 messages.extend({"role": "user", "content": str(text)[:8000]} for text in accepted)
                 try:
-                    next_content, cost = complete(messages)
+                    next_content, cost = _completer()(messages)
                     followup_cost += float(cost or 0.0)
-                except Exception:
+                except Exception as exc:
                     return ToolLoopResult(
                         True,
                         _format_file_results_sv(results, "Modellen kunde inte väga in följdfrågan."),
@@ -3930,6 +4052,8 @@ def run_bounded_file_tool_loop(
                         stage_plan_id,
                         attachments=tuple(attachments),
                         review_stage_plan_id=review_stage_plan_id,
+                        model_error_class=type(exc).__name__,
+                        model_error_code=str(getattr(exc, "code", "") or "") or None,
                     )
                 continue
         parsed = _parse_tool_call(next_content)
@@ -4116,10 +4240,12 @@ def run_bounded_file_tool_loop(
                 f"max {int(FILE_LOOP_MAX_SECONDS)} sekunder",
                 is_timeout=True,
             )
+        if calls >= 6:
+            _compact_older_file_messages(messages)
         try:
-            next_content, cost = complete(messages)
+            next_content, cost = _completer(name)(messages)
             followup_cost += float(cost or 0.0)
-        except Exception:
+        except Exception as exc:
             return ToolLoopResult(
                 True,
                 _with_review_notice(
@@ -4138,6 +4264,8 @@ def run_bounded_file_tool_loop(
                 stage_plan_id,
                 attachments=tuple(attachments),
                 review_stage_plan_id=review_stage_plan_id,
+                model_error_class=type(exc).__name__,
+                model_error_code=str(getattr(exc, "code", "") or "") or None,
             )
     return ToolLoopResult(
         True,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -113,14 +114,24 @@ def classify_with_llm(
     language: str,
     telemetry: Telemetry,
     site: str,
+    case_id: str | None = None,
+    actor: str | None = None,
+    batch_mode: bool = False,
 ) -> tuple[SupportCategory, float, str] | None:
     """LLM classify wrapper used by hybrid path (mockable in tests)."""
-    parsed = classify_support_with_llm(
-        customer_message=text,
-        language=language,
-        telemetry=telemetry,
-        site=site,
-    )
+    kwargs: dict[str, Any] = {
+        "customer_message": text,
+        "language": language,
+        "telemetry": telemetry,
+        "site": site,
+    }
+    if case_id is not None:
+        kwargs["case_id"] = case_id
+    if actor is not None:
+        kwargs["actor"] = actor
+    if batch_mode:
+        kwargs["batch_mode"] = True
+    parsed = classify_support_with_llm(**kwargs)
     if not parsed:
         return None
     category_raw, confidence = parsed
@@ -136,6 +147,9 @@ def hybrid_classify(
     language: str = "sv",
     telemetry: Telemetry | None = None,
     site: str = "azom",
+    case_id: str | None = None,
+    actor: str | None = None,
+    batch_mode: bool = False,
 ) -> tuple[SupportCategory, float, str]:
     """
     Keyword gate for abuse/critical; otherwise LLM classify with keyword fallback.
@@ -146,7 +160,19 @@ def hybrid_classify(
     if any(k in lowered for k in CRITICAL_KEYWORDS):
         return SupportCategory.ABUSE, _ABUSE_CONFIDENCE, "keyword"
 
-    llm = classify_with_llm(text=text, language=language, telemetry=tel, site=site)
+    call_kwargs: dict[str, Any] = {
+        "text": text,
+        "language": language,
+        "telemetry": tel,
+        "site": site,
+    }
+    if case_id is not None:
+        call_kwargs["case_id"] = case_id
+    if actor is not None:
+        call_kwargs["actor"] = actor
+    if batch_mode:
+        call_kwargs["batch_mode"] = True
+    llm = classify_with_llm(**call_kwargs)
     if llm is not None:
         return llm
 
@@ -568,6 +594,12 @@ class SupportService:
         use_mock: bool | None = None,
         order_context: str | None = None,
         allow_llm: bool = True,
+        case_id: str | None = None,
+        batch_mode: bool = False,
+        known_category: str | None = None,
+        known_confidence: float | None = None,
+        known_method: str | None = None,
+        order_context_getter: Callable[[], str | None] | None = None,
     ) -> SupportResult:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
@@ -578,13 +610,28 @@ class SupportService:
             if customer_email:
                 customer_email = validate_email(customer_email)
 
-            if allow_llm:
-                category, confidence, classify_method = hybrid_classify(
-                    text,
-                    language=language,
-                    telemetry=self.telemetry,
-                    site=site,
-                )
+            pre_cat = _category_from_value(known_category) if known_category else None
+            if any(k in text.lower() for k in CRITICAL_KEYWORDS):
+                category = SupportCategory.ABUSE
+                confidence = _ABUSE_CONFIDENCE
+                classify_method = "keyword"
+            elif pre_cat is not None:
+                category = pre_cat
+                confidence = float(known_confidence if known_confidence is not None else _KEYWORD_CONFIDENCE)
+                classify_method = known_method or "existing"
+            elif allow_llm:
+                hyb_kwargs: dict[str, Any] = {
+                    "language": language,
+                    "telemetry": self.telemetry,
+                    "site": site,
+                }
+                if case_id is not None:
+                    hyb_kwargs["case_id"] = case_id
+                if actor_obj.name:
+                    hyb_kwargs["actor"] = actor_obj.name
+                if batch_mode:
+                    hyb_kwargs["batch_mode"] = True
+                category, confidence, classify_method = hybrid_classify(text, **hyb_kwargs)
             else:
                 category = classify_message(text)
                 confidence = _KEYWORD_CONFIDENCE
@@ -596,6 +643,8 @@ class SupportService:
                     customer_email, use_mock=use_mock
                 )
             resolved_context = order_context
+            if resolved_context is None and order_context_getter is not None:
+                resolved_context = order_context_getter()
             if resolved_context is None and order_id:
                 resolved_context = resolve_order_context(order_id, use_mock=use_mock)
 
@@ -642,16 +691,23 @@ class SupportService:
 
             reply = None
             if allow_llm:
-                reply = draft_support_with_llm(
-                    customer_message=text,
-                    category=category.value,
-                    language=language,
-                    customer_name=customer_name,
-                    order_id=order_id,
-                    order_context=resolved_context,
-                    telemetry=self.telemetry,
-                    site=site,
-                )
+                draft_kwargs: dict[str, Any] = {
+                    "customer_message": text,
+                    "category": category.value,
+                    "language": language,
+                    "customer_name": customer_name,
+                    "order_id": order_id,
+                    "order_context": resolved_context,
+                    "telemetry": self.telemetry,
+                    "site": site,
+                }
+                if case_id is not None:
+                    draft_kwargs["case_id"] = case_id
+                if actor_obj.name:
+                    draft_kwargs["actor"] = actor_obj.name
+                if batch_mode:
+                    draft_kwargs["batch_mode"] = True
+                reply = draft_support_with_llm(**draft_kwargs)
             if not reply:
                 reply = draft_reply(
                     category=category,

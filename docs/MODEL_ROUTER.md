@@ -38,13 +38,15 @@
 
 | Module | Role |
 |--------|------|
-| `skills/ecom_ops/llm.py` | Facade. `chat_completion`, `classify_support_with_llm`, `draft_support_with_llm`, `generate_product_desc_with_llm` keep their signatures. |
-| `skills/ecom_ops/model_router/router.py` | Order, skip unconfigured, one attempt per route, telemetry. |
-| `skills/ecom_ops/model_router/store.py` | Atomic session files, mode `0600`, process lock. |
-| `skills/ecom_ops/model_router/openai_chatgpt.py` | Sign in with ChatGPT + Responses API. |
+| `skills/ecom_ops/llm.py` | Facade. `chat_completion`, `classify_support_with_llm`, `draft_support_with_llm`, `generate_product_desc_with_llm` keep their signatures and expose `get_last_result()`. |
+| `skills/ecom_ops/model_router/profiles.py` | Loads `config/model_profiles.yaml` + mtime-reloaded `AZOM_DATA_DIR/model_profiles.override.yaml` + `runtime.env` reload. |
+| `skills/ecom_ops/model_router/circuit_breaker.py` | Cross-process circuit breaker persisted in `AZOM_DATA_DIR/model_router_health.json` (`0600`, lock). |
+| `skills/ecom_ops/model_router/router.py` | `complete_profile`, `complete_slot`, `complete_route`, `complete`, capabilities, telemetry. |
+| `skills/ecom_ops/model_router/store.py` | Atomic session/file helpers (`atomic_write_text`, `file_lock`), mode `0600`. |
+| `skills/ecom_ops/model_router/openai_chatgpt.py` | Sign in with ChatGPT + Responses API (`reasoning.effort`, `text.format`, static-prefix `instructions`). |
 | `skills/ecom_ops/model_router/xai_grok_build.py` | Delegated Grok Build CLI. |
-| `skills/ecom_ops/model_router/xai_api_key.py` | `https://api.x.ai/v1/chat/completions`. |
-| `skills/ecom_ops/model_router/openrouter.py` | Existing chat-completions fallback and USD estimate. |
+| `skills/ecom_ops/model_router/xai_api_key.py` | `https://api.x.ai/v1/chat/completions` (opt-in fallback; `estimated_external` cost). |
+| `skills/ecom_ops/model_router/openrouter.py` | Per-model USD estimate + `usage.cost` fallback against the USD cap. |
 
 `ModelRouteError` is a `RuntimeError`. Subclasses: `ModelConfigError`, `ModelAuthError`, `ModelRateLimitError`, `ModelUnavailableError`. Each has a short `.code`.
 
@@ -68,14 +70,22 @@ AZOM_MODEL_ROUTE_ORDER=xai_grok_build,xai_api_key,openrouter
 
 Unconfigured ChatGPT is already skipped, so the default order is safe when the SIWC env is empty.
 
+## Model profiles, capabilities, and circuit breaker
+
+- **Profiles (`config/model_profiles.yaml`):** 7 task-scoped profiles (`cases_classify`, `cases_draft`, `product_copy`, `chat_fast_tools`, `chat_general`, `wp_tool_router`, `wp_code_deep`) bind a `prompt_ref`, fixed `runtime_policy_mode`, generation parameters, timeouts, context budgets, schema escalation policy, and ordered mount slots (subscription routes first, surgical OpenRouter models, opt-in `xai_api_key` fallback).
+- **Overrides (`AZOM_DATA_DIR/model_profiles.override.yaml`):** Oscar edits profile mounts/params on `/oscar`. Writes are atomic (`0600`), strictly allowlisted (never tokens, secrets, `PROTECTED_OVERLAY_KEYS`, or `isolated_test`), and hot-reloaded across `azom-dashboard`, `azom-bot`, and `azom-cases-poll` via file mtime.
+- **Capabilities & static prefix:** Adapters declare `RouteCapabilities` so unsupported parameters (`temperature` on ChatGPT/Grok Build, `reasoning_effort` on `xai_api_key`) are omitted cleanly and per-slot model IDs never leak across providers on fallback. `openai_chatgpt.py` hoists only the contiguous leading `system` block into `instructions` so prompt caching survives multi-turn tool loops.
+- **Channel isolation:** `AZOM_TELEGRAM_MODEL_ROUTE` applies only to `channel="telegram"` (optional `AZOM_MESSENGER_MODEL_ROUTE` for Messenger). `/model` session pins override `openrouter` slots only.
+- **Circuit breaker (`AZOM_DATA_DIR/model_router_health.json`):** Cross-process cooldowns prevent batch stampedes on dead/rate-limited/auth-failing routes, auto-clear `OPEN_AUTH` on integer epoch or OAuth `generation` bumps (zero secret hashes stored), use single-flight `HALF_OPEN` probes, and are always bypassed by isolated `/oscar/models/test` and `/oscar/models/profiles/test` (`complete_slot`, no fallback).
+
 ## Refresh ownership
 
 | Order token | route_id | Who refreshes | `app_owned_refresh` | `cost_usd` |
 |-------------|----------|---------------|---------------------|------------|
 | `chatgpt_oauth` | `chatgpt_oauth` | Azom | true | `0.0` (subscription) |
 | `xai_grok_build` | `xai_grok_build` | Grok Build | false | `0.0`, `usage_known=false` unless the CLI reports usage (it does not today) |
-| `xai_api_key` | `xai_api_key` | Operator rotates `XAI_API_KEY` | false | `0.0` (provider usage logged when present; not added to the USD cap) |
-| `openrouter` | `openrouter_api_key` | Operator rotates `OPENROUTER_API_KEY` | false | Estimated. Callers record that estimate once against the cap. |
+| `xai_api_key` | `xai_api_key` | Operator rotates `XAI_API_KEY` | false | `0.0` against OpenRouter cap; `cost_kind="estimated_external"` + `estimated_cost_usd` in meta |
+| `openrouter` | `openrouter_api_key` | Operator rotates `OPENROUTER_API_KEY` | false | Estimated per model (or actual `usage.cost` when returned). Callers record that estimate once against the cap. |
 
 ## ChatGPT OAuth
 
@@ -159,16 +169,17 @@ Oscar only, existing CSRF on POST:
 
 | Action | Path |
 |--------|------|
-| Status on `/oscar` | Preferred route, order (not editable), model id, last test, needs_reauth, generation, expires, refresh owner, host id, plan-usage flag |
+| Status on `/oscar` | Preferred route, `model_all_routes` (all routes + circuit breaker state: `CLOSED` / `OPEN_TRANSIENT` / `OPEN_RATE` / `OPEN_AUTH` / `HALF_OPEN`), model id, last test, needs_reauth, generation, expires, refresh owner, host id, plan-usage flag |
 | Save model ids | `POST /oscar/models/settings` writes `OPENAI_MODEL`, `XAI_MODEL`, `OPENROUTER_MODEL`, and `AZOM_XAI_GROK_BUILD` to `runtime.env`. Empty model fields stay unchanged. |
+| Profile mounts & breaker | `POST /oscar/models/profiles/save`, `/oscar/models/profiles/test` (isolated, no fallback), `/oscar/models/profiles/reset`, and `POST /oscar/models/breaker/reset` (manual circuit reset; `OPEN_AUTH` also auto-clears on connect/login/save). |
 | Anslut / Återanslut | `GET /oauth/openai/start` |
 | Callback | `GET /oauth/openai/callback` (state check; code is not copied into the next redirect) |
 | Testa modell | `POST /oscar/models/test` with one `route_id`. Prompt: `Reply with the single word PONG. Do not call tools.` `max_output_tokens` is 512. The page does not call it on load. |
 | Koppla från | `POST /oscar/models/chatgpt/disconnect` |
 | xAI login | `POST /oscar/models/xai/login` runs `grok login --device-auth` and shows the code. `GET /oscar/models/xai/login/status` is Oscar-only and returns status, URL, code, and detail. The page polls it while status is `pending`. Azom does not read `auth.json`. |
 | Model search | `GET /oscar?model_q=&catalog=openrouter` or `catalog=xai`. Choosing a row fills the model field. Save still writes `runtime.env`. |
-| xAI | Grok Build enable flag and model id. `XAI_API_KEY` is an Oscar secret. Direct app-owned xAI OAuth stays unavailable. |
-| Behavior | `GET/POST /oscar/behavior` edits versioned `chat`, `classify`, `draft`, and `product_desc` prompts in `config/prompts.yaml`. The bot reads current prompt text from disk; chat appends fixed runtime policy and the bounded WordPress tool guide. Changed prompt text gets a new version. |
+| xAI | Grok Build enable flag and model id. `XAI_API_KEY` is an Oscar secret (opt-in fallback; logs `cost_kind="estimated_external"` with `cost_usd=0.0` so OpenRouter cap is untouched). Direct app-owned xAI OAuth stays unavailable. |
+| Behavior | `GET/POST /oscar/behavior` edits versioned `chat`, `classify`, `draft`, `product_desc`, and `wp_coder` prompts in `config/prompts.yaml`. The bot reads current prompt text from disk; chat appends fixed runtime policy and attaches the WordPress tool guide conditionally (`wp` / `wp_drift` turns only). Changed prompt text gets a new version. |
 | Usage | `GET /data/telemetry` filters action, route, and errors. Meta is shown without secret-like keys. |
 | History | `GET /data/audit` reads `audit.jsonl`. Jonatan can read it. A `cases` target links to the case. |
 

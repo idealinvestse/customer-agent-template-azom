@@ -63,9 +63,20 @@ class UsageEvent:
 
 class Telemetry:
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or _store_path()
+        self._explicit_path = path
         self._cost_cache: float | None = None
         self._cost_cache_mtime: float = 0.0
+        self._cost_cache_path: Path | None = None
+
+    @property
+    def path(self) -> Path:
+        return self._explicit_path if self._explicit_path is not None else _store_path()
+
+    @path.setter
+    def path(self, value: Path | None) -> None:
+        self._explicit_path = value
+        self._cost_cache = None
+        self._cost_cache_path = None
 
     def record(
         self,
@@ -102,16 +113,21 @@ class Telemetry:
 
     def sum_cost_usd(self) -> float:
         """Return total cost. Uses a cached value keyed on file mtime (P3.3)."""
-        if not self.path.is_file():
+        target = self.path
+        if not target.is_file():
             return 0.0
         try:
-            mtime = self.path.stat().st_mtime
+            mtime = target.stat().st_mtime
         except OSError:
             return 0.0
-        if self._cost_cache is not None and mtime == self._cost_cache_mtime:
+        if (
+            self._cost_cache is not None
+            and mtime == self._cost_cache_mtime
+            and self._cost_cache_path == target
+        ):
             return self._cost_cache
         total = 0.0
-        with self.path.open(encoding="utf-8") as fh:
+        with target.open(encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -122,6 +138,7 @@ class Telemetry:
                     continue
         self._cost_cache = total
         self._cost_cache_mtime = mtime
+        self._cost_cache_path = target
         return total
 
     def within_budget(self, cap_usd: float) -> bool:

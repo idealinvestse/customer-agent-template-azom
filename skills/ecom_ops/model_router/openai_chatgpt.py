@@ -24,7 +24,7 @@ from urllib.parse import unquote, urlencode
 
 import requests
 
-from ecom_ops.model_router.base import ModelRequest, ModelResult
+from ecom_ops.model_router.base import ModelRequest, ModelResult, RouteCapabilities
 from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
@@ -32,11 +32,12 @@ from ecom_ops.model_router.errors import (
     ModelRateLimitError,
     ModelUnavailableError,
 )
-from ecom_ops.model_router.store import ModelSession, ModelSessionStore
+from ecom_ops.model_router.store import ModelSession, ModelSessionStore, atomic_write_text
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_OPENAI_MODEL = "gpt-5.2"
+_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
 DYNAMIC_CLIENT_ID = "dynamic_agent_client"
 DEFAULT_SCOPE = (
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
@@ -63,7 +64,7 @@ def _explicit_siwc_set() -> bool:
     return any(_env(name) for name in _REQUIRED_ENV)
 
 
-def _default_host_id() -> str:
+def _default_host_id(*, create: bool = False) -> str:
     path = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data")) / "openai_siwc_host_id"
     try:
         if path.is_file():
@@ -72,17 +73,17 @@ def _default_host_id() -> str:
                 return existing
     except OSError:
         pass
+    if not create:
+        return ""
     generated = secrets.token_hex(16)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(generated + "\n", encoding="utf-8")
-        os.chmod(path, 0o600)
+        atomic_write_text(path, generated + "\n", mode=0o600)
     except OSError:
         return generated
     return generated
 
 
-def _siwc(name: str) -> str:
+def _siwc(name: str, *, create_host_id: bool = False) -> str:
     """SIWC setting. Env wins. Documented defaults apply only when none of the five are set."""
     explicit = _env(name)
     if explicit:
@@ -101,7 +102,7 @@ def _siwc(name: str) -> str:
             port = "8080"
         return f"http://127.0.0.1:{port}/oauth/openai/callback"
     if name == "OPENAI_SIWC_HOST_ID":
-        return _default_host_id()
+        return _default_host_id(create=create_host_id)
     return ""
 
 
@@ -163,35 +164,70 @@ def _prefer_output_text(delta_text: str, done_text: str, completed_text: str) ->
 
 
 def build_responses_payload(request: ModelRequest, model: str) -> dict[str, Any]:
-    """Responses API body. No temperature and no max_tokens."""
-    system_parts = [
-        message["content"]
-        for message in request.messages
-        if message.get("role") == "system" and message.get("content")
-    ]
-    developer_parts = [
-        message["content"]
-        for message in request.messages
-        if message.get("role") == "developer" and message.get("content")
-    ]
-    conversation = [
-        {"role": message.get("role") or "user", "content": message.get("content") or ""}
-        for message in request.messages
-        if message.get("role") not in {"system", "developer"}
-    ]
+    """Responses API body. No temperature and no max_tokens.
+
+    Only the leading contiguous ``system`` block is hoisted into top-level
+    ``instructions`` so prompt-cache prefixes remain static across multi-turn
+    tool loops. Any mid-conversation ``system`` messages stay ordered inside
+    ``input`` as ``developer`` items.
+    """
+    leading_system: list[str] = []
+    idx = 0
+    while idx < len(request.messages):
+        msg = request.messages[idx]
+        if msg.get("role") != "system":
+            break
+        content = msg.get("content")
+        if content:
+            leading_system.append(str(content))
+        idx += 1
+
+    developer_prefix: list[str] = []
+    conversation: list[dict[str, str]] = []
+    for msg in request.messages[idx:]:
+        role = msg.get("role") or "user"
+        content = msg.get("content") or ""
+        if role == "developer" and not conversation:
+            if content:
+                developer_prefix.append(str(content))
+            continue
+        if role == "system":
+            conversation.append({"role": "developer", "content": str(content)})
+        else:
+            conversation.append({"role": str(role), "content": str(content)})
+
+    input_items: list[dict[str, str]] = []
+    if developer_prefix:
+        input_items.append({"role": "developer", "content": "\n\n".join(developer_prefix)})
+    input_items.extend(conversation)
+
     payload: dict[str, Any] = {
         "model": model,
-        "input": conversation,
+        "input": input_items,
         "stream": True,
         "store": False,
         "max_output_tokens": request.max_output_tokens,
     }
-    if system_parts:
-        payload["instructions"] = "\n\n".join(system_parts)
-    if developer_parts:
-        payload["input"] = [
-            {"role": "developer", "content": "\n\n".join(developer_parts)}
-        ] + conversation
+    if leading_system:
+        payload["instructions"] = "\n\n".join(leading_system)
+    effort = (request.reasoning_effort or "").strip().lower()
+    if effort in _EFFORTS:
+        payload["reasoning"] = {"effort": effort}
+    if isinstance(request.response_format, dict) and request.response_format:
+        fmt = dict(request.response_format)
+        # Responses API uses text.format with flat name/schema if json_schema wrapper passed.
+        if fmt.get("type") == "json_schema" and isinstance(fmt.get("json_schema"), dict):
+            js = fmt["json_schema"]
+            payload["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": js.get("name") or "response",
+                    "schema": js.get("schema") or {},
+                    "strict": bool(js.get("strict", True)),
+                }
+            }
+        else:
+            payload["text"] = {"format": fmt}
     return payload
 
 
@@ -206,6 +242,14 @@ def extract_authorization_code(callback_url: str) -> str:
 class OpenAIChatGPTOAuthRoute:
     provider = "openai"
     route_id = "chatgpt_oauth"
+    capabilities = RouteCapabilities(
+        supports_temperature=False,
+        supports_reasoning_effort=True,
+        supports_json_schema=True,
+        supports_streaming=True,
+        cost_kind="subscription",
+        subject_to_openrouter_cap=False,
+    )
 
     def __init__(self, account_id: str = "default") -> None:
         self.account_id = account_id
@@ -214,15 +258,34 @@ class OpenAIChatGPTOAuthRoute:
     def _state_store(self) -> ModelSessionStore:
         return ModelSessionStore(f"{self.provider}_state", self.account_id)
 
+    def siwc_endpoints_ready(self) -> bool:
+        """True when Oscar can start the SIWC connect flow (explicit 5 vars or empty defaults)."""
+        if _explicit_siwc_set():
+            return all(bool(_env(name)) for name in _REQUIRED_ENV)
+        return True
+
     def is_configured(self) -> bool:
-        return all(_siwc(name) for name in _REQUIRED_ENV)
+        return self.siwc_endpoints_ready()
+
+    def is_callable(self) -> bool:
+        """True when SIWC endpoints are ready AND an active session exists."""
+        if not self.siwc_endpoints_ready():
+            return False
+        session = self.store.load()
+        return bool(
+            session is not None
+            and not session.needs_reauth
+            and (session.access_token or session.refresh_token)
+        )
 
     def status(self) -> dict[str, Any]:
         session = self.store.load()
+        host_id = _siwc("OPENAI_SIWC_HOST_ID", create_host_id=False)
         base = {
             "provider": self.provider,
             "route_id": self.route_id,
             "configured": self.is_configured(),
+            "siwc_ready": self.siwc_endpoints_ready(),
             "connected": False,
             "refresh_owner": "azom",
             "app_owned_refresh": True,
@@ -233,13 +296,14 @@ class OpenAIChatGPTOAuthRoute:
             "cost_kind": "subscription",
             "plan_usage": False,
             "id_token_verified": False,
-            "ext_agent_host_id": _siwc("OPENAI_SIWC_HOST_ID"),
+            "ext_agent_host_id": host_id,
         }
         if not session:
             return base
         view = session.public_view()
         base.update(view)
         base["configured"] = self.is_configured()
+        base["siwc_ready"] = self.siwc_endpoints_ready()
         base["connected"] = (
             not session.needs_reauth and bool(session.access_token) and session.status == "connected"
         )
@@ -267,7 +331,7 @@ class OpenAIChatGPTOAuthRoute:
 
     def start_authorization(self) -> tuple[str, str]:
         """Return ``(authorize_url, state)``. State is stored until exchange."""
-        if not self.is_configured():
+        if not self.siwc_endpoints_ready():
             raise ModelConfigError("ChatGPT OAuth configuration is incomplete")
 
         state = secrets.token_urlsafe(32)
@@ -279,7 +343,7 @@ class OpenAIChatGPTOAuthRoute:
             .decode("ascii")
         )
         client_id, initial_registration = self._authorize_client_id()
-        host_id = _siwc("OPENAI_SIWC_HOST_ID")
+        host_id = _siwc("OPENAI_SIWC_HOST_ID", create_host_id=True)
         scope = _scope()
         self._state_store().save(
             ModelSession(
@@ -438,10 +502,18 @@ class OpenAIChatGPTOAuthRoute:
                 headers={"Accept": "application/json"},
             )
         except requests.RequestException as exc:
-            raise ModelAuthError("ChatGPT OAuth token endpoint unreachable") from exc
+            raise ModelUnavailableError(
+                "ChatGPT OAuth token endpoint unreachable",
+                code="token_endpoint_unavailable",
+            ) from exc
 
         if response.status_code == 429:
             raise ModelRateLimitError("ChatGPT OAuth token endpoint rate limited")
+        if response.status_code >= 500:
+            raise ModelUnavailableError(
+                f"ChatGPT OAuth token endpoint unavailable ({response.status_code})",
+                code="token_endpoint_unavailable",
+            )
         code = ""
         if response.status_code >= 400:
             try:
@@ -480,66 +552,79 @@ class OpenAIChatGPTOAuthRoute:
         generation was rejected (HTTP 401). Refresh it once. If another
         process already stored a newer generation, use that instead.
         """
-        with self.store.lock():
-            current = self.store.load()
-            if not current:
-                raise ModelAuthError("No ChatGPT OAuth session to refresh")
-            if current.needs_reauth:
-                raise ModelAuthError("ChatGPT OAuth needs reconnect", code="needs_reauth")
-            if rejected_generation is None:
-                if self.store.is_access_token_fresh(current):
-                    return current
-            elif (
-                current.generation > rejected_generation
-                and self.store.is_access_token_fresh(current)
-            ):
-                return current
-            if not current.refresh_token:
-                raise ModelAuthError("ChatGPT OAuth session has no refresh token")
-            if not self.store.can_refresh_now(current):
-                raise ModelAuthError("ChatGPT OAuth refresh is not currently allowed")
-
-            started_generation = current.generation
-            try:
-                data = self._token_request(
-                    {
-                        "grant_type": "refresh_token",
-                        "client_id": current.client_id or _siwc("OPENAI_SIWC_CLIENT_ID"),
-                        "refresh_token": current.refresh_token,
-                        "resource": _resource(),
-                        "ext_agent_host_id": current.ext_agent_host_id or _siwc("OPENAI_SIWC_HOST_ID"),
-                    }
-                )
-            except ModelAuthError as exc:
-                if exc.code != "invalid_grant":
-                    raise
-                latest = self.store.load()
-                if (
-                    latest is not None
-                    and latest.generation > started_generation
-                    and self.store.is_access_token_fresh(latest)
-                    and not latest.needs_reauth
+        try:
+            lock_ctx = self.store.lock()
+        except Exception as exc:
+            raise ModelUnavailableError(
+                "ChatGPT OAuth session lock unavailable",
+                code="lock_timeout",
+            ) from exc
+        try:
+            with lock_ctx:
+                current = self.store.load()
+                if not current:
+                    raise ModelAuthError("No ChatGPT OAuth session to refresh")
+                if current.needs_reauth:
+                    raise ModelAuthError("ChatGPT OAuth needs reconnect", code="needs_reauth")
+                if rejected_generation is None:
+                    if self.store.is_access_token_fresh(current):
+                        return current
+                elif (
+                    current.generation > rejected_generation
+                    and self.store.is_access_token_fresh(current)
                 ):
-                    return latest
-                self._mark_needs_reauth(current)
-                raise
+                    return current
+                if not current.refresh_token:
+                    raise ModelAuthError("ChatGPT OAuth session has no refresh token")
+                if not self.store.can_refresh_now(current):
+                    raise ModelAuthError("ChatGPT OAuth refresh is not currently allowed")
 
-            refreshed = self._session_from_token_response(
-                data,
-                generation=started_generation + 1,
-                previous=current,
-            )
-            if not refreshed.access_token:
-                raise ModelAuthError("ChatGPT OAuth refresh response missing access token")
-            try:
-                self.store.save(refreshed)
-            except OSError as exc:
-                self._mark_needs_reauth(current)
-                raise ModelAuthError(
-                    "ChatGPT OAuth refresh could not be persisted; reconnect required",
-                    code="persist_failed",
-                ) from exc
-            return refreshed
+                started_generation = current.generation
+                try:
+                    data = self._token_request(
+                        {
+                            "grant_type": "refresh_token",
+                            "client_id": current.client_id or _siwc("OPENAI_SIWC_CLIENT_ID"),
+                            "refresh_token": current.refresh_token,
+                            "resource": _resource(),
+                            "ext_agent_host_id": current.ext_agent_host_id or _siwc("OPENAI_SIWC_HOST_ID"),
+                        }
+                    )
+                except ModelAuthError as exc:
+                    if exc.code != "invalid_grant":
+                        raise
+                    latest = self.store.load()
+                    if (
+                        latest is not None
+                        and latest.generation > started_generation
+                        and self.store.is_access_token_fresh(latest)
+                        and not latest.needs_reauth
+                    ):
+                        return latest
+                    self._mark_needs_reauth(current)
+                    raise
+
+                refreshed = self._session_from_token_response(
+                    data,
+                    generation=started_generation + 1,
+                    previous=current,
+                )
+                if not refreshed.access_token:
+                    raise ModelAuthError("ChatGPT OAuth refresh response missing access token")
+                try:
+                    self.store.save(refreshed)
+                except OSError as exc:
+                    self._mark_needs_reauth(current)
+                    raise ModelAuthError(
+                        "ChatGPT OAuth refresh could not be persisted; reconnect required",
+                        code="persist_failed",
+                    ) from exc
+                return refreshed
+        except TimeoutError as exc:
+            raise ModelUnavailableError(
+                "ChatGPT OAuth session lock timed out",
+                code="lock_timeout",
+            ) from exc
 
     def _ensure_access_token(self) -> str:
         session = self.store.load()
@@ -578,6 +663,7 @@ class OpenAIChatGPTOAuthRoute:
         on_text_delta=None,
         *,
         on_first_delta=None,
+        hard_deadline: float | None = None,
     ) -> tuple[str, dict[str, Any]]:
         parts: list[str] = []
         done_text = ""
@@ -586,6 +672,8 @@ class OpenAIChatGPTOAuthRoute:
         saw_delta = False
         try:
             for line in response.iter_lines(decode_unicode=True):
+                if hard_deadline is not None and time.monotonic() > hard_deadline:
+                    raise ModelUnavailableError("ChatGPT stream hard timeout", code="hard_timeout")
                 if not line or not str(line).startswith("data:"):
                     continue
                 raw = str(line)[5:].strip()
@@ -624,6 +712,10 @@ class OpenAIChatGPTOAuthRoute:
                         if isinstance(response_obj.get("usage"), dict):
                             usage = response_obj["usage"]
                         completed_text = _completed_output_text(response_obj)
+        except ModelUnavailableError:
+            raise
+        except requests.RequestException as exc:
+            raise ModelUnavailableError("ChatGPT stream interrupted", code="stream_error") from exc
         finally:
             response.close()
         return _prefer_output_text("".join(parts), done_text, completed_text), usage
@@ -635,13 +727,18 @@ class OpenAIChatGPTOAuthRoute:
         telemetry: Telemetry | None = None,
     ) -> ModelResult:
         tel = telemetry or default_telemetry
-        if not self.is_configured():
+        if not self.siwc_endpoints_ready():
             raise ModelConfigError("ChatGPT OAuth configuration is incomplete")
         model = request.model or _env("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL
         payload = build_responses_payload(request, model)
         _emit_phase(
             request,
             {"phase": "waiting", "route_id": self.route_id, "model": model},
+        )
+        hard_deadline = (
+            time.monotonic() + float(request.hard_timeout)
+            if request.hard_timeout and request.hard_timeout > 0
+            else None
         )
         access_token = self._ensure_access_token()
         used = self.store.load()
@@ -659,15 +756,23 @@ class OpenAIChatGPTOAuthRoute:
                 response.close()
                 raise ModelAuthError("ChatGPT Responses rejected the refreshed token")
         if response.status_code == 429:
+            retry_raw = getattr(response, "headers", {}).get("Retry-After") if getattr(response, "headers", None) else None
+            retry_after = None
+            if retry_raw is not None:
+                try:
+                    retry_after = float(str(retry_raw).strip())
+                except (TypeError, ValueError):
+                    retry_after = None
             response.close()
-            raise ModelRateLimitError("ChatGPT Responses rate limit reached")
+            raise ModelRateLimitError("ChatGPT Responses rate limit reached", retry_after=retry_after)
         if response.status_code == 403:
             response.close()
             raise ModelAuthError("ChatGPT Responses authorization denied", code="forbidden")
         if response.status_code >= 400:
             status = response.status_code
             response.close()
-            raise ModelUnavailableError(f"ChatGPT Responses request rejected ({status})")
+            code = "unknown_model" if status in {400, 404} else f"http_{status}"
+            raise ModelUnavailableError(f"ChatGPT Responses request rejected ({status})", code=code)
 
         on_first_delta = (
             (
@@ -683,6 +788,7 @@ class OpenAIChatGPTOAuthRoute:
             response,
             request.on_text_delta,
             on_first_delta=on_first_delta,
+            hard_deadline=hard_deadline,
         )
         if not content:
             raise ModelUnavailableError("ChatGPT Responses returned no content")

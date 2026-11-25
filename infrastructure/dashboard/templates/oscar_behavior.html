@@ -15,7 +15,7 @@
   <section class="az-card border-oscar-600/35">
     <form method="post" action="/oscar/behavior" class="space-y-5">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      {% for name, label in [('chat', 'Chat'), ('classify', 'Klassning'), ('draft', 'Kundutkast'), ('product_desc', 'Produkttext')] %}
+      {% for name, label in [('chat', 'Chat'), ('classify', 'Klassning'), ('draft', 'Kundutkast'), ('product_desc', 'Produkttext'), ('wp_coder', 'WP-kodare')] %}
       {% set row = prompts.get(name, {}) %}
       <div>
         <label class="az-label" for="prompt-{{ name }}">{{ label }} · version {{ row.get('version', '') }}</label>
