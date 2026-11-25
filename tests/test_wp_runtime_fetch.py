@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from ecom_ops.wp_ops import runtime_fetch as rf
-from ecom_ops.wp_ops.runtime_fetch import (
+from ecom_ops.integrations import wp_runtime_fetch as rf
+from ecom_ops.integrations.wp_runtime_fetch import (
     RuntimeFetchError,
     check_runtime,
     download,
@@ -20,6 +20,8 @@ from ecom_ops.wp_ops.runtime_fetch import (
     install,
     main,
     probe_php,
+    resolve_php_from_manifest,
+    resolve_runtime_manifest,
     select_pins,
 )
 
@@ -426,3 +428,27 @@ def test_cli_check_missing_manifest_exits_nonzero(
     assert main(["--check", "--dest", str(tmp_path)]) == 1
     assert "manifest_missing" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
+
+
+def test_explicit_manifest_lookup_returns_php_only_when_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert resolve_runtime_manifest(tmp_path, system="Windows", machine="AMD64", probe=_probe) is None
+    assert resolve_php_from_manifest(tmp_path, system="Windows", machine="AMD64", probe=_probe) is None
+
+    wordpress, php = _bundles()
+    _use_synthetic_pins(monkeypatch, wordpress, php)
+    install(
+        tmp_path,
+        system="Windows",
+        machine="AMD64",
+        fetch=_fetch_factory(wordpress, php),
+        probe=_probe,
+    )
+    resolved = resolve_php_from_manifest(tmp_path, system="Windows", machine="AMD64", probe=_probe)
+    assert resolved == (tmp_path / "php" / "php.exe").resolve()
+
+    stored = json.loads((tmp_path / "runtime.json").read_text(encoding="utf-8"))
+    stored["php_version"] = "8.3.0"
+    (tmp_path / "runtime.json").write_text(json.dumps(stored), encoding="utf-8")
+    assert resolve_php_from_manifest(tmp_path, system="Windows", machine="AMD64", probe=_probe) is None

@@ -16,6 +16,6 @@ if __name__ == "__main__":
     skills = root / "skills"
     if str(skills) not in sys.path:
         sys.path.insert(0, str(skills))
-    from ecom_ops.wp_ops.runtime_fetch import main
+    from ecom_ops.integrations.wp_runtime_fetch import main
 
     raise SystemExit(main())

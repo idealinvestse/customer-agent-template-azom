@@ -29,6 +29,7 @@ PROTECTED_OVERLAY_KEYS = frozenset(
         "DASHBOARD_SECRET_KEY",
         "AZOM_WP_FILES_SSH",
         "AZOM_WP_SANDBOX",
+        "AZOM_WP_RUNTIME_DIR",
         "AZOM_SSH_READ_ENABLED",
     }
 )

@@ -169,6 +169,43 @@ def test_php_lint_timeout_is_not_passed(monkeypatch, tmp_path: Path):
     assert mixed["status"] != "passed"
 
 
+def test_php_lint_explicit_manifest_lookup_and_child_env_allowlist(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("WP_APP_PASSWORD", "do-not-pass-to-php")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-secret")
+    monkeypatch.setattr("ecom_ops.integrations.wp_review_process.shutil.which", lambda _name: None)
+
+    missing = run_php_lint([("a.php", "<?php\n")], tmp_path, runtime_dir=tmp_path / "missing-rt")
+    assert missing["status"] == "unavailable"
+    assert missing["reason"] == "php_binary_missing"
+    assert missing["executed"] is False
+    assert missing["simulated"] is False
+
+    fake_php = tmp_path / "php.exe"
+    fake_php.write_bytes(b"stub")
+    monkeypatch.setattr(
+        "ecom_ops.integrations.wp_review_process.resolve_php_from_manifest",
+        lambda dest: fake_php if Path(dest) == tmp_path / "rt" else None,
+    )
+    seen: dict[str, object] = {}
+
+    def _ok(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="No syntax errors detected", stderr="")
+
+    monkeypatch.setattr("ecom_ops.integrations.wp_review_process.subprocess.run", _ok)
+    passed = run_php_lint([("a.php", "<?php\n")], tmp_path, runtime_dir=tmp_path / "rt")
+    assert passed["status"] == "passed"
+    assert passed["executed"] is True
+    assert passed["simulated"] is False
+    assert seen["cmd"][0] == str(fake_php)
+    kwargs = seen["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["shell"] is False
+    assert "WP_APP_PASSWORD" not in kwargs["env"]
+    assert "OPENROUTER_API_KEY" not in kwargs["env"]
+
+
 def test_run_checks_records_a_bound_snapshot_and_discards_a_mid_run_edit(monkeypatch, tmp_path: Path):
     _theme_files(tmp_path)
     plans = _plans(tmp_path)

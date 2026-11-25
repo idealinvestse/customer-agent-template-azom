@@ -10,6 +10,8 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ecom_ops.integrations.wp_runtime_fetch import resolve_php_from_manifest
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -24,8 +26,21 @@ def _artifact(artifact_dir: Path | None, payload: dict) -> str | None:
     return str(path)
 
 
-def run_php_lint(files: list[tuple[str, str]], artifact_dir: Path | None = None) -> dict:
-    php = shutil.which("php")
+def resolve_php_binary(*, runtime_dir: Path | None = None) -> str | None:
+    """Resolve PHP from an explicit runtime manifest when given, else PATH."""
+    if runtime_dir is not None:
+        binary = resolve_php_from_manifest(Path(runtime_dir))
+        return str(binary) if binary is not None else None
+    return shutil.which("php")
+
+
+def run_php_lint(
+    files: list[tuple[str, str]],
+    artifact_dir: Path | None = None,
+    *,
+    runtime_dir: Path | None = None,
+) -> dict:
+    php = resolve_php_binary(runtime_dir=runtime_dir)
     if not php:
         return {
             "job": "php_lint",

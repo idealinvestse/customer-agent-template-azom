@@ -233,6 +233,41 @@ def check_runtime(dest: Path, *, system: str | None = None, machine: str | None 
     return data
 
 
+def resolve_runtime_manifest(
+    dest: Path | None = None,
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+    probe=None,
+) -> dict | None:
+    """Explicitly validate a fetched runtime directory without downloading."""
+    target = Path(dest) if dest is not None else default_dest()
+    try:
+        return check_runtime(target, system=system, machine=machine, probe=probe)
+    except (RuntimeFetchError, OSError):
+        return None
+
+
+def resolve_php_from_manifest(
+    dest: Path,
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+    probe=None,
+) -> Path | None:
+    """Return the verified pinned PHP binary from a runtime manifest, or None."""
+    manifest = resolve_runtime_manifest(dest, system=system, machine=machine, probe=probe)
+    if manifest is None:
+        return None
+    raw = str(manifest.get("php_path") or "").strip()
+    if not raw:
+        return None
+    binary = Path(raw)
+    if binary.is_symlink() or not binary.is_file():
+        return None
+    return binary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fetch-wp-runtime")
     parser.add_argument("--dest", default=None)
