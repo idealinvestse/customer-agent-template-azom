@@ -99,9 +99,13 @@ def _enable_grok_build() -> None:
             lines.append(line)
     lines.append("AZOM_XAI_GROK_BUILD=1")
     atomic_write_text(path, "\n".join(lines).strip() + "\n", mode=0o600)
+    from ecom_ops.model_router import circuit_breaker
+    from ecom_ops.model_router.profiles import bump_config_epoch
     from ecom_ops.runtime_env import apply_overlays
 
     apply_overlays()
+    circuit_breaker.reset_breaker("route:xai_grok_build")
+    bump_config_epoch()
 
 
 def _absorb(line: str, status: dict[str, str]) -> None:

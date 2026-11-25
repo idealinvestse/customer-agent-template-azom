@@ -169,15 +169,16 @@ Oscar only, existing CSRF on POST:
 
 | Action | Path |
 |--------|------|
-| Status on `/oscar` | Preferred route, `model_all_routes` (all routes + circuit breaker state: `CLOSED` / `OPEN_TRANSIENT` / `OPEN_RATE` / `OPEN_AUTH` / `HALF_OPEN`), model id, last test, needs_reauth, generation, expires, refresh owner, host id, plan-usage flag |
+| Status on `/oscar` | Preferred route, `model_all_routes` (all routes + circuit breaker state: `CLOSED` / `OPEN_TRANSIENT` / `OPEN_RATE` / `OPEN_AUTH` / `HALF_OPEN`), connected & plan-usage flags, model id, last test, needs_reauth, generation, readable UTC expires (`expires_at_iso`), refresh owner, host id |
 | Save model ids | `POST /oscar/models/settings` writes `OPENAI_MODEL`, `XAI_MODEL`, `OPENROUTER_MODEL`, and `AZOM_XAI_GROK_BUILD` to `runtime.env`. Empty model fields stay unchanged. |
 | Profile mounts & breaker | `POST /oscar/models/profiles/save`, `/oscar/models/profiles/test` (isolated, no fallback), `/oscar/models/profiles/reset`, and `POST /oscar/models/breaker/reset` (manual circuit reset; `OPEN_AUTH` also auto-clears on connect/login/save). |
 | Anslut / Återanslut | `GET /oauth/openai/start` |
-| Callback | `GET /oauth/openai/callback` (state check; code is not copied into the next redirect) |
+| Callback & manuell fallback | `GET /oauth/openai/callback` (state check; code is not copied into the next redirect) and `POST /oauth/openai/complete-manual` (Oscar-only paste of full `127.0.0.1` loopback callback URL for remote VPS) |
+| Telegram `/oauth` (Oscar-only) | `/oauth`, `/oauth chatgpt`, `/oauth xai`, `/oauth test <route>` and natural Swedish (`"länka chatgpt/x.ai oauth"`) with inline buttons. Pasted callback URLs are deleted (`deleteMessage`) and exchanged ephemerally without writing `code`/`state` to SQLite or chat history. |
 | Testa modell | `POST /oscar/models/test` with one `route_id`. Prompt: `Reply with the single word PONG. Do not call tools.` `max_output_tokens` is 512. The page does not call it on load. |
 | Koppla från | `POST /oscar/models/chatgpt/disconnect` |
 | xAI login | `POST /oscar/models/xai/login` runs `grok login --device-auth` and shows the code. `GET /oscar/models/xai/login/status` is Oscar-only and returns status, URL, code, and detail. The page polls it while status is `pending`. Azom does not read `auth.json`. |
-| Model search | `GET /oscar?model_q=&catalog=openrouter` or `catalog=xai`. Choosing a row fills the model field. Save still writes `runtime.env`. |
+| Model search | `GET /oscar?model_q=&catalog=openrouter`, `catalog=openai`, or `catalog=xai`. Choosing a row fills the matching model field (`OPENROUTER_MODEL`, `OPENAI_MODEL`, or `XAI_MODEL`). Save still writes `runtime.env`. |
 | xAI | Grok Build enable flag and model id. `XAI_API_KEY` is an Oscar secret (opt-in fallback; logs `cost_kind="estimated_external"` with `cost_usd=0.0` so OpenRouter cap is untouched). Direct app-owned xAI OAuth stays unavailable. |
 | Behavior | `GET/POST /oscar/behavior` edits versioned `chat`, `classify`, `draft`, `product_desc`, and `wp_coder` prompts in `config/prompts.yaml`. The bot reads current prompt text from disk; chat appends fixed runtime policy and attaches the WordPress tool guide conditionally (`wp` / `wp_drift` turns only). Changed prompt text gets a new version. |
 | Usage | `GET /data/telemetry` filters action, route, and errors. Meta is shown without secret-like keys. |

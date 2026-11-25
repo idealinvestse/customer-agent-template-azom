@@ -646,3 +646,231 @@ def test_store_lock_timeout_raises_model_unavailable(monkeypatch, tmp_path):
     monkeypatch.setattr(route.store, "lock", _timeout_lock)
     with pytest.raises(ModelUnavailableError):
         route.complete(ModelRequest(messages=[{"role": "user", "content": "hej"}]))
+
+
+@responses.activate
+def test_earliest_refresh_at_unix_timestamp_does_not_double_add_epoch(monkeypatch):
+    _configure(monkeypatch)
+    route = OpenAIChatGPTOAuthRoute()
+    _url, state = route.start_authorization()
+    past_epoch = time.time() - 60
+    responses.add(
+        responses.POST,
+        _ENV["OPENAI_SIWC_TOKEN_URL"],
+        json={
+            "access_token": "access-unix",
+            "refresh_token": "refresh-unix",
+            "expires_in": 3600,
+            "earliest_refresh_at": int(past_epoch),
+            "scope": "openid offline_access chatgpt.tokens.use.direct",
+        },
+        status=200,
+    )
+    session = route.exchange_authorization_code(code="code-u", state=state)
+    # Absolute 10-digit Unix timestamp must stay near epoch, NOT ~2x time.time()
+    assert abs(session.earliest_refresh_at - past_epoch) < 2.0
+    assert route.store.can_refresh_now(session) is True
+
+
+@responses.activate
+def test_ensure_access_token_reuses_valid_token_inside_skew_when_refresh_locked(monkeypatch):
+    _configure(monkeypatch)
+    route = OpenAIChatGPTOAuthRoute()
+    now = time.time()
+    # Inside 120s skew window (< 120s left) while earliest_refresh_at is slightly in the future
+    route.store.save(
+        ModelSession(
+            provider="openai",
+            account_id="default",
+            client_id="azom-client",
+            access_token="still-valid-token",
+            refresh_token="refresh-secret",
+            expires_at=now + 45,
+            earliest_refresh_at=now + 120,
+            generation=1,
+            status="connected",
+        )
+    )
+    responses.add(responses.POST, RESPONSES_URL, body=_sse("Pong"), status=200)
+    res = route.complete(ModelRequest(messages=[{"role": "user", "content": "ping"}]))
+    assert res.content == "Pong"
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_reconnect_increments_generation_and_clears_open_auth_breaker(monkeypatch, tmp_path):
+    from ecom_ops.model_router import circuit_breaker
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    _configure(monkeypatch)
+    route = OpenAIChatGPTOAuthRoute()
+    _connected(route, fresh=True, generation=2)
+    circuit_breaker.record_failure(
+        "chatgpt_oauth",
+        "gpt-5.2",
+        ModelAuthError("revoked", code="invalid_grant"),
+    )
+    allowed, reason, _ = circuit_breaker.allow_attempt("chatgpt_oauth", "gpt-5.2")
+    assert allowed is False
+    assert reason == "open_auth"
+
+    _url, state = route.start_authorization()
+    responses.add(
+        responses.POST,
+        _ENV["OPENAI_SIWC_TOKEN_URL"],
+        json={
+            "access_token": "access-3",
+            "refresh_token": "refresh-3",
+            "expires_in": 3600,
+            "scope": "openid offline_access chatgpt.tokens.use.direct",
+        },
+        status=200,
+    )
+    sess = route.exchange_authorization_code(code="code-r", state=state)
+    assert sess.generation == 3
+    allowed_after, _, _ = circuit_breaker.allow_attempt("chatgpt_oauth", "gpt-5.2")
+    assert allowed_after is True
+
+
+@responses.activate
+def test_exchange_callback_url_parses_loopback_and_hides_secrets(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setenv("OPENAI_SIWC_CLIENT_ID", "dynamic_agent_client")
+    route = OpenAIChatGPTOAuthRoute()
+    custom_redirect = "http://127.0.0.1:8080/oauth/openai/callback"
+    _url, state = route.start_authorization(redirect_uri=custom_redirect)
+
+    with pytest.raises(ModelAuthError) as denied:
+        route.exchange_callback_url(f"{custom_redirect}?error=access_denied&state={state}")
+    assert denied.value.code == "access_denied"
+    assert state not in str(denied.value)
+
+    responses.add(
+        responses.POST,
+        _ENV["OPENAI_SIWC_TOKEN_URL"],
+        json={
+            "access_token": "access-cb",
+            "refresh_token": "refresh-cb",
+            "expires_in": 3600,
+            "scope": "openid offline_access chatgpt.tokens.use.direct",
+        },
+        status=200,
+    )
+    sess = route.exchange_callback_url(
+        f"{custom_redirect}?code=secret-code-123&state={state}&client_id=oaiapp_loop"
+    )
+    assert sess.client_id == "oaiapp_loop"
+    assert sess.redirect_uri == custom_redirect
+    assert route.status()["plan_usage"] is True
+    assert route.status()["expires_at_iso"].endswith("UTC")
+
+
+@responses.activate
+def test_sse_error_and_response_failed_classify_cleanly(monkeypatch):
+    _configure(monkeypatch)
+    route = OpenAIChatGPTOAuthRoute()
+    _connected(route, fresh=True)
+
+    rate_event = {
+        "type": "response.failed",
+        "response": {
+            "error": {"code": "rate_limit_exceeded", "message": "raw-secret-msg"}
+        },
+    }
+    responses.add(
+        responses.POST,
+        RESPONSES_URL,
+        body=f"data: {json.dumps(rate_event)}\n\n",
+        status=200,
+    )
+    with pytest.raises(ModelRateLimitError) as rl:
+        route.complete(ModelRequest(messages=[{"role": "user", "content": "ping"}]))
+    assert rl.value.code == "rate_limit_exceeded"
+    assert "raw-secret-msg" not in str(rl.value)
+
+    err_event = {"type": "error", "error": {"code": "server_error", "message": "raw-body"}}
+    responses.add(
+        responses.POST,
+        RESPONSES_URL,
+        body=f"data: {json.dumps(err_event)}\n\n",
+        status=200,
+    )
+    with pytest.raises(ModelUnavailableError) as unavail:
+        route.complete(ModelRequest(messages=[{"role": "user", "content": "ping"}]))
+    assert unavail.value.code == "server_error"
+    assert "raw-body" not in str(unavail.value)
+
+
+@responses.activate
+def test_400_unsupported_reasoning_retries_without_reasoning(monkeypatch):
+    _configure(monkeypatch)
+    route = OpenAIChatGPTOAuthRoute()
+    _connected(route, fresh=True)
+
+    responses.add(
+        responses.POST,
+        RESPONSES_URL,
+        json={"error": {"code": "unsupported_parameter", "param": "reasoning"}},
+        status=400,
+    )
+    responses.add(responses.POST, RESPONSES_URL, body=_sse("OK"), status=200)
+    res = route.complete(
+        ModelRequest(messages=[{"role": "user", "content": "ping"}], reasoning_effort="low")
+    )
+    assert res.content == "OK"
+    assert len(responses.calls) == 2
+    first_body = json.loads(responses.calls[0].request.body)
+    second_body = json.loads(responses.calls[1].request.body)
+    assert "reasoning" in first_body
+    assert "reasoning" not in second_body
+
+
+@responses.activate
+def test_400_generic_vs_unknown_model_and_list_models(monkeypatch):
+    from ecom_ops.model_router.openai_chatgpt import MODELS_URL
+
+    _configure(monkeypatch)
+    route = OpenAIChatGPTOAuthRoute()
+    _connected(route, fresh=True)
+
+    responses.add(
+        responses.POST,
+        RESPONSES_URL,
+        json={"error": {"code": "invalid_request_error", "message": "bad field"}},
+        status=400,
+    )
+    with pytest.raises(ModelUnavailableError) as generic_exc:
+        route.complete(ModelRequest(messages=[{"role": "user", "content": "ping"}]))
+    assert generic_exc.value.code == "invalid_request_error"
+
+    responses.add(
+        responses.POST,
+        RESPONSES_URL,
+        json={"error": {"code": "model_not_found"}},
+        status=400,
+    )
+    with pytest.raises(ModelUnavailableError) as model_exc:
+        route.complete(ModelRequest(messages=[{"role": "user", "content": "ping"}]))
+    assert model_exc.value.code == "unknown_model"
+
+    responses.add(responses.GET, MODELS_URL, status=401)
+    responses.add(
+        responses.POST,
+        _ENV["OPENAI_SIWC_TOKEN_URL"],
+        json={"access_token": "access-refreshed", "refresh_token": "refresh-2", "expires_in": 3600},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        MODELS_URL,
+        json={
+            "data": [
+                {"id": "gpt-5.4-mini", "name": "GPT-5.4 mini", "visibility": "list"},
+                {"id": "gpt-hidden", "visibility": "hidden"},
+                {"id": "gpt-6.2-sol", "visibility": "list"},
+            ]
+        },
+        status=200,
+    )
+    models = route.list_models()
+    assert [m["id"] for m in models] == ["gpt-5.4-mini", "gpt-6.2-sol"]

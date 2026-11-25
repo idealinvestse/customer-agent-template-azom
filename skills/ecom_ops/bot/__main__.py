@@ -55,6 +55,97 @@ _ACTION_CALLBACK = re.compile(
 _PROPOSAL_CALLBACK = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
 
 _DEFAULT_RATE_LIMITER = PerChatRateLimiter()
+_XAI_WATCH_LOCK = threading.Lock()
+_XAI_WATCHING: set[str] = set()
+
+
+def _maybe_watch_xai_login(
+    token: str,
+    chat_id: object,
+    *,
+    stopped: threading.Event | None = None,
+) -> None:
+    """Notify Telegram once in background when a pending xAI device login finishes."""
+    from ecom_ops.bot.telegram_oauth import format_xai_login_reply
+    from ecom_ops.model_router.xai_device_login import device_login_status
+
+    if device_login_status().get("status") != "pending":
+        return
+    key = str(chat_id)
+    with _XAI_WATCH_LOCK:
+        if key in _XAI_WATCHING:
+            return
+        _XAI_WATCHING.add(key)
+
+    def _watch() -> None:
+        deadline = time.monotonic() + 180.0
+        try:
+            while time.monotonic() < deadline and (stopped is None or not stopped.is_set()):
+                if stopped is not None:
+                    stopped.wait(2.0)
+                else:
+                    time.sleep(2.0)
+                snap = device_login_status()
+                if snap.get("status") in {"finished", "failed"}:
+                    try:
+                        _send_reply(token, chat_id, format_xai_login_reply(snap, started=False))
+                    except Exception:
+                        pass
+                    return
+        finally:
+            with _XAI_WATCH_LOCK:
+                _XAI_WATCHING.discard(key)
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
+def _handle_ephemeral_oauth_update(
+    token: str,
+    handler: BotHandler,
+    store: TelegramJobStore,
+    update: dict,
+) -> bool:
+    """Process pasted OAuth callback URLs without saving code/state to SQLite."""
+    from ecom_ops.bot.telegram_oauth import is_ephemeral_oauth_message
+
+    msg = update.get("message") or {}
+    text = msg.get("text")
+    chat_id = (msg.get("chat") or {}).get("id")
+    update_id = update.get("update_id")
+    if not (
+        isinstance(text, str)
+        and chat_id is not None
+        and update_id is not None
+        and is_ephemeral_oauth_message(text)
+    ):
+        return False
+    try:
+        uid = int(update_id)
+    except (TypeError, ValueError):
+        return False
+    if not store.acknowledge_ephemeral_update(uid):
+        return True
+    msg_id = _valid_message_id(msg.get("message_id"))
+    if msg_id is not None:
+        try:
+            _api(
+                token,
+                "deleteMessage",
+                _http_timeout=4,
+                chat_id=chat_id,
+                message_id=msg_id,
+            )
+        except Exception:
+            pass
+    try:
+        reply = handler.handle_ephemeral_oauth_callback(chat_id, text)
+    except Exception:
+        reply = BotReply(text="⚠️ ChatGPT OAuth misslyckades.")
+    try:
+        _send_reply(token, chat_id, reply)
+    except Exception as exc:
+        print(f"Telegram OAuth reply failed ({type(exc).__name__})", file=sys.stderr)
+    return True
 
 
 def _valid_message_id(value: object) -> int | None:
@@ -915,7 +1006,14 @@ def _preflight_action_job(
     return None
 
 
-def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: dict) -> None:
+def _process_job(
+    token: str,
+    handler: BotHandler,
+    store: TelegramJobStore,
+    job: dict,
+    *,
+    stopped: threading.Event | None = None,
+) -> None:
     job_id = str(job["job_id"])
     chat_id = job["chat_id"]
     payload = job.get("payload") or {}
@@ -1134,6 +1232,13 @@ def _process_job(token: str, handler: BotHandler, store: TelegramJobStore, job: 
         # Result and Telegram message ids remain in SQLite for outbox retry.
         print(f"Telegram job {job_id[:8]} delivery deferred", file=sys.stderr)
 
+    trigger_txt = str(payload.get("data") or payload.get("text") or "").lower()
+    if "oauth" in trigger_txt or "xai" in trigger_txt or "x.ai" in trigger_txt or "grok" in trigger_txt:
+        try:
+            _maybe_watch_xai_login(token, chat_id, stopped=stopped)
+        except Exception:
+            pass
+
 
 def _worker(token: str, handler: BotHandler, store: TelegramJobStore, stopped: threading.Event) -> None:
     while not stopped.is_set():
@@ -1142,7 +1247,7 @@ def _worker(token: str, handler: BotHandler, store: TelegramJobStore, stopped: t
             if job is None:
                 stopped.wait(0.25)
                 continue
-            _process_job(token, handler, store, job)
+            _process_job(token, handler, store, job, stopped=stopped)
         except Exception as exc:
             print(f"Telegram worker loop error ({type(exc).__name__})", file=sys.stderr)
             stopped.wait(1)
@@ -1371,6 +1476,8 @@ def main() -> int:
                 if stopped.is_set():
                     break
                 for update in payload.get("result") or []:
+                    if _handle_ephemeral_oauth_update(token, handler, store, update):
+                        continue
                     accepted = store.accept_update(update)
                     callback = update.get("callback_query") or {}
                     callback_id = callback.get("id")

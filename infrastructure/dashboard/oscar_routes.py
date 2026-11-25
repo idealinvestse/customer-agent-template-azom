@@ -122,7 +122,7 @@ def _model_panel() -> dict:
         "model_catalog": catalog_rows,
         "model_catalog_error": catalog_error,
         "model_catalog_provider": (
-            catalog_provider if catalog_provider in {"openrouter", "xai"} else "openrouter"
+            catalog_provider if catalog_provider in {"openrouter", "xai", "openai"} else "openrouter"
         ),
     }
 
@@ -245,9 +245,16 @@ def register_oscar_routes(app: Flask) -> None:
     @app.route("/oscar/models/chatgpt/disconnect", methods=["POST"])
     @_oscar_required
     def oscar_chatgpt_disconnect():
+        from ecom_ops.audit import log_action
         from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
 
         OpenAIChatGPTOAuthRoute().disconnect()
+        log_action(
+            actor=g.actor["name"],
+            action="chatgpt_oauth_disconnect",
+            target="chatgpt_oauth",
+            details={},
+        )
         _flash("ChatGPT frånkopplad", "ok")
         return redirect(url_for("oscar_home") + f"?{_flash_q('ChatGPT frånkopplad')}")
 

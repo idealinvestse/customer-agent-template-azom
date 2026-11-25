@@ -361,3 +361,81 @@ def test_oscar_profile_mounts_save_test_reset_and_breaker_reset(tmp_path, monkey
     ]
     actions = {row["action"] for row in audit_lines}
     assert {"model_profile_save", "model_breaker_reset", "model_profile_reset"} <= actions
+
+
+def test_oscar_chatgpt_manual_callback_and_status_fields(tmp_path, monkeypatch):
+    import json
+    from urllib.parse import parse_qs, urlparse
+
+    import responses as rsps_mod
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.setenv("OPENAI_SIWC_CLIENT_ID", "dynamic_agent_client")
+    monkeypatch.setenv("OPENAI_SIWC_REDIRECT_URI", "http://127.0.0.1:8080/oauth/openai/callback")
+    monkeypatch.setenv("OPENAI_SIWC_AUTHORIZATION_URL", "https://auth.example/authorize")
+    monkeypatch.setenv("OPENAI_SIWC_TOKEN_URL", "https://auth.example/token")
+    monkeypatch.setenv("OPENAI_SIWC_HOST_ID", "host-vps-1")
+    monkeypatch.chdir(DASH_DIR)
+    app = _load_dashboard_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    # Jonatan cannot use manual callback
+    j_hdrs = _auth("jonatan", "jonatan")
+    with client.session_transaction() as sess:
+        sess["csrf_token"] = "j-csrf"
+    j_hdrs["X-CSRF-Token"] = "j-csrf"
+    assert (
+        client.post(
+            "/oauth/openai/complete-manual",
+            headers=j_hdrs,
+            data={"callback_url": "http://127.0.0.1:8080/oauth/openai/callback?code=x&state=y"},
+        ).status_code
+        == 403
+    )
+
+    # Oscar starts auth, then completes via pasted loopback URL
+    start_resp = client.get("/oauth/openai/start", headers=_auth())
+    assert start_resp.status_code == 302
+    state = parse_qs(urlparse(start_resp.headers["Location"]).query)["state"][0]
+
+    with rsps_mod.RequestsMock() as rsps:
+        rsps.add(
+            rsps_mod.POST,
+            "https://auth.example/token",
+            json={
+                "access_token": "plus-access-secret",
+                "refresh_token": "plus-refresh-secret",
+                "expires_in": 3600,
+                "earliest_refresh_at": 1700000000,
+                "scope": "openid offline_access chatgpt.tokens.use.direct",
+            },
+            status=200,
+        )
+        done = client.post(
+            "/oauth/openai/complete-manual",
+            headers=_auth(client=client),
+            data={
+                "callback_url": (
+                    f"http://127.0.0.1:8080/oauth/openai/callback"
+                    f"?code=secret-auth-code&state={state}&client_id=oaiapp_vps"
+                )
+            },
+            follow_redirects=True,
+        )
+    assert done.status_code == 200
+    body = done.get_data(as_text=True)
+    assert "ChatGPT kopplad" in body
+    assert "Plananvändning: beviljad" in body
+    assert "plus-access-secret" not in body
+    assert "plus-refresh-secret" not in body
+    assert "secret-auth-code" not in body
+
+    audit_raw = (tmp_path / "data" / "audit.jsonl").read_text(encoding="utf-8")
+    assert "secret-auth-code" not in audit_raw
+    assert state not in audit_raw
+    rows = [json.loads(line) for line in audit_raw.splitlines() if line.strip()]
+    assert any(r["action"] == "chatgpt_oauth_manual_connect" for r in rows)

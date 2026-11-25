@@ -130,6 +130,7 @@
             <th scope="col">Rutt</th>
             <th scope="col">Modell</th>
             <th scope="col">Konfigurerad</th>
+            <th scope="col">Ansluten</th>
             <th scope="col">Breaker</th>
             <th scope="col">Refresh</th>
             <th scope="col">Omautentisering</th>
@@ -152,6 +153,14 @@
             <td><code class="az-code font-mono break-all">{{ row.get("model") or "—" }}</code></td>
             <td>{{ ui.status_badge('ok' if row.get("configured") else 'neutral', 'Ja' if row.get("configured") else 'Nej') }}</td>
             <td>
+              {{ ui.status_badge('ok' if row.get("connected") else 'neutral', 'Ja' if row.get("connected") else 'Nej') }}
+              {% if route_id == 'chatgpt_oauth' %}
+              <div class="mt-1 text-xs text-mist-400">
+                {% if row.get("plan_usage") %}Plananvändning: beviljad{% else %}Plananvändning: saknas{% endif %}
+              </div>
+              {% endif %}
+            </td>
+            <td>
               {% if br and br.get("state", "closed") != "closed" %}
                 {{ ui.status_badge('error', br.get("state") ~ ' (' ~ br.get("remaining_s", 0) ~ 's)') }}
               {% else %}
@@ -161,7 +170,7 @@
             <td class="text-xs text-mist-300">{{ row.get("refresh_owner") or "—" }}</td>
             <td>{{ ui.status_badge('warn', 'Ja') if row.get("needs_reauth") else "Nej" }}</td>
             <td class="font-mono text-xs tabular-nums">{{ row.get("generation") if row.get("generation") is not none else "—" }}</td>
-            <td class="text-xs text-mist-300 tabular-nums">{{ row.get("expires_at_fmt") or fmt_dt(row.get("expires_at")) or "—" }}</td>
+            <td class="text-xs text-mist-300 tabular-nums">{{ row.get("expires_at_fmt") or row.get("expires_at_iso") or fmt_dt(row.get("expires_at")) or "—" }}</td>
             <td>
               <form method="post" action="/oscar/models/test" class="inline">
                 <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
@@ -250,6 +259,26 @@
           {% endif %}
           <a class="az-btn-secondary az-btn-sm" href="/oauth/gmail/start">{{ "Förnya Gmail" if gmail_connected else "Anslut Gmail" }}</a>
         </div>
+        <details class="rounded-lg border border-ink-700/70 bg-ink-900/70 p-3">
+          <summary class="cursor-pointer text-xs font-medium text-mist-200">Slutför manuell callback (remote VPS / 127.0.0.1)</summary>
+          <p class="az-muted mt-2 text-xs">
+            Aktiv <code class="az-code font-mono">redirect_uri</code>:
+            <code class="az-code font-mono break-all">{{ chatgpt.get("redirect_uri", "") }}</code>.
+            Om OpenAI skickar tillbaka till <code class="az-code font-mono">127.0.0.1</code> när dashboarden körs på en fjärrserver, klistra in hela adressfälts-URL:en nedan inom 10 minuter.
+          </p>
+          <form method="post" action="/oauth/openai/complete-manual" class="mt-2.5 flex flex-wrap items-center gap-2">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input
+              class="az-input min-w-[14rem] flex-1 font-mono text-xs"
+              type="text"
+              name="callback_url"
+              aria-label="Manuell ChatGPT callback-URL"
+              placeholder="http://127.0.0.1:8080/oauth/openai/callback?code=...&state=..."
+              autocomplete="off"
+            />
+            <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Slutför...">Slutför ChatGPT-anslutning</button>
+          </form>
+        </details>
       </div>
 
       <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4 space-y-3">
@@ -377,7 +406,6 @@
 
       <button class="az-btn-oscar" type="submit" data-busy-label="Sparar...">Spara modellval</button>
     </form>
-
     <div class="border-t border-ink-700/80 pt-4 space-y-3">
       <h3 class="text-sm font-semibold text-mist-100">Sök i modellkatalog</h3>
       <form method="get" action="/oscar#model-catalog" class="flex flex-wrap items-end gap-3">
@@ -385,10 +413,11 @@
           <label class="az-label" for="model_q">Sök modell</label>
           <input class="az-input" id="model_q" name="model_q" type="search" maxlength="80" value="{{ model_query or '' }}" placeholder="t.ex. deepseek flash" />
         </div>
-        <div class="w-44">
+        <div class="w-52">
           <label class="az-label" for="catalog">Katalog</label>
           <select class="az-select" id="catalog" name="catalog">
-            <option value="openrouter" {% if model_catalog_provider != 'xai' %}selected{% endif %}>OpenRouter</option>
+            <option value="openrouter" {% if model_catalog_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
+            <option value="openai" {% if model_catalog_provider == 'openai' %}selected{% endif %}>ChatGPT Plus (OAuth)</option>
             <option value="xai" {% if model_catalog_provider == 'xai' %}selected{% endif %}>xAI</option>
           </select>
         </div>
@@ -407,7 +436,7 @@
             class="az-btn-secondary az-btn-sm"
             type="button"
             data-model-id="{{ row.id }}"
-            data-model-target="{{ 'XAI_MODEL' if model_catalog_provider == 'xai' else 'OPENROUTER_MODEL' }}"
+            data-model-target="{{ 'OPENAI_MODEL' if model_catalog_provider == 'openai' else ('XAI_MODEL' if model_catalog_provider == 'xai' else 'OPENROUTER_MODEL') }}"
           >{{ row.name }}</button>
           <code class="az-code font-mono break-all">{{ row.id }}</code>
           <span class="text-xs text-mist-400">Klicka för att fylla fältet ovan.</span>

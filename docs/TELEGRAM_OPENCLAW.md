@@ -155,6 +155,7 @@ Token byts under `/oscar/secrets`. Allowlist och actor map sätts i processmilj�
 | `/wp plans [site-id]` | Lista öppna `wr-*`-granskningsarbetsytor och stagingstatus |
 | `/wp plan <plan-id>` | Visa `wr-*`-plan, ändrade filer, kontroller och (om stagingredo + `WP_OPS_ADMIN` + `CODE_EDIT`) stagingknapp `wpreview:stage:wr-...` |
 | `/wp clear` | Rensa vald WordPress-sajt (och cachade review-hashar) |
+| `/oauth [chatgpt\|xai\|test\|status]` | Oscar-only: länka, testa och hantera ChatGPT Plus OAuth och xAI Grok Build direkt i Telegram (knappar + efemär callback-URL utan SQLite-lagring) |
 
 ### `/cases` subcommands
 
