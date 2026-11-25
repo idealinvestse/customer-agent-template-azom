@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import urllib.error
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -33,13 +34,21 @@ from ecom_ops.bot.reply import (
 )
 from ecom_ops.bot.store import TelegramConversationStore
 from ecom_ops.bot.telegram_transport import (
+    ALLOWED_INBOUND_IMAGE_MIMES,
+    MAX_INBOUND_IMAGE_BYTES,
     PerChatRateLimiter,
     TelegramApiError,
     call_telegram_api,
+    detect_image_format,
+    download_file_bytes,
+    get_file_path,
     is_missing_message_error,
     send_photo,
     telegram_api_post,
 )
+
+_INBOX_MEDIA_TTL_SECONDS = 24 * 3600
+_SAFE_CHAT_DIR_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 _ACTION_MESSAGE = re.compile(
     r"^/cases\s+(?:approve|send|close|regenerate|regen|redraft)\b", re.I
@@ -152,6 +161,196 @@ def _valid_message_id(value: object) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return None
+
+
+def _inbox_media_root(data_dir: Path | None = None) -> Path:
+    base = (
+        Path(data_dir)
+        if data_dir is not None
+        else Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    )
+    return base / "telegram_inbox_media"
+
+
+def cleanup_old_inbox_media(
+    *,
+    data_dir: Path | None = None,
+    max_age_seconds: float = _INBOX_MEDIA_TTL_SECONDS,
+    now: float | None = None,
+) -> int:
+    """Remove inbound Telegram media files older than ``max_age_seconds``."""
+    root = _inbox_media_root(data_dir)
+    if not root.is_dir():
+        return 0
+    ts = time.time() if now is None else float(now)
+    cutoff = ts - max(0.0, float(max_age_seconds))
+    removed = 0
+    for child in list(root.rglob("*")):
+        try:
+            if child.is_symlink() or not child.is_file():
+                continue
+            if child.stat().st_mtime < cutoff:
+                child.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def extract_inbound_image_candidate(
+    message: dict[str, Any],
+    *,
+    max_bytes: int = MAX_INBOUND_IMAGE_BYTES,
+) -> tuple[str | None, str, str | None]:
+    """Return ``(file_id, caption, error_reason)`` for a Telegram photo or image document."""
+    if not isinstance(message, dict):
+        return None, "", None
+    caption = str(message.get("caption") or "").strip()[:8000]
+
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        eligible: list[tuple[int, int, int, str]] = []
+        saw_photo = False
+        for idx, item in enumerate(photos):
+            if not isinstance(item, dict):
+                continue
+            fid = str(item.get("file_id") or "").strip()
+            if not fid:
+                continue
+            saw_photo = True
+            raw_size = item.get("file_size")
+            size_val = 0
+            if raw_size is not None:
+                try:
+                    size_val = int(raw_size)
+                except (TypeError, ValueError):
+                    size_val = 0
+                if size_val > max_bytes:
+                    continue
+            try:
+                width = max(0, int(item.get("width") or 0))
+            except (TypeError, ValueError):
+                width = 0
+            try:
+                height = max(0, int(item.get("height") or 0))
+            except (TypeError, ValueError):
+                height = 0
+            eligible.append((width * height, size_val, idx, fid))
+        if eligible:
+            eligible.sort(key=lambda row: (row[0], row[1], row[2]))
+            return eligible[-1][3], caption, None
+        if saw_photo:
+            return None, caption, "too_large"
+
+    doc = message.get("document")
+    if isinstance(doc, dict):
+        mime = str(doc.get("mime_type") or "").strip().lower()
+        if mime in ALLOWED_INBOUND_IMAGE_MIMES:
+            fid = str(doc.get("file_id") or "").strip()
+            if not fid:
+                return None, caption, None
+            raw_size = doc.get("file_size")
+            if raw_size is not None:
+                try:
+                    if int(raw_size) > max_bytes:
+                        return None, caption, "too_large"
+                except (TypeError, ValueError):
+                    pass
+            return fid, caption, None
+    return None, "", None
+
+
+def save_inbound_telegram_image(
+    chat_id: str | int,
+    data: bytes,
+    *,
+    data_dir: Path | None = None,
+    max_bytes: int = MAX_INBOUND_IMAGE_BYTES,
+) -> Path:
+    """Validate and save inbound Telegram image bytes under ``AZOM_DATA_DIR/telegram_inbox_media/<chat_id>/``."""
+    if not isinstance(data, (bytes, bytearray)) or len(data) <= 0 or len(data) > max_bytes:
+        raise ValueError("Inbound image is empty or exceeds max_bytes limit")
+    fmt = detect_image_format(bytes(data))
+    if fmt is None:
+        raise ValueError("Unsupported image format; only PNG, JPEG, and WEBP are allowed")
+    _mime, ext = fmt
+    safe_chat = _SAFE_CHAT_DIR_RE.sub("_", str(chat_id).strip()) or "unknown"
+    target_dir = _inbox_media_root(data_dir) / safe_chat
+    target_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_old_inbox_media(data_dir=data_dir)
+    dest = target_dir / f"{uuid.uuid4().hex}{ext}"
+    dest.write_bytes(bytes(data))
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
+    return dest.resolve()
+
+
+def _ingest_inbound_media(
+    token: str,
+    handler: BotHandler,
+    store: TelegramJobStore,
+    update: dict[str, Any],
+) -> tuple[list[str], bool]:
+    """Download and validate any inbound photo/image document on ``update``.
+
+    Returns ``(image_paths, handled_early)``. When ``handled_early`` is True, the
+    update has already been acknowledged and replied to (e.g. rejected oversize or
+    invalid image) and should not be passed to ``store.accept_update``.
+    """
+    msg = update.get("message")
+    if not isinstance(msg, dict):
+        return [], False
+    file_id, _caption, err_reason = extract_inbound_image_candidate(msg)
+    if file_id is None and err_reason is None:
+        return [], False
+
+    chat_id = (msg.get("chat") or {}).get("id")
+    if chat_id is None:
+        return [], False
+    update_id = update.get("update_id")
+    msg_id = _valid_message_id(msg.get("message_id"))
+
+    def _ack_and_reply(reply: BotReply) -> tuple[list[str], bool]:
+        if update_id is not None:
+            try:
+                if not store.acknowledge_ephemeral_update(int(update_id)):
+                    return [], True
+            except Exception:
+                pass
+        try:
+            _send_reply(token, chat_id, reply, reply_to_message_id=msg_id)
+        except Exception as exc:
+            print(f"Telegram media error reply failed ({type(exc).__name__})", file=sys.stderr)
+        return [], True
+
+    denied = _authorized_control(handler, str(chat_id))
+    if denied is not None:
+        return _ack_and_reply(denied)
+
+    if err_reason == "too_large":
+        return _ack_and_reply(
+            BotReply(
+                text="Bilden är för stor (max 5 MB). Skicka en mindre skärmdump i PNG, JPEG eller WEBP."
+            )
+        )
+
+    assert file_id is not None
+    try:
+        remote_path = get_file_path(token, file_id)
+        raw_bytes = download_file_bytes(token, remote_path, max_bytes=MAX_INBOUND_IMAGE_BYTES)
+        saved = save_inbound_telegram_image(chat_id, raw_bytes)
+    except Exception as exc:
+        print(f"Telegram inbound image rejected ({type(exc).__name__})", file=sys.stderr)
+        return _ack_and_reply(
+            BotReply(
+                text=(
+                    "Kunde inte läsa in bilden. Endast PNG, JPEG eller WEBP upp till 5 MB stöds."
+                )
+            )
+        )
+    return [str(saved)], False
 
 
 def _call_supported(fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -896,8 +1095,16 @@ def _reply_from_result(value: dict | None) -> BotReply:
 def _deliver_job_result(token: str, store: TelegramJobStore, job: dict) -> bool:
     reply = _reply_from_result(job.get("result"))
     payload = job.get("payload") or {}
+    job_image_paths = [
+        str(p).strip()
+        for p in (payload.get("image_paths") or [])
+        if isinstance(p, str) and str(p).strip()
+    ]
     title = sanitize_status_fragment(
-        payload.get("text") or payload.get("data") or "", max_len=72
+        payload.get("text")
+        or payload.get("data")
+        or ("Skärmdump" if job_image_paths else ""),
+        max_len=72,
     )
     live = _LiveTelegramTurn(
         token,
@@ -1017,8 +1224,16 @@ def _process_job(
     job_id = str(job["job_id"])
     chat_id = job["chat_id"]
     payload = job.get("payload") or {}
+    job_image_paths = [
+        str(p).strip()
+        for p in (payload.get("image_paths") or [])
+        if isinstance(p, str) and str(p).strip()
+    ]
     title = sanitize_status_fragment(
-        payload.get("text") or payload.get("data") or "", max_len=72
+        payload.get("text")
+        or payload.get("data")
+        or ("Skärmdump" if job_image_paths else ""),
+        max_len=72,
     )
     live = _LiveTelegramTurn(
         token,
@@ -1129,6 +1344,7 @@ def _process_job(
                                         on_stream_clear=live.on_stream_clear,
                                         on_phase_change=live.on_phase_change,
                                         task_id=job.get("task_id"),
+                                        image_paths=job_image_paths or None,
                                     )
                                 )
                 finally:
@@ -1171,6 +1387,7 @@ def _process_job(
                     on_phase_change=live.on_phase_change,
                     on_checkpoint=checkpoint,
                     task_id=job.get("task_id"),
+                    image_paths=job_image_paths or None,
                 )
             )
         cancelled = store.cancel_requested(job_id)
@@ -1478,7 +1695,16 @@ def main() -> int:
                 for update in payload.get("result") or []:
                     if _handle_ephemeral_oauth_update(token, handler, store, update):
                         continue
-                    accepted = store.accept_update(update)
+                    inbound_images, media_handled = _ingest_inbound_media(
+                        token, handler, store, update
+                    )
+                    if media_handled:
+                        continue
+                    accepted = _call_supported(
+                        store.accept_update,
+                        update,
+                        image_paths=inbound_images or None,
+                    )
                     callback = update.get("callback_query") or {}
                     callback_id = callback.get("id")
                     if callback_id:

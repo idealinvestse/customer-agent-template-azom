@@ -268,3 +268,23 @@ def test_oscar_confirm_toggles_the_plugin(monkeypatch, tmp_path):
     second = handler.handle_callback(55, "action:yes")
     assert "är aktiv" in second.text
     assert transport.plugins["akismet/akismet"]["status"] == "active"
+
+
+def test_workspace_prompt_with_aktivt_tema_falls_through_without_wp_context(monkeypatch):
+    _no_llm(monkeypatch)
+    from ecom_ops.bot.site_content import site_content_turn
+
+    turn = site_content_turn(
+        "Öppna en arbetsyta för aktivt tema på azom-no, gör en liten teständring i sandlådan, kör kontroller och skicka skärmdump",
+        allow_wp_ops_fallthrough=False,
+    )
+    assert turn.consumed is False
+    assert turn.results == []
+
+    refused = site_content_turn("ändra functions.php", allow_wp_ops_fallthrough=False)
+    assert refused.consumed is True
+    assert "inte" in refused.results[0][1].lower()
+
+    themes = site_content_turn("visa teman", allow_wp_ops_fallthrough=False)
+    assert themes.consumed is True
+    assert themes.results[0][0] == "list_themes"

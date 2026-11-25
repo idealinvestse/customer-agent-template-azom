@@ -29,6 +29,15 @@
     badge_tone='info'
   ) %}
     {% if plan %}
+    {% if has_interactive_preview %}
+    <a
+      class="az-btn-primary az-btn-sm"
+      href="{{ url_for('wp_review_preview', site_id=plan.site_id, plan_id=plan.plan_id) }}"
+      target="_blank"
+      rel="noopener noreferrer"
+      data-interactive-preview-link="true"
+    >{{ icon('external-link', 'xs') }}<span>Öppna interaktiv sandbox-förhandsvisning</span></a>
+    {% endif %}
     <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_site_detail', site_id=plan.site_id) }}">{{ icon('arrow-left', 'xs') }}<span>Tillbaka till sajt</span></a>
     {% endif %}
   {% endcall %}

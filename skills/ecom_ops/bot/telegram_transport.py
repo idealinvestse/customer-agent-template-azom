@@ -21,6 +21,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.model_router.base import MAX_MULTIMODAL_IMAGE_BYTES, detect_image_format
+
+MAX_INBOUND_IMAGE_BYTES = MAX_MULTIMODAL_IMAGE_BYTES
+ALLOWED_INBOUND_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp"})
 _BOT_TOKEN_RE = re.compile(r"\bbot\d+:[A-Za-z0-9_\-]{8,}\b")
 _NOT_MODIFIED_NEEDLE = "message is not modified"
 _MISSING_MESSAGE_NEEDLES = (
@@ -314,6 +318,109 @@ def send_photo(
         rate_limiter=rate_limiter,
         chat_id=chat_id,
     )
+
+
+def validate_telegram_file_path(file_path: str) -> str:
+    """Validate a Telegram Bot API ``file_path`` against traversal and smuggling."""
+    if not isinstance(file_path, str):
+        raise ValueError("Invalid Telegram file_path")
+    cleaned = file_path.strip()
+    if not cleaned or len(cleaned) > 512:
+        raise ValueError("Invalid Telegram file_path")
+    candidates = [cleaned]
+    unquoted = urllib.parse.unquote(cleaned)
+    candidates.append(unquoted)
+    candidates.append(urllib.parse.unquote(unquoted))
+    for candidate in candidates:
+        if any(ch in candidate for ch in ("\r", "\n", "\x00", "\\", "?", "#")):
+            raise ValueError("Invalid Telegram file_path")
+        if candidate.startswith("/") or "://" in candidate:
+            raise ValueError("Invalid Telegram file_path")
+        segments = candidate.split("/")
+        if any(seg in {"", ".", ".."} for seg in segments):
+            raise ValueError("Path traversal rejected in Telegram file_path")
+    return cleaned
+
+
+def get_file_path(token: str, file_id: str, *, timeout: float = 15.0) -> str:
+    """Resolve a Telegram ``file_id`` to a validated relative ``file_path`` via ``getFile``."""
+    fid = str(file_id or "").strip()
+    if not fid or len(fid) > 256 or any(ch.isspace() or ord(ch) < 32 for ch in fid):
+        raise ValueError("Invalid Telegram file_id")
+    resp = telegram_api_post(token, "getFile", file_id=fid, _http_timeout=timeout)
+    if not isinstance(resp, dict) or resp.get("ok") is not True:
+        code = resp.get("error_code") if isinstance(resp, dict) else 400
+        code_int = int(code) if isinstance(code, int) and not isinstance(code, bool) else 400
+        desc = str(resp.get("description") or "getFile failed") if isinstance(resp, dict) else "getFile failed"
+        raise TelegramApiError(code_int, desc, error_code=code_int, method="getFile")
+    result = resp.get("result")
+    if not isinstance(result, dict):
+        raise ValueError("Telegram getFile response missing result")
+    raw_path = result.get("file_path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError("Telegram getFile response missing file_path")
+    return validate_telegram_file_path(raw_path)
+
+
+def download_file_bytes(
+    token: str,
+    file_path: str,
+    max_bytes: int = MAX_INBOUND_IMAGE_BYTES,
+    *,
+    timeout: float = 20.0,
+) -> bytes:
+    """Download an inbound Telegram image with size, path, and magic-byte validation.
+
+    Security invariants:
+    - Refuses path traversal / ``..`` in ``file_path`` before issuing any HTTP request.
+    - Enforces ``max_bytes`` (default 5 MiB) both via Content-Length and streaming cap.
+    - Validates PNG, JPEG, or WEBP magic bytes only.
+    - Never chains raw ``urllib`` exceptions that could expose the bot token URL.
+    """
+    validated_path = validate_telegram_file_path(file_path)
+    limit = int(max_bytes)
+    if limit <= 0:
+        raise ValueError("max_bytes must be positive")
+    quoted_path = urllib.parse.quote(validated_path, safe="/")
+    url = f"https://api.telegram.org/file/bot{token}/{quoted_path}"
+    req = urllib.request.Request(url, method="GET")
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
+            headers = getattr(resp, "headers", None)
+            if headers is not None:
+                raw_len = headers.get("Content-Length")
+                if raw_len is not None:
+                    try:
+                        if int(str(raw_len).strip()) > limit:
+                            raise ValueError("Inbound image exceeds max_bytes limit")
+                    except ValueError as exc:
+                        if "max_bytes" in str(exc):
+                            raise
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit:
+                    raise ValueError("Inbound image exceeds max_bytes limit")
+                chunks.append(chunk)
+    except ValueError:
+        raise
+    except urllib.error.HTTPError as exc:
+        api_err = parse_http_error(exc, method="downloadFile")
+        raise api_err from None
+    except urllib.error.URLError as exc:
+        reason = _strip_bot_token(str(getattr(exc, "reason", "") or "network error"))
+        raise TelegramApiError(0, reason, method="downloadFile") from None
+
+    data = b"".join(chunks)
+    if not data:
+        raise ValueError("Downloaded Telegram image is empty")
+    if detect_image_format(data) is None:
+        raise ValueError("Unsupported image format; only PNG, JPEG, and WEBP are allowed")
+    return data
 
 
 def call_telegram_api(

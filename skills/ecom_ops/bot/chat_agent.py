@@ -32,20 +32,26 @@ from ecom_ops.bot.progress_events import (
     ProgressEvent,
     emit_progress,
 )
-from ecom_ops.bot.site_content import site_content_turn, site_tool_result
+from ecom_ops.bot.site_content import (
+    _WP_WORKSPACE_INTENT_RE,
+    site_content_turn,
+    site_tool_result,
+)
 from ecom_ops.bot.store import clamp_messages
 from ecom_ops.llm import DEFAULT_MODEL, chat_completion, get_last_result, openrouter_cap_usd
 from ecom_ops.model_router import get_model_router
+from ecom_ops.model_router.base import MAX_MULTIMODAL_IMAGE_BYTES, detect_image_format
 from ecom_ops.model_router.errors import ModelRouteError, ModelUnavailableError
 from ecom_ops.order_context import format_order_context_block
 from ecom_ops.prompts import get_prompt
-from ecom_ops.rbac import resolve_actor
+from ecom_ops.rbac import Permission, resolve_actor
 from ecom_ops.security import validate_order_id
 from ecom_ops.telemetry import Telemetry, default_telemetry
 from ecom_ops.wp_ops.agent_tools import (
     ALL_FILE_TOOLS,
     WP_DRIFT_TOOL_GUIDE,
     WP_TOOL_GUIDE,
+    WP_TOOL_NAMES,
     context_for_storage,
     context_matches,
     run_bounded_file_tool_loop,
@@ -53,6 +59,7 @@ from ecom_ops.wp_ops.agent_tools import (
     tool_name_from,
 )
 from ecom_ops.wp_ops.page_review_intent import extract_page_review_target, is_page_review
+from ecom_ops.wp_ops.registry import resolve_site_id_from_text
 
 # Prefer shared extractor (SB1) for SV/NO/DK labels + near-status forms.
 BARE_ORDER_RE = re.compile(r"^\s*#?\s*(\d{4,12})\s*$")
@@ -149,9 +156,16 @@ WP_CODE_INTENT_RE = re.compile(
     r"arbetsyta(?:n)?|workspace|refaktor(?:era|ering)|bulk[\s_-]?replace|mass[äa]ndr\w*|"
     r"sajtplugin|site[\s_-]?plugin|azom-site-|scaffold|"
     r"static[\s_-]?checks?|statisk(?:a)?\s+kontroll(?:er)?|sandbox|"
+    r"sandl[åa]da(?:n)?|sk[äa]rmdump(?:ar|en)?|screenshot(?:s)?|"
+    r"print(?:screen)?|html(?:-?kod(?:en)?)?|rendera(?:d|t|r)?|f[öo]rhandsvisning(?:en)?|"
+    r"produktsid(?:a|an|or|orna)|k[öo]pknapp(?:en|ar)?|"
+    r"inring(?:a|ad|at|ade|ning(?:en)?)?|bifogad\s+bild|"
+    r"(?:[äa]ndra|redigera|uppdatera|byt(?:a)?|justera)\s+(?:en\s+|denna\s+|det\s+)?"
+    r"(?:produkt(?:en|sida(?:n)?)?|k[öo]pknapp(?:en)?|inring\w*)|"
     r"component[\s_-]?intel|wp\.org|wordpress\.org|playbook|"
     r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|theme_overview|plugin_overview|"
-    r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file)|"
+    r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file|"
+    r"list_products|get_product|fetch_page_html|preview_page)|"
     r"wc_template_overrides_audit|"
     r"(?:skapa|bygg|utveckla|granska|fels[öo]k|analysera|kod(?:a)?|skriv(?:a)?)\s+"
     r"(?:ett\s+|en\s+|nytt\s+|detta\s+)?(?:plugin(?:et)?|till[äa]gg(?:et)?|barntema(?:t)?)|"
@@ -159,6 +173,28 @@ WP_CODE_INTENT_RE = re.compile(
     r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|"
     r"kod(?:en)?|css|php|scss|block(?:en|et|s)?)\b",
     re.I,
+)
+_VISION_WP_INTENT_RE = re.compile(
+    r"\b(?:"
+    r"[äa]ndra|redigera|uppdatera|byt(?:a)?|fixa|justera|ta\s+bort|l[äa]gg\s+till|"
+    r"skapa|g[öo]r(?:a)?|granska|kolla|visa|inspektera|titta|"
+    r"inring\w*|marker\w*|cirkel\w*|pil(?:en)?|sk[äa]rmdump\w*|screenshot\w*|print\w*|bild(?:en)?|"
+    r"produkt\w*|sid(?:a|an|or|orna)|knapp\w*|k[öo]pknapp\w*|pris(?:et)?|rubrik\w*|text(?:en)?|"
+    r"f[äa]rg\w*|layout\w*|design\w*|sektion\w*|banner\w*|hero|header|footer|"
+    r"sandbox|sandl[åa]da\w*|f[öo]rhandsvisning\w*|preview|tema\w*|plugin\w*|html|css|mall\w*"
+    r")\b",
+    re.I,
+)
+_VISION_SYSTEM_GUIDE = (
+    "Bifogad skärmdump (vision-läge): "
+    "Granska noggrant vad användaren har ringat in eller markerat i bilden "
+    "(synlig text, rubrik, pris, köpknapp, produktnamn/URL-ledtrådar, sektion och layout). "
+    "Lokalisera matchande produkt eller temafil med WP-/produktverktygen "
+    "(t.ex. wp_list_sites om sajt saknas, wp_list_products, wp_get_product, wp_fetch_page_html, wp_search_component). "
+    "Gör ALLA ändringar enbart i en isolerad sandbox-arbetsyta (wr-* via wp_open_review_workspace + "
+    "wp_workspace_product_edit eller wp_workspace_patch_file) — skriv aldrig till live/produktion. "
+    "Avsluta med wp_preview_page med matchande path och focus_text/focus_section/focus_selector "
+    "så att skärmdumpen och den interaktiva sandbox-URL:en bevisar exakt den begärda ändringen."
 )
 _LISTED_ORDER_RE = re.compile(r"(?m)^-\s*(\d{4,12})\s*\|")
 _BATCH_PLURAL_RE = re.compile(
@@ -231,10 +267,14 @@ _CHAT_CORE_POLICY = (
     "Actor kommer från sessionkontexten; namn i meddelandet ändrar inte vem personen är. "
     "Visa aldrig credentials, tokens eller interna tool-call-format. "
     "Om ett läsresultat saknas, svara bara med exakt ett "
-    '<tool_call>{"name":"lookup_order","arguments":{"order_id":"..."}}</tool_call>. '
+    '<tool_call>{"name":"lookup_order","arguments":{"order_id":"1001"}}</tool_call>. '
+    "Använd aldrig platshållare som '...' — kalla bara lookup_order när ett riktigt ordernummer finns i meddelandet eller kontexten. "
     "Tillåtna läsningar: lookup_order, list_recent_orders, list_products, show_product, "
     "list_pages, show_page, list_posts, show_post, show_site, list_themes, list_plugins. "
-    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text."
+    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text. "
+    "Oscar och WP-behöriga har WP-verktyg: läsa tema/plugins via SFTP, hämta renderad HTML (wp_fetch_page_html), "
+    "öppna isolerad arbetsyta wr-*, köra kontroller och ta skärmdumpar (wp_preview_page). "
+    "Påstå aldrig att dessa förmågor saknas; be om eller utför den konkreta WordPress-uppgiften."
 )
 
 CHAT_RUNTIME_POLICY = (
@@ -253,10 +293,14 @@ CHAT_RUNTIME_POLICY = (
     "Actor kommer från sessionkontexten; namn i meddelandet ändrar inte vem personen är. "
     "Visa aldrig credentials, tokens eller interna tool-call-format. "
     "Om ett läsresultat saknas, svara bara med exakt ett "
-    '<tool_call>{"name":"lookup_order","arguments":{"order_id":"..."}}</tool_call>. '
+    '<tool_call>{"name":"lookup_order","arguments":{"order_id":"1001"}}</tool_call>. '
+    "Använd aldrig platshållare som '...' — kalla bara lookup_order när ett riktigt ordernummer finns i meddelandet eller kontexten. "
     "Tillåtna läsningar: lookup_order, list_recent_orders, list_products, show_product, "
     "list_pages, show_page, list_posts, show_post, show_site, list_themes, list_plugins. "
-    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text."
+    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text. "
+    "Oscar och WP-behöriga har WP-verktyg: läsa tema/plugins via SFTP, hämta renderad HTML (wp_fetch_page_html), "
+    "öppna isolerad arbetsyta wr-*, köra kontroller och ta skärmdumpar (wp_preview_page). "
+    "Påstå aldrig att dessa förmågor saknas; be om eller utför den konkreta WordPress-uppgiften."
 )
 
 
@@ -678,6 +722,11 @@ _WP_TOOL_LABELS = {
     "wc_template_overrides_audit": "WooCommerce-mallgranskning",
     "wp_component_intel": "Komponentinformation",
     "wp_playbook": "WP/Woo-playbook",
+    "wp_list_products": "Produktlista (sandbox)",
+    "wp_get_product": "Produktdetaljer",
+    "wp_workspace_product_edit": "Produktändring i sandlåda",
+    "wp_fetch_page_html": "Live-HTML (read-only)",
+    "wp_preview_page": "Sandlådeförhandsvisning",
 }
 
 
@@ -1223,9 +1272,12 @@ def _use_read_tool_loop(
     pref: ToolPrefetch,
     *,
     has_wp_site_context: bool = False,
+    has_vision_wp_intent: bool = False,
 ) -> bool:
     """True when this turn may run several read-only tool calls."""
     if pref.pending_action is not None:
+        return False
+    if has_vision_wp_intent:
         return False
     msg = user_message or ""
     if WP_OPS_INTENT_RE.search(msg):
@@ -1631,6 +1683,7 @@ def gather_tool_results(
     listed_offset: int = 0,
     on_progress: ProgressCallback | None = None,
     has_wp_site_context: bool = False,
+    has_vision_wp_intent: bool = False,
 ) -> ToolPrefetch:
     """Tool prefetch with sticky multi-turn context (OpenClaw-like follow-ups)."""
     pref = ToolPrefetch(
@@ -1645,7 +1698,13 @@ def gather_tool_results(
     woo_domain = mentioned or sticky_market
     pref.sticky_market = woo_domain
 
-    wp_code_bypass = has_wp_site_context and bool(WP_CODE_INTENT_RE.search(text))
+    if has_vision_wp_intent:
+        return pref
+
+    explicit_wp_workspace = bool(_WP_WORKSPACE_INTENT_RE.search(text))
+    wp_code_bypass = (
+        has_wp_site_context and bool(WP_CODE_INTENT_RE.search(text))
+    ) or explicit_wp_workspace
 
     if not wp_code_bypass:
         site_intent = bool(_SITE_CONTENT_HINT_RE.search(text))
@@ -1655,7 +1714,7 @@ def gather_tool_results(
                 text,
                 domain=woo_domain,
                 sticky_post_id=sticky_post_id,
-                allow_wp_ops_fallthrough=has_wp_site_context,
+                allow_wp_ops_fallthrough=has_wp_site_context or explicit_wp_workspace,
             )
 
         if site_intent:
@@ -1752,20 +1811,21 @@ def gather_tool_results(
         if write_turn.consumed:
             return _apply_catalog(pref, write_turn, woo_domain)
 
-    prod_intent = parse_product_desc_intent(text)
-    if prod_intent and prod_intent.get("product_id"):
-        pref.pending_action = PendingAction(kind="product_desc", payload=prod_intent)
-        pref.results.append(
-            (
-                "propose_product_desc",
+    if not wp_code_bypass:
+        prod_intent = parse_product_desc_intent(text)
+        if prod_intent and prod_intent.get("product_id"):
+            pref.pending_action = PendingAction(kind="product_desc", payload=prod_intent)
+            pref.results.append(
                 (
-                    f"FÖRESLÅ produktbeskrivning för product_id={prod_intent['product_id']} "
-                    f"(publish=false som default). Vänta på bekräftelse."
-                ),
+                    "propose_product_desc",
+                    (
+                        f"FÖRESLÅ produktbeskrivning för product_id={prod_intent['product_id']} "
+                        f"(publish=false som default). Vänta på bekräftelse."
+                    ),
+                )
             )
-        )
-        pref.digest = _make_digest(pref.results)
-        return pref
+            pref.digest = _make_digest(pref.results)
+            return pref
 
     regen_id = parse_regenerate_nl(text)
     if regen_id:
@@ -2321,6 +2381,42 @@ def _run_fast_read_loop(
         messages.append({"role": "system", "content": f"Tool result [{name}]:\n{body}"})
 
 
+def _validate_chat_image_paths(
+    image_paths: list[str] | tuple[str, ...] | None,
+    *,
+    limit: int = 4,
+) -> list[str]:
+    """Keep unique, existing, non-symlink PNG/JPEG/WEBP files within size limit."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in image_paths or ():
+        if not isinstance(item, (str, Path)):
+            continue
+        raw = str(item).strip()
+        if not raw or "\x00" in raw:
+            continue
+        path = Path(raw)
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            size = path.stat().st_size
+            if size <= 0 or size > MAX_MULTIMODAL_IMAGE_BYTES:
+                continue
+            head = path.read_bytes()[:16]
+        except OSError:
+            continue
+        if detect_image_format(head) is None:
+            continue
+        resolved = str(path.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(resolved)
+    if len(out) > limit:
+        out = out[-limit:]
+    return out
+
+
 def run_chat(
     user_message: str,
     *,
@@ -2340,12 +2436,14 @@ def run_chat(
     on_stream_clear: Callable[[], None] | None = None,
     on_phase_change: Callable[[dict[str, Any]], None] | None = None,
     on_checkpoint: Callable[[], list[str]] | None = None,
+    image_paths: list[str] | tuple[str, ...] | None = None,
 ) -> ChatResult:
     """Run one hybrid chat turn with tools, sticky context, optional LLM."""
     session = dict(session or {})
     tel = telemetry or default_telemetry
     hist = clamp_messages(history)
     user_message = (user_message or "").strip()
+    valid_images = _validate_chat_image_paths(image_paths)
     if not user_message:
         return ChatResult(text="Skriv något, eller /help.", messages=hist)
 
@@ -2398,13 +2496,34 @@ def run_chat(
     def _checkpoint() -> list[str]:
         return _collect_checkpoint(announce=True)
 
+    def _stored_user_text(value: str, idx: int) -> str:
+        if idx == 0 and valid_images:
+            names = ", ".join(Path(p).name for p in valid_images)
+            marker = (
+                f"[Bifogad skärmdump: {names}]"
+                if len(valid_images) == 1
+                else f"[Bifogade skärmdumpar: {names}]"
+            )
+            return f"{marker} {value}".strip()
+        return value
+
     def _with_turn(assistant: str) -> list[dict[str, str]]:
         messages = list(hist)
-        messages.extend({"role": "user", "content": value} for value in turn_user_messages)
+        messages.extend(
+            {"role": "user", "content": _stored_user_text(value, idx)}
+            for idx, value in enumerate(turn_user_messages)
+        )
         messages.append({"role": "assistant", "content": assistant})
         return clamp_messages(messages)
 
-    if is_page_review(user_message):
+    has_vision_wp_intent = bool(valid_images) and (
+        bool(_VISION_WP_INTENT_RE.search(user_message))
+        or bool(WP_CODE_INTENT_RE.search(user_message))
+        or bool(WP_OPS_INTENT_RE.search(user_message))
+        or has_wp_site_context
+    )
+
+    if not valid_images and is_page_review(user_message):
         from ecom_ops.wp_ops.page_review_loop import run_bounded_page_review_loop
 
         bound = wp_ops_context if isinstance(wp_ops_context, dict) else None
@@ -2416,6 +2535,22 @@ def run_chat(
             conversation_id=conversation_id,
         ):
             site_id = str(bound.get("site_id") or "")
+        if not site_id:
+            candidate = resolve_site_id_from_text(user_message)
+            if candidate:
+                try:
+                    allowed_read = resolve_actor(actor).has(Permission.WP_OPS_READ)
+                except Exception:
+                    allowed_read = False
+                if allowed_read:
+                    site_id = candidate
+                    bound = context_for_storage(
+                        actor=actor,
+                        channel=channel,
+                        conversation_id=conversation_id,
+                        site_id=site_id,
+                        operation_ids=(),
+                    )
         from ecom_ops.bot.page_review_runtime import page_review_client
 
         page_review_kwargs: dict[str, Any] = {
@@ -2431,11 +2566,15 @@ def run_chat(
             page_review_kwargs["on_checkpoint"] = on_checkpoint
         outcome = run_bounded_page_review_loop(**page_review_kwargs)
         text = outcome.text
+        from ecom_ops.bot.reply import safe_workspace_attachments
+
+        attachments = safe_workspace_attachments(getattr(outcome, "attachments", ()))
         return ChatResult(
             text=text,
             messages=_with_turn(text),
             tool_digest="",
             clear_tool_digest=True,
+            attachments=attachments,
             sticky_order_id=str(sticky_order_id) if sticky_order_id else None,
             sticky_case_id8=str(sticky_case_id8) if sticky_case_id8 else None,
             sticky_market=str(sticky_market) if sticky_market else None,
@@ -2456,6 +2595,7 @@ def run_chat(
         listed_offset=listed_offset,
         on_progress=on_progress,
         has_wp_site_context=has_wp_site_context,
+        has_vision_wp_intent=has_vision_wp_intent,
     )
     phase_started = time.monotonic()
     _prefetch_listed_orders(
@@ -2604,6 +2744,12 @@ def run_chat(
                 if tool_block
                 else playbook_hints
             )
+    if valid_images:
+        tool_block = (
+            f"{tool_block}\n\n{_VISION_SYSTEM_GUIDE}".strip()
+            if tool_block
+            else _VISION_SYSTEM_GUIDE
+        )
 
     def _phase_kwargs() -> dict[str, Any]:
         if on_phase_change is not None and _accepts_kwarg(
@@ -2645,7 +2791,7 @@ def run_chat(
 
     has_wp_code_intent = bool(WP_CODE_INTENT_RE.search(user_message))
     has_wp_drift_intent = bool(WP_OPS_INTENT_RE.search(user_message))
-    if has_wp_code_intent:
+    if has_wp_code_intent or has_vision_wp_intent:
         prompt_mode = "chat_wp_file"
         default_profile_id = "wp_tool_router"
     elif has_wp_site_context or has_wp_drift_intent:
@@ -2699,12 +2845,16 @@ def run_chat(
     else:
         clipped_hist = _clip_history_for_profile(hist, max_turns=16, max_chars=16000, max_assistant_chars=2000)
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     messages.extend(clipped_hist)
     if tool_block:
         messages.append({"role": "system", "content": tool_block})
     _checkpoint()
-    messages.extend({"role": "user", "content": value} for value in turn_user_messages)
+    for idx, value in enumerate(turn_user_messages):
+        user_msg: dict[str, Any] = {"role": "user", "content": value}
+        if idx == 0 and valid_images:
+            user_msg["images"] = list(valid_images)
+        messages.append(user_msg)
 
     def _xai_round() -> bool:
         if channel_route in {"xai_grok_build", "xai_api_key"}:
@@ -2737,7 +2887,10 @@ def run_chat(
         return content, added
 
     use_read_loop = _use_read_tool_loop(
-        user_message, pref, has_wp_site_context=has_wp_site_context
+        user_message,
+        pref,
+        has_wp_site_context=has_wp_site_context,
+        has_vision_wp_intent=has_vision_wp_intent or bool(valid_images),
     )
     if use_read_loop and _xai_round():
         model = _FAST_TOOL_MODEL
@@ -2781,7 +2934,7 @@ def run_chat(
         file_tokens = 4096
         initial_max_tokens = (
             file_tokens
-            if (has_wp_site_context and has_wp_code_intent)
+            if (has_vision_wp_intent or (has_wp_site_context and has_wp_code_intent))
             else (
                 wp_tokens
                 if has_wp_site_context or has_wp_drift_intent or has_wp_code_intent
@@ -2872,7 +3025,10 @@ def run_chat(
             return values
 
         loop_context = wp_ops_context if has_wp_site_context else None
-        if _use_file_tool_loop(content):
+        use_file_loop = _use_file_tool_loop(content) or (
+            prompt_mode == "chat_wp_file" and tool_name_from(content) in WP_TOOL_NAMES
+        )
+        if use_file_loop:
             file_loop_kwargs: dict[str, Any] = {
                 "complete": lambda followup_messages: _complete_stream(
                     followup_messages,
@@ -2888,6 +3044,8 @@ def run_chat(
                 "context": loop_context,
                 "before_tool": lambda: _steers_before_tool(),
             }
+            if _accepts_kwarg(run_bounded_file_tool_loop, "allow_wp_first"):
+                file_loop_kwargs["allow_wp_first"] = prompt_mode == "chat_wp_file"
             if _accepts_kwarg(run_bounded_file_tool_loop, "complete_deep"):
                 file_loop_kwargs["complete_deep"] = lambda followup_messages: _complete_stream(
                     followup_messages,
@@ -3097,6 +3255,8 @@ def run_chat(
             "soft_escalate_nudge": soft_nudge or soft_extra,
             "pending": pref.pending_action.kind if pref.pending_action else None,
             "wp_tool_calls": wp_loop.calls if wp_loop.handled else 0,
+            "has_images": bool(valid_images),
+            "image_count": len(valid_images),
         },
     )
 

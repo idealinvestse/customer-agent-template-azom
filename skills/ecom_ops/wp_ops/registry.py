@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -69,6 +71,43 @@ def site_by_id(sites: tuple[Site, ...], site_id: str) -> Site | None:
         if site.id == site_id:
             return site
     return None
+
+
+def resolve_site_id_from_text(
+    text: str,
+    *,
+    path: Path | None = None,
+    data_dir: Path | None = None,
+) -> str:
+    """Resolve a single unambiguous registered site id from message text."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    sites = load_sites(path=path, data_dir=data_dir, apply_overlay=False)
+    matches: list[Site] = []
+    for site in sites:
+        id_hit = bool(
+            site.id
+            and re.search(
+                rf"(?<![A-Za-z0-9_-]){re.escape(site.id)}(?![A-Za-z0-9_-])",
+                raw,
+                re.I,
+            )
+        )
+        host = (urlparse(site.canonical_url).hostname or "").strip()
+        host_hit = bool(
+            host
+            and re.search(
+                rf"(?<![A-Za-z0-9.-]){re.escape(host)}(?![A-Za-z0-9.-])",
+                raw,
+                re.I,
+            )
+        )
+        if id_hit or host_hit:
+            matches.append(site)
+    if len(matches) == 1:
+        return matches[0].id
+    return ""
 
 
 def as_public(sites: tuple[Site, ...], present: dict[str, bool]) -> list[dict[str, Any]]:

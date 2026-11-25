@@ -635,7 +635,7 @@ def test_playbooks_topics_selection_and_formatting() -> None:
 def test_tool_schema_registration_and_wp_playbook_rbac(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert len(EXTRA_FILE_TOOLS) == 15
+    assert len(EXTRA_FILE_TOOLS) == 20
     assert ALL_FILE_TOOLS == FILE_TOOL_NAMES | EXTRA_FILE_TOOLS
     for name in ALL_FILE_TOOLS:
         if name == "wp_read_theme_plugin_file":

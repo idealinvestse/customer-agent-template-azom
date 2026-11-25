@@ -11,7 +11,7 @@ from typing import Any
 
 from ecom_ops.bot.dashboard_links import case_detail_url, cases_list_url, link_footer
 
-_WORKSPACE_PNG = re.compile(r"^(?:base|work)-(?:desktop|mobile)\.png$")
+_WORKSPACE_PNG = re.compile(r"^(?:base|work|live|preview|change|focus)-(?:desktop|mobile)\.png$")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 _MAX_ATTACHMENTS = 4

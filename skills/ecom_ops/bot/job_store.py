@@ -240,7 +240,11 @@ class TelegramJobStore:
         return int(row["value"]) if row else 0
 
     @staticmethod
-    def _parse_update(update: dict[str, Any]) -> dict[str, Any] | None:
+    def _parse_update(
+        update: dict[str, Any],
+        *,
+        image_paths: list[str] | None = None,
+    ) -> dict[str, Any] | None:
         update_id = update.get("update_id")
         try:
             update_id = int(update_id)
@@ -267,18 +271,38 @@ class TelegramJobStore:
         chat = message.get("chat") or {}
         chat_id = chat.get("id")
         text = message.get("text")
-        if chat_id is None or not isinstance(text, str):
+        raw_images = (
+            image_paths
+            if image_paths is not None
+            else message.get("_azom_image_paths")
+        )
+        norm_images = (
+            [str(p).strip() for p in raw_images if isinstance(p, str) and str(p).strip()][:4]
+            if isinstance(raw_images, (list, tuple))
+            else []
+        )
+        if chat_id is None:
+            return {"update_id": update_id, "kind": "ignored"}
+        if isinstance(text, str):
+            effective_text = text[:8000]
+        elif norm_images:
+            caption = message.get("caption")
+            effective_text = caption[:8000] if isinstance(caption, str) else ""
+        else:
             return {"update_id": update_id, "kind": "ignored"}
         reply_to = message.get("reply_to_message")
         reply_to_id = reply_to.get("message_id") if isinstance(reply_to, dict) else None
-        return {
+        parsed_msg: dict[str, Any] = {
             "update_id": update_id,
             "kind": "message",
             "chat_id": str(chat_id),
-            "text": text[:8000],
+            "text": effective_text,
             "message_id": message.get("message_id"),
             "reply_to_message_id": reply_to_id,
         }
+        if norm_images:
+            parsed_msg["image_paths"] = norm_images
+        return parsed_msg
 
     @staticmethod
     def approval_snapshot(state: dict[str, Any] | None) -> str:
@@ -335,9 +359,14 @@ class TelegramJobStore:
             conn.commit()
             return True
 
-    def accept_update(self, update: dict[str, Any]) -> dict[str, Any]:
+    def accept_update(
+        self,
+        update: dict[str, Any],
+        *,
+        image_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Durably store the update and advance the Telegram cursor atomically."""
-        parsed = self._parse_update(update)
+        parsed = self._parse_update(update, image_paths=image_paths)
         if not parsed:
             return {"disposition": "ignored"}
         if parsed["kind"] == "message" and is_ephemeral_oauth_message(str(parsed.get("text") or "")):
@@ -406,8 +435,9 @@ class TelegramJobStore:
 
             if parsed["kind"] == "message":
                 text = parsed["text"]
+                msg_image_paths = list(parsed.get("image_paths") or [])
                 source_message_id = parsed.get("message_id")
-                control = _CONTROL.fullmatch(text.strip())
+                control = None if msg_image_paths else _CONTROL.fullmatch(text.strip())
                 if control:
                     action = control.group(1).lower()
                     args = (control.group(2) or "").strip()
@@ -450,73 +480,79 @@ class TelegramJobStore:
                     for r in running_rows
                 ]
                 parallel = bool(running_jobs)
-                decision = decide_message_routing(
-                    text,
-                    reply_to_message_id=parsed.get("reply_to_message_id"),
-                    running_jobs=running_jobs,
-                    max_steers_per_job=MAX_STEERS_PER_JOB,
-                )
-                if decision.mode == "steer" and decision.target_job_id:
-                    target = next(
-                        (j for j in running_jobs if j["job_id"] == decision.target_job_id),
-                        None,
-                    )
-                    queued = conn.execute(
-                        "SELECT COUNT(*) AS n FROM bot_jobs WHERE conversation_id=? "
-                        "AND state='queued'",
-                        (conversation_id,),
-                    ).fetchone()["n"]
-                    reserved_steers = conn.execute(
-                        "SELECT COUNT(*) AS n FROM bot_job_steers s JOIN bot_jobs j "
-                        "ON j.job_id=s.job_id WHERE j.conversation_id=? AND j.state='running' "
-                        "AND s.consumed_at IS NULL",
-                        (conversation_id,),
-                    ).fetchone()["n"]
-                    if (
-                        target is not None
-                        and (target["steer_used"] + target["steer_pending"]) < MAX_STEERS_PER_JOB
-                        and queued + reserved_steers + 1 <= MAX_QUEUED_PER_CHAT
-                    ):
-                        conn.execute(
-                            "INSERT INTO bot_job_steers(job_id,source_update_id,text,created_at) "
-                            "VALUES(?,?,?,?)",
-                            (decision.target_job_id, update_id, decision.cleaned_text, now),
-                        )
-                        self._event(
-                            conn,
-                            decision.target_job_id,
-                            "steer_queued",
-                            "Följdfråga mottagen",
-                        )
-                        conn.execute(
-                            "UPDATE telegram_inbox SET state='steer',disposition='steer',"
-                            "payload_json=NULL WHERE update_id=?",
-                            (update_id,),
-                        )
-                        conn.commit()
-                        return {
-                            "disposition": "steer",
-                            "job_id": decision.target_job_id,
-                            "chat_id": chat_id,
-                            "update_id": update_id,
-                            "source_message_id": source_message_id,
-                        }
-
-                cleaned_text = decision.cleaned_text
-                if _ACTION_COMMAND.match(cleaned_text.strip()):
-                    kind = "action"
-                elif is_page_review(cleaned_text):
-                    kind = "page_review"
-                else:
+                if msg_image_paths:
+                    cleaned_text = text
                     kind = "read_turn"
+                else:
+                    decision = decide_message_routing(
+                        text,
+                        reply_to_message_id=parsed.get("reply_to_message_id"),
+                        running_jobs=running_jobs,
+                        max_steers_per_job=MAX_STEERS_PER_JOB,
+                    )
+                    if decision.mode == "steer" and decision.target_job_id:
+                        target = next(
+                            (j for j in running_jobs if j["job_id"] == decision.target_job_id),
+                            None,
+                        )
+                        queued = conn.execute(
+                            "SELECT COUNT(*) AS n FROM bot_jobs WHERE conversation_id=? "
+                            "AND state='queued'",
+                            (conversation_id,),
+                        ).fetchone()["n"]
+                        reserved_steers = conn.execute(
+                            "SELECT COUNT(*) AS n FROM bot_job_steers s JOIN bot_jobs j "
+                            "ON j.job_id=s.job_id WHERE j.conversation_id=? AND j.state='running' "
+                            "AND s.consumed_at IS NULL",
+                            (conversation_id,),
+                        ).fetchone()["n"]
+                        if (
+                            target is not None
+                            and (target["steer_used"] + target["steer_pending"]) < MAX_STEERS_PER_JOB
+                            and queued + reserved_steers + 1 <= MAX_QUEUED_PER_CHAT
+                        ):
+                            conn.execute(
+                                "INSERT INTO bot_job_steers(job_id,source_update_id,text,created_at) "
+                                "VALUES(?,?,?,?)",
+                                (decision.target_job_id, update_id, decision.cleaned_text, now),
+                            )
+                            self._event(
+                                conn,
+                                decision.target_job_id,
+                                "steer_queued",
+                                "Följdfråga mottagen",
+                            )
+                            conn.execute(
+                                "UPDATE telegram_inbox SET state='steer',disposition='steer',"
+                                "payload_json=NULL WHERE update_id=?",
+                                (update_id,),
+                            )
+                            conn.commit()
+                            return {
+                                "disposition": "steer",
+                                "job_id": decision.target_job_id,
+                                "chat_id": chat_id,
+                                "update_id": update_id,
+                                "source_message_id": source_message_id,
+                            }
+
+                    cleaned_text = decision.cleaned_text
+                    if _ACTION_COMMAND.match(cleaned_text.strip()):
+                        kind = "action"
+                    elif is_page_review(cleaned_text):
+                        kind = "page_review"
+                    else:
+                        kind = "read_turn"
                 task_id = uuid.uuid4().hex
-                payload = {
+                payload: dict[str, Any] = {
                     "type": "message",
                     "chat_id": chat_id,
                     "text": cleaned_text,
                     "source_message_id": source_message_id,
                     "reply_to_message_id": parsed.get("reply_to_message_id"),
                 }
+                if msg_image_paths:
+                    payload["image_paths"] = msg_image_paths
                 approval_key = self._approval_key(chat_id, payload) if kind == "action" else None
                 job_id = self._insert_job(
                     conn,

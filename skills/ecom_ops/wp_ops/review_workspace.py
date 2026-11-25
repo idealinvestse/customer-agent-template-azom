@@ -257,8 +257,11 @@ def write_tree(folder: Path, files: list[tuple[str, bytes]]) -> None:
         parts = [part for part in relative.replace("\\", "/").split("/") if part]
         if not parts or any(part in {".", ".."} for part in parts):
             raise ReviewError("PathRejected")
-        dest = (folder.joinpath(*parts)).resolve()
-        if dest != root and root not in dest.parents:
+        candidate = folder.joinpath(*parts)
+        if candidate.is_symlink():
+            raise ReviewError("PathRejected")
+        dest = candidate.resolve()
+        if dest.is_symlink() or (dest != root and root not in dest.parents):
             raise ReviewError("PathRejected")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)

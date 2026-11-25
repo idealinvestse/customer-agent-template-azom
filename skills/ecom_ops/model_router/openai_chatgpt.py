@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,12 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 import requests
 
 from ecom_ops.model_router import circuit_breaker
-from ecom_ops.model_router.base import ModelRequest, ModelResult, RouteCapabilities
+from ecom_ops.model_router.base import (
+    ModelRequest,
+    ModelResult,
+    RouteCapabilities,
+    encode_image_data_url,
+)
 from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
@@ -75,18 +81,40 @@ def _explicit_siwc_set() -> bool:
     return any(_env(name) for name in _REQUIRED_ENV)
 
 
+_UUID_URN_RE = re.compile(
+    r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_JWK_THUMBPRINT_URN_RE = re.compile(
+    r"^urn:ietf:params:oauth:jwk-thumbprint:[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=-]{8,200}$"
+)
+_DID_KEY_RE = re.compile(r"^did:key:[A-Za-z0-9._~-]{8,200}$")
+
+
+def _is_valid_host_id_uri(value: str) -> bool:
+    """Validate OpenAI SIWC ``ext_agent_host_id`` URI formats."""
+    candidate = (value or "").strip()
+    if not candidate or len(candidate) > 256 or any(ch.isspace() for ch in candidate):
+        return False
+    return bool(
+        _UUID_URN_RE.fullmatch(candidate)
+        or _JWK_THUMBPRINT_URN_RE.fullmatch(candidate)
+        or _DID_KEY_RE.fullmatch(candidate)
+    )
+
+
 def _default_host_id(*, create: bool = False) -> str:
     path = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data")) / "openai_siwc_host_id"
     try:
         if path.is_file():
             existing = path.read_text(encoding="utf-8").strip()
-            if existing and len(existing) <= 128 and existing.replace("-", "").replace("_", "").isalnum():
+            if _is_valid_host_id_uri(existing):
                 return existing
     except OSError:
         pass
     if not create:
         return ""
-    generated = secrets.token_hex(16)
+    generated = f"urn:uuid:{uuid.uuid4()}"
     try:
         atomic_write_text(path, generated + "\n", mode=0o600)
     except OSError:
@@ -174,6 +202,51 @@ def _prefer_output_text(delta_text: str, done_text: str, completed_text: str) ->
     return delta
 
 
+def _responses_message_content(msg: dict[str, Any]) -> str | list[dict[str, Any]]:
+    """Build plain-string or OpenAI Responses multimodal content list for one message."""
+    content = msg.get("content")
+    raw_images = msg.get("images")
+    image_list = (
+        [str(p).strip() for p in raw_images if isinstance(p, (str, Path)) and str(p).strip()]
+        if isinstance(raw_images, (list, tuple))
+        else []
+    )
+    if not image_list and not isinstance(content, list):
+        return str(content or "")
+
+    parts: list[dict[str, Any]] = []
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "")
+            if ptype in {"text", "input_text"}:
+                parts.append({"type": "input_text", "text": str(part.get("text") or "")})
+            elif ptype == "input_image" and part.get("image_url"):
+                parts.append({"type": "input_image", "image_url": str(part["image_url"])})
+            elif ptype == "image_url":
+                img = part.get("image_url")
+                if isinstance(img, dict) and img.get("url"):
+                    parts.append({"type": "input_image", "image_url": str(img["url"])})
+                elif isinstance(img, str) and img:
+                    parts.append({"type": "input_image", "image_url": img})
+    else:
+        text_val = str(content or "")
+        if text_val or not image_list:
+            parts.append({"type": "input_text", "text": text_val})
+
+    for img_path in image_list:
+        try:
+            data_url = encode_image_data_url(img_path)
+        except ValueError as exc:
+            raise ModelConfigError(
+                "Invalid image attachment for Responses API",
+                code="invalid_image",
+            ) from exc
+        parts.append({"type": "input_image", "image_url": data_url})
+    return parts
+
+
 def build_responses_payload(request: ModelRequest, model: str) -> dict[str, Any]:
     """Responses API body. No temperature and no max_tokens.
 
@@ -194,20 +267,20 @@ def build_responses_payload(request: ModelRequest, model: str) -> dict[str, Any]
         idx += 1
 
     developer_prefix: list[str] = []
-    conversation: list[dict[str, str]] = []
+    conversation: list[dict[str, Any]] = []
     for msg in request.messages[idx:]:
         role = msg.get("role") or "user"
         content = msg.get("content") or ""
-        if role == "developer" and not conversation:
+        if role == "developer" and not conversation and not msg.get("images") and not isinstance(content, list):
             if content:
                 developer_prefix.append(str(content))
             continue
         if role == "system":
-            conversation.append({"role": "developer", "content": str(content)})
+            conversation.append({"role": "developer", "content": _responses_message_content(msg)})
         else:
-            conversation.append({"role": str(role), "content": str(content)})
+            conversation.append({"role": str(role), "content": _responses_message_content(msg)})
 
-    input_items: list[dict[str, str]] = []
+    input_items: list[dict[str, Any]] = []
     if developer_prefix:
         input_items.append({"role": "developer", "content": "\n\n".join(developer_prefix)})
     input_items.extend(conversation)
@@ -323,6 +396,7 @@ class OpenAIChatGPTOAuthRoute:
         supports_reasoning_effort=True,
         supports_json_schema=True,
         supports_streaming=True,
+        supports_vision=True,
         cost_kind="subscription",
         subject_to_openrouter_cap=False,
     )
@@ -815,7 +889,9 @@ class OpenAIChatGPTOAuthRoute:
             raise ModelUnavailableError("ChatGPT models response was not JSON") from exc
         finally:
             response.close()
-        data = payload.get("data") if isinstance(payload, dict) else None
+        data = payload.get("data")
+        if not isinstance(data, list):
+            data = payload.get("models")
         if not isinstance(data, list):
             return []
         has_visibility = any(isinstance(it, dict) and "visibility" in it for it in data)
@@ -823,12 +899,12 @@ class OpenAIChatGPTOAuthRoute:
         for item in data:
             if not isinstance(item, dict):
                 continue
-            model_id = str(item.get("id") or "").strip()
+            model_id = str(item.get("id") or item.get("slug") or "").strip()
             if not model_id:
                 continue
             if has_visibility and str(item.get("visibility") or "").strip() != "list":
                 continue
-            label = str(item.get("name") or item.get("display_name") or model_id).strip()
+            label = str(item.get("name") or item.get("display_name") or item.get("title") or model_id).strip()
             out.append({"id": model_id, "name": label})
         return out
 
@@ -867,12 +943,19 @@ class OpenAIChatGPTOAuthRoute:
         usage: dict[str, Any] = {}
         saw_delta = False
         try:
-            for line in response.iter_lines(decode_unicode=True):
+            for raw_line in response.iter_lines(decode_unicode=True):
                 if hard_deadline is not None and time.monotonic() > hard_deadline:
                     raise ModelUnavailableError("ChatGPT stream hard timeout", code="hard_timeout")
-                if not line or not str(line).startswith("data:"):
+                if raw_line is None:
                     continue
-                raw = str(line)[5:].strip()
+                line = (
+                    raw_line.decode("utf-8", errors="replace")
+                    if isinstance(raw_line, (bytes, bytearray))
+                    else str(raw_line)
+                )
+                if not line or not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
                 if raw == "[DONE]":
                     break
                 try:
