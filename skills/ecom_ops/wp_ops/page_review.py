@@ -49,6 +49,7 @@ class ReviewContext:
     capped: set[str] = field(default_factory=set)
     page: Any = None
     io_timeout: float | None = None
+    target_page: str | None = None
 
 
 def _not_run(tool: str, site_id: str, reason: str, availability: str = "unavailable") -> dict[str, Any]:
@@ -183,8 +184,14 @@ def prepare_context(
     transport: Any = None,
     registry_path: Path | None = None,
     data_dir: Path | None = None,
+    target_page: str | None = None,
 ) -> ReviewContext:
-    ctx = ReviewContext(site_id=str(site_id or "").strip(), actor_name=actor)
+    clean_target = str(target_page or "").strip().lower() or None
+    ctx = ReviewContext(
+        site_id=str(site_id or "").strip(),
+        actor_name=actor,
+        target_page=clean_target,
+    )
     try:
         person = resolve_actor(actor)
     except AccessDenied:
@@ -248,6 +255,42 @@ def _read_relative(ctx: ReviewContext, root: str, relative: str, *, role: str) -
     return text
 
 
+def _resolve_target_page(ctx: ReviewContext, tool: str, target: str) -> dict[str, Any] | None:
+    if target.isdigit():
+        try:
+            ctx.page = ctx.client.get_page(target, context="edit")
+        except TimeoutError:
+            return _not_run(tool, ctx.site_id, "io_timeout")
+        except Exception:
+            return _not_run(tool, ctx.site_id, "target_page_not_found")
+    else:
+        try:
+            pages = ctx.client.list_pages(per_page=20, search=target)
+        except TimeoutError:
+            return _not_run(tool, ctx.site_id, "io_timeout")
+        except Exception:
+            return _not_run(tool, ctx.site_id, "target_page_not_found")
+        target_lower = target.lower()
+        matched = None
+        for candidate in pages if isinstance(pages, list) else []:
+            c_raw = candidate.raw if isinstance(getattr(candidate, "raw", None), dict) else {}
+            c_slug = str(c_raw.get("slug") or "").strip().lower()
+            if c_slug == target_lower or str(getattr(candidate, "id", "")) == target:
+                matched = candidate
+                break
+        if matched is None:
+            return _not_run(tool, ctx.site_id, "target_page_not_found")
+        try:
+            ctx.page = ctx.client.get_page(matched.id, context="edit")
+        except TimeoutError:
+            return _not_run(tool, ctx.site_id, "io_timeout")
+        except Exception:
+            return _not_run(tool, ctx.site_id, "target_page_not_found")
+    if ctx.page is None:
+        return _not_run(tool, ctx.site_id, "target_page_not_found")
+    return None
+
+
 def step_home(ctx: ReviewContext) -> dict[str, Any]:
     tool = "wp_page_review_home"
     if not ctx.allowed:
@@ -256,45 +299,68 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
         return _not_run(tool, ctx.site_id, ctx.reason or "site_unselected")
     if ctx.client is None:
         return _not_run(tool, ctx.site_id, "not_bound", "not_bound")
-    try:
-        settings = ctx.client.get_settings()
-        themes = ctx.client.list_themes()
-    except TimeoutError:
-        return _not_run(tool, ctx.site_id, "io_timeout")
-    except Exception:
-        return _not_run(tool, ctx.site_id, "rest_failed")
-    if not isinstance(settings, dict) or not isinstance(themes, list):
-        return _not_run(tool, ctx.site_id, "rest_failed")
-    front = str(settings.get("show_on_front") or "").strip().lower()
-    if front not in {"page", "posts"}:
-        return _not_run(tool, ctx.site_id, "settings_incomplete")
-    page_id = 0
-    if front == "page":
+    target = str(ctx.target_page or "").strip()
+    if target:
         try:
-            page_id = int(settings.get("page_on_front") or 0)
-        except (TypeError, ValueError):
-            page_id = 0
-        if page_id <= 0:
-            return _not_run(tool, ctx.site_id, "page_on_front_missing")
-    try:
-        page_for_posts = int(settings.get("page_for_posts") or 0)
-    except (TypeError, ValueError):
-        page_for_posts = 0
-    ctx.show_on_front = front
-    ctx.page_id = page_id
-    ctx.page_for_posts = max(0, page_for_posts)
-    if front == "page":
-        try:
-            ctx.page = ctx.client.get_page(page_id, context="edit")
+            themes = ctx.client.list_themes()
         except TimeoutError:
             return _not_run(tool, ctx.site_id, "io_timeout")
         except Exception:
-            ctx.page = None
-        else:
-            raw = ctx.page.raw if isinstance(getattr(ctx.page, "raw", None), dict) else {}
-            slug = str(raw.get("slug") or "").strip().lower()
-            if _SLUG.fullmatch(slug):
-                ctx.page_slug = slug
+            return _not_run(tool, ctx.site_id, "rest_failed")
+        if not isinstance(themes, list):
+            return _not_run(tool, ctx.site_id, "rest_failed")
+        failure = _resolve_target_page(ctx, tool, target)
+        if failure is not None:
+            return failure
+        front = "page"
+        page_id = int(ctx.page.id)
+        ctx.show_on_front = "page"
+        ctx.page_id = page_id
+        ctx.page_for_posts = 0
+        raw = ctx.page.raw if isinstance(getattr(ctx.page, "raw", None), dict) else {}
+        slug = str(raw.get("slug") or "").strip().lower()
+        if _SLUG.fullmatch(slug):
+            ctx.page_slug = slug
+    else:
+        try:
+            settings = ctx.client.get_settings()
+            themes = ctx.client.list_themes()
+        except TimeoutError:
+            return _not_run(tool, ctx.site_id, "io_timeout")
+        except Exception:
+            return _not_run(tool, ctx.site_id, "rest_failed")
+        if not isinstance(settings, dict) or not isinstance(themes, list):
+            return _not_run(tool, ctx.site_id, "rest_failed")
+        front = str(settings.get("show_on_front") or "").strip().lower()
+        if front not in {"page", "posts"}:
+            return _not_run(tool, ctx.site_id, "settings_incomplete")
+        page_id = 0
+        if front == "page":
+            try:
+                page_id = int(settings.get("page_on_front") or 0)
+            except (TypeError, ValueError):
+                page_id = 0
+            if page_id <= 0:
+                return _not_run(tool, ctx.site_id, "page_on_front_missing")
+        try:
+            page_for_posts = int(settings.get("page_for_posts") or 0)
+        except (TypeError, ValueError):
+            page_for_posts = 0
+        ctx.show_on_front = front
+        ctx.page_id = page_id
+        ctx.page_for_posts = max(0, page_for_posts)
+        if front == "page":
+            try:
+                ctx.page = ctx.client.get_page(page_id, context="edit")
+            except TimeoutError:
+                return _not_run(tool, ctx.site_id, "io_timeout")
+            except Exception:
+                ctx.page = None
+            else:
+                raw = ctx.page.raw if isinstance(getattr(ctx.page, "raw", None), dict) else {}
+                slug = str(raw.get("slug") or "").strip().lower()
+                if _SLUG.fullmatch(slug):
+                    ctx.page_slug = slug
     active = [
         row for row in themes if isinstance(row, dict) and str(row.get("status") or "") == "active"
     ]
@@ -321,6 +387,7 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
             "selected_template_path": None,
             "selection": "unavailable",
             "site_editor": "unavailable",
+            "site_editor_templates": [],
             "candidates": [],
             "candidate_hits": [],
             "findings": [],
@@ -339,6 +406,23 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
     page_raw = ctx.page.raw if ctx.page is not None and isinstance(getattr(ctx.page, "raw", None), dict) else {}
     assigned_template = str(page_raw.get("template") or "").strip()
     block = ctx.theme_kind == "block"
+    site_editor = "unavailable"
+    site_editor_templates: list[str] = []
+    if block:
+        list_tpl = getattr(ctx.client, "list_templates", None)
+        if callable(list_tpl):
+            try:
+                tpl_rows = list_tpl()
+            except Exception:
+                tpl_rows = []
+            if isinstance(tpl_rows, list) and tpl_rows:
+                site_editor_templates = [
+                    str(r.get("slug") or r.get("id"))[:80]
+                    for r in tpl_rows[:20]
+                    if isinstance(r, dict) and (r.get("slug") or r.get("id"))
+                ]
+                if site_editor_templates:
+                    site_editor = "read"
     if ctx.theme_kind == "unknown":
         candidates: tuple[str, ...] = ()
     else:
@@ -464,7 +548,8 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
         "template_assignment": assigned_template or None,
         "assignment_state": assignment_state,
         "selection": selection,
-        "site_editor": "unavailable",
+        "site_editor": site_editor,
+        "site_editor_templates": site_editor_templates,
         "stylesheet": stylesheet,
         "template": ctx.template or None,
         "theme_relationship": ctx.relationship,

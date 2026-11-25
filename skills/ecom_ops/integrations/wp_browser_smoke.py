@@ -30,10 +30,11 @@ from ecom_ops.integrations.wp_local_runtime import (
     LocalWordPressSandbox,
     build_php_child_env,
     make_local_sandbox_gate,
+    resolve_local_runtime,
     runtime_dir_from_env,
 )
 from ecom_ops.integrations.wp_review_process import run_php_lint
-from ecom_ops.integrations.wp_runtime_fetch import RuntimeFetchError, check_runtime
+from ecom_ops.integrations.wp_runtime_fetch import RuntimeFetchError
 from ecom_ops.wp_ops.review_checks import (
     JOBS,
     PROFILE,
@@ -524,6 +525,104 @@ def _text_files(folder: Path) -> list[tuple[str, str]]:
     return [(rel, data.decode("utf-8", errors="replace")) for rel, data in iter_files(folder)]
 
 
+def _write_egress_probe(
+    artifact_dir: Path,
+    all_egress: list[dict[str, str]],
+    *,
+    started_at: str,
+    finished_at: str,
+    browser_isolated: bool,
+) -> dict[str, Any]:
+    egress_artifact = artifact_dir / "egress_probe.json"
+    egress_artifact.write_text(
+        json.dumps(
+            {
+                "job": "egress_probe",
+                "blocked_attempts": all_egress,
+                "wordpress_block_external": True,
+                "browser_host_resolver_isolated": browser_isolated,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    egress_ok = len(all_egress) == 0
+    return {
+        "job": "egress_probe",
+        "status": "passed" if egress_ok else "failed",
+        "summary": (
+            "egress_probe passed: 0 non-loopback requests"
+            if egress_ok
+            else f"egress_probe failed: {len(all_egress)} blocked external request(s)"
+        ),
+        "command": "internal:loopback_egress_guard",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "exit_code": 0 if egress_ok else 1,
+        "artifact_path": str(egress_artifact),
+        "executed": True,
+        "simulated": False,
+    }
+
+
+def _build_binding(
+    *,
+    run_id: str,
+    site_id: str,
+    plan_id: str,
+    base_sha256: str,
+    work_sha256: str,
+    policy: dict[str, str],
+    started_at: str,
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "site_id": site_id,
+        "plan_id": plan_id,
+        "base_sha256": base_sha256,
+        "work_sha256": work_sha256,
+        "policy": policy,
+        "profile": PROFILE,
+        "profile_version": PROFILE_VERSION,
+        "started_at": started_at,
+        "finished_at": _now(),
+        "published": False,
+    }
+
+
+def _probe_loopback_http(url: str) -> dict[str, Any]:
+    """Perform a strict loopback HTTP GET to verify plugin boot without a browser."""
+    assert_loopback_http_url(url)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    http_status: int | None = None
+    http_body = ""
+    http_error_msg: str | None = None
+    try:
+        with opener.open(url, timeout=10.0) as resp:
+            http_status = int(resp.status)
+            http_body = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        http_status = int(exc.code)
+        try:
+            http_body = exc.read().decode("utf-8", errors="replace")
+        except OSError:
+            http_body = ""
+    except (urllib.error.URLError, OSError) as exc:
+        http_error_msg = str(exc)[:300]
+
+    lower_body = http_body.lower()
+    fatal_markers = [marker for marker in _WP_FATAL_MARKERS if marker in lower_body]
+    ok = http_error_msg is None and http_status == 200 and bool(http_body.strip()) and not fatal_markers
+    return {
+        "ok": ok,
+        "http_status": http_status,
+        "fatal_markers": fatal_markers,
+        "error": http_error_msg,
+        "body_bytes": len(http_body.encode("utf-8")),
+    }
+
+
 def run_vertical_theme_render(
     *,
     site: object,
@@ -536,13 +635,15 @@ def run_vertical_theme_render(
     risk: str = "low",
     runtime_dir: Path | None = None,
     browser_binary: str | None = None,
+    parent_theme_slug: str | None = None,
+    parent_theme_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Run one opt-in, bound vertical render of a synthetic theme (base + work, desktop + mobile)."""
     if not sandbox_enabled():
         raise ReviewError("SandboxDisabled")
     resolved_runtime = runtime_dir_from_env(runtime_dir)
     try:
-        manifest = check_runtime(resolved_runtime)
+        manifest = resolve_local_runtime(resolved_runtime)
     except (RuntimeFetchError, OSError) as exc:
         raise ReviewError("SandboxRuntimeUnavailable") from exc
 
@@ -558,7 +659,12 @@ def run_vertical_theme_render(
     run_id = "cr-" + secrets.token_hex(6)
     started = _now()
 
-    lint_row = run_php_lint(work_files, artifact_dir, runtime_dir=resolved_runtime)
+    lint_runtime = None if manifest.get("system_php") else resolved_runtime
+    lint_row = (
+        run_php_lint(work_files, artifact_dir, runtime_dir=lint_runtime)
+        if policy["php_lint"] != "not_applicable"
+        else run_job("php_lint", "theme", work_files, risk)
+    )
 
     revisions: dict[str, Any] = {}
     sandbox_records: dict[str, Any] = {}
@@ -574,6 +680,8 @@ def run_vertical_theme_render(
             theme_slug=slug,
             theme_dir=rev_dir,
             runtime_dir=resolved_runtime,
+            parent_theme_slug=parent_theme_slug,
+            parent_theme_dir=parent_theme_dir,
         )
         gate = make_local_sandbox_gate(sandbox)
         record: dict[str, Any] | None = None
@@ -654,42 +762,18 @@ def run_vertical_theme_render(
             "simulated": False,
         }
 
-    egress_artifact = artifact_dir / "egress_probe.json"
-    egress_artifact.write_text(
-        json.dumps(
-            {
-                "job": "egress_probe",
-                "blocked_attempts": all_egress,
-                "wordpress_block_external": True,
-                "browser_host_resolver_isolated": True,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    egress_row = _write_egress_probe(
+        artifact_dir,
+        all_egress,
+        started_at=browser_started,
+        finished_at=browser_finished,
+        browser_isolated=True,
     )
-    egress_ok = len(all_egress) == 0
-    egress_row = {
-        "job": "egress_probe",
-        "status": "passed" if egress_ok else "failed",
-        "summary": (
-            "egress_probe passed: 0 non-loopback requests"
-            if egress_ok
-            else f"egress_probe failed: {len(all_egress)} blocked external request(s)"
-        ),
-        "command": "internal:loopback_egress_guard",
-        "started_at": browser_started,
-        "finished_at": browser_finished,
-        "exit_code": 0 if egress_ok else 1,
-        "artifact_path": str(egress_artifact),
-        "executed": True,
-        "simulated": False,
-    }
 
     rows: list[dict[str, Any]] = []
     for job in JOBS:
         if job == "php_lint":
-            rows.append(lint_row if policy["php_lint"] != "not_applicable" else run_job(job, "theme", work_files, risk))
+            rows.append(lint_row)
         elif job == "browser_smoke":
             rows.append(browser_row if policy["browser_smoke"] != "not_applicable" else run_job(job, "theme", work_files, risk))
         elif job == "egress_probe":
@@ -709,19 +793,15 @@ def run_vertical_theme_render(
         profile_version=PROFILE_VERSION,
     )
     status = suite_status("theme", work_files, risk, stamped)
-    binding = {
-        "run_id": run_id,
-        "site_id": site_id,
-        "plan_id": plan_id,
-        "base_sha256": base_sha256,
-        "work_sha256": work_sha256,
-        "policy": policy,
-        "profile": PROFILE,
-        "profile_version": PROFILE_VERSION,
-        "started_at": started,
-        "finished_at": _now(),
-        "published": False,
-    }
+    binding = _build_binding(
+        run_id=run_id,
+        site_id=site_id,
+        plan_id=plan_id,
+        base_sha256=base_sha256,
+        work_sha256=work_sha256,
+        policy=policy,
+        started_at=started,
+    )
     bind_artifacts(artifact_dir, stamped, binding)
 
     return {
@@ -733,4 +813,149 @@ def run_vertical_theme_render(
         "revisions": revisions,
         "egress_attempts": all_egress,
         "php_errors": all_php_errors,
+    }
+
+
+def run_vertical_plugin_smoke(
+    *,
+    site: object,
+    site_id: str,
+    plan_id: str,
+    slug: str,
+    base_dir: Path,
+    work_dir: Path,
+    artifact_dir: Path,
+    risk: str = "low",
+    runtime_dir: Path | None = None,
+    browser_binary: str | None = None,
+) -> dict[str, Any]:
+    """Run one opt-in, bound vertical smoke of an isolated plugin on a synthetic host theme."""
+    if not sandbox_enabled():
+        raise ReviewError("SandboxDisabled")
+    resolved_runtime = runtime_dir_from_env(runtime_dir)
+    try:
+        manifest = resolve_local_runtime(resolved_runtime)
+    except (RuntimeFetchError, OSError) as exc:
+        raise ReviewError("SandboxRuntimeUnavailable") from exc
+
+    base_dir = Path(base_dir).resolve()
+    work_dir = Path(work_dir).resolve()
+    artifact_dir = Path(artifact_dir).resolve()
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    base_sha256 = tree_hash(base_dir)
+    work_sha256 = tree_hash(work_dir)
+    work_files = _text_files(work_dir)
+    policy = requirements("plugin", work_files, risk)
+    run_id = "cr-" + secrets.token_hex(6)
+    started = _now()
+
+    lint_runtime = None if manifest.get("system_php") else resolved_runtime
+    lint_row = (
+        run_php_lint(work_files, artifact_dir, runtime_dir=lint_runtime)
+        if policy["php_lint"] != "not_applicable"
+        else run_job("php_lint", "plugin", work_files, risk)
+    )
+
+    sandbox_records: dict[str, Any] = {}
+    php_errors: list[str] = []
+    all_egress: list[dict[str, str]] = []
+    render: dict[str, Any] = {}
+    plugin_boot_ok = False
+
+    probe_started = _now()
+    sb_dir = Path(tempfile.mkdtemp(prefix="azom-wp-sb-plugin-"))
+    sandbox = LocalWordPressSandbox(
+        plan_id=plan_id,
+        sandbox_dir=sb_dir,
+        plugin_slug=slug,
+        plugin_dir=work_dir,
+        runtime_dir=resolved_runtime,
+    )
+    gate = make_local_sandbox_gate(sandbox)
+    record: dict[str, Any] | None = None
+    try:
+        record = gate.start(site, plan_id, high_risk=(risk == "high"))
+        sandbox_records["work"] = dict(record)
+        render = run_browser_render(
+            sandbox.url,
+            artifact_dir,
+            label="work",
+            browser_binary=browser_binary,
+        )
+        if render.get("reason") == "browser_binary_missing":
+            http_probe = _probe_loopback_http(sandbox.url)
+            render["http_probe"] = http_probe
+            boot_signal_ok = bool(http_probe.get("ok"))
+        else:
+            boot_signal_ok = bool(render.get("ok"))
+
+        php_errors = sandbox.read_php_errors()
+        wp_egress = sandbox.read_egress_attempts()
+        all_egress = wp_egress + list(render.get("egress_attempts") or [])
+        render["php_errors"] = php_errors
+        render["wp_egress_attempts"] = wp_egress
+        if render.get("executed") is True:
+            render["ok"] = bool(render.get("ok")) and not php_errors
+        plugin_boot_ok = boot_signal_ok and not php_errors
+    finally:
+        if record is not None:
+            sandbox_records["work_stopped"] = gate.stop(record)
+        else:
+            sandbox.stop()
+        shutil.rmtree(sb_dir, ignore_errors=True)
+    probe_finished = _now()
+
+    egress_row = _write_egress_probe(
+        artifact_dir,
+        all_egress,
+        started_at=probe_started,
+        finished_at=probe_finished,
+        browser_isolated=bool(render.get("executed")),
+    )
+
+    rows: list[dict[str, Any]] = []
+    for job in JOBS:
+        if job == "php_lint":
+            rows.append(lint_row)
+        elif job == "egress_probe":
+            rows.append(egress_row)
+        elif job == "browser_smoke":
+            rows.append(run_job("browser_smoke", "plugin", work_files, risk))
+        else:
+            rows.append(run_job(job, "plugin", work_files, risk, artifact_dir=artifact_dir))
+
+    stamped = stamp_run(
+        rows,
+        run_id=run_id,
+        site_id=site_id,
+        plan_id=plan_id,
+        base_sha256=base_sha256,
+        work_sha256=work_sha256,
+        policy=policy,
+        profile=PROFILE,
+        profile_version=PROFILE_VERSION,
+    )
+    status = suite_status("plugin", work_files, risk, stamped)
+    binding = _build_binding(
+        run_id=run_id,
+        site_id=site_id,
+        plan_id=plan_id,
+        base_sha256=base_sha256,
+        work_sha256=work_sha256,
+        policy=policy,
+        started_at=started,
+    )
+    bind_artifacts(artifact_dir, stamped, binding)
+
+    return {
+        "run_id": run_id,
+        "status": status,
+        "plugin_boot_ok": plugin_boot_ok,
+        "binding": binding,
+        "checks": stamped,
+        "sandbox_records": sandbox_records,
+        "revisions": {"work": render},
+        "egress_attempts": all_egress,
+        "php_errors": {"work": php_errors},
     }

@@ -208,6 +208,25 @@ def register_wp_routes(app: Flask) -> None:
     def wp_review_extend(site_id: str, plan_id: str):
         return _post_review_extend(site_id, plan_id)
 
+    @app.route("/wp/<site_id>/reviews/<plan_id>/artifact/<name>")
+    @_auth_required
+    def wp_review_artifact(site_id: str, plan_id: str, name: str):
+        if not _REVIEW_ID.fullmatch(plan_id):
+            return Response("Okänd plan", 404)
+        if not _file_admin():
+            return Response("Saknar behörighet", 403)
+        path, err = _review_ops().artifact_file(site_id, plan_id, name, actor=g.actor["name"])
+        if err is not None or path is None:
+            blocked = _review_http(err) if err is not None else None
+            if blocked is not None:
+                return blocked
+            return Response("Okänd artefakt", 404)
+        return Response(
+            path.read_bytes(),
+            mimetype="image/png",
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
 
 def _post_ssh(site_id: str):
     from ecom_ops.wp_ops import WpOpsService
@@ -541,6 +560,14 @@ def _render_review(site_id: str, plan_id: str, *, error_class: str = "", result:
     payload = shown.data or {}
     plan = dict(payload.get("plan") or {})
     diff = str(payload.get("diff") or "") if admin else ""
+    screenshots = _review_ops().list_artifacts(site_id, plan_id, actor=g.actor["name"]) if admin else []
+    browser_passed = any(
+        isinstance(row, dict)
+        and row.get("job") == "browser_smoke"
+        and row.get("status") == "passed"
+        and row.get("executed") is True
+        for row in (plan.get("checks") or [])
+    )
     outcome = result or {}
     return render_template(
         "wp_review.html",
@@ -548,6 +575,8 @@ def _render_review(site_id: str, plan_id: str, *, error_class: str = "", result:
             plan=plan,
             diff=diff,
             can_review=admin,
+            screenshots=screenshots,
+            has_rendered_preview=bool(screenshots and browser_passed),
             error_class=error_class or str(outcome.get("error_class") or ""),
             executed=outcome.get("executed") is True,
             bytes_copied=False,

@@ -27,7 +27,8 @@ _ACTION_COMMAND = re.compile(
 )
 _ACTION_CALLBACK = re.compile(
     r"^(?:cases:approve:|cases:regen:|order:set:|product:desc:|action:yes$|"
-    r"escalate:yes$|wpfile:stage:fe-[a-f0-9]{12}$)",
+    r"escalate:yes$|wpfile:stage:fe-[a-f0-9]{12}$|"
+    r"wpreview:stage:wr-[a-f0-9]{12}$)",
     re.I,
 )
 
@@ -420,7 +421,9 @@ class TelegramJobStore:
                     "callback_query_id": parsed["callback_query_id"],
                     "source_message_id": parsed.get("source_message_id"),
                 }
-                if data in {"action:yes", "escalate:yes"} or data.startswith("wpfile:stage:"):
+                if data in {"action:yes", "escalate:yes"} or data.startswith(
+                    ("wpfile:stage:", "wpreview:stage:")
+                ):
                     state_row = conn.execute(
                         "SELECT state_json FROM telegram_conversations WHERE chat_id=?",
                         (chat_id,),

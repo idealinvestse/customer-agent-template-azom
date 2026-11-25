@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -28,6 +29,11 @@ from ecom_ops.wp_ops.review_workspace import SLUG, ReviewError
 _ALLOWED_OS_ENV = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
 _FORBIDDEN_PREFIXES = ("WP_SECRET_", "WOO_", "MAIL_", "SMTP_", "OPENROUTER_", "TELEGRAM_", "MESSENGER_")
 _STARTUP_TIMEOUT_S = 15.0
+_PLUGIN_ENTRY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,60}/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.php$")
+_PLUGIN_MAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.php$")
+_PHP_SYS_VERSION_RE = re.compile(r"PHP (8\.[234]\.\d+)")
+_WP_VERSION_RE = re.compile(r"\$wp_version\s*=\s*(['\"])([^'\"]+)\1\s*;")
+_PROBE_ENV_KEYS = ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
 
 
 def runtime_dir_from_env(explicit: Path | None = None) -> Path:
@@ -60,7 +66,8 @@ def _pick_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _copy_theme_tree(source: Path, dest: Path) -> None:
+def _copy_component_tree(source: Path, dest: Path) -> None:
+    """Copy a local theme or plugin directory into the sandbox without following symlinks."""
     source_root = Path(source).resolve()
     if not source_root.is_dir():
         raise ReviewError("WorkspaceMissing")
@@ -79,6 +86,132 @@ def _copy_theme_tree(source: Path, dest: Path) -> None:
         target.write_bytes(path.read_bytes())
 
 
+_copy_theme_tree = _copy_component_tree
+
+
+def _php_serialize_list(items: list[str]) -> str:
+    """Serialize a list of strings as a PHP indexed array using UTF-8 byte lengths."""
+    if not items:
+        return "a:0:{}"
+    parts = [f'i:{idx};s:{len(item.encode("utf-8"))}:"{item}";' for idx, item in enumerate(items)]
+    return f"a:{len(items)}:{{{''.join(parts)}}}"
+
+
+def _write_minimal_synthetic_theme(dest: Path) -> None:
+    """Write a minimal synthetic host theme for isolated plugin-only runs."""
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "style.css").write_text(
+        "/*\nTheme Name: Azom Synthetic Plugin Host\nVersion: 1.0.0\n*/\n",
+        encoding="utf-8",
+    )
+    (dest / "functions.php").write_text(
+        "<?php\nadd_action('wp_enqueue_scripts', function () { wp_enqueue_style('azom-host-style', get_stylesheet_uri(), array(), '1.0.0'); });\n",
+        encoding="utf-8",
+    )
+    (dest / "index.php").write_text(
+        "<!doctype html>\n"
+        "<html <?php language_attributes(); ?>>\n"
+        "<head>\n"
+        "<meta charset=\"<?php bloginfo('charset'); ?>\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        "<?php wp_head(); ?>\n"
+        "</head>\n"
+        "<body <?php body_class(); ?>>\n"
+        "<?php wp_body_open(); ?>\n"
+        '<main data-azom-theme-marker="azom-plugin-host">Azom Plugin Host</main>\n'
+        "<?php wp_footer(); ?>\n"
+        "</body>\n"
+        "</html>\n",
+        encoding="utf-8",
+    )
+
+
+def _detect_plugin_main_file(plugin_dir: Path, plugin_slug: str) -> str:
+    """Locate the main PHP entry file inside a plugin directory."""
+    root = Path(plugin_dir)
+    if not root.is_dir():
+        raise ReviewError("ComponentMissing")
+    preferred = root / f"{plugin_slug}.php"
+    if preferred.is_file() and not preferred.is_symlink():
+        return preferred.name
+    php_files = sorted(
+        (p for p in root.iterdir() if p.is_file() and not p.is_symlink() and p.suffix.lower() == ".php"),
+        key=lambda p: p.name,
+    )
+    for path in php_files:
+        text = path.read_text(encoding="utf-8", errors="replace")[:8192]
+        if "Plugin Name:" in text:
+            return path.name
+    if php_files:
+        return php_files[0].name
+    raise ReviewError("ComponentMissing")
+
+
+def resolve_local_runtime(runtime_dir: Path) -> dict[str, Any]:
+    """Resolve the pinned runtime manifest, with non-Windows system PHP fallback."""
+    resolved_dir = Path(runtime_dir)
+    try:
+        return check_runtime(resolved_dir)
+    except RuntimeFetchError:
+        if os.name == "nt":
+            raise ReviewError("SandboxRuntimeUnavailable") from None
+    except OSError:
+        raise ReviewError("SandboxRuntimeUnavailable") from None
+
+    wp_dir = resolved_dir / "wordpress"
+    version_file = wp_dir / "wp-includes" / "version.php"
+    php_path = shutil.which("php")
+    if not version_file.is_file() or version_file.is_symlink() or not php_path:
+        raise ReviewError("SandboxRuntimeUnavailable")
+
+    probe_env = {k: v for k, v in os.environ.items() if k.upper() in _PROBE_ENV_KEYS}
+    try:
+        ver_proc = subprocess.run(
+            [php_path, "-v"],
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env=probe_env,
+        )
+        mod_proc = subprocess.run(
+            [php_path, "-m"],
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env=probe_env,
+        )
+        version_text = version_file.read_text(encoding="utf-8", errors="replace")[:65536]
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReviewError("SandboxRuntimeUnavailable") from exc
+
+    if ver_proc.returncode != 0 or mod_proc.returncode != 0:
+        raise ReviewError("SandboxRuntimeUnavailable")
+
+    php_match = _PHP_SYS_VERSION_RE.search(f"{ver_proc.stdout or ''}\n{ver_proc.stderr or ''}")
+    if php_match is None:
+        raise ReviewError("SandboxRuntimeUnavailable")
+
+    modules = {line.strip().lower() for line in (mod_proc.stdout or "").splitlines() if line.strip()}
+    if "pdo_sqlite" not in modules:
+        raise ReviewError("SandboxRuntimeUnavailable")
+
+    wp_match = _WP_VERSION_RE.search(version_text)
+    if wp_match is None:
+        raise ReviewError("SandboxRuntimeUnavailable")
+
+    return {
+        "php_path": php_path,
+        "wordpress_path": str(wp_dir.resolve()),
+        "wordpress_version": wp_match.group(2),
+        "php_version": php_match.group(1),
+        "system_php": True,
+    }
+
+
 def _php_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
@@ -89,8 +222,14 @@ def _init_sqlite_db(
     base_url: str,
     theme_slug: str,
     parent_slug: str | None = None,
+    active_plugins: list[str] | None = None,
     site_title: str = "Azom Synthetic Fixture",
 ) -> None:
+    plugin_entries = list(active_plugins or [])
+    for entry in plugin_entries:
+        if not isinstance(entry, str) or not _PLUGIN_ENTRY_RE.fullmatch(entry):
+            raise ReviewError("PathRejected")
+    serialized_plugins = _php_serialize_list(plugin_entries)
     if db_path.exists():
         db_path.unlink()
     template_slug = parent_slug or theme_slug
@@ -234,7 +373,7 @@ def _init_sqlite_db(
             ("blog_public", "0", "yes"),
             ("template", template_slug, "yes"),
             ("stylesheet", theme_slug, "yes"),
-            ("active_plugins", "a:0:{}", "yes"),
+            ("active_plugins", serialized_plugins, "yes"),
             ("show_on_front", "page", "yes"),
             ("page_on_front", "2", "yes"),
             ("page_for_posts", "0", "yes"),
@@ -707,31 +846,45 @@ require_once ABSPATH . WPINC . '/template-loader.php';
 
 
 class LocalWordPressSandbox:
-    """One opt-in, loopback-only WordPress 7.1.5 + PHP 8.3.37 process."""
+    """One opt-in, loopback-only WordPress + PHP process."""
 
     def __init__(
         self,
         *,
         plan_id: str,
         sandbox_dir: Path,
-        theme_slug: str,
-        theme_dir: Path,
+        theme_slug: str = "azom-plugin-host",
+        theme_dir: Path | None = None,
         runtime_dir: Path | None = None,
         parent_theme_slug: str | None = None,
         parent_theme_dir: Path | None = None,
+        plugin_slug: str | None = None,
+        plugin_dir: Path | None = None,
+        plugin_main_file: str | None = None,
         startup_timeout_s: float = _STARTUP_TIMEOUT_S,
     ) -> None:
+        if theme_dir is None and plugin_dir is None:
+            raise ReviewError("WorkspaceMissing")
         if not SLUG.fullmatch(theme_slug):
             raise ReviewError("SlugRejected")
         if parent_theme_slug is not None and not SLUG.fullmatch(parent_theme_slug):
             raise ReviewError("SlugRejected")
+        if plugin_slug is not None and not SLUG.fullmatch(plugin_slug):
+            raise ReviewError("SlugRejected")
+        if plugin_dir is not None and not plugin_slug:
+            raise ReviewError("SlugRejected")
+        if plugin_main_file is not None and not _PLUGIN_MAIN_RE.fullmatch(plugin_main_file):
+            raise ReviewError("PathRejected")
         self.plan_id = plan_id
         self.sandbox_dir = Path(sandbox_dir).resolve()
         self.theme_slug = theme_slug
-        self.theme_dir = Path(theme_dir).resolve()
+        self.theme_dir = Path(theme_dir).resolve() if theme_dir is not None else None
         self.runtime_dir = runtime_dir_from_env(runtime_dir)
         self.parent_theme_slug = parent_theme_slug
         self.parent_theme_dir = Path(parent_theme_dir).resolve() if parent_theme_dir else None
+        self.plugin_slug = plugin_slug
+        self.plugin_dir = Path(plugin_dir).resolve() if plugin_dir is not None else None
+        self.plugin_main_file = plugin_main_file
         self.startup_timeout_s = max(2.0, float(startup_timeout_s))
         self.port: int | None = None
         self.url: str = ""
@@ -750,7 +903,7 @@ class LocalWordPressSandbox:
         if not sandbox_enabled():
             raise ReviewError("SandboxDisabled")
         try:
-            manifest = check_runtime(self.runtime_dir)
+            manifest = resolve_local_runtime(self.runtime_dir)
         except (RuntimeFetchError, OSError) as exc:
             raise ReviewError("SandboxRuntimeUnavailable") from exc
 
@@ -763,13 +916,26 @@ class LocalWordPressSandbox:
         self.sandbox_dir.mkdir(parents=True, exist_ok=True)
         wp_content = self.sandbox_dir / "wp-content"
         themes_dir = wp_content / "themes"
+        plugins_dir = wp_content / "plugins"
         mu_plugins = wp_content / "mu-plugins"
         themes_dir.mkdir(parents=True, exist_ok=True)
+        plugins_dir.mkdir(parents=True, exist_ok=True)
         mu_plugins.mkdir(parents=True, exist_ok=True)
 
-        _copy_theme_tree(self.theme_dir, themes_dir / self.theme_slug)
+        if self.theme_dir is not None:
+            _copy_component_tree(self.theme_dir, themes_dir / self.theme_slug)
+        else:
+            _write_minimal_synthetic_theme(themes_dir / self.theme_slug)
         if self.parent_theme_slug and self.parent_theme_dir:
-            _copy_theme_tree(self.parent_theme_dir, themes_dir / self.parent_theme_slug)
+            _copy_component_tree(self.parent_theme_dir, themes_dir / self.parent_theme_slug)
+
+        active_plugins: list[str] = []
+        if self.plugin_slug and self.plugin_dir:
+            _copy_component_tree(self.plugin_dir, plugins_dir / self.plugin_slug)
+            main_file = self.plugin_main_file or _detect_plugin_main_file(self.plugin_dir, self.plugin_slug)
+            if not _PLUGIN_MAIN_RE.fullmatch(main_file):
+                raise ReviewError("PathRejected")
+            active_plugins = [f"{self.plugin_slug}/{main_file}"]
 
         (wp_content / "db.php").write_text(_render_db_dropin(), encoding="utf-8")
         (mu_plugins / "azom-egress-guard.php").write_text(_render_egress_guard(), encoding="utf-8")
@@ -782,6 +948,7 @@ class LocalWordPressSandbox:
             base_url=self.url.rstrip("/"),
             theme_slug=self.theme_slug,
             parent_slug=self.parent_theme_slug,
+            active_plugins=active_plugins,
         )
 
         wp_config = self.sandbox_dir / "wp-config.php"
@@ -804,31 +971,47 @@ class LocalWordPressSandbox:
 
         env = build_php_child_env()
         self._env_names = sorted(env)
-        command = [
-            str(php_binary),
-            "-n",
-            "-d",
-            f"extension_dir={ext_dir}",
-            "-d",
-            "extension=pdo_sqlite",
-            "-d",
-            "extension=sqlite3",
-            "-d",
-            "extension=mbstring",
-            "-d",
-            "extension=fileinfo",
-            "-d",
-            "display_errors=0",
-            "-d",
-            "log_errors=1",
-            "-d",
-            f"error_log={self._php_error_log}",
-            "-S",
-            f"127.0.0.1:{self.port}",
-            "-t",
-            str(wp_core),
-            str(router),
-        ]
+        if manifest.get("system_php") is True:
+            command = [
+                str(php_binary),
+                "-d",
+                "display_errors=0",
+                "-d",
+                "log_errors=1",
+                "-d",
+                f"error_log={self._php_error_log}",
+                "-S",
+                f"127.0.0.1:{self.port}",
+                "-t",
+                str(wp_core),
+                str(router),
+            ]
+        else:
+            command = [
+                str(php_binary),
+                "-n",
+                "-d",
+                f"extension_dir={ext_dir}",
+                "-d",
+                "extension=pdo_sqlite",
+                "-d",
+                "extension=sqlite3",
+                "-d",
+                "extension=mbstring",
+                "-d",
+                "extension=fileinfo",
+                "-d",
+                "display_errors=0",
+                "-d",
+                "log_errors=1",
+                "-d",
+                f"error_log={self._php_error_log}",
+                "-S",
+                f"127.0.0.1:{self.port}",
+                "-t",
+                str(wp_core),
+                str(router),
+            ]
         stdout_path = self.sandbox_dir / "php-server.out.log"
         stderr_path = self.sandbox_dir / "php-server.err.log"
         self._stdout_handle = stdout_path.open("wb")

@@ -72,6 +72,15 @@ _THEME_TOUCH_RE = re.compile(
     r"|\b(?:tema(?:t)?|theme)\b.{0,24}\b(?:till|byta|aktivera)\b",
     re.I,
 )
+_THEME_FALLTHROUGH_REFUSE_RE = re.compile(
+    r"\b(?:byt|byta|v[äa]xla|aktivera|installera|avinstallera|"
+    r"radera|ta\s+bort|delete)\s+(?:det\s+|ett\s+|nytt\s+|annat\s+|"
+    r"nuvarande\s+|aktiva?\s+|mitt\s+|v[åa]rt\s+)?"
+    r"(?:tema(?:t|n)?|theme)(?!\.json\b)\b"
+    r"|\b(?:byt|byta|v[äa]xla|aktivera)\s+tema(?:t)?\s+till\b"
+    r"|\b(?:tema(?:t)?|theme)(?!\.json\b)\s+(?:ska\s+(?:bytas|aktiveras)|byts)\b",
+    re.I,
+)
 _PLUGIN_LIST_RE = re.compile(
     r"\b(?:visa|lista|hämta|hamta|vilka|which|list)\s+"
     r"(?:aktiva?\s+|active\s+)?(?:plugins?|till[äa]gg(?:en)?)\b"
@@ -93,6 +102,46 @@ _PACKAGE_REFUSE_RE = re.compile(
     r"\b(?:installera|avinstallera|radera|ta\s+bort|uppdatera|updatera|delete)\s+"
     r"(?:plugin(?:et|s)?|till[äa]gg(?:et)?|tema(?:t|n)?|theme)\b",
     re.I,
+)
+_PACKAGE_FALLTHROUGH_REFUSE_RE = re.compile(
+    r"\b(?:installera|avinstallera|radera|ta\s+bort|delete)\s+"
+    r"(?:det\s+|ett\s+|nytt\s+|hela\s+)?"
+    r"(?:plugin(?:et|s)?|till[äa]gg(?:et)?|tema(?:t|n)?|theme(?!\.json\b))\b",
+    re.I,
+)
+_WP_CODE_FALLTHROUGH_RE = re.compile(
+    r"functions\.php|style\.css|theme\.json|header\.php|footer\.php|"
+    r"single\.php|page\.php|front-page\.php|archive\.php|woocommerce/|"
+    r"\b(?:[a-z0-9_-]+\.(?:php|css|scss|js|json|html)|"
+    r"temafil(?:er)?|pluginfil(?:er)?|temakod|pluginkod|k[äa]llkod(?:en)?|"
+    r"barntema(?:t|n)?|child[\s_-]?theme|modertema(?:t)?|f[öo]r[äa]ldratema(?:t)?|parent[\s_-]?theme|"
+    r"blocktema(?:t)?|block[\s_-]?theme|block\.json|mallhierarki|template[\s_-]?hierarch\w*|"
+    r"hooks?|hookar|filters?|actions?|add_action|add_filter|do_action|apply_filters|"
+    r"register_rest_route|register_block_type|wp_enqueue_(?:script|style)|"
+    r"shortcodes?|snippets?|overrides?|templates?|mall(?:ar|en)?|"
+    r"hpos|custom_order_tables|wc_tested_up_to|"
+    r"arbetsyta(?:n)?|workspace|refaktor(?:era|ering)|bulk[\s_-]?replace|mass[äa]ndr\w*|"
+    r"sajtplugin|site[\s_-]?plugin|azom-site-|scaffold|"
+    r"static[\s_-]?checks?|statisk(?:a)?\s+kontroll(?:er)?|sandbox|"
+    r"component[\s_-]?intel|wp\.org|wordpress\.org|playbook|"
+    r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|theme_overview|plugin_overview|"
+    r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file)|"
+    r"wc_template_overrides_audit|"
+    r"skapa\s+(?:ett\s+)?(?:nytt\s+)?(?:plugin|till[äa]gg|barntema)|"
+    r"granska\s+(?:plugin(?:et)?|till[äa]gg(?:et)?|tema(?:t)?|koden)|"
+    r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|"
+    r"kod(?:en)?|css|php|scss)\b",
+    re.I,
+)
+_CRITICAL_PLUGIN_SLUGS = frozenset(
+    {
+        "woocommerce",
+        "klarna-checkout-for-woocommerce",
+        "klarna-payments-for-woocommerce",
+        "vipps-mobilepay",
+        "woocommerce-gateway-stripe",
+        "svea-checkout-for-woocommerce",
+    }
 )
 _FILE_RE = re.compile(
     r"functions\.php|style\.css|\btemafil(?:er)?\b|\bpluginfil(?:er)?\b",
@@ -148,11 +197,16 @@ def site_content_turn(
     *,
     domain: str | None = None,
     sticky_post_id: str | None = None,
+    allow_wp_ops_fallthrough: bool = False,
 ) -> SiteTurn:
     raw = text or ""
-    refusal = _refusal(raw)
+    refusal = _refusal(raw, allow_wp_ops_fallthrough=allow_wp_ops_fallthrough)
     if refusal:
         return SiteTurn(consumed=True, results=[("site_content", refusal)])
+    if allow_wp_ops_fallthrough and (
+        _FILE_RE.search(raw) or _WP_CODE_FALLTHROUGH_RE.search(raw)
+    ):
+        return SiteTurn(consumed=False)
     write = _parse_write(raw, sticky_post_id=sticky_post_id)
     if write is not None:
         if write.error:
@@ -326,12 +380,14 @@ def execute_plugin_status(
     return True, f"Plugin {name} ({plugin_id}) är {label}."
 
 
-def _refusal(text: str) -> str | None:
-    if _FILE_RE.search(text):
+def _refusal(text: str, *, allow_wp_ops_fallthrough: bool = False) -> str | None:
+    if not allow_wp_ops_fallthrough and _FILE_RE.search(text):
         return _REFUSE_FILE
-    if _PACKAGE_REFUSE_RE.search(text):
+    package_re = _PACKAGE_FALLTHROUGH_REFUSE_RE if allow_wp_ops_fallthrough else _PACKAGE_REFUSE_RE
+    if package_re.search(text):
         return _REFUSE_PACKAGE
-    if _THEME_TOUCH_RE.search(text):
+    theme_re = _THEME_FALLTHROUGH_REFUSE_RE if allow_wp_ops_fallthrough else _THEME_TOUCH_RE
+    if theme_re.search(text):
         return _REFUSE_THEME
     if _POST_DELETE_RE.search(text):
         return _REFUSE_POST_DELETE
@@ -538,22 +594,34 @@ def _propose_plugin(write: _Write, *, domain: str | None) -> SiteTurn:
     if error or plugin is None:
         return SiteTurn(consumed=True, results=[("site_content", error or "Pluginet saknas.")])
     plugin_id = str(plugin.get("plugin") or "")
+    slug = plugin_id.split("/", 1)[0].lower()
+    is_critical = (
+        write.fields.get("status") == "inactive" and slug in _CRITICAL_PLUGIN_SLUGS
+    )
+    payload: dict[str, Any] = {
+        "plugin": plugin_id,
+        "status": write.fields.get("status"),
+        "name": _component_name(plugin),
+        "label": write.label,
+        "preview": write.preview,
+        "domain": domain,
+    }
+    if is_critical:
+        payload["critical"] = True
     pending = PendingAction(
         kind="plugin_status",
-        payload={
-            "plugin": plugin_id,
-            "status": write.fields.get("status"),
-            "name": _component_name(plugin),
-            "label": write.label,
-            "preview": write.preview,
-            "domain": domain,
-        },
+        payload=payload,
     )
     current = _PLUGIN_STATUS_SV.get(str(plugin.get("status") or ""), str(plugin.get("status") or ""))
     propose = (
         f"FÖRESLÅ ändring (ej utförd): plugin {plugin_id} "
         f"({_component_name(plugin)}) → {write.preview}. Nu: {current}."
     )
+    if is_critical:
+        propose = (
+            "VARNING: kritiskt e-handelsplugin — inaktivering kan slå ut kassa/butik. "
+            + propose
+        )
     return SiteTurn(
         consumed=True,
         results=[

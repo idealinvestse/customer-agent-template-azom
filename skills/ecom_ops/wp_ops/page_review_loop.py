@@ -115,6 +115,7 @@ def run_bounded_page_review_loop(
     clock: Callable[[], float] | None = None,
     max_calls: int = PAGE_REVIEW_MAX_CALLS,
     max_seconds: float = PAGE_REVIEW_MAX_SECONDS,
+    target_page: str | None = None,
 ) -> PageReviewOutcome:
     """Run the homepage review. The task owns the tool order."""
     now = clock or time.monotonic
@@ -127,6 +128,7 @@ def run_bounded_page_review_loop(
         transport=transport,
         registry_path=registry_path,
         data_dir=root,
+        target_page=target_page,
     )
     refused: list[dict[str, Any]] = []
     for name, arguments in (attempted or [])[:PAGE_REVIEW_MAX_CALLS]:

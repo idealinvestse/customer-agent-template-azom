@@ -196,10 +196,211 @@ class WpOpsService:
         return self._file_changes().list_tree(site_id, kind, slug, relative, actor=actor)
 
     def search_component(
-        self, site_id: str, kind: str, slug: str, relative: str, query: str, *, actor: str
+        self,
+        site_id: str,
+        kind: str,
+        slug: str,
+        relative: str,
+        query: str,
+        *,
+        actor: str,
+        extensions: list[str] | None = None,
+        case_insensitive: bool = True,
+        mode: str = "literal",
+        context_lines: int = 0,
     ) -> WpOpsResult:
         return self._file_changes().search(
-            site_id, kind, slug, relative, query, actor=actor
+            site_id,
+            kind,
+            slug,
+            relative,
+            query,
+            actor=actor,
+            extensions=extensions,
+            case_insensitive=case_insensitive,
+            mode=mode,
+            context_lines=context_lines,
+        )
+
+    def _review_plans(self):
+        from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+        return ReviewPlans(
+            data_dir=self.data_dir,
+            registry_path=self.registry_path,
+            clock=self.clock,
+            transport_factory=self.files_factory,
+        )
+
+    def list_workspaces(
+        self,
+        site_id: str | None = None,
+        *,
+        actor: str,
+        status: str | None = None,
+        include_terminal: bool = False,
+    ) -> WpOpsResult:
+        return self._review_plans().list_plans(
+            site_id,
+            actor=actor,
+            status=status,
+            include_terminal=include_terminal,
+        )
+
+    def workspace_list_files(
+        self, site_id: str, plan_id: str, rel_dir: str = "", *, actor: str
+    ) -> WpOpsResult:
+        return self._review_plans().workspace_list_files(site_id, plan_id, rel_dir, actor=actor)
+
+    def workspace_read_file(
+        self,
+        site_id: str,
+        plan_id: str,
+        rel_path: str,
+        *,
+        actor: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> WpOpsResult:
+        return self._review_plans().workspace_read_file(
+            site_id,
+            plan_id,
+            rel_path,
+            actor=actor,
+            start_line=start_line,
+            end_line=end_line,
+        )
+
+    def workspace_diff(
+        self,
+        site_id: str,
+        plan_id: str,
+        rel_path: str | None = None,
+        *,
+        actor: str,
+    ) -> WpOpsResult:
+        return self._review_plans().workspace_diff(site_id, plan_id, rel_path, actor=actor)
+
+    def workspace_apply_changes(
+        self,
+        site_id: str,
+        plan_id: str,
+        changes: list[dict[str, Any]],
+        *,
+        actor: str,
+        allow_create: bool = True,
+        allow_delete: bool = True,
+    ) -> WpOpsResult:
+        return self._review_plans().workspace_apply_changes(
+            site_id,
+            plan_id,
+            changes,
+            actor=actor,
+            allow_create=allow_create,
+            allow_delete=allow_delete,
+        )
+
+    def workspace_bulk_replace(
+        self,
+        site_id: str,
+        plan_id: str,
+        find: str,
+        replace: str,
+        *,
+        actor: str,
+        mode: str = "literal",
+        extensions: list[str] | None = None,
+        path_prefix: str | None = None,
+        dry_run: bool = False,
+    ) -> WpOpsResult:
+        return self._review_plans().workspace_bulk_replace(
+            site_id,
+            plan_id,
+            find,
+            replace,
+            actor=actor,
+            mode=mode,
+            extensions=extensions,
+            path_prefix=path_prefix,
+            dry_run=dry_run,
+        )
+
+    def workspace_scaffold(
+        self,
+        site_id: str,
+        plan_id: str,
+        template: str,
+        *,
+        actor: str,
+        component_slug: str | None = None,
+    ) -> WpOpsResult:
+        return self._review_plans().workspace_scaffold(
+            site_id,
+            plan_id,
+            template,
+            actor=actor,
+            component_slug=component_slug,
+        )
+
+    def workspace_theme_json(
+        self,
+        site_id: str,
+        plan_id: str,
+        operations: list[dict[str, Any]],
+        *,
+        actor: str,
+    ) -> WpOpsResult:
+        return self._review_plans().workspace_theme_json(
+            site_id,
+            plan_id,
+            operations,
+            actor=actor,
+        )
+
+    def audit_overrides(
+        self,
+        site_id: str,
+        slug: str,
+        *,
+        actor: str,
+        woo_version: str | None = None,
+        reference_versions: dict[str, str] | None = None,
+    ) -> WpOpsResult:
+        from ecom_ops.wp_ops.files import PathRejected, component_dir
+        from ecom_ops.wp_ops.review_workspace import ReviewError, read_site_component
+        from ecom_ops.wp_ops.woo_templates import audit_overrides as run_override_audit
+
+        editor = self._file_editor()
+        site, denied = editor._site(site_id, actor, write=False)
+        if denied is not None:
+            return denied
+        assert isinstance(site, Site)
+        try:
+            component_dir(site.files_root, "theme", slug)
+        except PathRejected:
+            return editor._fail("PathRejected", "Kind or path is not editable.")
+        ssh = editor._ssh(site)
+        transport = editor._transport(site)
+        try:
+            raw_files = read_site_component(transport, site.files_root, "theme", slug)
+        except ReviewError as exc:
+            return editor._fail(exc.error_class, exc.error_class, site=site, ssh=ssh)
+        text_files = [(rel, data.decode("utf-8", errors="replace")) for rel, data in raw_files]
+        report = run_override_audit(
+            text_files,
+            woo_version=woo_version or site.woo_version or None,
+            reference_versions=reference_versions,
+        )
+        return WpOpsResult(
+            ok=True,
+            message="woo overrides audited",
+            data={
+                "site_id": site.id,
+                "slug": slug,
+                **report,
+                "ssh": ssh,
+                "live_calls": ssh,
+            },
         )
 
     def propose_file_diff(

@@ -97,7 +97,7 @@ def cmd_help(ctx: CommandContext) -> str:
         "/status · /whoami · /new · /reset · /stop\n"
         "Telegram har också /jobs, /cancel [job-id] och Oscars /reconcile.\n"
         "/tools · /tasks · /usage · /model · /context\n"
-        "/order · /cases · /health · /brief · /marketing · /commands"
+        "/order · /cases · /wp · /health · /brief · /marketing · /commands"
     )
 
 
@@ -270,9 +270,23 @@ def cmd_tools(ctx: CommandContext) -> str:
         ("wp_backup_status / wp_security_findings", "WordPress backupstatus och kända säkerhetsfynd"),
         ("wp_prepare_update_plan / wp_prepare_restore_plan", "Låsta planförhandsgranskningar; kan inte godkännas eller köras"),
         ("wp_list_open_operations", "Öppna WordPress-driftärenden"),
+        ("wp_component_context / wp_list_components", "Tema- och plugin-kontext samt lista"),
+        ("wp_theme_overview / wp_plugin_overview", "Samlad tema- och pluginöversikt (hooks/HPOS)"),
+        ("wp_list_component_tree / wp_search_component", "Filträd och källkodssökning"),
+        ("wp_read_theme_plugin_file", "Läs rad-/bytefönster (Oscar)"),
+        ("wp_open_review_workspace / wp_workspace_*", "Säker granskningsarbetsyta (wr-*), patch, diff, refactor och kontroller"),
+        ("wp_list_workspaces / wp_workspace_list_files / wp_workspace_read_file / wp_workspace_diff", "Lista, läsa filer och se diff i wr-*-arbetsyta"),
+        ("wp_workspace_apply_changes / wp_workspace_bulk_replace / wp_workspace_scaffold", "Flera ändringar, massersättning och barntema-/sajtplugin-mall"),
+        ("wp_workspace_theme_json / wp_workspace_copy_woo_template / wp_workspace_static_checks", "theme.json-uppdatering, Woo-mallkopia och statiska kontroller"),
+        ("wp_code_index / wp_template_hierarchy / wc_template_overrides_audit", "Kodindex, mallhierarki och WooCommerce override-granskning"),
+        ("wp_component_intel / wp_playbook", "WordPress.org-komponentinfo och WP/Woo-playbooks"),
+        ("wp_propose_file_diff / wp_propose_new_file", "Enfils diffplan (fe-*) med hashar"),
     ]
     slash_tools = [
-        ("/wp sites | /wp use <site-id> | /wp clear", "Välj eller rensa sajt för WordPress-driftverktygen"),
+        (
+            "/wp sites | /wp use <site-id> | /wp plans [site-id] | /wp plan <id> | /wp clear",
+            "Välj sajt eller visa granskningsplaner (wr-*)",
+        ),
         ("order-status", "Uppdatera Woo-orderstatus (operator/CLI)"),
         ("product-desc", "Generera produktbeskrivning"),
         ("support", "Klassificera och skapa kundutkast"),
@@ -399,7 +413,7 @@ def cmd_skill(ctx: CommandContext) -> str:
             "Skill: ecom-ops\n"
             "Actions: order-status, product-desc, product-data, pages, posts, "
             "site-text, themes, plugins, WordPress ops reads/previews, support, mail, ssh, cases\n"
-            "WP context: /wp sites, /wp use <site-id>, /wp clear; plans are preview-only\n"
+            "WP context: /wp sites, /wp use <site-id>, /wp plans [site-id], /wp plan <plan-id>, /wp clear; plans are preview-only\n"
             "CLI: python -m ecom_ops --help\n"
             "Docs: skills/ecom-ops/SKILL.md"
         )
@@ -725,6 +739,12 @@ def cmd_order(ctx: CommandContext) -> str:
     return "__ORDER_PROMPT__"
 
 
+def cmd_wp(ctx: CommandContext) -> str:
+    """WordPress site & review workspace command usage summary."""
+    del ctx
+    return "/wp sites · /wp use <site-id> · /wp plans [site-id] · /wp plan <plan-id> · /wp clear"
+
+
 COMMANDS: list[CommandSpec] = [
     CommandSpec("help", "Kort hjälp", cmd_help),
     CommandSpec("commands", "Full kommandokatalog", cmd_commands),
@@ -746,6 +766,7 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("marketing", "Ads+GA4 snapshot (read-only)", cmd_marketing, aliases=("ads", "ga4")),
     CommandSpec("cases", "Ärenden: list|show|approve|close", cmd_cases),
     CommandSpec("order", "Orderstatus (read-only)", cmd_order),
+    CommandSpec("wp", "WP: sites|use|plans|plan|clear", cmd_wp),
 ]
 
 _BY_NAME: dict[str, CommandSpec] = {}
@@ -776,6 +797,7 @@ TELEGRAM_MENU_COMMANDS: list[dict[str, str]] = [
         "health",
         "brief",
         "skill",
+        "wp",
     }
 ]
 

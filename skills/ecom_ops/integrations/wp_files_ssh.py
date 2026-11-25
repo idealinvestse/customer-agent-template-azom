@@ -12,6 +12,7 @@ import posixpath
 import re
 import socket
 import stat
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -30,7 +31,7 @@ from ecom_ops.wp_ops.ssh_settings import host_key_ok, stored_key_path, user_ok
 _HOST = re.compile(
     r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"
 )
-_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,60}$")
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 _ENTRY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 _SENSITIVE_NAME = re.compile(
@@ -38,7 +39,9 @@ _SENSITIVE_NAME = re.compile(
     r"(?:^|[-_.])(?:secrets?|credentials?|tokens?|passwords?|auth|private[-_.]?key|api[-_.]?key)(?:[-_.]|$)|"
     r"\.(?:bak|backup|sql|sqlite3?|dump|swp|orig)$)"
 )
-_EXTENSIONS = frozenset({".php", ".css", ".js", ".json", ".txt", ".html"})
+_EXTENSIONS = frozenset(
+    {".php", ".css", ".scss", ".js", ".json", ".txt", ".md", ".html", ".pot", ".po"}
+)
 _MAX_BYTES = 65536
 _MAX_DIRECTORY_ENTRIES = 256
 _CONNECT_TIMEOUT = 10
@@ -58,16 +61,85 @@ class SshFileTransport:
     def __init__(self, site: Site, data_dir: Path) -> None:
         self.site = site
         self.data_dir = Path(data_dir)
+        self._batch_state = threading.local()
+
+    @contextmanager
+    def open_batch(self) -> Iterator[SshFileTransport]:
+        """Hold one verified SFTP session open across nested read/list calls."""
+        state = self._batch_state
+        depth = getattr(state, "depth", 0)
+        if depth > 0:
+            state.depth = depth + 1
+            try:
+                yield self
+            finally:
+                state.depth -= 1
+            return
+
+        cm = self._session()
+        sftp = cm.__enter__()
+        state.cm = cm
+        state.sftp = sftp
+        state.depth = 1
+        try:
+            yield self
+        finally:
+            state.depth = 0
+            state.sftp = None
+            state.cm = None
+            cm.__exit__(None, None, None)
+
+    @contextmanager
+    def _active_session(self) -> Iterator[SFTPClient]:
+        state = self._batch_state
+        sftp = getattr(state, "sftp", None)
+        if getattr(state, "depth", 0) > 0 and sftp is not None:
+            yield sftp
+            return
+        with self._session() as fresh:
+            yield fresh
 
     def list_dir(self, absolute_dir: str) -> list[str]:
+        return [name for name, _is_dir in self._list_entries_abs(absolute_dir)]
+
+    def list_entries(self, rel_dir: str = "") -> list[tuple[str, bool]]:
+        """Return sorted ``(name, is_dir)`` pairs inside ``rel_dir`` using SFTP attrs."""
+        if not isinstance(rel_dir, str):
+            raise PathRejected("scope")
+        raw = rel_dir.strip()
+        if not raw or "\\" in raw:
+            raise PathRejected("scope")
+        if raw.startswith("/"):
+            candidate = raw
+        else:
+            root = str(self.site.files_root or "").rstrip("/")
+            if not root:
+                raise PathRejected("root")
+            candidate = f"{root}/{raw.lstrip('/')}"
+        return self._list_entries_abs(candidate)
+
+    def _list_entries_abs(self, absolute_dir: str) -> list[tuple[str, bool]]:
         path = self._safe_path(absolute_dir, listing=True)
-        with self._session() as sftp:
+        with self._active_session() as sftp:
             self._check_remote_path(sftp, path, directory=True)
             # internal-sftp does not finish listdir_iter, so the channel times out.
-            entries = list(sftp.listdir_attr(path))
+            entries: list[Any] | None = None
+            if hasattr(sftp, "listdir_attr") and callable(sftp.listdir_attr):
+                try:
+                    entries = list(sftp.listdir_attr(path))
+                except (AttributeError, NotImplementedError):
+                    entries = None
+                except (OSError, EOFError, TimeoutError, paramiko.SSHException) as exc:
+                    raise TransportError("SshFailed") from exc
+            if entries is None:
+                try:
+                    raw_names = list(sftp.listdir(path))
+                except (OSError, EOFError, TimeoutError, paramiko.SSHException) as exc:
+                    raise TransportError("SshFailed") from exc
+                entries = [type("_Entry", (), {"filename": str(n), "st_mode": None})() for n in raw_names]
             if len(entries) > _MAX_DIRECTORY_ENTRIES:
                 raise TransportError("SshDirectoryTooLarge")
-            names: list[str] = []
+            out: list[tuple[str, bool]] = []
             for entry in entries:
                 name = str(getattr(entry, "filename", "") or "")
                 if (
@@ -80,17 +152,19 @@ class SshFileTransport:
                 if mode is None:
                     try:
                         mode = sftp.lstat(posixpath.join(path, name)).st_mode
-                    except OSError:
+                    except (OSError, EOFError, TimeoutError, paramiko.SSHException):
                         continue
                 if mode is None or stat.S_ISLNK(mode):
                     continue
-                if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
-                    names.append(name)
-            return sorted(names)
+                if stat.S_ISDIR(mode):
+                    out.append((name, True))
+                elif stat.S_ISREG(mode):
+                    out.append((name, False))
+            return sorted(out, key=lambda item: item[0])
 
     def read_bytes(self, absolute_file: str) -> bytes:
         path = self._safe_path(absolute_file, listing=False)
-        with self._session() as sftp:
+        with self._active_session() as sftp:
             attrs = self._check_remote_path(sftp, path, directory=False)
             size = getattr(attrs, "st_size", None)
             if size is None or size > _MAX_BYTES:
@@ -262,7 +336,7 @@ class SshFileTransport:
             current = posixpath.join(current, segment)
             try:
                 attrs = sftp.lstat(current)
-            except OSError as exc:
+            except (OSError, EOFError, TimeoutError, paramiko.SSHException) as exc:
                 raise TransportError("SshFailed") from exc
             mode = getattr(attrs, "st_mode", None)
             if mode is None or stat.S_ISLNK(mode):

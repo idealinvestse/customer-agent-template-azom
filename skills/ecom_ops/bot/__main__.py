@@ -12,13 +12,19 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 from ecom_ops.bot.chat_agent import ChatCancelled
 from ecom_ops.bot.handlers import BotHandler
 from ecom_ops.bot.job_store import JOB_LEASE_SECONDS, TelegramJobStore
 from ecom_ops.bot.openclaw_commands import TELEGRAM_MENU_COMMANDS
-from ecom_ops.bot.reply import BotReply, as_reply, telegram_markup_to_actions
+from ecom_ops.bot.reply import (
+    BotReply,
+    as_reply,
+    safe_workspace_attachments,
+    telegram_markup_to_actions,
+)
 from ecom_ops.bot.store import TelegramConversationStore
 
 _ACTION_MESSAGE = re.compile(
@@ -28,7 +34,7 @@ _ACTION_CALLBACK = re.compile(
     r"^(?:cases:approve:[0-9a-f]{8}|cases:regen:[0-9a-f]{8}|"
     r"order:set:\d{1,12}:[a-z][a-z-]{0,31}|"
     r"product:desc:(?:0|[1-9]\d{0,11}):[01]|action:yes|escalate:yes|"
-    r"wpfile:stage:fe-[a-f0-9]{12})$",
+    r"wpfile:stage:fe-[a-f0-9]{12}|wpreview:stage:wr-[a-f0-9]{12})$",
     re.I,
 )
 
@@ -58,6 +64,63 @@ def _register_commands(token: str) -> None:
         print(f"setMyCommands skipped ({type(exc).__name__})", file=sys.stderr)
 
 
+def _send_photo(token: str, chat_id: object, photo_path: Path, *, caption: str = "") -> dict:
+    boundary = f"----AzomBoundary{uuid.uuid4().hex}"
+    parts: list[bytes] = []
+
+    def _add_field(name: str, value: str) -> None:
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode()
+        )
+
+    _add_field("chat_id", str(chat_id))
+    clean_caption = caption[:200]
+    if clean_caption:
+        _add_field("caption", clean_caption)
+    filename = photo_path.name.replace('"', "")
+    parts.append(
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="photo"; filename="{filename}"\r\n'
+            "Content-Type: image/png\r\n\r\n"
+        ).encode()
+        + photo_path.read_bytes()
+        + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendPhoto",
+        data=b"".join(parts),
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=15.0) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _send_attachments(token: str, chat_id: object, attachments: tuple[str, ...]) -> None:
+    if not attachments:
+        return
+    try:
+        validated = safe_workspace_attachments(attachments)
+    except Exception:
+        return
+    for item in validated:
+        try:
+            _send_photo(
+                token,
+                chat_id,
+                Path(item),
+                caption=f"Sandlåda: {Path(item).name}",
+            )
+        except Exception:
+            continue
+
+
 def _send_reply(token: str, chat_id: object, reply: BotReply) -> None:
     chunks = _telegram_safe_chunks(reply.text)
     for i, part in enumerate(chunks):
@@ -70,6 +133,8 @@ def _send_reply(token: str, chat_id: object, reply: BotReply) -> None:
         if reply.reply_markup and i == len(chunks) - 1:
             params["reply_markup"] = reply.reply_markup
         _api(token, "sendMessage", **params)
+    if reply.attachments:
+        _send_attachments(token, chat_id, reply.attachments)
 
 
 def _utf16_length(text: str) -> int:
@@ -339,9 +404,12 @@ class _LiveTelegramTurn:
             canonical_chunks = _telegram_safe_chunks(
                 reply.text, limit=self._CHUNK_LIMIT
             )
-            return self._sync_answer_chunks(
+            synced = self._sync_answer_chunks(
                 canonical_chunks, reply_markup=reply.reply_markup
             )
+            if synced and reply.attachments:
+                _send_attachments(self.token, self.chat_id, reply.attachments)
+            return synced
 
     def fail(self) -> None:
         with self.lock:
@@ -361,7 +429,7 @@ _ACTION_LOCKS_GUARD = threading.Lock()
 def _action_lock_key(job: dict, handler: BotHandler) -> str:
     payload = job.get("payload") or {}
     data = str(payload.get("data") or "")
-    if data.startswith("wpfile:stage:"):
+    if data.startswith(("wpfile:stage:", "wpreview:stage:")):
         return "wp-file-edits"
     if data == "action:yes":
         state = handler.store.get(job.get("chat_id")) or {}
@@ -383,6 +451,7 @@ def _result_for_reply(reply: BotReply) -> dict:
         "text": reply.text,
         "reply_markup": reply.reply_markup,
         "needs_typing": bool(reply.needs_typing),
+        "attachments": list(reply.attachments),
     }
 
 
@@ -395,6 +464,9 @@ def _reply_from_result(value: dict | None) -> BotReply:
         reply_markup=markup,
         actions=telegram_markup_to_actions(markup),
         needs_typing=bool(result.get("needs_typing")),
+        attachments=tuple(
+            str(x) for x in (result.get("attachments") or []) if isinstance(x, str)
+        ),
     )
 
 
@@ -429,7 +501,9 @@ def _preflight_action_job(handler: BotHandler, job: dict) -> str | None:
         data = str(payload.get("data") or "").strip()
         if not _ACTION_CALLBACK.fullmatch(data):
             return "Åtgärdsknappen kunde inte valideras. Ingen ändring utfördes."
-        requires_snapshot = data in {"action:yes", "escalate:yes"} or data.startswith("wpfile:stage:")
+        requires_snapshot = data in {"action:yes", "escalate:yes"} or data.startswith(
+            ("wpfile:stage:", "wpreview:stage:")
+        )
     elif payload_type == "message":
         if not _ACTION_MESSAGE.match(str(payload.get("text") or "").strip()):
             return "Åtgärdskommandot kunde inte valideras. Ingen ändring utfördes."

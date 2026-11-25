@@ -31,8 +31,8 @@ Incoming update
     ├─ slash → openclaw_commands.dispatch_openclaw_command
     │            (/cases approve → real send via CaseService)
     ├─ mid-flow multi-step (order_lookup …)
-    ├─ "granska startsidans källkod" → jobbkind page_review
-    │            fyra sajtbundna steg: startsida, editorinnehåll, källfiler, browser-preview
+    ├─ "granska startsidans källkod" / "granska sidan <slug|id> källkod" → jobbkind page_review
+    │            fyra sajtbundna steg: startsida (eller target_page) + site_editor för blockteman, editorinnehåll, källfiler, browser-preview
     │            inga orderverktyg och ingen orderdigest
     │            php -l körs med fast kommando när PHP finns; browser/runtime = unavailable
     └─ free text → chat_agent.run_chat
@@ -40,12 +40,12 @@ Incoming update
                      read tools + confirm-only write proposals
                      bounded named WordPress ops tool loop (site-bound, RBAC checked; Oscar-only read-only SFTP file reads)
                      model-router phrasing (optional; AZOM_TELEGRAM_MODEL_ROUTE pins one route)
-                     BotReply + optional approve / triage keyboards
+                     BotReply + optional approve / triage keyboards + safe_workspace_attachments
 ```
 
-**Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI. En sidgranskning anropar inte orderchatten. En följdfråga medan jobbet körs stannar i sidgranskningen. Fritext “ja” och `action:yes` godkänner inte granskningen. Den redan körande botprocessen har inte startats om, så `page_review` är inte live förrän en begärd omstart.
+**Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI. En sidgranskning anropar inte orderchatten (`extract_page_review_target` hämtar valfri `target_page` för `"granska sidan <slug|id> källkod"`, och för blockteman läses Site Editor-mallar via `WordPressClient.list_templates()`, annars `site_editor: "unavailable"`). En följdfråga medan jobbet körs stannar i sidgranskningen. Fritext “ja” och `action:yes` godkänner inte granskningen. Den redan körande botprocessen har inte startats om, så `page_review` är inte live förrän en begärd omstart.
 
-En filplansnotis kan länka till dashboardens planvy när `AZOM_DASHBOARD_PUBLIC_URL` är en HTTPS-URL. Länken innehåller bara registrerat `site_id` och `plan_id`, kräver dashboardinloggning och RBAC, och utför eller godkänner ingenting. Utan giltig HTTPS-bas visas ingen absolut länk.
+En filplansnotis kan länka till dashboardens planvy när `AZOM_DASHBOARD_PUBLIC_URL` är en HTTPS-URL. Länken innehåller bara registrerat `site_id` och `plan_id`, kräver dashboardinloggning och RBAC, och utför eller godkänner ingenting. Utan giltig HTTPS-bas visas ingen absolut länk. Efter `wp_workspace_run_checks` skickar Telegram-sändaren (`_send_attachments` → `_send_photo`) högst fyra allowlistade PNG-skärmdumpar (`base|work-desktop|mobile.png` från `wp_workspaces/.../artifacts/`) via `BotReply.attachments` och `safe_workspace_attachments()` när en riktig sandlådekörning skapat dem; absoluta filsökvägar läggs aldrig i LLM-meddelanden.
 
 ### Live-status och strömmande svar
 
@@ -91,7 +91,7 @@ TELEGRAM_ACTOR_MAP=111111111:jonatan,222222222:oscar
 # TELEGRAM_FAIL_CLOSED=1
 ```
 
-Vid start registrerar boten `TELEGRAM_MENU_COMMANDS` via Telegram `setMyCommands`. Chatten får veta den mappade aktören i varje tur. En fritext som «jag är Oscar» ändrar inte rollen, och Oscar ombeds inte eskalera till sig själv.
+Vid start registrerar boten `TELEGRAM_MENU_COMMANDS` via Telegram `setMyCommands` (inklusive `/wp` för WordPress-sajt och granskningsplaner: `sites|use|plans|plan|clear`). Chatten får veta den mappade aktören i varje tur. En fritext som «jag är Oscar» ändrar inte rollen, och Oscar ombeds inte eskalera till sig själv.
 
 ### Bra / dåligt exempel
 
@@ -125,7 +125,7 @@ Token byts under `/oscar/secrets`. Allowlist och actor map sätts i processmilj�
 | `/reset` · `/reset soft` | Full reset eller behåll session settings |
 | `/stop` (`/cancel [job-id]`) | Begär avbrytning vid säker punkt; utan jobb avbryts sparat flow |
 | `/reconcile <job-id> done|not_applied` | Oscar-only: registrera manuellt kontrollerat utfall; kör inte jobbet igen |
-| `/tools` · `/tools verbose` | Chat tools vs slash/CLI tools |
+| `/tools` · `/tools verbose` | Chat tools (inkl. `wp_list_components`, `wp_theme_overview`, `wp_plugin_overview`, `wp_open_review_workspace / wp_workspace_*`, `wp_code_index`, `wp_template_hierarchy`, `wc_template_overrides_audit`, `wp_component_intel`, `wp_playbook`) vs slash/CLI tools |
 | `/tasks` | Open cases + open escalations count |
 | `/usage` · `/usage cost\|off` | Cost / footer mode |
 | `/model` · `/model <name>\|default` | Session model pin |
@@ -138,7 +138,9 @@ Token byts under `/oscar/secrets`. Allowlist och actor map sätts i processmilj�
 | `/cases` | list · show · approve · regenerate · close · help |
 | `/wp sites` | Lista registrerade sajter för WordPress driftuppslag |
 | `/wp use <site-id>` | Välj sajt i aktuell chattkontext |
-| `/wp clear` | Rensa vald WordPress-sajt |
+| `/wp plans [site-id]` | Lista öppna `wr-*`-granskningsarbetsytor och stagingstatus |
+| `/wp plan <plan-id>` | Visa `wr-*`-plan, ändrade filer, kontroller och (om stagingredo + `WP_OPS_ADMIN` + `CODE_EDIT`) stagingknapp `wpreview:stage:wr-...` |
+| `/wp clear` | Rensa vald WordPress-sajt (och cachade review-hashar) |
 
 ### `/cases` subcommands
 
@@ -185,7 +187,7 @@ Prefetch (`chat_agent.gather_tool_results`):
 | `propose_site_update` | «ändra sajttitel till …» eller «ändra tagline till …» → **confirm button** |
 | `list_themes` | «visa teman», «vilket tema är aktivt». Inget temabyte |
 | `list_plugins` | «visa plugins». Aktiv eller inaktiv |
-| `propose_plugin_status` | «aktivera plugin …» eller «stäng av plugin …» → **confirm button**. Bara Oscar |
+| `propose_plugin_status` | «aktivera plugin …» eller «stäng av plugin …» → **confirm button**. Bara Oscar. Inaktivering av kritiska e-handelsplugins (`woocommerce`, Klarna, Vipps, Stripe, Svea) visar en explicit varning före bekräftelse |
 | `propose_product_desc` | → **confirm button** |
 | `propose_regenerate` | → **confirm button** (skickar aldrig) |
 
@@ -203,22 +205,33 @@ WordPress driftverktygen är separata från WordPress-innehållets `list_pages`/
 
 Servern begränsar driftloopens tur till 3 anrop, 30 sekunder, 4 KiB per resultat och 10 KiB totalt. Användaren måste välja en registrerad sajt; servern gör RBAC-kontroll vid varje verktygskörning. Driftstatus kan vara mock eller okänd. Livehälsokontroller, säkerhetsskanning, versionsupptäckt, uppdatering och produktions-restore är inte implementerade. Update- och restoreplaner är förhandsgranskningar utan godkännande- eller exekveringsväg.
 
-Filverktyg är en egen tur. Driftloopen kör dem inte. Den turen får högst 4 läsningar, 1 sökning, 8 anrop och 45 sekunder. Statusraden namnger verktyg, sajt och sökväg och citerar inte källan.
+Fil- och arbetsyteverktyg körs i en egen bunden tur (`run_bounded_file_tool_loop()`, `ALL_FILE_TOOLS`). Driftloopen kör dem inte, men inne i fil-/arbetsyteturen får även driftläsningar (`WP_TOOL_NAMES`) köras utan att bryta turen. När en sajt är vald med `/wp use <site-id>` (`session.wp_ops_context`) passerar WP-kodfrågor (`WP_CODE_INTENT_RE`) förbi innehålls-, katalog- och produktfällan (`site_content`, `catalog_write_turn`, `catalog_read_turn`) direkt till `wp_ops`-verktygen i stället för att stoppas eller misstas för produkt-/siduppslag (`site_content` med `allow_wp_ops_fallthrough` släpper också igenom kod-/filfrågor medan temabyte, installation och radering nekas utan sajtstöd). Vid `WP_CODE_INTENT_RE` injiceras även upp till två kompakta `wp_playbook`-guider (`format_playbook_hints`, max 750 tecken) som vägledning. Turen får högst **16** anrop, **10** läsningar, **5** sökningar och **60** sekunder (16 KiB per resultat, 48 KiB totalt). Om något tak nås tvingar `_finish_on_budget()` fram en slutsummering av insamlade resultat och vad som återstår okänt. Statusraden namnger verktyg, sajt och sökväg och citerar inte källan.
 
 | Namngivet verktyg | Användning |
 |-------------------|------------|
 | `wp_component_context` | Registeruppgifter utan hemligheter, värd eller filrot. Inget REST-anrop när mock är på |
+| `wp_list_components` | Lista tema- eller plugin-sluggar (`WP_OPS_READ`) |
+| `wp_theme_overview` | Aktivt tema/föräldratema, `block`/`classic`, filträd (djup 3, max 120) och `woocommerce/`-overrides |
+| `wp_plugin_overview` | Samlad pluginöversikt (djup 2, max 80), hooks, HPOS-deklaration och `WC tested up to`. Bara Oscar |
 | `wp_list_component_tree` | En katalognivå. Jonatan får lista |
-| `wp_search_component` | Bokstavlig sökning. Bara Oscar. Inget regex och inget helt filinnehåll |
-| `wp_read_theme_plugin_file` | Fönster, normalt 4096 byte och högst 8192, med `next_offset`. Bara Oscar |
-| `wp_propose_file_diff` / `wp_propose_new_file` | Namngiven plan med bas- och resultat-hash. Skriver inte filen |
-| `wp_validate_plan` | Kontrollerar hashar. Hög risk flyttas inte fram. Ingen PHP-process |
-| `wp_apply_staging` | Från modellen: bara ett förslag. Knappen `wpfile:stage:{plan_id}` skriver enbart mock-staging |
-| `wp_request_production` / `wp_deploy_production` | Alltid stopp. Ingen Telegram-knapp för produktion |
-| `wp_verify_change` | Jämför hash. Sidkontroller körs inte |
-| `wp_rollback_file` | `RestoreNotInMvp`. Ingen återställning |
+| `wp_search_component` | Sökning med `mode="literal"\|"regex"`, `context_lines` (`0`–`3`), `plan_id` (`wr-*`), `extensions` (max 6) och `case_insensitive` (default `true`). Bara Oscar; utdrag skrubbas från hemligheter |
+| `wp_read_theme_plugin_file` | Bytefönster (4096 byte normalt, max 8192, `next_offset`) eller radintervall (`start_line`/`end_line`, 1-baserat, `next_line`). Bara Oscar |
+| `wp_code_index` | Statiskt symbolindex (`function`/`method`/`class`/`hook`/`shortcode`/`rest_route`/`block`/`constant`/`header`) för installerad komponent eller `wr-*`. Bara Oscar |
+| `wp_template_hierarchy` | Beräknar WordPress-/WooCommerce-mallhierarki (`TEMPLATE_CONTEXTS`) och matchar befintliga kandidater (`WP_OPS_READ`) |
+| `wc_template_overrides_audit` | Granskar temats `woocommerce/`-overrides och `@version`-drift (`WP_OPS_READ`) |
+| `wp_component_intel` | WordPress.org-metadata (`WP_OPS_READ`). `AZOM_WPORG_INTEL` är avstängd som standard (endast opt-in med `AZOM_WPORG_INTEL=1` och `AZOM_USE_MOCK=0`; mock-läge använder offline-fixturer) |
+| `wp_playbook` | Noll-IO-guide för `PLAYBOOK_TOPICS` (alla chattaktörer; ger ingen behörighet) |
+| `wp_open_review_workspace` / `wp_list_workspaces` | Öppna eller lista isolerade `wr-*`-arbetsytor under `AZOM_DATA_DIR/wp_workspaces/`. Skriver inte sajten |
+| `wp_workspace_list_files` / `wp_workspace_read_file` / `wp_workspace_diff` / `wp_workspace_status` | Lista filer (`WP_OPS_READ`), läsa radintervall (Oscar) och hämta skrubbad `unified_diff` (Oscar + `CODE_EDIT`) i `wr-*` |
+| `wp_workspace_patch_file` / `wp_workspace_create_file` / `wp_workspace_apply_changes` / `wp_workspace_bulk_replace` | Enfilspatch, ny fil, atomiska ändringar (`edit`/`create`/`delete`/`revert`) och massersättning (`dry_run=true` först) i `wr-*` |
+| `wp_workspace_scaffold` / `wp_workspace_theme_json` / `wp_workspace_copy_from_parent` / `wp_workspace_copy_woo_template` | Skapa grundstruktur (`child_theme_basics`/`site_plugin_basics`/`woo_compat_declaration`), uppdatera `theme.json` med JSON-pekare eller kopiera ren modertema-/Woo-mall till `wr-*` |
+| `wp_workspace_static_checks` | Snabb ren Python-kontroll (säkerhet, Woo, JSON-lint) offline; publicerar inte `check_run` och öppnar inte staging |
+| `wp_workspace_run_checks` | Kör `ReviewPlans.run_checks()` (sandlåda när `AZOM_WP_SANDBOX=1`, annars `run_catalog` med `unavailable` för saknade körningar), sparar skrubbade sammanfattningar/fynd, bifogar upp till 4 PNG-skärmdumpar via `_send_photo` och visar stagingknapp `wpreview:stage:wr-...` endast när `tests_passed` + `published` på staging utan hög risk |
+| `wp_propose_file_diff` / `wp_propose_new_file` | Enfils diffplan (`fe-*`) med bas- och resultat-hash. Tredjepartsplugins inspekteras skrivskyddat; egna sajtutökningar läggs i `azom-site-<site_id>` |
+| `wp_validate_plan` / `wp_apply_staging` | Kontrollerar hashar resp. föreslår enfils-staging via knappen `wpfile:stage:fe-...` |
+| `wp_request_production` / `wp_deploy_production` / `wp_verify_change` / `wp_rollback_file` | Produktion ger alltid stopp (`BackupNotVerified`), rollback ger `RestoreNotInMvp`; ingen Telegram-knapp för produktion |
 
-`action:yes` ändrar inte en filplan. Avbryt är `wpfile:no:{plan_id}` och raderar diffen. Fri text «ja» räcker inte.
+`action:yes` och fritext «ja»/«godkänn» ändrar aldrig en `fe-*`-plan eller en `wr-*`-arbetsyta. Enfiliga planer använder inline-knappen `wpfile:stage:fe-...` / `wpfile:no:fe-...` (`WP_OPS_OPERATE` på mock-staging). Flerfilsarbetsytor (`wr-*`) använder inline-knappen `wpreview:stage:wr-...` / `wpreview:no:wr-...` (antingen direkt efter godkänd `wp_workspace_run_checks` eller via `/wp plan <plan-id>`), med strikt fail-closed RBAC för Oscar (`WP_OPS_ADMIN` + `CODE_EDIT`) samt snapshot-bindning (`wp_review_hashes` med `base_sha256` och `work_sha256`). Skrivningen sker enbart till lokalt mock-träd; produktion deployas aldrig tyst eller från chatten (`ProductionWriteDisabled` / `BackupNotVerified`).
 
 ### Site write rails
 
@@ -231,7 +244,8 @@ Filverktyg är en egen tur. Driftloopen kör dem inte. Den turen får högst 4 l
 | Post field | `action:yes` / `action:no` | `WP_OPS_OPERATE` |
 | Site title or tagline | `action:yes` / `action:no` | `WP_OPS_OPERATE` |
 | Plugin on/off | `action:yes` / `action:no` | `WP_OPS_ADMIN` (Oscar) |
-| Stagingfil | `wpfile:stage:{plan_id}` / `wpfile:no:{plan_id}` | `WP_OPS_OPERATE` på registrerad staging. Bara lokal mockträd. Produktion har ingen knapp |
+| Stagingfil (`fe-*`) | `wpfile:stage:fe-...` / `wpfile:no:fe-...` | `WP_OPS_OPERATE` på registrerad mock-staging. Produktion har ingen knapp |
+| Staging-arbetsyta (`wr-*`) | `wpreview:stage:wr-...` / `wpreview:no:wr-...` | `WP_OPS_ADMIN` + `CODE_EDIT` (Oscar) + snapshot-hashar + `tests_passed`. Bara lokal mock-staging; aldrig tyst produktionsdeploy |
 | Regen draft | `cases:regen:{id8}` | `CASE_REPLY` (Jonatan OK) |
 
 Jonatan kan approve:a cases men **inte** skriva Woo order/product om hen inte är mappad till `agent`/`oscar`.

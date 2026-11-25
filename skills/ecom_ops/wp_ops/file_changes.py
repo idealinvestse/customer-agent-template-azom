@@ -8,6 +8,7 @@ backup and restore exist.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
 import os
@@ -18,7 +19,9 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.rbac import Permission
+from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
 from ecom_ops.wp_ops.files import (
+    _MAX_BYTES,
     FileEditor,
     LocalTree,
     PathRejected,
@@ -33,7 +36,9 @@ from ecom_ops.wp_ops.service import WpOpsResult
 
 _PLAN_ID = re.compile(r"^fe-[a-f0-9]{12}$")
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
-_EXTENSIONS = frozenset({".php", ".css", ".js", ".json", ".txt", ".html"})
+_EXTENSIONS = frozenset(
+    {".php", ".css", ".scss", ".js", ".json", ".txt", ".md", ".html", ".pot", ".po"}
+)
 _SKIP_DIRS = frozenset({"vendor", "node_modules", "cache", "uploads", ".git"})
 _SENSITIVE = re.compile(
     r"(?i)(^\.env(?:$|\.)|^wp-config[^/]*\.php$|"
@@ -47,14 +52,39 @@ _HIGH_RISK = re.compile(
 _PLAN_TTL = timedelta(hours=12)
 _MAX_SUMMARY = 200
 _MAX_DIFF_BYTES = 65536
-_SEARCH_FILES = 20
-_SEARCH_BYTES = 256 * 1024
+_SEARCH_FILES = 80
+_SEARCH_BYTES = 512 * 1024
 _SEARCH_HITS = 20
 _TREE_CAP = 256
+_SEARCH_MODES = frozenset({"literal", "regex"})
+_URI_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s]+:)[^@/\s]+(@)")
+_AUTH_HEADER_RE = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}")
+_TOKEN_LITERAL_RE = re.compile(
+    r"(?:"
+    r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}\b|"
+    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b|"
+    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{8,}\b|"
+    r"\bxai-[A-Za-z0-9_-]{8,}\b|"
+    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|"
+    r"\bAIza[0-9A-Za-z_-]{16,}\b|"
+    r"\bAKIA[0-9A-Z]{16}\b|"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r")"
+)
+_CRED_LINE_RE = re.compile(
+    r"(?im)^([^\r\n]*?(?:db_password|db_pass|db_user|secret|password|passwd|passphrase|"
+    r"token|api[_-]?key|private[_-]?key|auth(?:orization)?[_-]?(?:key|token|secret|salt)?|"
+    r"logged_in_(?:key|salt)|nonce_(?:key|salt)|secure_auth_(?:key|salt)|"
+    r"consumer[_-]?(?:key|secret)|access[_-]?key|signing[_-]?key|client[_-]?secret|"
+    r"webhook[_-]?secret|encryption[_-]?key)[^\r\n]*?(?:=>|=|:|,))(.+)$"
+)
 
 FILE_TOOL_NAMES = frozenset(
     {
         "wp_component_context",
+        "wp_list_components",
+        "wp_theme_overview",
+        "wp_plugin_overview",
         "wp_list_component_tree",
         "wp_search_component",
         "wp_read_theme_plugin_file",
@@ -67,6 +97,11 @@ FILE_TOOL_NAMES = frozenset(
         "wp_verify_change",
         "wp_rollback_file",
         "wp_open_review_workspace",
+        "wp_workspace_patch_file",
+        "wp_workspace_create_file",
+        "wp_workspace_copy_from_parent",
+        "wp_workspace_status",
+        "wp_workspace_run_checks",
     }
 )
 
@@ -198,6 +233,179 @@ def _directory(root: str, kind: str, slug: str, relative: str) -> str:
     return base + "/" + "/".join(parts)
 
 
+def _scrub_search_text(text: str, extra_secrets: list[str] | None = None) -> str:
+    cleaned = scrub_secrets(text, extra_secrets or [])
+    out = cleaned if isinstance(cleaned, str) else str(text or "")
+    out = _URI_CRED_RE.sub(r"\1***\2", out)
+    out = _AUTH_HEADER_RE.sub(r"\1 [REDACTED]", out)
+    out = _TOKEN_LITERAL_RE.sub("[REDACTED]", out)
+    out = _CRED_LINE_RE.sub(r"\1 [REDACTED]", out)
+    return out
+
+
+def _compile_search_matcher(
+    query: str,
+    *,
+    mode: str,
+    case_insensitive: bool,
+) -> re.Pattern[str] | None:
+    if mode not in _SEARCH_MODES:
+        raise ValueError("Invalid search mode.")
+    if not isinstance(query, str) or len(query) < 2 or len(query) > 80:
+        raise ValueError("Search text must be 2 to 80 characters.")
+    if mode == "literal":
+        return None
+    flags = re.IGNORECASE if case_insensitive else 0
+    try:
+        return re.compile(query, flags)
+    except re.error as exc:
+        raise ValueError(f"Invalid regular expression: {exc.msg}") from exc
+
+
+def _normalize_extensions(
+    extensions: list[str] | None,
+    *,
+    allowed: frozenset[str] | None = None,
+) -> frozenset[str] | None:
+    if extensions is None:
+        return allowed
+    if not isinstance(extensions, list) or not extensions:
+        raise ValueError("Invalid extensions filter.")
+    normalized: list[str] = []
+    for item in extensions:
+        if not isinstance(item, str):
+            raise ValueError("Invalid extensions filter.")
+        ext = item.strip().lower()
+        if not ext or any(ch in ext for ch in ("/", "\\", " ")):
+            raise ValueError("Invalid extensions filter.")
+        if not ext.startswith("."):
+            ext = "." + ext
+        if allowed is not None and ext not in allowed:
+            raise ValueError("Invalid extensions filter.")
+        normalized.append(ext)
+    return frozenset(normalized)
+
+
+def _match_text_lines(
+    rel: str,
+    scrubbed_body: str,
+    *,
+    query: str,
+    compiled: re.Pattern[str] | None,
+    case_insensitive: bool,
+    context_lines: int,
+    remaining: int,
+) -> list[dict[str, Any]]:
+    if remaining <= 0:
+        return []
+    lines = scrubbed_body.splitlines()
+    needle = query.lower() if case_insensitive else query
+    out: list[dict[str, Any]] = []
+    for idx, line in enumerate(lines):
+        if compiled is not None:
+            matched = compiled.search(line) is not None
+        else:
+            haystack = line.lower() if case_insensitive else line
+            matched = needle in haystack
+        if not matched:
+            continue
+        excerpt = line.strip()
+        if len(excerpt) > 120:
+            excerpt = excerpt[:120]
+        hit: dict[str, Any] = {"path": rel, "line": idx + 1, "excerpt": excerpt}
+        if context_lines > 0:
+            hit["before"] = [
+                lines[j].strip()[:120] for j in range(max(0, idx - context_lines), idx)
+            ]
+            hit["after"] = [
+                lines[j].strip()[:120]
+                for j in range(idx + 1, min(len(lines), idx + 1 + context_lines))
+            ]
+        out.append(hit)
+        if len(out) >= remaining:
+            break
+    return out
+
+
+def search_texts(
+    files: dict[str, str],
+    query: str,
+    *,
+    mode: str = "literal",
+    context_lines: int = 0,
+    case_insensitive: bool = True,
+    extensions: list[str] | None = None,
+    path_prefix: str | None = None,
+    max_matches: int = 40,
+    extra_secrets: list[str] | None = None,
+) -> dict[str, Any]:
+    """Search in-memory text files with literal/regex matching, context, and secret scrubbing."""
+    if type(context_lines) is not int:
+        raise ValueError("Invalid context_lines.")
+    ctx = max(0, min(3, context_lines))
+    if type(case_insensitive) is not bool:
+        raise ValueError("Invalid case_insensitive flag.")
+    if type(max_matches) is not int:
+        raise ValueError("Invalid max_matches.")
+    limit = max(1, min(200, max_matches))
+    compiled = _compile_search_matcher(query, mode=mode, case_insensitive=case_insensitive)
+    allowed_suffixes = _normalize_extensions(extensions, allowed=None)
+
+    clean_prefix = ""
+    if path_prefix is not None:
+        if not isinstance(path_prefix, str):
+            raise ValueError("Invalid path_prefix.")
+        clean_prefix = path_prefix.strip().replace("\\", "/").strip("/")
+        if clean_prefix and (
+            any(part in {"", ".", ".."} for part in clean_prefix.split("/"))
+            or sensitive_relative(clean_prefix)
+        ):
+            raise ValueError("Invalid path_prefix.")
+
+    hits: list[dict[str, Any]] = []
+    files_scanned = 0
+    truncated = False
+    for rel in sorted(files):
+        body = files[rel]
+        if not isinstance(rel, str) or not isinstance(body, str):
+            continue
+        clean_rel = rel.strip().replace("\\", "/").lstrip("/")
+        if not clean_rel or sensitive_relative(clean_rel):
+            continue
+        if clean_prefix and clean_rel != clean_prefix and not clean_rel.startswith(clean_prefix + "/"):
+            continue
+        suffix = Path(clean_rel).suffix.lower()
+        if allowed_suffixes is not None and suffix not in allowed_suffixes:
+            continue
+        if "\x00" in body or len(body.encode("utf-8")) > _MAX_BYTES:
+            continue
+        if len(hits) >= limit:
+            truncated = True
+            break
+        files_scanned += 1
+        scrubbed = _scrub_search_text(body, extra_secrets)
+        found = _match_text_lines(
+            clean_rel,
+            scrubbed,
+            query=query,
+            compiled=compiled,
+            case_insensitive=case_insensitive,
+            context_lines=ctx,
+            remaining=limit - len(hits),
+        )
+        hits.extend(found)
+        if len(hits) >= limit:
+            truncated = True
+            break
+    return {
+        "hits": hits,
+        "truncated": truncated,
+        "files_scanned": files_scanned,
+        "mode": mode,
+        "context_lines": ctx,
+    }
+
+
 class FileChangeOps:
     """Operations that sit on top of the existing typed file editor."""
 
@@ -225,9 +433,16 @@ class FileChangeOps:
         assert isinstance(site, Site)
         if sensitive_relative(relative):
             return editor._fail("PathRejected", "Kind or path is not editable.")
+        transport = editor._transport(site)
         try:
             directory = _directory(site.files_root, kind, slug, relative)
-            names = editor._transport(site).list_dir(directory)
+            if hasattr(transport, "list_entries") and callable(transport.list_entries):
+                raw_entries = list(transport.list_entries(directory))
+            else:
+                raw_entries = [
+                    (name, Path(name).suffix.lower() not in _EXTENSIONS)
+                    for name in transport.list_dir(directory)
+                ]
         except PathRejected:
             return editor._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
@@ -236,14 +451,13 @@ class FileChangeOps:
             )
         entries: list[dict[str, str]] = []
         truncated = False
-        for name in names:
+        for name, is_dir in raw_entries:
             if name in {".", ".."} or sensitive_relative(name) or name.lower() in _SKIP_DIRS:
                 continue
             if len(entries) >= _TREE_CAP:
                 truncated = True
                 break
-            suffix = Path(name).suffix.lower()
-            kind_name = "file" if suffix in _EXTENSIONS else "directory"
+            kind_name = "directory" if is_dir else "file"
             entries.append({"name": name, "kind": kind_name})
         return WpOpsResult(
             ok=True,
@@ -272,6 +486,10 @@ class FileChangeOps:
         query: str,
         *,
         actor: str,
+        extensions: list[str] | None = None,
+        case_insensitive: bool = True,
+        mode: str = "literal",
+        context_lines: int = 0,
     ) -> WpOpsResult:
         editor = self.editor
         site, denied = editor._site(site_id, actor, write=False)
@@ -281,65 +499,108 @@ class FileChangeOps:
         admin = editor.need(actor, Permission.WP_OPS_ADMIN, site=site, action="wp_ops_file_read")
         if admin is not None:
             return admin
+        if mode not in _SEARCH_MODES:
+            return editor._fail("InvalidToolArguments", "Invalid search mode.")
+        if type(context_lines) is not int:
+            return editor._fail("InvalidToolArguments", "Invalid context_lines.")
+        ctx = max(0, min(3, context_lines))
+        if type(case_insensitive) is not bool:
+            return editor._fail("InvalidToolArguments", "Invalid case_insensitive flag.")
         text = str(query or "")
         if len(text) < 2 or len(text) > 80:
             return editor._fail("InvalidSearch", "Search text must be 2 to 80 characters.")
+        try:
+            compiled = _compile_search_matcher(text, mode=mode, case_insensitive=case_insensitive)
+        except ValueError as exc:
+            return editor._fail("InvalidSearch", str(exc))
+        try:
+            allowed_suffixes = _normalize_extensions(extensions, allowed=_EXTENSIONS)
+        except ValueError:
+            return editor._fail("InvalidToolArguments", "Invalid extensions filter.")
+        assert allowed_suffixes is not None
         if sensitive_relative(relative):
             return editor._fail("PathRejected", "Kind or path is not editable.")
         try:
             directory = _directory(site.files_root, kind, slug, relative)
         except PathRejected:
             return editor._fail("PathRejected", "Kind or path is not editable.")
+
+        bound = bind_credential(site)
+        extra_secrets = [bound.value] if bound.present else []
         hits: list[dict[str, Any]] = []
         scanned_files = 0
         scanned_bytes = 0
         truncated = False
         stack = [("", directory)]
-        while stack and scanned_files < _SEARCH_FILES and scanned_bytes < _SEARCH_BYTES:
-            prefix, current = stack.pop(0)
-            try:
-                names = editor._transport(site).list_dir(current)
-            except (PathRejected, TransportError):
-                continue
-            for name in names:
-                if sensitive_relative(name) or name.lower() in _SKIP_DIRS:
-                    continue
-                rel = f"{prefix}/{name}" if prefix else name
-                suffix = Path(name).suffix.lower()
-                if suffix not in _EXTENSIONS:
-                    if _SEGMENT.fullmatch(name):
-                        try:
-                            stack.append((rel, _directory(site.files_root, kind, slug, rel)))
-                        except PathRejected:
-                            continue
-                    continue
-                if scanned_files >= _SEARCH_FILES or scanned_bytes >= _SEARCH_BYTES:
-                    truncated = True
-                    break
+        transport = editor._transport(site)
+        has_entries = hasattr(transport, "list_entries") and callable(transport.list_entries)
+        batch_ctx = (
+            transport.open_batch()
+            if hasattr(transport, "open_batch") and callable(transport.open_batch)
+            else contextlib.nullcontext()
+        )
+        with batch_ctx:
+            while stack and scanned_files < _SEARCH_FILES and scanned_bytes < _SEARCH_BYTES:
+                prefix, current = stack.pop(0)
                 try:
-                    body = editor._read_text(site, resolve_file(site.files_root, kind, slug, rel))
+                    if has_entries:
+                        dir_entries = list(transport.list_entries(current))
+                    else:
+                        dir_entries = [
+                            (name, Path(name).suffix.lower() not in _EXTENSIONS)
+                            for name in transport.list_dir(current)
+                        ]
                 except (PathRejected, TransportError):
                     continue
-                encoded = body.encode("utf-8")
-                scanned_files += 1
-                scanned_bytes += len(encoded)
-                if scanned_bytes > _SEARCH_BYTES:
-                    truncated = True
-                    break
-                for number, line in enumerate(body.splitlines(), start=1):
-                    if text not in line:
+                for name, is_dir in dir_entries:
+                    if sensitive_relative(name) or name.lower() in _SKIP_DIRS:
                         continue
-                    excerpt = line.strip()
-                    if len(excerpt) > 120:
-                        excerpt = excerpt[:120]
-                    hits.append({"path": rel, "line": number, "excerpt": excerpt})
+                    rel = f"{prefix}/{name}" if prefix else name
+                    if is_dir:
+                        if _SEGMENT.fullmatch(name):
+                            try:
+                                stack.append((rel, _directory(site.files_root, kind, slug, rel)))
+                            except PathRejected:
+                                continue
+                        continue
+                    suffix = Path(name).suffix.lower()
+                    if suffix not in allowed_suffixes:
+                        continue
+                    if scanned_files >= _SEARCH_FILES or scanned_bytes >= _SEARCH_BYTES:
+                        truncated = True
+                        break
+                    try:
+                        raw_bytes = transport.read_bytes(resolve_file(site.files_root, kind, slug, rel))
+                    except (PathRejected, TransportError):
+                        continue
+                    if len(raw_bytes) > _MAX_BYTES or b"\x00" in raw_bytes:
+                        continue
+                    try:
+                        body = raw_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        continue
+                    encoded = body.encode("utf-8")
+                    scanned_files += 1
+                    scanned_bytes += len(encoded)
+                    if scanned_bytes > _SEARCH_BYTES:
+                        truncated = True
+                        break
+                    scrubbed = _scrub_search_text(editor._scrub(site, body), extra_secrets)
+                    matched = _match_text_lines(
+                        rel,
+                        scrubbed,
+                        query=text,
+                        compiled=compiled,
+                        case_insensitive=case_insensitive,
+                        context_lines=ctx,
+                        remaining=_SEARCH_HITS - len(hits),
+                    )
+                    hits.extend(matched)
                     if len(hits) >= _SEARCH_HITS:
                         truncated = True
                         break
-                if len(hits) >= _SEARCH_HITS:
+                if truncated:
                     break
-            if truncated:
-                break
         return WpOpsResult(
             ok=True,
             message="search",
@@ -351,6 +612,8 @@ class FileChangeOps:
                 "hits": hits,
                 "truncated": truncated,
                 "files_scanned": scanned_files,
+                "mode": mode,
+                "context_lines": ctx,
                 "ssh": editor._ssh(site),
                 "live_calls": editor._ssh(site),
             },

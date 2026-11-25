@@ -116,6 +116,7 @@ class InMemoryWpTransport:
                 "version": "1.3",
             },
         }
+        self.templates: list[dict[str, Any]] = []
         self.plugins: dict[str, dict[str, Any]] = {
             "woocommerce/woocommerce": {
                 "plugin": "woocommerce/woocommerce",
@@ -174,6 +175,10 @@ class InMemoryWpTransport:
             return self._themes(method, parts)
         if collection == "plugins":
             return self._plugins(method, parts, json)
+        if collection == "templates":
+            if method.upper() == "GET":
+                return [dict(row) for row in self.templates]
+            raise SecurityError(f"Unhandled WP templates: {method}")
 
         store = self._store_for(collection)
         if store is None:
@@ -604,6 +609,15 @@ class WordPressClient:
         data = self.transport.request(
             "GET",
             self._url("/wp-json/wp/v2/themes"),
+            auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def list_templates(self) -> list[dict[str, Any]]:
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wp/v2/templates"),
             auth=self._auth(),
             timeout=self.timeout,
         )

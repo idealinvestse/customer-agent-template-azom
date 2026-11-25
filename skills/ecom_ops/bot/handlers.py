@@ -22,6 +22,7 @@ from ecom_ops.bot.chat_agent import (
     wants_escalate,
     wants_hard_escalate_confirm,
 )
+from ecom_ops.bot.dashboard_links import review_plan_url
 from ecom_ops.bot.dialog_actions import (
     PendingAction,
     execute_case_regenerate,
@@ -36,12 +37,15 @@ from ecom_ops.bot.recovery import (
     with_recovery,
 )
 from ecom_ops.bot.reply import (
+    ActionButton,
+    ActionMarkup,
     BotReply,
     approve_case_actions,
     as_reply,
     bot_reply,
     order_status_confirm_actions,
     product_desc_confirm_actions,
+    safe_workspace_attachments,
     triage_cases_actions,
     yes_no_actions,
 )
@@ -52,11 +56,135 @@ from ecom_ops.bot.site_content import (
 )
 from ecom_ops.bot.store import ConversationStore, clamp_messages
 from ecom_ops.escalation import EscalationService, default_escalation
-from ecom_ops.rbac import Actor, Permission, resolve_actor
+from ecom_ops.rbac import Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import validate_order_id
 from ecom_ops.wp_ops.agent_tools import WpAgentTools, context_for_storage, context_matches
 
 ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
+_FILE_PLAN_ID = re.compile(r"fe-[a-f0-9]{12}")
+_REVIEW_PLAN_ID = re.compile(r"wr-[a-f0-9]{12}")
+_MAX_REVIEW_HASH_CACHE = 8
+
+
+def _wpreview_stage_actions(
+    plan_id: str, *, review_url: str | None = None
+) -> ActionMarkup:
+    rows: list[list[ActionButton]] = [
+        [
+            ActionButton(
+                label="Stagea ändringar till staging",
+                payload=f"wpreview:stage:{plan_id}",
+            ),
+            ActionButton(label="Avbryt", payload=f"wpreview:no:{plan_id}"),
+        ]
+    ]
+    if review_url:
+        rows.append([ActionButton(label="Öppna granskning", url=review_url)])
+    return ActionMarkup(rows=rows)
+
+
+def _review_plan_ready(
+    plans: Any,
+    plan: dict[str, Any],
+    *,
+    changed_count: int | None = None,
+) -> tuple[bool, str]:
+    status = str(plan.get("status") or "")
+    if status == "staged":
+        return False, "redan i staging"
+    if status in {
+        "expired",
+        "rejected",
+        "denied",
+        "fork_not_approved",
+        "not_resumable",
+    }:
+        return False, status
+    if plan.get("superseded_by"):
+        return False, "ersatt av nyare plan"
+    if plan.get("risk") == "high":
+        return False, "hög risk blockerad"
+    if plan.get("environment") != "staging":
+        return False, "endast staging kan stageas"
+    if status != "tests_passed":
+        return False, f"kontroller ej godkända ({status})"
+    evidence = plans._require_current_evidence(plan)
+    if evidence is not None:
+        reason = str((evidence.data or {}).get("error_class") or "EvidenceMissing")
+        return False, f"bevis saknas ({reason})"
+    if changed_count is not None and changed_count == 0:
+        return False, "inga ändringar"
+    return True, "redo för staging"
+
+
+def _format_changed_files(
+    changed_files: list[dict[str, Any]], *, limit: int = 15
+) -> list[str]:
+    lines: list[str] = []
+    for item in changed_files[:limit]:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        op = str(item.get("status") or item.get("op") or "changed").strip()
+        lines.append(f"- [{op}] {path}")
+    extra = len(changed_files) - limit
+    if extra > 0:
+        lines.append(f"- ... och {extra} fler")
+    return lines
+
+
+def _format_check_rows(checks: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for row in checks[:12]:
+        if not isinstance(row, dict):
+            continue
+        job = str(row.get("job") or "").strip()
+        status = str(row.get("status") or "unknown").strip()
+        if not job:
+            continue
+        reason = str(row.get("reason") or "").strip()
+        suffix = f" ({reason})" if reason and status != "passed" else ""
+        lines.append(f"- {job}: {status}{suffix}")
+    return lines
+
+
+def _with_review_hashes(
+    session: dict[str, Any], *, actor: str, plan: dict[str, Any]
+) -> dict[str, Any]:
+    plan_id = str(plan.get("plan_id") or "")
+    site_id = str(plan.get("site_id") or "")
+    base_sha = str(plan.get("base_sha256") or "")
+    work_sha = str(plan.get("work_sha256") or "")
+    if not (_REVIEW_PLAN_ID.fullmatch(plan_id) and site_id and base_sha and work_sha):
+        return session
+    existing = dict(session.get("wp_review_hashes") or {})
+    existing.pop(plan_id, None)
+    existing[plan_id] = {
+        "actor": actor,
+        "site_id": site_id,
+        "base_sha256": base_sha,
+        "work_sha256": work_sha,
+    }
+    while len(existing) > _MAX_REVIEW_HASH_CACHE:
+        oldest = next(iter(existing))
+        existing.pop(oldest, None)
+    session["wp_review_hashes"] = existing
+    return session
+
+
+def _drop_review_hash(session: dict[str, Any], plan_id: str) -> bool:
+    cached = session.get("wp_review_hashes")
+    if not isinstance(cached, dict) or plan_id not in cached:
+        return False
+    updated = dict(cached)
+    updated.pop(plan_id, None)
+    if updated:
+        session["wp_review_hashes"] = updated
+    else:
+        session.pop("wp_review_hashes", None)
+    return True
 
 
 def _stored_tool_digest(result: ChatResult, prior_digest: str) -> str:
@@ -361,7 +489,7 @@ class BotHandler:
         if raw == "wpfile:no" or raw.startswith("wpfile:no:"):
             plan_id = raw.split(":", 2)[2] if raw.startswith("wpfile:no:") else ""
             if plan_id:
-                if not re.fullmatch(r"fe-[a-f0-9]{12}", plan_id):
+                if not _FILE_PLAN_ID.fullmatch(plan_id):
                     return BotReply(text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK))
                 from ecom_ops.wp_ops import WpOpsService
 
@@ -369,7 +497,7 @@ class BotHandler:
             return BotReply(text="Avbrutet. Ingen fil ändrades.")
         if raw.startswith("wpfile:stage:"):
             plan_id = raw.split(":", 2)[2]
-            if not re.fullmatch(r"fe-[a-f0-9]{12}", plan_id):
+            if not _FILE_PLAN_ID.fullmatch(plan_id):
                 return BotReply(text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK))
             from ecom_ops.wp_ops import WpOpsService
 
@@ -378,6 +506,8 @@ class BotHandler:
                 return BotReply(text="Filen är skriven i staging. Produktionen är oförändrad.")
             error = str((staged.data or {}).get("error_class") or "OperationUnavailable")
             return BotReply(text=f"Staging skrevs inte ({error}). Ingen fil ändrades.")
+        if raw == "wpreview:no" or raw.startswith(("wpreview:no:", "wpreview:stage:")):
+            return self._handle_wpreview_callback(chat_id, actor, raw)
         if raw == "action:yes":
             blocked = self._mutations_blocked_reply()
             if blocked:
@@ -411,16 +541,30 @@ class BotHandler:
         state = self.store.get(chat_id) or {}
         session = dict(state.get("session") or {})
         context = session.get("wp_ops_context")
-        if context is None:
-            return
-        if context_matches(
+        changed = False
+        if context is not None and not context_matches(
             context,
             actor=actor,
             channel=self.channel,
             conversation_id=f"{self.channel}:{chat_id}",
         ):
+            session.pop("wp_ops_context", None)
+            changed = True
+        hashes = session.get("wp_review_hashes")
+        if isinstance(hashes, dict):
+            kept = {
+                pid: row
+                for pid, row in hashes.items()
+                if isinstance(row, dict) and row.get("actor") == actor
+            }
+            if len(kept) != len(hashes):
+                if kept:
+                    session["wp_review_hashes"] = kept
+                else:
+                    session.pop("wp_review_hashes", None)
+                changed = True
+        if not changed:
             return
-        session.pop("wp_ops_context", None)
         self._merge_state(
             chat_id,
             session=session,
@@ -576,7 +720,13 @@ class BotHandler:
         return yes_no_actions(yes_data="action:yes", no_data="action:no")
 
     def _start_pending(
-        self, chat_id: str | int, pending: PendingAction, text: str, *, actor: Actor
+        self,
+        chat_id: str | int,
+        pending: PendingAction,
+        text: str,
+        *,
+        actor: Actor,
+        attachments: tuple[str, ...] = (),
     ) -> BotReply:
         if not self._pending_allowed(actor, pending):
             return BotReply(text=f"{text}\n\n{self._deny_pending_reply(pending)}")
@@ -601,10 +751,12 @@ class BotHandler:
             messages=prev.get("messages"),
             tool_digest=prev.get("tool_digest"),
         )
+        attachment_kwargs = {"attachments": attachments} if attachments else {}
         return bot_reply(
             text,
             actions=self._actions_for_pending(pending, actor=actor),
             needs_typing=True,
+            **attachment_kwargs,
         )
 
     def _confirm_pending_text(self, chat_id: str | int, *, yes: bool) -> BotReply:
@@ -797,6 +949,18 @@ class BotHandler:
         if result.wp_ops_context is not None:
             session["wp_ops_context"] = result.wp_ops_context
 
+        review_plan_id = getattr(result, "review_stage_plan_id", None)
+        review_plan_row: dict[str, Any] | None = None
+        if review_plan_id and _REVIEW_PLAN_ID.fullmatch(review_plan_id):
+            try:
+                from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+                review_plan_row = ReviewPlans().get(review_plan_id)
+                if isinstance(review_plan_row, dict):
+                    _with_review_hashes(session, actor=actor, plan=review_plan_row)
+            except Exception:
+                review_plan_row = None
+
         self._merge_state(
             chat_id,
             flow=None,
@@ -809,6 +973,14 @@ class BotHandler:
 
         text = result.text
         actions = None
+        safe_attachments = (
+            safe_workspace_attachments(result.attachments)
+            if result.attachments
+            else ()
+        )
+        attachment_kwargs = (
+            {"attachments": safe_attachments} if safe_attachments else {}
+        )
 
         if result.offer_escalate:
             self._merge_state(
@@ -828,9 +1000,10 @@ class BotHandler:
                     yes_data="escalate:yes", no_data="escalate:no"
                 ),
                 needs_typing=True,
+                **attachment_kwargs,
             )
 
-        if result.file_stage_plan_id and re.fullmatch(r"fe-[a-f0-9]{12}", result.file_stage_plan_id):
+        if result.file_stage_plan_id and _FILE_PLAN_ID.fullmatch(result.file_stage_plan_id):
             plan_id = result.file_stage_plan_id
             return bot_reply(
                 text,
@@ -839,6 +1012,21 @@ class BotHandler:
                     no_data=f"wpfile:no:{plan_id}",
                 ),
                 needs_typing=True,
+                **attachment_kwargs,
+            )
+
+        if review_plan_id and _REVIEW_PLAN_ID.fullmatch(review_plan_id):
+            site_id = (
+                str(review_plan_row.get("site_id") or "")
+                if isinstance(review_plan_row, dict)
+                else ""
+            )
+            url = review_plan_url(site_id, review_plan_id) if site_id else None
+            return bot_reply(
+                text,
+                actions=_wpreview_stage_actions(review_plan_id, review_url=url),
+                needs_typing=True,
+                **attachment_kwargs,
             )
 
         if result.pending_action is not None:
@@ -847,7 +1035,11 @@ class BotHandler:
             except (TelegramActorDenied, ChannelActorDenied):
                 return self._deny_actor()
             return self._start_pending(
-                chat_id, result.pending_action, text, actor=actor_obj
+                chat_id,
+                result.pending_action,
+                text,
+                actor=actor_obj,
+                **attachment_kwargs,
             )
 
         if result.soft_escalate_nudge and SOFT_ESCALATE_NUDGE not in text:
@@ -865,11 +1057,270 @@ class BotHandler:
         elif result.suggest_case_ids:
             actions = triage_cases_actions(result.suggest_case_ids)
 
-        return bot_reply(text, actions=actions, needs_typing=True)
+        return bot_reply(
+            text, actions=actions, needs_typing=True, attachments=safe_attachments
+        )
+
+    def _handle_wpreview_callback(
+        self, chat_id: str | int, actor: str, raw: str
+    ) -> BotReply:
+        if raw == "wpreview:no" or raw.startswith("wpreview:no:"):
+            plan_id = raw.split(":", 2)[2] if raw.startswith("wpreview:no:") else ""
+            if plan_id:
+                if not _REVIEW_PLAN_ID.fullmatch(plan_id):
+                    return BotReply(
+                        text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK)
+                    )
+                prev = self.store.get(chat_id) or {}
+                session = dict(prev.get("session") or {})
+                if _drop_review_hash(session, plan_id):
+                    self._merge_state(
+                        chat_id,
+                        session=session,
+                        messages=prev.get("messages"),
+                        tool_digest=prev.get("tool_digest"),
+                    )
+                return BotReply(
+                    text=f"Avbrutet ({plan_id}). Ingen ändring skrevs till staging eller produktion."
+                )
+            return BotReply(
+                text="Avbrutet. Ingen ändring skrevs till staging eller produktion."
+            )
+
+        plan_id = raw.split(":", 2)[2]
+        if not _REVIEW_PLAN_ID.fullmatch(plan_id):
+            return BotReply(
+                text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK)
+            )
+        blocked = self._mutations_blocked_reply()
+        if blocked:
+            return blocked
+        try:
+            actor_obj = resolve_actor(actor)
+            require_permission(actor_obj, Permission.WP_OPS_ADMIN)
+            require_permission(actor_obj, Permission.CODE_EDIT)
+        except Exception:
+            return BotReply(
+                text="Staging av granskningsplan kräver Oscar (WP_OPS_ADMIN och CODE_EDIT). Ingen ändring utfördes."
+            )
+
+        from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+        plans = ReviewPlans()
+        plan = plans.get(plan_id)
+        if plan is None:
+            return BotReply(
+                text=f"Staging skrevs inte (UnknownPlan). Granskningsplanen {plan_id} hittades inte."
+            )
+        site_id = str(plan.get("site_id") or "")
+        prev = self.store.get(chat_id) or {}
+        session = dict(prev.get("session") or {})
+        cached = (session.get("wp_review_hashes") or {}).get(plan_id)
+        if (
+            isinstance(cached, dict)
+            and cached.get("actor") == actor
+            and cached.get("site_id") == site_id
+        ):
+            base_sha = str(cached.get("base_sha256") or "")
+            work_sha = str(cached.get("work_sha256") or "")
+        else:
+            base_sha = str(plan.get("base_sha256") or "")
+            work_sha = str(plan.get("work_sha256") or "")
+
+        ws_status = plans.workspace_status(site_id, plan_id, actor=actor)
+        changed_files = (
+            list((ws_status.data or {}).get("changed_files") or [])
+            if ws_status.ok
+            else []
+        )
+        staged = plans.approve_staging(
+            site_id,
+            plan_id,
+            actor=actor,
+            base_sha256=base_sha,
+            work_sha256=work_sha,
+        )
+        if staged.ok and (staged.data or {}).get("executed") is True:
+            if _drop_review_hash(session, plan_id):
+                self._merge_state(
+                    chat_id,
+                    session=session,
+                    messages=prev.get("messages"),
+                    tool_digest=prev.get("tool_digest"),
+                )
+            lines = [
+                f"Ändringarna för {plan_id} är skrivna i staging ({site_id}, mock). Produktionen är oförändrad."
+            ]
+            file_lines = _format_changed_files(changed_files)
+            if file_lines:
+                lines.append("Ändrade filer:")
+                lines.extend(file_lines)
+            url = review_plan_url(site_id, plan_id)
+            if url:
+                lines.append(f"Granskning: {url} (kräver inloggning)")
+            else:
+                lines.append(f"Granskningssida: /wp/{site_id}/reviews/{plan_id} (kräver inloggning)")
+            return BotReply(text="\n".join(lines))
+
+        error = str((staged.data or {}).get("error_class") or "OperationUnavailable")
+        detail = str(staged.message or "").strip()
+        msg = f"Staging skrevs inte ({error}). Ingen ändring utfördes."
+        if detail and detail != error:
+            msg = f"{msg}\n{detail}"
+        return BotReply(text=msg)
+
+    def _wp_plans_command(self, actor: str, parts: list[str]) -> BotReply:
+        from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+        site_id = parts[1] if len(parts) == 2 else None
+        plans = ReviewPlans()
+        res = plans.list_plans(site_id, actor=actor)
+        if not res.ok:
+            err = str((res.data or {}).get("error_class") or "")
+            if err == "AccessDenied":
+                return BotReply(text="Du saknar rättighet att läsa granskningsplaner.")
+            if err == "UnknownSite":
+                return BotReply(text=f"Okänd WordPress-sajt: {site_id}.")
+            return BotReply(text=f"Kunde inte lista granskningsplaner ({err or 'okänt fel'}).")
+
+        rows = list((res.data or {}).get("plans") or [])
+        if not rows:
+            scope = f" för {site_id}" if site_id else ""
+            return BotReply(text=f"Inga öppna granskningsarbetsytor (wr-*){scope}.")
+
+        can_see_summary = False
+        try:
+            actor_obj = resolve_actor(actor)
+            can_see_summary = actor_obj.has(Permission.WP_OPS_ADMIN) and actor_obj.has(
+                Permission.CODE_EDIT
+            )
+        except Exception:
+            can_see_summary = False
+
+        header = f"Granskningsarbetsytor ({site_id}):" if site_id else "Granskningsarbetsytor (senaste):"
+        lines = [header]
+        for item in rows[:10]:
+            pid = str(item.get("plan_id") or "")
+            psite = str(item.get("site_id") or "")
+            target = f"{item.get('kind')}:{item.get('slug')}"
+            status = str(item.get("status") or "unknown")
+            _ready, ready_label = _review_plan_ready(plans, item)
+            title = ""
+            if can_see_summary:
+                raw_row = plans.get(pid, site_id=psite)
+                raw_summary = str((raw_row or {}).get("summary") or "").strip()
+                if raw_summary:
+                    title = f" · {raw_summary[:40]}"
+            lines.append(f"- {pid} | {psite} | {target} | {status} | {ready_label}{title}")
+        if len(rows) > 10:
+            lines.append(f"... och {len(rows) - 10} fler.")
+        lines.append("Detaljer: /wp plan <plan-id>")
+        return BotReply(text="\n".join(lines))
+
+    def _wp_plan_command(
+        self, chat_id: str | int, actor: str, parts: list[str]
+    ) -> BotReply:
+        plan_id = parts[1].strip()
+        if not _REVIEW_PLAN_ID.fullmatch(plan_id):
+            return BotReply(text="Ange ett giltigt plan-id (wr-xxxxxxxxxxxx).")
+        try:
+            actor_obj = resolve_actor(actor)
+            require_permission(actor_obj, Permission.WP_OPS_READ)
+        except Exception:
+            return BotReply(text="Du saknar rättighet att läsa granskningsplaner.")
+
+        from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+        plans = ReviewPlans()
+        raw_plan = plans.get(plan_id)
+        if raw_plan is None:
+            return BotReply(text=f"Okänd granskningsplan: {plan_id}.")
+        site_id = str(raw_plan.get("site_id") or "")
+        shown = plans.show(site_id, plan_id, actor=actor, include_diff=True)
+        if not shown.ok:
+            err = str((shown.data or {}).get("error_class") or "")
+            if err == "AccessDenied":
+                return BotReply(text="Du saknar rättighet att läsa granskningsplanen.")
+            if err == "Expired":
+                return BotReply(text=f"Granskningsplan {plan_id} har gått ut.")
+            return BotReply(text=f"Kunde inte visa plan {plan_id} ({err or 'okänt fel'}).")
+
+        view = dict((shown.data or {}).get("plan") or {})
+        ws_status = plans.workspace_status(site_id, plan_id, actor=actor)
+        changed_files = (
+            list((ws_status.data or {}).get("changed_files") or [])
+            if ws_status.ok
+            else []
+        )
+        ready, ready_label = _review_plan_ready(
+            plans, raw_plan, changed_count=len(changed_files)
+        )
+        can_stage = actor_obj.has(Permission.WP_OPS_ADMIN) and actor_obj.has(
+            Permission.CODE_EDIT
+        )
+        artifacts = (
+            plans.list_artifacts(site_id, plan_id, actor=actor) if can_stage else []
+        )
+        url = review_plan_url(site_id, plan_id)
+
+        lines = [
+            f"Granskningsplan {plan_id}",
+            f"Sajt: {site_id} ({view.get('environment')}) · {view.get('kind')}: {view.get('slug')}",
+            f"Status: {view.get('status')} · Risk: {view.get('risk')} · Staging: {ready_label}",
+        ]
+        summary = str(view.get("summary") or "").strip()
+        if summary:
+            lines.append(f"Sammanfattning: {summary[:200]}")
+
+        if changed_files:
+            lines.append(f"Ändrade filer ({len(changed_files)}):")
+            lines.extend(_format_changed_files(changed_files))
+        else:
+            lines.append("Ändrade filer: inga ännu.")
+
+        check_lines = _format_check_rows(list(view.get("checks") or []))
+        if check_lines:
+            lines.append("Kontroller:")
+            lines.extend(check_lines)
+        check_run = view.get("check_run")
+        if isinstance(check_run, dict) and check_run.get("run_id"):
+            pub = "ja" if check_run.get("published") is True else "nej"
+            lines.append(f"Check-run: {check_run.get('run_id')} (publicerad: {pub})")
+
+        sandbox = view.get("sandbox") if isinstance(view.get("sandbox"), dict) else {}
+        if sandbox:
+            lines.append(
+                f"Sandbox: {sandbox.get('state', 'stopped')} ({sandbox.get('engine', 'unavailable')})"
+            )
+        if artifacts:
+            lines.append(f"Artifakter: {', '.join(artifacts[:6])}")
+        if url:
+            lines.append(f"Granskningslänk: {url} (kräver inloggning)")
+        else:
+            lines.append(f"Granskningssida: /wp/{site_id}/reviews/{plan_id} (kräver inloggning)")
+        lines.append("Produktion deployas aldrig från chatten.")
+
+        if ready and can_stage:
+            prev = self.store.get(chat_id) or {}
+            session = dict(prev.get("session") or {})
+            _with_review_hashes(session, actor=actor, plan=raw_plan)
+            self._merge_state(
+                chat_id,
+                session=session,
+                messages=prev.get("messages"),
+                tool_digest=prev.get("tool_digest"),
+            )
+            return bot_reply(
+                "\n".join(lines),
+                actions=_wpreview_stage_actions(plan_id, review_url=url),
+            )
+        if ready and not can_stage:
+            lines.append("Staging kräver Oscar (WP_OPS_ADMIN + CODE_EDIT).")
+        return BotReply(text="\n".join(lines))
 
     def _wp_context_command(self, chat_id: str | int, text: str) -> BotReply | None:
         """Minimal user controls for the sticky, actor-scoped WordPress site."""
-        match = re.fullmatch(r"/wp(?:\s+(.*))?", text.strip(), re.I)
+        match = re.fullmatch(r"/wp(?:@\w+)?(?:\s+(.*))?", text.strip(), re.I)
         if not match:
             return None
         parts = (match.group(1) or "").strip().split()
@@ -878,6 +1329,7 @@ class BotHandler:
         session = dict(state.get("session") or {})
         if action == "clear" and len(parts) == 1:
             session.pop("wp_ops_context", None)
+            session.pop("wp_review_hashes", None)
             self._merge_state(
                 chat_id,
                 session=session,
@@ -886,11 +1338,17 @@ class BotHandler:
             )
             return BotReply(text="WordPress-sajtkontexten är rensad.")
         if action == "help" and len(parts) == 1:
-            return BotReply(text="/wp sites · /wp use <site-id> · /wp clear")
+            return BotReply(
+                text="/wp sites · /wp use <site-id> · /wp plans [site-id] · /wp plan <plan-id> · /wp clear"
+            )
         try:
             actor = self._resolve_actor(chat_id)
         except (TelegramActorDenied, ChannelActorDenied):
             return self._deny_actor()
+        if action == "plans" and len(parts) in {1, 2}:
+            return self._wp_plans_command(actor, parts)
+        if action == "plan" and len(parts) == 2:
+            return self._wp_plan_command(chat_id, actor, parts)
         tools = WpAgentTools()
         if action == "sites" and len(parts) == 1:
             output = tools.execute(
@@ -940,4 +1398,6 @@ class BotHandler:
                 tool_digest=state.get("tool_digest"),
             )
             return BotReply(text=f"Aktiv WordPress-sajt: {site_id}. Fråga om status, backup eller uppdateringar.")
-        return BotReply(text="Använd /wp sites, /wp use <site-id> eller /wp clear.")
+        return BotReply(
+            text="Använd /wp sites, /wp use <site-id>, /wp plans [site-id], /wp plan <plan-id> eller /wp clear."
+        )

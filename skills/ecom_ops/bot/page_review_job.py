@@ -10,6 +10,7 @@ from typing import Any
 
 from ecom_ops.bot.reply import BotReply
 from ecom_ops.wp_ops.agent_tools import context_matches
+from ecom_ops.wp_ops.page_review_intent import extract_page_review_target
 from ecom_ops.wp_ops.page_review_loop import run_bounded_page_review_loop
 
 
@@ -55,10 +56,12 @@ def run_page_review_job(
         )
     from ecom_ops.bot.page_review_runtime import page_review_client
 
+    target_page = extract_page_review_target(str((job.get("payload") or {}).get("text") or ""))
     outcome = run_bounded_page_review_loop(
         site_id=site_id,
         actor=actor,
         client=page_review_client(site_id, actor),
         on_progress=progress,
+        target_page=target_page,
     )
     return BotReply(text=outcome.text)

@@ -26,7 +26,8 @@ version: "3.0.0"
 **Safe ops:** `skills/azom-safe-ops/SKILL.md`  
 **Router health:** `skills/model-router-health/SKILL.md`  
 **OAuth incident:** `skills/oauth-incident/SKILL.md`  
-**OpenClaw client upgrade:** `skills/openclaw-upgrade/SKILL.md`
+**OpenClaw client upgrade:** `skills/openclaw-upgrade/SKILL.md`  
+**WordPress review & dev:** `skills/wordpress-review/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `skills/wordpress-plugin-dev/SKILL.md`
 
 ## Prioritized actions
 
@@ -87,11 +88,13 @@ Details: `docs/MAIL_PROVIDERS.md`.
 
 ## Woo / WordPress
 
-See `docs/WOO_WORDPRESS.md` — shipment trackings, multi-site `domain=`, WordPress Application Passwords, webhook HMAC, retries. A homepage source review uses [`skills/wordpress-review/SKILL.md`](../wordpress-review/SKILL.md) and does not call order tools.
+See `docs/WOO_WORDPRESS.md` — shipment trackings, multi-site `domain=`, WordPress Application Passwords, webhook HMAC, retries. A homepage source review uses [`skills/wordpress-review/SKILL.md`](../wordpress-review/SKILL.md) and does not call order tools. Theme and site-plugin engineering workflows live in [`skills/wordpress-theme-dev/SKILL.md`](../wordpress-theme-dev/SKILL.md) and [`skills/wordpress-plugin-dev/SKILL.md`](../wordpress-plugin-dev/SKILL.md).
 
 Site operations are separate from the WordPress content client: [`docs/WORDPRESS_OPS.md`](../../docs/WORDPRESS_OPS.md). The chat exposes named, site-bound reads for registry/status, backup status, security findings, and open operations, plus locked update/restore plan previews. The previews cannot be approved or executed. The server enforces actor/site RBAC and bounded calls (3 calls, 30 seconds, 4 KiB per result / 10 KiB total). The 12-hour site context is scoped to actor, channel, and conversation. There is no model-created shell, PHP, or WP-CLI. Security scanning, version discovery, live health checks, update execution, and production restore are not implemented; outputs must report mock or unknown states accurately.
 
 Phase 1 is mock health. Phase 2 is a local mock backup manifest and a staging drill. Oscar can read a window of one existing theme or plugin file through `wp_read_theme_plugin_file`. The default window is 4096 bytes and the maximum is 8192, with `next_offset` when bytes remain. The tool is site-bound, Oscar-only, and read-only. Chat may also list one directory, search a literal string, and propose a named diff or a new file in an existing parent directory. The proposal stores hashes only. The diff body lives under `AZOM_DATA_DIR/wp_file_payloads` and is excluded from the normal backup tarball. Chat does not write the file. A staging write happens only after the server button `wpfile:stage:{plan_id}` and only on the local mock tree. The production review POST checks the plan id and both hashes and returns `BackupNotVerified`. `wp_deploy_production` and `wp_rollback_file` do not write. Live WordPress file access uses SFTP with the pinned host key and per-site key; it never opens a shell or sends a password. Live access stays off until a dedicated `*-wp-reader` account is configured for forced read-only SFTP and `AZOM_WP_FILES_SSH=1` is explicitly enabled. The separate VPS SSH health runner has a fixed command allowlist and remains off until `AZOM_SSH_READ_ENABLED=1`, explicit pinned `known_hosts`, an OpenSSH identity, and a dedicated non-root `*-ssh-reader` account are configured. Production WordPress file writes over SSH are refused. A normal backup excludes `ssh-keys/` and `wp_file_payloads/`. `wp show` does not include the identity path. `restore` refuses. A verified mock backup is not off-site and not green. This is not Phase 4.
+
+The separate WordPress file and workspace loop caps one turn at **16** calls, **10** reads, **5** searches, and **60s** (`60` seconds; max 16 KiB per result / 48 KiB total). Alongside single-file `fe-*` plans (`wpfile:stage:{plan_id}`), chat supports playbooks (`wp_playbook`), component/code inspection (`wp_list_components`, `wp_theme_overview`, `wp_plugin_overview`, `wp_code_index`, `wp_template_hierarchy`, `wc_template_overrides_audit`, `wp_page_review`, and optional `wp_component_intel` only when `AZOM_WPORG_INTEL=1`), and isolated multi-file `wr-*` workspaces (`wp_open_review_workspace`, `wp_workspace_patch_file`, `wp_workspace_create_file`, `wp_workspace_apply_changes`, `wp_workspace_bulk_replace`, `wp_workspace_theme_json`, `wp_workspace_copy_from_parent`, `wp_workspace_copy_woo_template`, `wp_workspace_scaffold`, `wp_workspace_diff`, `wp_workspace_status`, `wp_workspace_static_checks`, `wp_workspace_run_checks`). Multi-file `wr-*` workspaces run `wp_workspace_static_checks` and `wp_workspace_run_checks` and stage only via the explicit server button `wpreview:stage:wr-...` (never via free-text approval; production remains gated and Oscar-escalated).
 
 ## Marketing Google
 

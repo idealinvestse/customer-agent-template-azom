@@ -117,6 +117,7 @@ class Site:
     ssh_port: int = 0
     ssh_identity_file: str = ""
     host_public_key: str = ""
+    woo_version: str = ""
 
     def capability_map(self) -> dict[str, str]:
         return dict(self.capabilities)
@@ -139,6 +140,7 @@ class Site:
             "hosting_provider": self.hosting_provider,
             "wordpress_version": self.wordpress_version,
             "php_version": self.php_version,
+            "woo_version": self.woo_version,
             "version_source": "registry",
             "woocommerce": self.woocommerce,
             "critical_urls": list(self.critical_urls),
@@ -241,6 +243,12 @@ def parse_site(raw: Any) -> Site:
         alert_owner=_short_text(raw.get("alert_owner") or "unassigned", field=f"{site_id} alert_owner", limit=80),
         files_root=_files_root(raw.get("files_root"), site_id=site_id),
         ssh_host=_ssh_host(raw.get("ssh_host"), site_id=site_id),
+        woo_version=_short_text(
+            raw.get("woo_version") or "",
+            field=f"{site_id} woo_version",
+            limit=40,
+            allow_empty=True,
+        ),
     )
 
 

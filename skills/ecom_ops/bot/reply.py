@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import os
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ecom_ops.bot.dashboard_links import case_detail_url, cases_list_url, link_footer
+
+_WORKSPACE_PNG = re.compile(r"^(?:base|work)-(?:desktop|mobile)\.png$")
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
+_MAX_ATTACHMENTS = 4
 
 
 @dataclass
@@ -36,6 +45,7 @@ class BotReply:
     reply_markup: dict[str, Any] | None = None
     actions: ActionMarkup | None = None
     needs_typing: bool = False
+    attachments: tuple[str, ...] = ()
 
     def __str__(self) -> str:
         return self.text
@@ -258,6 +268,7 @@ def bot_reply(
     actions: ActionMarkup | None = None,
     reply_markup: dict[str, Any] | None = None,
     needs_typing: bool = False,
+    attachments: tuple[str, ...] = (),
 ) -> BotReply:
     """Build BotReply with actions and telegram markup kept in sync."""
     if actions and not reply_markup:
@@ -269,7 +280,52 @@ def bot_reply(
         actions=actions,
         reply_markup=reply_markup,
         needs_typing=needs_typing,
+        attachments=attachments,
     )
+
+
+def safe_workspace_attachments(
+    paths: Iterable[str | Path],
+    *,
+    data_dir: Path | None = None,
+) -> tuple[str, ...]:
+    """Validate and deduplicate sandbox screenshot PNGs inside wp_workspaces/*/artifacts."""
+    root_raw = data_dir or os.environ.get("AZOM_DATA_DIR", ".azom-data") or ".azom-data"
+    base_root = (Path(root_raw) / "wp_workspaces").resolve()
+    accepted: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        if not raw or (isinstance(raw, str) and not raw.strip()):
+            continue
+        p = Path(raw)
+        try:
+            if p.is_symlink():
+                continue
+            resolved = p.resolve()
+            if base_root not in resolved.parents:
+                continue
+            if resolved.parent.name != "artifacts":
+                continue
+            if _WORKSPACE_PNG.fullmatch(resolved.name) is None:
+                continue
+            if not resolved.is_file():
+                continue
+            size = resolved.stat().st_size
+            if not (0 < size <= _MAX_ATTACHMENT_BYTES):
+                continue
+            with resolved.open("rb") as fh:
+                if fh.read(8) != _PNG_MAGIC:
+                    continue
+        except OSError:
+            continue
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        accepted.append(key)
+        if len(accepted) >= _MAX_ATTACHMENTS:
+            break
+    return tuple(accepted)
 
 
 def with_dashboard_footer(text: str, url: str | None) -> str:

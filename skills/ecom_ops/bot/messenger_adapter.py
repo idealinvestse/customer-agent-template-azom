@@ -123,7 +123,7 @@ def actions_to_messenger_buttons(actions: ActionMarkup | None) -> list[dict[str,
         if "show" in p or p.startswith("cases:regen"):
             return (2, 0)
         if p in {"action:yes", "escalate:yes"} or p.startswith(
-            ("order:set", "product:desc", "wpfile:stage")
+            ("order:set", "product:desc", "wpfile:stage", "wpreview:stage")
         ):
             return (1, 1)
         if "list" in p or p.endswith(":cancel") or p in {"action:no", "escalate:no"}:
