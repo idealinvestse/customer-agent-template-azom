@@ -1,98 +1,188 @@
 {% extends "base.html" %}
-{% block title %}Onboarding – Azom Dashboard{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Onboarding – Azom Agent Dashboard{% endblock %}
 {% block page_subtitle %}Onboarding{% endblock %}
 {% block content %}
+{% set step1_ok = bool(runtime.customer and runtime.domains) if bool is defined else (runtime.customer and runtime.domains) %}
+{% set step2_ok = true %}
+{% set step3_ok = (secrets_missing | default(0)) == 0 %}
+{% set step4_ok = gmail_connected | default(runtime.gmail_tokens_stored) %}
+{% set step5_ok = health_ok | default(health.ok if health else false) %}
+{% set done_count = (1 if step1_ok else 0) + (1 if step2_ok else 0) + (1 if step3_ok else 0) + (1 if step4_ok else 0) + (1 if step5_ok else 0) %}
+{% set pct_done = (done_count * 20) %}
+
+<script type="application/json" id="onboarding-init">
+  {{ {
+    "healthOk": step5_ok,
+    "gmailConnected": step4_ok,
+    "gmailEmail": "",
+    "secrets": secrets | default([]),
+    "checks": checks | default(health.checks if health else [])
+  } | tojson }}
+</script>
+
 <div
   class="space-y-5"
-  x-data="{
-    loading: false,
-    healthOk: {{ 'true' if health.ok else 'false' }},
-    gmailConnected: {{ 'true' if runtime.gmail_tokens_stored else 'false' }},
-    gmailEmail: '',
-    secrets: {{ secrets | tojson }},
-    checks: {{ health.checks | tojson }},
-    secretsHint: 'checklista',
-    async refresh() {
-      this.loading = true;
-      try {
-        const [st, gm] = await Promise.all([
-          fetch('/onboarding/status').then(r => r.json()),
-          fetch('/oauth/gmail/status').then(r => r.json()),
-        ]);
-        this.healthOk = !!(st.health && st.health.ok);
-        this.checks = (st.health && st.health.checks) ? st.health.checks : this.checks;
-        this.secrets = st.secrets || this.secrets;
-        this.gmailConnected = !!gm.connected;
-        this.gmailEmail = gm.email || '';
-        const missing = (this.secrets || []).filter(s => !s.present).length;
-        this.secretsHint = missing ? (missing + ' saknas') : 'alla present';
-      } catch (e) { console.error(e); }
-      this.loading = false;
-    }
-  }"
-  x-init="refresh()"
+  x-data="onboardingView"
+  data-status-url="/onboarding/status"
+  data-gmail-url="/oauth/gmail/status"
 >
-  <div class="flex flex-wrap items-end justify-between gap-3">
-    <div>
-      <h2 class="az-page-title">Onboarding</h2>
-      <p class="az-muted mt-1">Steg-för-steg setup för Azom-agenten.</p>
-    </div>
-    <button type="button" class="az-btn-secondary" @click="refresh()" :disabled="loading" x-text="loading ? 'Uppdaterar…' : 'Uppdatera status'"></button>
+  {% call ui.page_header("Onboarding", "Steg-för-steg setup och statuskontroll för Azom-agenten.") %}
+    <button
+      type="button"
+      class="az-btn-secondary"
+      @click="refresh"
+      :disabled="loading"
+    >
+      {{ icon('refresh', 'sm') }}
+      <span x-text="refreshLabel">Uppdatera status</span>
+    </button>
+  {% endcall %}
+
+  <div x-show="hasError" x-cloak class="az-callout az-callout-danger" role="alert">
+    <span class="mt-0.5 shrink-0">{{ icon('alert-circle', 'sm') }}</span>
+    <span x-text="errorMsg">Kunde inte uppdatera status.</span>
   </div>
 
   <section class="az-card">
-    <h2 class="az-section-title">Onboarding wizard</h2>
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0">Onboarding wizard</h2>
+      <span class="az-badge {{ 'az-badge-ok' if done_count == 5 else 'az-badge-info' }} tabular-nums">{{ done_count }}/5 klart</span>
+    </div>
+    <div class="az-progress mb-4" aria-label="Onboarding-framsteg {{ done_count }} av 5">
+      <span style="width: {{ pct_done }}%"></span>
+    </div>
+
     <ol class="divide-y divide-ink-700/80">
-      <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5 first:pt-0">
-        <strong class="text-mist-100">1. Kund &amp; domäner</strong>
-        <span class="az-muted">— {{ runtime.customer }} ({{ runtime.domains | join(', ') }})</span>
-        <a class="text-sm text-steel-400 hover:text-steel-300" href="/settings">redigera</a>
+      <li class="flex flex-wrap items-center justify-between gap-2 py-3.5 first:pt-0">
+        <div class="flex flex-wrap items-center gap-2">
+          {{ ui.status_badge('ok' if step1_ok else 'warn', 'Klar' if step1_ok else 'Krävs', show_icon=True) }}
+          <strong class="text-mist-100">1. Kund &amp; domäner</strong>
+          <span class="az-muted">— {{ runtime.customer }} (<span class="font-mono text-xs">{{ runtime.domains | join(', ') }}</span>)</span>
+        </div>
+        <a class="az-btn-secondary az-btn-sm" href="/settings">Redigera</a>
       </li>
-      <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5">
-        <strong class="text-mist-100">2. Mock vs live</strong>
-        <span class="az-muted">— {% if runtime.mock_mode %}Mock-läge{% else %}Live{% endif %}</span>
-        <a class="text-sm text-steel-400 hover:text-steel-300" href="/settings">växla</a>
-      </li>
-      <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5">
-        <strong class="text-mist-100">3. Secrets</strong>
-        <span class="az-muted">— <span x-text="secretsHint"></span></span>
-        <a class="text-sm text-steel-400 hover:text-steel-300" href="/secrets">öppna</a>
+
+      <li class="flex flex-wrap items-center justify-between gap-2 py-3.5">
+        <div class="flex flex-wrap items-center gap-2">
+          {{ ui.status_badge('warn' if runtime.mock_mode else 'ok', 'Mock-läge' if runtime.mock_mode else 'Live-drift', show_icon=True) }}
+          <strong class="text-mist-100">2. Mock vs live</strong>
+          <span class="az-muted">— {% if runtime.mock_mode %}Mock-läge aktivt{% else %}Live-drift aktiv{% endif %}</span>
+        </div>
         {% if is_oscar %}
-        <a class="text-sm text-oscar-400 hover:text-oscar-400/80" href="/oscar/secrets">Oscar editor</a>
+        <a class="az-btn-secondary az-btn-sm" href="/settings">Växla</a>
+        {% else %}
+        <span class="text-xs text-mist-400">Styrs av Oscar</span>
         {% endif %}
       </li>
-      <li class="flex flex-wrap items-center gap-x-2 gap-y-2 py-3.5">
-        <strong class="text-mist-100">4. Gmail OAuth</strong>
-        <span class="az-muted">—</span>
-        <span x-show="gmailConnected" class="az-present" x-text="gmailEmail ? ('connected · ' + gmailEmail) : 'connected'"></span>
-        <span x-show="!gmailConnected" class="az-missing">not connected</span>
-        <a class="az-btn-primary" href="/oauth/gmail/start" x-show="!gmailConnected">Koppla Gmail</a>
-        <a class="az-btn-secondary" href="/oauth/gmail/start" x-show="gmailConnected">Förnya</a>
+
+      <li class="flex flex-wrap items-center justify-between gap-2 py-3.5">
+        <div class="flex flex-wrap items-center gap-2">
+          {{ ui.status_badge('ok' if step3_ok else 'warn', 'Klar' if step3_ok else 'Saknas', show_icon=True) }}
+          <strong class="text-mist-100">3. Secrets</strong>
+          <span class="az-muted">— <span x-text="secretsHint">{% if secrets_missing %}{{ secrets_missing }} saknas{% else %}alla konfigurerade{% endif %}</span></span>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          {% if is_oscar %}
+          <a class="az-btn-oscar az-btn-sm" href="/oscar/secrets">Oscar secrets-editor</a>
+          {% else %}
+          <a class="az-btn-secondary az-btn-sm" href="/secrets">Visa &amp; begär</a>
+          {% endif %}
+        </div>
       </li>
-      <li class="flex flex-wrap items-baseline gap-x-2 gap-y-1 py-3.5 last:pb-0">
-        <strong class="text-mist-100">5. Health probe</strong>
-        <span class="az-muted">—</span>
-        <span x-show="healthOk" class="az-present">OK</span>
-        <span x-show="!healthOk" class="az-missing">Issues</span>
+
+      <li class="flex flex-wrap items-center justify-between gap-2 py-3.5">
+        <div class="flex flex-wrap items-center gap-2">
+          <span x-show="notMounted">
+            {% if step4_ok %}
+              {{ ui.status_badge('ok', 'Ansluten', show_icon=True) }}
+            {% else %}
+              {{ ui.status_badge('error', 'Inte ansluten', show_icon=True) }}
+            {% endif %}
+          </span>
+          <span x-show="mounted" x-cloak :class="gmailStatusClass" x-text="gmailStatusText"></span>
+          <strong class="text-mist-100">4. Gmail OAuth</strong>
+        </div>
+        <div>
+          {% if is_oscar %}
+          <span x-show="notMounted">
+            {% if step4_ok %}
+            <a class="az-btn-secondary az-btn-sm" href="/oauth/gmail/start">Förnya</a>
+            {% else %}
+            <a class="az-btn-primary az-btn-sm" href="/oauth/gmail/start">Koppla Gmail</a>
+            {% endif %}
+          </span>
+          <span x-show="mounted" x-cloak>
+            <a class="az-btn-primary az-btn-sm" href="/oauth/gmail/start" x-show="notGmailConnected">Koppla Gmail</a>
+            <a class="az-btn-secondary az-btn-sm" href="/oauth/gmail/start" x-show="gmailConnected">Förnya</a>
+          </span>
+          {% else %}
+          <span class="text-xs text-mist-400">OAuth-koppling hanteras av Oscar</span>
+          {% endif %}
+        </div>
+      </li>
+
+      <li class="flex flex-wrap items-center justify-between gap-2 py-3.5 last:pb-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <span x-show="notMounted">
+            {% if step5_ok %}
+              {{ ui.status_badge('ok', 'OK', show_icon=True) }}
+            {% else %}
+              {{ ui.status_badge('error', 'Problem', show_icon=True) }}
+            {% endif %}
+          </span>
+          <span x-show="mounted" x-cloak :class="healthStatusClass" x-text="healthStatusText"></span>
+          <strong class="text-mist-100">5. Hälsokontroll</strong>
+          <span class="az-muted">— automatisk verifiering av lokal driftstatus</span>
+        </div>
       </li>
     </ol>
   </section>
 
   <section class="az-card">
-    <h2 class="az-section-title">Secrets checklist</h2>
-    <div class="overflow-x-auto">
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 id="secrets-checklist-heading" class="az-section-title mb-0">Secrets checklist</h2>
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-xs text-mist-400 tabular-nums">{{ secrets_missing | default(0) }} saknas av {{ secrets_total | default(secrets | length) }}</span>
+        {% if is_oscar %}
+        <a class="text-xs font-medium text-oscar-300 hover:underline" href="/oscar/secrets">Hantera i Oscar secrets →</a>
+        {% else %}
+        <a class="text-xs font-medium text-steel-300 hover:underline" href="/secrets">Öppna Secrets →</a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="secrets-checklist-heading">
       <table class="az-table">
         <thead>
-          <tr><th>Group</th><th>Env var</th><th>Status</th></tr>
+          <tr>
+            <th scope="col">Grupp</th>
+            <th scope="col">Variabel</th>
+            <th scope="col">Status</th>
+          </tr>
         </thead>
-        <tbody>
+        <tbody x-show="notMounted">
+          {% for s in secrets %}
+          <tr>
+            <td>{{ s.group }}</td>
+            <td><code class="az-code">{{ s.name }}</code></td>
+            <td>
+              {% if s.present %}
+              <span class="az-present">present</span>
+              {% else %}
+              <span class="az-missing">missing</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tbody x-show="mounted" x-cloak>
           <template x-for="s in secrets" :key="s.name">
             <tr>
               <td x-text="s.group"></td>
               <td><code class="az-code" x-text="s.name"></code></td>
               <td>
-                <span x-show="s.present" class="az-present">present</span>
-                <span x-show="!s.present" class="az-missing">missing</span>
+                <span :class="s.statusClass" x-text="s.statusLabel"></span>
               </td>
             </tr>
           </template>
@@ -102,21 +192,39 @@
   </section>
 
   <section class="az-card">
-    <h2 class="az-section-title">Health checks</h2>
-    <div class="overflow-x-auto">
+    <h2 id="health-checks-heading" class="az-section-title">Health checks</h2>
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="health-checks-heading">
       <table class="az-table">
         <thead>
-          <tr><th>Check</th><th>Status</th><th>Detail</th></tr>
+          <tr>
+            <th scope="col">Kontroll</th>
+            <th scope="col">Status</th>
+            <th scope="col">Detaljer</th>
+          </tr>
         </thead>
-        <tbody>
+        <tbody x-show="notMounted">
+          {% for c in checks | default(health.checks if health else []) %}
+          <tr>
+            <td>{{ c.name }}</td>
+            <td>
+              {% if c.ok %}
+              <span class="az-present">ok</span>
+              {% else %}
+              <span class="az-missing">fail</span>
+              {% endif %}
+            </td>
+            <td class="az-muted font-mono text-xs">{{ c.detail }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        <tbody x-show="mounted" x-cloak>
           <template x-for="c in checks" :key="c.name">
             <tr>
               <td x-text="c.name"></td>
               <td>
-                <span x-show="c.ok" class="az-present">ok</span>
-                <span x-show="!c.ok" class="az-missing">fail</span>
+                <span :class="c.statusClass" x-text="c.statusLabel"></span>
               </td>
-              <td class="az-muted" x-text="c.detail"></td>
+              <td class="az-muted font-mono text-xs" x-text="c.detail"></td>
             </tr>
           </template>
         </tbody>

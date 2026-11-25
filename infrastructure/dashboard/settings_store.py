@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import shutil
+import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +137,35 @@ def _save_yaml(name: str, data: dict[str, Any]) -> None:
         yaml.safe_dump(data, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
+def _reject_control_chars(label: str, value: str) -> None:
+    if "\r" in value or "\n" in value or "\x00" in value:
+        raise ValueError(f"Ogiltiga kontrolltecken i {label}")
+
+
+def _atomic_write_0600(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        try:
+            os.chmod(tmp_name, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+        os.replace(tmp_name, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def _write_env_file(path: Path, updates: dict[str, str], *, allow_keys: frozenset[str] | None = None) -> None:
     from ecom_ops.runtime_env import PROTECTED_OVERLAY_KEYS
 
@@ -149,6 +182,8 @@ def _write_env_file(path: Path, updates: dict[str, str], *, allow_keys: frozense
                 order.append(k)
             existing[k] = v.strip()
     for k, v in updates.items():
+        _reject_control_chars("nyckel", str(k))
+        _reject_control_chars(str(k), str(v))
         if allow_keys is not None and k not in allow_keys:
             continue
         if k in PROTECTED_OVERLAY_KEYS:
@@ -157,13 +192,8 @@ def _write_env_file(path: Path, updates: dict[str, str], *, allow_keys: frozense
             order.append(k)
         existing[k] = v
         os.environ[k] = v
-    path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{k}={existing[k]}" for k in order if k in existing]
-    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    _atomic_write_0600(path, "\n".join(lines) + ("\n" if lines else ""))
 
 
 def load_settings_view() -> dict[str, Any]:
@@ -201,6 +231,7 @@ def load_settings_view() -> dict[str, Any]:
         "smart_handling": bool(integrations.get("smart_handling", True)),
         "full_agent_tools": bool(integrations.get("full_agent_tools", True)),
         "mock_mode": mock,
+        "live_locked": not mock,
         "mail_providers": list(MAIL_PROVIDERS),
     }
 
@@ -211,6 +242,16 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_positive_cap(raw: Any, label: str) -> float:
+    try:
+        val = float(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} måste vara ett positivt tal")
+    if not math.isfinite(val) or val <= 0:
+        raise ValueError(f"{label} måste vara ett ändligt tal > 0")
+    return val
 
 
 def save_settings(form: dict[str, Any]) -> dict[str, Any]:
@@ -238,9 +279,14 @@ def save_settings(form: dict[str, Any]) -> dict[str, Any]:
         # Quote "no" for YAML boolean safety
         sites["domains"] = domains
 
-    cap_raw = form.get("openrouter_cap", form.get("budget_cap_llm"))
-    if cap_raw is not None:
-        cap = float(cap_raw)
+    if "budget_cap_llm" in form:
+        _parse_positive_cap(form["budget_cap_llm"], "LLM budget cap")
+    if "openrouter_cap" in form:
+        cap = _parse_positive_cap(form["openrouter_cap"], "OpenRouter cap")
+        limits["openrouter_cap"] = cap
+        sites["budget_cap_llm"] = cap
+    elif "budget_cap_llm" in form:
+        cap = _parse_positive_cap(form["budget_cap_llm"], "LLM budget cap")
         limits["openrouter_cap"] = cap
         sites["budget_cap_llm"] = cap
 
@@ -274,6 +320,7 @@ def save_settings(form: dict[str, Any]) -> dict[str, Any]:
         if flag in form:
             integrations[flag] = _as_bool(form[flag])
 
+    mock_mode_ignored = False
     if "mock_mode" in form:
         from ecom_ops.runtime_env import env_flag
 
@@ -281,6 +328,8 @@ def save_settings(form: dict[str, Any]) -> dict[str, Any]:
         # stores AZOM_USE_MOCK — process/systemd env is the only source.
         if env_flag("AZOM_USE_MOCK", default=True):
             os.environ["AZOM_USE_MOCK"] = "1" if _as_bool(form["mock_mode"]) else "0"
+        elif _as_bool(form["mock_mode"]):
+            mock_mode_ignored = True
 
     _save_yaml("sites.yaml", sites)
     _save_yaml("limits.yaml", limits)
@@ -293,7 +342,9 @@ def save_settings(form: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         pass
 
-    return load_settings_view()
+    view = load_settings_view()
+    view["mock_mode_ignored"] = mock_mode_ignored
+    return view
 
 
 MODEL_RUNTIME_KEYS = frozenset(
@@ -361,10 +412,14 @@ def save_secrets(updates: dict[str, str]) -> list[str]:
     """Oscar-only: write secrets.env. Returns list of keys saved."""
     cleaned: dict[str, str] = {}
     for k, v in updates.items():
-        key = str(k).strip()
+        raw_k = str(k)
+        raw_v = str(v)
+        _reject_control_chars("nyckel", raw_k)
+        key = raw_k.strip()
         if key not in EDITABLE_SECRET_KEYS:
             continue
-        val = str(v).strip()
+        _reject_control_chars(key, raw_v)
+        val = raw_v.strip()
         if val == "":
             continue  # empty = leave unchanged
         cleaned[key] = val
@@ -379,52 +434,116 @@ def save_secrets(updates: dict[str, str]) -> list[str]:
     return list(cleaned.keys())
 
 
+_SECRET_FIELD_META: dict[str, dict[str, Any]] = {
+    "WOO_BASE_URL": {"secret": False, "input_type": "url", "label": "WooCommerce bas-URL", "hint": "t.ex. https://azom.se"},
+    "WOO_CONSUMER_KEY": {"secret": True, "input_type": "password", "label": "WooCommerce Consumer Key", "hint": "REST API ck_..."},
+    "WOO_CONSUMER_SECRET": {"secret": True, "input_type": "password", "label": "WooCommerce Consumer Secret", "hint": "REST API cs_..."},
+    "WOO_WEBHOOK_SECRET": {"secret": True, "input_type": "password", "label": "WooCommerce Webhook Secret", "hint": "HMAC-hemlighet för /webhooks/woo"},
+    "WP_USERNAME": {"secret": False, "input_type": "text", "label": "WordPress användarnamn", "hint": "REST-användare"},
+    "WP_APP_PASSWORD": {"secret": True, "input_type": "password", "label": "WordPress Application Password", "hint": "App-lösenord för WP REST"},
+    "MAIL_PROVIDER": {"secret": False, "input_type": "select", "label": "Mailleverantör", "hint": "Aktiv provider för poll/utskick", "options": list(MAIL_PROVIDERS)},
+    "MAIL_USERNAME": {"secret": False, "input_type": "text", "label": "Mail-användarnamn", "hint": "Konto/inloggning för mail"},
+    "MAIL_PASSWORD": {"secret": True, "input_type": "password", "label": "Mail-lösenord", "hint": "Lösenord / app-lösenord"},
+    "MAIL_FROM": {"secret": False, "input_type": "email", "label": "Avsändaradress (From)", "hint": "t.ex. support@azom.se"},
+    "SMTP_HOST": {"secret": False, "input_type": "text", "label": "SMTP-värd", "hint": "t.ex. smtp.example.com"},
+    "SMTP_PORT": {"secret": False, "input_type": "number", "label": "SMTP-port", "hint": "t.ex. 587 eller 465"},
+    "SMTP_PASSWORD": {"secret": True, "input_type": "password", "label": "SMTP-lösenord", "hint": "Om annat än MAIL_PASSWORD"},
+    "IMAP_HOST": {"secret": False, "input_type": "text", "label": "IMAP-värd", "hint": "t.ex. imap.example.com"},
+    "IMAP_PORT": {"secret": False, "input_type": "number", "label": "IMAP-port", "hint": "vanligen 993"},
+    "MAIL_OAUTH_CLIENT_ID": {"secret": False, "input_type": "text", "label": "Gmail OAuth Client ID", "hint": "Google Cloud OAuth-klient"},
+    "MAIL_OAUTH_CLIENT_SECRET": {"secret": True, "input_type": "password", "label": "Gmail OAuth Client Secret", "hint": "Hemlig klientnyckel"},
+    "MAIL_OAUTH_REDIRECT_URI": {"secret": False, "input_type": "url", "label": "Gmail OAuth Redirect URI", "hint": "https://.../oauth/gmail/callback"},
+    "GRAPH_TENANT_ID": {"secret": False, "input_type": "text", "label": "Microsoft Graph Tenant ID", "hint": "Azure AD tenant UUID"},
+    "GRAPH_CLIENT_ID": {"secret": False, "input_type": "text", "label": "Microsoft Graph Client ID", "hint": "App registration ID"},
+    "GRAPH_CLIENT_SECRET": {"secret": True, "input_type": "password", "label": "Microsoft Graph Client Secret", "hint": "App secret"},
+    "GRAPH_USER": {"secret": False, "input_type": "email", "label": "Microsoft Graph-brevlåda", "hint": "Delad/användarens e-post"},
+    "SSH_HOST": {"secret": False, "input_type": "text", "label": "SSH-värd", "hint": "Värdnamn eller IP för read-only SSH"},
+    "SSH_USER": {"secret": False, "input_type": "text", "label": "SSH-användare", "hint": "Dedikerad icke-root reader"},
+    "SSH_PORT": {"secret": False, "input_type": "number", "label": "SSH-port", "hint": "Standard 22"},
+    "SSH_PASSWORD": {"secret": True, "input_type": "password", "label": "SSH-lösenord", "hint": "Endast om nyckel inte används"},
+    "OPENROUTER_API_KEY": {"secret": True, "input_type": "password", "label": "OpenRouter API-nyckel", "hint": "Fallback LLM-route"},
+    "XAI_API_KEY": {"secret": True, "input_type": "password", "label": "xAI API-nyckel", "hint": "Direkt Grok API (valfri)"},
+    "TELEGRAM_BOT_TOKEN": {"secret": True, "input_type": "password", "label": "Telegram Bot Token", "hint": "Från @BotFather"},
+    "TELEGRAM_ALLOWED_CHAT_IDS": {"secret": False, "input_type": "text", "label": "Tillåtna Telegram-chattar", "hint": "Styrs endast i processmiljön"},
+    "MESSENGER_PAGE_ACCESS_TOKEN": {"secret": True, "input_type": "password", "label": "Messenger Page Access Token", "hint": "Meta Page-token"},
+    "MESSENGER_APP_SECRET": {"secret": True, "input_type": "password", "label": "Messenger App Secret", "hint": "HMAC-verifiering för webhook"},
+    "MESSENGER_VERIFY_TOKEN": {"secret": True, "input_type": "password", "label": "Messenger Verify Token", "hint": "Webhook verify-token"},
+    "MESSENGER_ALLOWED_PSIDS": {"secret": False, "input_type": "text", "label": "Tillåtna Messenger-PSID", "hint": "Styrs endast i processmiljön"},
+    "MESSENGER_ACTOR_MAP": {"secret": False, "input_type": "text", "label": "Messenger Actor Map", "hint": "Styrs endast i processmiljön"},
+    "AZOM_DASHBOARD_PUBLIC_URL": {"secret": False, "input_type": "url", "label": "Publik Dashboard-URL", "hint": "https://... för granskningslänkar"},
+    "GOOGLE_OAUTH_CLIENT_ID": {"secret": False, "input_type": "text", "label": "Google Marketing Client ID", "hint": "OAuth-klient för Ads/GA4"},
+    "GOOGLE_OAUTH_CLIENT_SECRET": {"secret": True, "input_type": "password", "label": "Google Marketing Client Secret", "hint": "Hemlig OAuth-nyckel"},
+    "GOOGLE_OAUTH_REDIRECT_URI": {"secret": False, "input_type": "url", "label": "Google Marketing Redirect URI", "hint": "https://.../oauth/google/callback"},
+    "GOOGLE_ADS_DEVELOPER_TOKEN": {"secret": True, "input_type": "password", "label": "Google Ads Developer Token", "hint": "Krävs för live Ads-läsningar"},
+    "GOOGLE_ADS_LOGIN_CUSTOMER_ID": {"secret": False, "input_type": "text", "label": "Google Ads Login Customer ID", "hint": "MCC-konto (siffror)"},
+    "AZOM_GA4_PROPERTY_IDS": {"secret": False, "input_type": "text", "label": "GA4 Property IDs", "hint": "Kommaseparerad lista"},
+    "AZOM_GADS_CUSTOMER_IDS": {"secret": False, "input_type": "text", "label": "Google Ads Customer IDs", "hint": "Kommaseparerad lista"},
+    "GA4_MEASUREMENT_ID": {"secret": False, "input_type": "text", "label": "GA4 Measurement ID", "hint": "G-XXXXXXXXXX"},
+    "GA4_MEASUREMENT_API_SECRET": {"secret": True, "input_type": "password", "label": "GA4 Measurement API Secret", "hint": "Measurement Protocol-hemlighet"},
+    "DASHBOARD_PASSWORD": {"secret": True, "input_type": "password", "label": "Dashboard-lösenord (Jonatan)", "hint": "Basic Auth-lösenord"},
+    "DASHBOARD_OSCAR_PASSWORD": {"secret": True, "input_type": "password", "label": "Dashboard-lösenord (Oscar)", "hint": "Admin Basic Auth-lösenord"},
+}
+
+_SECRET_GROUPS: list[tuple[str, list[str]]] = [
+    ("WooCommerce", ["WOO_BASE_URL", "WOO_CONSUMER_KEY", "WOO_CONSUMER_SECRET", "WOO_WEBHOOK_SECRET"]),
+    ("WordPress", ["WP_USERNAME", "WP_APP_PASSWORD"]),
+    ("Mail", ["MAIL_PROVIDER", "MAIL_USERNAME", "MAIL_PASSWORD", "MAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_PASSWORD", "IMAP_HOST", "IMAP_PORT"]),
+    ("Mail OAuth", ["MAIL_OAUTH_CLIENT_ID", "MAIL_OAUTH_CLIENT_SECRET", "MAIL_OAUTH_REDIRECT_URI"]),
+    ("Graph", ["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_USER"]),
+    ("SSH", ["SSH_HOST", "SSH_USER", "SSH_PORT", "SSH_PASSWORD"]),
+    ("LLM", ["OPENROUTER_API_KEY", "XAI_API_KEY"]),
+    ("Telegram", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHAT_IDS"]),
+    ("Messenger", ["MESSENGER_PAGE_ACCESS_TOKEN", "MESSENGER_APP_SECRET", "MESSENGER_VERIFY_TOKEN", "MESSENGER_ALLOWED_PSIDS", "MESSENGER_ACTOR_MAP", "AZOM_DASHBOARD_PUBLIC_URL"]),
+    ("Google Marketing", ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_LOGIN_CUSTOMER_ID", "AZOM_GA4_PROPERTY_IDS", "AZOM_GADS_CUSTOMER_IDS", "GA4_MEASUREMENT_ID", "GA4_MEASUREMENT_API_SECRET"]),
+    ("Dashboard", ["DASHBOARD_PASSWORD", "DASHBOARD_OSCAR_PASSWORD"]),
+]
+
+
+def _secret_item(group: str, key: str) -> dict[str, Any]:
+    meta = _SECRET_FIELD_META.get(key, {})
+    is_secret = bool(meta.get("secret", True))
+    return {
+        "group": group,
+        "name": key,
+        "present": bool(os.environ.get(key, "").strip()),
+        "editable": key in EDITABLE_SECRET_KEYS,
+        "secret": is_secret,
+        "input_type": str(meta.get("input_type") or ("password" if is_secret else "text")),
+        "label": str(meta.get("label") or key),
+        "hint": str(meta.get("hint") or ""),
+        "options": list(meta.get("options") or []),
+    }
+
+
 def secrets_status() -> list[dict[str, Any]]:
     apply_env_overlays()
-    groups = [
-        ("WooCommerce", ["WOO_BASE_URL", "WOO_CONSUMER_KEY", "WOO_CONSUMER_SECRET"]),
-        ("Mail", ["MAIL_PROVIDER", "MAIL_USERNAME", "MAIL_PASSWORD", "MAIL_FROM"]),
-        ("Mail OAuth", ["MAIL_OAUTH_CLIENT_ID", "MAIL_OAUTH_CLIENT_SECRET", "MAIL_OAUTH_REDIRECT_URI"]),
-        ("Graph", ["GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_USER"]),
-        ("SSH", ["SSH_HOST", "SSH_USER", "SSH_PORT", "SSH_PASSWORD"]),
-        ("LLM", ["OPENROUTER_API_KEY", "XAI_API_KEY"]),
-        ("Telegram", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHAT_IDS"]),
-        (
-            "Messenger",
-            [
-                "MESSENGER_PAGE_ACCESS_TOKEN",
-                "MESSENGER_APP_SECRET",
-                "MESSENGER_VERIFY_TOKEN",
-                "MESSENGER_ALLOWED_PSIDS",
-                "MESSENGER_ACTOR_MAP",
-                "AZOM_DASHBOARD_PUBLIC_URL",
-            ],
-        ),
-        ("Dashboard", ["DASHBOARD_PASSWORD", "DASHBOARD_OSCAR_PASSWORD"]),
-    ]
     out: list[dict[str, Any]] = []
-    for group, keys in groups:
+    for group, keys in _SECRET_GROUPS:
         for key in keys:
-            out.append(
-                {
-                    "group": group,
-                    "name": key,
-                    "present": bool(os.environ.get(key, "").strip()),
-                    "editable": key in EDITABLE_SECRET_KEYS,
-                }
-            )
+            out.append(_secret_item(group, key))
     return out
 
 
-def resolve_escalation(ticket_id: str) -> bool:
-    """Mark escalation ticket resolved by rewriting JSONL. Returns True if found."""
+def editable_secret_groups() -> list[dict[str, Any]]:
+    """Return all 44 EDITABLE_SECRET_KEYS grouped with rich field metadata."""
+    apply_env_overlays()
+    groups: list[dict[str, Any]] = []
+    for group, keys in _SECRET_GROUPS:
+        items = [_secret_item(group, key) for key in keys if key in EDITABLE_SECRET_KEYS]
+        if items:
+            groups.append({"group": group, "items": items})
+    return groups
+
+
+def resolve_escalation(ticket_id: str, *, resolved_by: str | None = None) -> bool:
+    """Mark escalation ticket resolved atomically. Returns True if found."""
     path = _data_dir() / "escalations.jsonl"
     if not path.is_file():
         return False
     lines = path.read_text(encoding="utf-8").splitlines()
     found = False
     out: list[str] = []
-    import json
+    now = datetime.now(UTC).isoformat()
 
     for line in lines:
         line = line.strip()
@@ -437,8 +556,11 @@ def resolve_escalation(ticket_id: str) -> bool:
             continue
         if str(obj.get("id")) == str(ticket_id):
             obj["status"] = "resolved"
+            obj["resolved_at"] = now
+            if resolved_by:
+                obj["resolved_by"] = resolved_by
             found = True
         out.append(json.dumps(obj, ensure_ascii=False))
     if found:
-        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+        _atomic_write_0600(path, "\n".join(out) + ("\n" if out else ""))
     return found

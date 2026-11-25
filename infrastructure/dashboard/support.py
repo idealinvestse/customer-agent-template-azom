@@ -3,15 +3,58 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from flask import Response, g, redirect, request, url_for
+from flask import (
+    Response,
+    g,
+    get_flashed_messages,
+    redirect,
+    request,
+    url_for,
+)
+from flask import (
+    flash as _flask_flash,
+)
 
 from settings_store import apply_env_overlays, secrets_status
 from status import runtime_status
+
+_FLASH_LEVELS = frozenset({"ok", "info", "warn", "error"})
+
+
+def _fmt_dt(value: Any) -> str:
+    """Format an ISO timestamp or Unix epoch seconds as YYYY-MM-DD HH:MM (UTC)."""
+    if value is None or value == "" or isinstance(value, bool):
+        return ""
+    try:
+        if isinstance(value, (int, float)):
+            num = float(value)
+            if not math.isfinite(num) or num <= 0:
+                return ""
+            return datetime.fromtimestamp(num, tz=UTC).strftime("%Y-%m-%d %H:%M")
+        raw = str(value).strip()
+        if not raw or raw in {"0", "0.0"}:
+            return ""
+        if raw.replace(".", "", 1).isdigit() and len(raw.split(".", 1)[0]) >= 9:
+            num = float(raw)
+            if math.isfinite(num) and num > 0:
+                return datetime.fromtimestamp(num, tz=UTC).strftime("%Y-%m-%d %H:%M")
+            return ""
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        s = str(value).strip()
+        return s[:16].replace("T", " ") if len(s) >= 16 else s
 
 
 def _data_dir() -> Path:
@@ -19,8 +62,15 @@ def _data_dir() -> Path:
 
 
 def _is_mock() -> bool:
+    from ecom_ops.runtime_env import env_flag
+
     apply_env_overlays()
-    return os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    return env_flag("AZOM_USE_MOCK", default=False)
+
+
+def _flash(message: str, category: str = "ok") -> None:
+    level = category if category in _FLASH_LEVELS else "ok"
+    _flask_flash(str(message), level)
 
 
 def _tail_jsonl(path: Path, limit: int = 50) -> list[dict]:
@@ -41,11 +91,53 @@ def _tail_jsonl(path: Path, limit: int = 50) -> list[dict]:
     return out
 
 
+def _normalize_flash_level(category: str) -> str:
+    cat = (category or "").strip().lower()
+    if cat in {"error", "danger", "err"}:
+        return "error"
+    if cat in {"warn", "warning"}:
+        return "warn"
+    if cat == "info":
+        return "info"
+    return "ok"
+
+
+def _collect_flashes() -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    try:
+        for cat, txt in get_flashed_messages(with_categories=True):
+            level = _normalize_flash_level(cat)
+            text = str(txt or "").strip()
+            if text and (level, text) not in seen:
+                seen.add((level, text))
+                out.append({"level": level, "text": text})
+    except RuntimeError:
+        pass
+    for param, level in (
+        ("err", "error"),
+        ("warn", "warn"),
+        ("info", "info"),
+        ("msg", "ok"),
+    ):
+        val = (request.args.get(param) or "").strip()
+        if val and (level, val) not in seen:
+            seen.add((level, val))
+            out.append({"level": level, "text": val})
+    return out
+
+
 def _flash_from_query() -> str | None:
-    msg = request.args.get("msg")
     err = request.args.get("err")
+    warn = request.args.get("warn")
+    info = request.args.get("info")
+    msg = request.args.get("msg")
     if err:
         return f"error:{err}"
+    if warn:
+        return f"warn:{warn}"
+    if info:
+        return f"info:{info}"
     if msg:
         return f"ok:{msg}"
     return None
@@ -107,10 +199,39 @@ def _case_queue_query(filt: dict[str, str | bool]) -> str:
     return "&".join(parts)
 
 
-def _flash_q(msg: str | None = None, *, err: str | None = None) -> str:
+def _flash_q(
+    msg: str | None = None,
+    *,
+    err: str | None = None,
+    warn: str | None = None,
+    info: str | None = None,
+) -> str:
     if err is not None:
         return f"err={quote(str(err), safe='')}"
+    if warn is not None:
+        return f"warn={quote(str(warn), safe='')}"
+    if info is not None:
+        return f"info={quote(str(info), safe='')}"
     return f"msg={quote(str(msg or ''), safe='')}"
+
+
+def _normalize_escalation(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an escalation JSONL record for unified UI rendering."""
+    status = str(raw.get("status") or "open").strip().lower()
+    if status not in {"open", "resolved"}:
+        status = "open"
+    details = raw.get("details")
+    return {
+        "id": str(raw.get("id") or ""),
+        "status": status,
+        "severity": str(raw.get("severity") or ""),
+        "reason": str(raw.get("reason") or ""),
+        "summary": str(raw.get("summary") or ""),
+        "details": details if isinstance(details, dict) else ({"detail": details} if details else {}),
+        "created_at": str(raw.get("created_at") or ""),
+        "resolved_at": str(raw.get("resolved_at") or ""),
+        "resolved_by": str(raw.get("resolved_by") or ""),
+    }
 
 
 def _redirect_next_or_list(
@@ -199,27 +320,35 @@ def _presence_integrations(runtime: dict) -> dict:
             return "partial"
         return "missing"
 
-    rows = []
+    rows: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
     for group, items in by_group.items():
-        st = group_status([bool(i.get("present")) for i in items])
-        rows.append({"id": group.lower().replace(" ", "_"), "label": group, "status": st})
+        gid = group.lower().replace(" ", "_")
+        if gid == "telegram":
+            st = "ok" if runtime.get("telegram_configured") else "missing"
+        else:
+            st = group_status([bool(i.get("present")) for i in items])
+        seen_ids.add(gid)
+        rows.append({"id": gid, "label": group, "status": st})
 
-    rows.append(
-        {
-            "id": "gmail_oauth",
-            "label": "Gmail OAuth",
-            "status": "ok" if runtime.get("gmail_tokens_stored") else (
-                "partial" if runtime.get("gmail_oauth_configured") else "missing"
-            ),
-        }
-    )
-    rows.append(
-        {
-            "id": "telegram",
-            "label": "Telegram",
-            "status": "ok" if runtime.get("telegram_configured") else "missing",
-        }
-    )
+    if "gmail_oauth" not in seen_ids:
+        rows.append(
+            {
+                "id": "gmail_oauth",
+                "label": "Gmail OAuth",
+                "status": "ok"
+                if runtime.get("gmail_tokens_stored")
+                else ("partial" if runtime.get("gmail_oauth_configured") else "missing"),
+            }
+        )
+    if "telegram" not in seen_ids:
+        rows.append(
+            {
+                "id": "telegram",
+                "label": "Telegram",
+                "status": "ok" if runtime.get("telegram_configured") else "missing",
+            }
+        )
     counts = {"ok": 0, "missing": 0, "partial": 0, "error": 0}
     for r in rows:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
@@ -231,12 +360,25 @@ def _dashboard_context(**extra: Any) -> dict:
     runtime = runtime_status()
     actor = getattr(g, "actor", {"name": "?", "role": "?", "is_oscar": False})
     counts = _ops_counts()
+    flashes = _collect_flashes()
+    explicit_flash = extra.get("flash")
+    if isinstance(explicit_flash, str) and ":" in explicit_flash:
+        lvl, _, txt = explicit_flash.partition(":")
+        lvl = _normalize_flash_level(lvl)
+        if txt and not any(f["level"] == lvl and f["text"] == txt for f in flashes):
+            flashes.insert(0, {"level": lvl, "text": txt})
+    first_flash = (
+        explicit_flash
+        if explicit_flash
+        else (f"{flashes[0]['level']}:{flashes[0]['text']}" if flashes else None)
+    )
     ctx = {
         "user": actor["name"],
         "role": actor["role"],
         "is_oscar": actor.get("is_oscar", False),
         "runtime": runtime,
-        "flash": _flash_from_query(),
+        "flash": first_flash,
+        "flashes": flashes,
         "open_cases": counts["open_cases"],
         "escalated_cases": counts["escalated_cases"],
         "suggest_cases": counts.get("suggest_cases", 0),

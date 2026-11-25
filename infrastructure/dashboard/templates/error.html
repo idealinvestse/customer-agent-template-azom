@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+
+{% set err_code = status_code | default(code | default(500)) | int %}
+{% if err_code == 403 %}
+  {% set default_title = 'Åtkomst nekad (403)' %}
+  {% set default_msg = 'Du har inte behörighet att öppna den här sidan eller utföra den här åtgärden. Kontakta Oscar om ändringen behövs.' %}
+  {% set callout_tone = 'warn' %}
+{% elif err_code == 404 %}
+  {% set default_title = 'Sidan hittades inte (404)' %}
+  {% set default_msg = 'Adressen finns inte längre eller så saknas objektet du försökte öppna.' %}
+  {% set callout_tone = 'info' %}
+{% elif err_code == 400 %}
+  {% set default_title = 'Ogiltig begäran (400)' %}
+  {% set default_msg = 'Begäran kunde inte valideras (t.ex. utgången CSRF-token eller saknade fält). Ladda om sidan och försök igen.' %}
+  {% set callout_tone = 'warn' %}
+{% elif err_code == 429 %}
+  {% set default_title = 'För många försök (429)' %}
+  {% set default_msg = 'Tillfällig hastighetsgräns aktiv. Vänta en stund innan du försöker igen.' %}
+  {% set callout_tone = 'warn' %}
+{% else %}
+  {% set default_title = 'Ett oväntat fel uppstod (' ~ err_code ~ ')' %}
+  {% set default_msg = 'Servern kunde inte slutföra begäran. Försök igen eller kontrollera loggarna.' %}
+  {% set callout_tone = 'danger' %}
+{% endif %}
+
+{% block title %}{{ title | default(default_title) }} – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Fel {{ err_code }}{% endblock %}
+
+{% block content %}
+<div class="space-y-5">
+  {{ ui.page_header(title | default(default_title), subtitle='HTTP ' ~ err_code, badge_text='HTTP ' ~ err_code, badge_tone='error' if err_code >= 500 else 'warn') }}
+
+  <section class="az-card space-y-4">
+    {{ ui.info_callout(callout_tone, title | default(default_title), message | default(description | default(default_msg)), role='alert') }}
+
+    <div class="flex flex-wrap gap-2">
+      <a class="az-btn-primary" href="{{ back_url | default('/') }}">
+        {{ icon('arrow-left', 'sm') }}
+        <span>Tillbaka till Start</span>
+      </a>
+      <a class="az-btn-secondary" href="/cases?status=open,escalated">
+        {{ icon('inbox', 'sm') }}
+        <span>Öppna ärenden</span>
+      </a>
+    </div>
+  </section>
+</div>
+{% endblock %}

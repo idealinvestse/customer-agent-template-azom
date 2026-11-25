@@ -19,7 +19,8 @@
 |------|------|
 | `skills/ecom_ops/` | Importable `ecom_ops` package (actions, cases, bot, integrations, llm, cli) |
 | `skills/ecom-ops/SKILL.md` | Skill card for Moss / agent hosts |
-| `infrastructure/dashboard/` | Flask dashboard + webhooks + Oscar probes |
+| `infrastructure/dashboard/` | Flask dashboard + webhooks + Oscar probes + compiled `static/` assets (`templates/` uses `_ui.html` / `_icons.html` / `error.html`) |
+| `infrastructure/dashboard/frontend/` | Build-time-only Tailwind CSS v4 + `@alpinejs/csp` + Fontsource pipeline (not used at runtime) |
 | `infrastructure/systemd/` | Unit files for Ubuntu install |
 | `infrastructure/docker-compose.prod.yml` | Production Docker compose |
 | `config/` | YAML/JSON config (read-only in Docker) |
@@ -87,6 +88,15 @@ Dashboard (local):
 # mock Basic Auth passwords: jonatan / oscar  (ONLY when AZOM_USE_MOCK=1)
 ```
 
+Dashboard frontend build (Node is build-time only — zero Node required at runtime/Docker/systemd; run only when changing `infrastructure/dashboard/templates/` or `infrastructure/dashboard/frontend/src/input.css`):
+
+```bash
+# cwd: repository root
+npm --prefix infrastructure/dashboard/frontend install
+npm --prefix infrastructure/dashboard/frontend run build
+# expect: syncs alpine-csp.min.js + 24 woff2 font files and compiles infrastructure/dashboard/static/css/dashboard.css
+```
+
 Bot (needs token only for real Telegram; mock paths covered by tests):
 
 ```bash
@@ -135,6 +145,7 @@ bash tests/test_spinup.sh
 | Woo / WP clients | `skills/ecom_ops/integrations/woocommerce.py`, `wordpress.py`, `webhooks.py` |
 | Mail providers | `skills/ecom_ops/integrations/mail*` |
 | Dashboard routes / probes | `infrastructure/dashboard/` (`app.py` factory + `*_routes.py`; probes are Oscar UI, not CLI) |
+| Dashboard UI / CSS / JS | `infrastructure/dashboard/templates/` (`base.html`, `_ui.html`, `_icons.html`, `error.html`), `infrastructure/dashboard/static/js/dashboard.js`, and `infrastructure/dashboard/frontend/src/input.css` (rebuild CSS via `npm --prefix infrastructure/dashboard/frontend run build`) |
 | RBAC | `config/rbac.yaml` + `skills/ecom_ops/rbac.py` (`limits.yaml` jonatan_role is display-only) |
 | Agent voice and chat prompt | `SOUL.md` + versioned `config/prompts.yaml` (`chat`) + fixed runtime policy and `WP_TOOL_GUIDE` in `skills/ecom_ops/bot/chat_agent.py`; Oscar edits the registry at `/oscar/behavior`. |
 

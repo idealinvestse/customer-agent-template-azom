@@ -1,40 +1,143 @@
 {% extends "base.html" %}
-{% block title %}Eskaleringar – Azom{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Eskaleringar – Azom Agent Dashboard{% endblock %}
 {% block page_subtitle %}Eskaleringar{% endblock %}
 {% block content %}
+{% set cur_show = show_filter | default('open') %}
 <div class="space-y-5">
-  <div>
-    <h2 class="az-page-title">Eskaleringar</h2>
-    <p class="az-muted mt-1">Tickets som väntar på manuell hantering.</p>
-  </div>
+  {% call ui.page_header("Eskaleringar", "Ärenden och säkerhetsfrågor som eskalerats till Oscar för manuell hantering.") %}
+    <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-ink-700/80 bg-ink-900/70 p-1" role="navigation" aria-label="Statusflikar">
+      <a
+        href="/data/escalations?show=open"
+        class="rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums transition {{ 'bg-steel-600 text-white' if cur_show == 'open' else 'text-mist-300 hover:bg-ink-800 hover:text-mist-100' }}"
+      >Öppna ({{ open_count | default(0) }})</a>
+      <a
+        href="/data/escalations?show=resolved"
+        class="rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums transition {{ 'bg-steel-600 text-white' if cur_show == 'resolved' else 'text-mist-300 hover:bg-ink-800 hover:text-mist-100' }}"
+      >Lösta ({{ resolved_count | default(0) }})</a>
+      <a
+        href="/data/escalations?show=all"
+        class="rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums transition {{ 'bg-steel-600 text-white' if cur_show == 'all' else 'text-mist-300 hover:bg-ink-800 hover:text-mist-100' }}"
+      >Alla ({{ all_count | default(rows | length) }})</a>
+    </div>
+  {% endcall %}
+
+  {% if capped %}
+  {{ ui.info_callout('info', 'Radtak aktivt (' ~ row_cap ~ ' rader)', 'Visar de senaste ' ~ row_cap ~ ' eskaleringarna från escalations.jsonl.') }}
+  {% endif %}
 
   <section class="az-card">
-    <h2 class="az-section-title">Eskaleringar</h2>
-    {% if is_oscar %}
-    <p class="mb-4"><a class="az-btn-oscar" href="/oscar/escalations">Oscar: markera lösta →</a></p>
-    {% endif %}
+    <h2 id="escalations-table-heading" class="az-section-title">
+      {% if cur_show == 'open' %}Öppna eskaleringar{% elif cur_show == 'resolved' %}Lösta eskaleringar{% else %}Alla eskaleringar{% endif %} ({{ rows | length }})
+    </h2>
+
     {% if rows %}
-    <div class="overflow-x-auto">
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="escalations-table-heading">
       <table class="az-table">
         <thead>
-          <tr><th>When</th><th>ID</th><th>Status</th><th>Severity</th><th>Reason</th><th>Summary</th></tr>
+          <tr>
+            <th scope="col">Tid</th>
+            <th scope="col">ID</th>
+            <th scope="col">Status</th>
+            <th scope="col">Allvarlighetsgrad</th>
+            <th scope="col">Orsak</th>
+            <th scope="col">Sammanfattning</th>
+            <th scope="col">Detaljer</th>
+            <th scope="col">Åtgärd / Löst</th>
+          </tr>
         </thead>
         <tbody>
           {% for e in rows %}
+          {% set det_json = fmt_json(e.get('details')) %}
           <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
-            <td><code class="az-code">{{ e.get('id', '')[:8] }}</code></td>
-            <td>{{ e.get('status', 'open') }}</td>
-            <td>{{ e.get('severity', '') }}</td>
-            <td><code class="az-code">{{ e.get('reason', '') }}</code></td>
-            <td>{{ e.get('summary', '') }}</td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums text-mist-300">{{ fmt_dt(e.get('created_at')) }}</td>
+            <td class="whitespace-nowrap">
+              <div class="inline-flex items-center gap-1">
+                <code class="az-code" title="{{ e.get('id', '') }}">{{ e.get('id', '')[:8] }}</code>
+                {% if e.get('id') %}
+                <button
+                  type="button"
+                  class="rounded p-1 text-mist-400 hover:bg-ink-800 hover:text-mist-100"
+                  data-copy="{{ e.get('id') }}"
+                  title="Kopiera fullständigt ID"
+                  aria-label="Kopiera ID {{ e.get('id') }}"
+                >
+                  {{ icon('copy', 'xs') }}
+                </button>
+                {% endif %}
+              </div>
+            </td>
+            <td class="whitespace-nowrap">
+              {% if e.get('status') == 'resolved' %}
+                {{ ui.status_badge('ok', 'Löst', show_icon=True) }}
+              {% else %}
+                {{ ui.status_badge('warn', 'Öppen', show_icon=True) }}
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap">
+              {% set sev = (e.get('severity') or '') | lower %}
+              {% if sev in ('critical', 'high', 'error') %}
+                {{ ui.status_badge('error', e.get('severity')) }}
+              {% elif sev in ('warn', 'warning', 'medium') %}
+                {{ ui.status_badge('warn', e.get('severity')) }}
+              {% elif sev %}
+                {{ ui.status_badge('neutral', e.get('severity')) }}
+              {% else %}
+                <span class="text-mist-500">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if e.get('reason') %}
+              <code class="az-code">{{ e.get('reason') }}</code>
+              {% else %}
+              <span class="text-mist-500">—</span>
+              {% endif %}
+            </td>
+            <td class="min-w-[14rem] text-sm text-mist-100">{{ e.get('summary', '') }}</td>
+            <td>
+              {% if det_json %}
+              <details>
+                <summary class="cursor-pointer text-xs font-medium text-steel-300 hover:underline">Visa detaljer</summary>
+                <pre class="mt-2 max-w-md overflow-x-auto whitespace-pre-wrap rounded border border-ink-700/70 bg-ink-950/70 p-2 font-mono text-xs text-mist-300">{{ det_json }}</pre>
+              </details>
+              {% else %}
+              <span class="text-mist-500">—</span>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap text-xs">
+              {% if e.get('status') == 'resolved' %}
+                <span class="text-mist-300">
+                  {{ e.get('resolved_by') or 'Oscar' }}
+                  {% if e.get('resolved_at') %}
+                  · <span class="font-mono tabular-nums text-mist-400">{{ fmt_dt(e.get('resolved_at')) }}</span>
+                  {% endif %}
+                </span>
+              {% elif is_oscar %}
+                <form method="post" action="/oscar/escalations">
+                  <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                  <input type="hidden" name="ticket_id" value="{{ e.get('id') }}" />
+                  <input type="hidden" name="show" value="{{ cur_show }}" />
+                  <button
+                    type="submit"
+                    class="az-btn-oscar az-btn-sm"
+                    data-confirm="Markera eskalering '{{ e.get('summary', '')[:60] }}' som löst?"
+                    data-confirm-title="Markera eskalering löst"
+                    data-confirm-ok="Markera löst"
+                    data-busy-label="Markerar..."
+                  >Markera löst</button>
+                </form>
+              {% else %}
+                <span class="text-mist-400">Väntar på Oscar</span>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
     {% else %}
-    <p class="az-muted">Inga eskaleringar.</p>
+    {{ ui.empty_state('Inga eskaleringar för valt filter', 'Det finns inga eskaleringar i denna vy just nu.', action_label='Visa alla' if cur_show != 'all' else None, action_href='/data/escalations?show=all' if cur_show != 'all' else None, icon_name='check-circle') }}
     {% endif %}
   </section>
 </div>

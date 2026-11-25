@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
 import sys
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote
 
-from flask import Flask, g, request
+from flask import Flask, Response, g, render_template, request, send_from_directory
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DASH_DIR = Path(__file__).resolve().parent
@@ -31,8 +35,48 @@ from marketing_routes import register_marketing_routes  # noqa: E402
 from oauth_routes import register_oauth_routes  # noqa: E402
 from oscar_routes import register_oscar_routes  # noqa: E402
 from settings_store import apply_env_overlays  # noqa: E402
+from support import _fmt_dt  # noqa: E402
 from webhooks import register_webhook_routes  # noqa: E402
 from wp_routes import register_wp_routes  # noqa: E402
+
+
+def _fmt_usd(value: Any) -> str:
+    """Format USD cost consistently with tabular precision."""
+    if value is None or value == "" or isinstance(value, bool):
+        return "—"
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(num):
+        return "—"
+    if num == 0:
+        return "$0.00"
+    if abs(num) < 0.01:
+        return f"${num:.4f}"
+    return f"${num:.2f}"
+
+
+def _fmt_json(value: Any) -> str:
+    """Pretty-print dict/list for collapsible inspection."""
+    if value is None or value == "" or value == {} or value == []:
+        return ""
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
+
+
+def _fmt_sv_bool(value: Any) -> str:
+    """Format boolean in Swedish."""
+    if value is None:
+        return "—"
+    return "Ja" if bool(value) else "Nej"
+
+
+def _url_quote(value: Any) -> str:
+    """Percent-encode a query parameter value."""
+    return quote(str(value or ""), safe="")
 
 
 def _case_age(iso: str | None) -> str:
@@ -40,8 +84,6 @@ def _case_age(iso: str | None) -> str:
     if not iso:
         return ""
     try:
-        from datetime import datetime
-
         raw = str(iso).replace("Z", "+00:00")
         created = datetime.fromisoformat(raw)
         if created.tzinfo is None:
@@ -63,8 +105,20 @@ def create_app() -> Flask:
     apply_env_overlays()
     application = Flask(__name__)
     application.wsgi_app = ProxyFix(application.wsgi_app, x_for=1, x_proto=1)
-    application.jinja_env.globals["case_age"] = _case_age
-    live = os.environ.get("AZOM_USE_MOCK", "1").lower() not in {"1", "true", "yes", "on"}
+    helpers = {
+        "case_age": _case_age,
+        "fmt_dt": _fmt_dt,
+        "fmt_usd": _fmt_usd,
+        "fmt_json": _fmt_json,
+        "fmt_sv_bool": _fmt_sv_bool,
+        "url_quote": _url_quote,
+    }
+    application.jinja_env.globals.update(helpers)
+    application.jinja_env.filters.update(helpers)
+
+    from ecom_ops.runtime_env import env_flag
+
+    live = not env_flag("AZOM_USE_MOCK", default=True)
     cookie_raw = os.environ.get("DASHBOARD_COOKIE_SECURE", "").strip().lower()
     if cookie_raw in {"1", "true", "yes", "on"}:
         cookie_secure = True
@@ -105,6 +159,62 @@ def create_app() -> Flask:
         except Exception:
             return {"null_send_active": False}
 
+    @application.route("/favicon.ico")
+    def favicon():
+        static_dir = _DASH_DIR / "static"
+        svg = static_dir / "favicon.svg"
+        if svg.is_file():
+            return send_from_directory(
+                str(static_dir), "favicon.svg", mimetype="image/svg+xml"
+            )
+        return Response("", 204)
+
+    def _render_http_error(status: int, title: str, message: str):
+        if (
+            getattr(g, "actor", None)
+            and not request.is_json
+            and request.accept_mimetypes.best != "application/json"
+        ):
+            try:
+                from support import _dashboard_context
+
+                return (
+                    render_template(
+                        "error.html",
+                        **_dashboard_context(
+                            status_code=status,
+                            code=status,
+                            title=title,
+                            message=message,
+                            description=message,
+                            back_url="/",
+                            error_code=status,
+                            error_title=title,
+                            error_message=message,
+                        ),
+                    ),
+                    status,
+                )
+            except Exception:
+                pass
+        return Response(message, status, mimetype="text/plain")
+
+    @application.errorhandler(403)
+    def _handle_403(_exc):
+        return _render_http_error(
+            403,
+            "Åtkomst nekad",
+            "Du saknar behörighet för den här sidan.",
+        )
+
+    @application.errorhandler(404)
+    def _handle_404(_exc):
+        return _render_http_error(
+            404,
+            "Sidan hittades inte",
+            "Sidan eller resursen du sökte finns inte.",
+        )
+
     @application.after_request
     def _security_headers(resp):
         resp.headers.setdefault("X-Frame-Options", "DENY")
@@ -120,10 +230,14 @@ def create_app() -> Flask:
         resp.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com; "
-            "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "font-src 'self'; "
             "img-src 'self' data: https:; "
             "connect-src 'self'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "object-src 'none'; "
             "frame-ancestors 'none'",
         )
         return resp

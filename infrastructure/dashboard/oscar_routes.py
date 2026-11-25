@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from flask import Flask, g, jsonify, redirect, render_template, request, url_for
 
 from auth import _oscar_required
@@ -9,6 +11,7 @@ from secret_probes import run_all_probes, run_probe
 from settings_store import (
     EDITABLE_SECRET_KEYS,
     apply_env_overlays,
+    editable_secret_groups,
     load_settings_view,
     resolve_escalation,
     save_model_runtime,
@@ -19,11 +22,23 @@ from settings_store import (
 from support import (
     _dashboard_context,
     _data_dir,
+    _flash,
+    _flash_q,
+    _fmt_dt,
     _load_probe_last,
     _merge_probe_last,
+    _normalize_escalation,
     _save_probe_last,
     _tail_jsonl,
 )
+
+_ERROR_CATEGORY_MAP = {
+    "ModelAuthError": ("auth", "Autentisering (auth)"),
+    "ModelConfigError": ("config", "Konfiguration (config)"),
+    "ModelRateLimitError": ("rate_limit", "Hastighetsgräns (rate_limit)"),
+    "ModelUnavailableError": ("unavailable", "Otillgänglig (unavailable)"),
+    "ModelSchemaError": ("schema", "Schemafel (schema)"),
+}
 
 
 def _model_panel() -> dict:
@@ -44,15 +59,64 @@ def _model_panel() -> dict:
         found = search_models(catalog_provider, query)
         catalog_rows = list(found.get("models") or [])
         catalog_error = str(found.get("error") or "")
+
+    raw_routes = router.routes()
+    formatted_routes: dict[str, dict] = {}
+    for rid, info in raw_routes.items():
+        row = dict(info) if isinstance(info, dict) else {}
+        row["expires_at_fmt"] = _fmt_dt(row.get("expires_at"))
+        formatted_routes[rid] = row
+
+    breaker_snapshot = circuit_breaker.status_snapshot()
+    route_breakers = {
+        k: v for k, v in breaker_snapshot.items() if str(k).startswith("route:")
+    }
+    slot_breakers = []
+    for k, v in breaker_snapshot.items():
+        if str(k).startswith("slot:"):
+            parts = str(k).split(":", 2)
+            slot_breakers.append(
+                {
+                    "key": k,
+                    "route_id": parts[1] if len(parts) > 1 else "",
+                    "model_id": parts[2] if len(parts) > 2 else "",
+                    **(v if isinstance(v, dict) else {}),
+                }
+            )
+    open_breakers_count = sum(
+        1
+        for v in breaker_snapshot.values()
+        if isinstance(v, dict) and v.get("state", "closed") != "closed"
+    )
+
+    last_test_raw = load_last_test()
+    last_test: dict = {}
+    if last_test_raw:
+        last_test = dict(last_test_raw)
+        err_cls = str(last_test.get("error_class") or "")
+        cat_key, cat_label = _ERROR_CATEGORY_MAP.get(
+            err_cls, ("error", err_cls) if err_cls else ("", "")
+        )
+        last_test.setdefault("model", "")
+        last_test.setdefault("provider", "")
+        last_test.setdefault("at", "")
+        last_test["at_fmt"] = _fmt_dt(last_test.get("at"))
+        last_test["error_category"] = cat_key
+        last_test["error_category_sv"] = cat_label
+
     return {
-        "model_routes": router.routes(),
+        "model_routes": formatted_routes,
         "model_all_routes": list(ROUTE_IDS),
         "model_order": router.ordered_route_ids(),
         "model_preferred": router.preferred_route_id(),
-        "model_last_test": load_last_test(),
-        "model_breaker": circuit_breaker.status_snapshot(),
+        "model_last_test": last_test,
+        "model_breaker": breaker_snapshot,
+        "model_route_breakers": route_breakers,
+        "model_slot_breakers": slot_breakers,
+        "open_breakers_count": open_breakers_count,
         "model_profiles": catalog_profiles.profiles,
         "model_recommended": catalog_profiles.recommended_models,
+        "reasoning_effort_options": ["", "none", "minimal", "low", "medium", "high", "xhigh"],
         "xai_login": device_login_status(),
         "model_query": query,
         "model_catalog": catalog_rows,
@@ -102,7 +166,8 @@ def register_oscar_routes(app: Flask) -> None:
 
         route_id = (request.form.get("route_id") or "").strip()
         if route_id not in ROUTE_IDS:
-            return redirect(url_for("oscar_home") + "?err=Okand+modellroute")
+            _flash("Okänd modellroute", "error")
+            return redirect(url_for("oscar_home") + f"?{_flash_q(err='Okänd modellroute')}")
         router = get_model_router()
         try:
             result = router.complete_route(
@@ -124,7 +189,8 @@ def register_oscar_routes(app: Flask) -> None:
                 model="",
                 provider="",
             )
-            return redirect(url_for("oscar_home") + "?err=Modelltest+misslyckades")
+            _flash("Modelltest misslyckades", "error")
+            return redirect(url_for("oscar_home") + f"?{_flash_q(err='Modelltest misslyckades')}")
         save_last_test(
             route_id=route_id,
             ok=True,
@@ -148,7 +214,8 @@ def register_oscar_routes(app: Flask) -> None:
                     "cost_kind": "estimated",
                 },
             )
-        return redirect(url_for("oscar_home") + "?msg=Modelltest+ok+utan+fallback")
+        _flash("Modelltest ok utan fallback", "ok")
+        return redirect(url_for("oscar_home") + f"?{_flash_q('Modelltest ok utan fallback')}")
 
     @app.route("/oscar/models/xai/login", methods=["POST"])
     @_oscar_required
@@ -181,7 +248,8 @@ def register_oscar_routes(app: Flask) -> None:
         from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
 
         OpenAIChatGPTOAuthRoute().disconnect()
-        return redirect(url_for("oscar_home") + "?msg=ChatGPT+fran+kopplad")
+        _flash("ChatGPT frånkopplad", "ok")
+        return redirect(url_for("oscar_home") + f"?{_flash_q('ChatGPT frånkopplad')}")
 
     @app.route("/oscar/models/settings", methods=["POST"])
     @_oscar_required
@@ -191,6 +259,7 @@ def register_oscar_routes(app: Flask) -> None:
         try:
             saved = save_model_runtime(request.form, grok_build_posted=True)
         except ValueError as exc:
+            _flash(str(exc), "error")
             return redirect(url_for("oscar_home", err=str(exc)))
         if saved:
             log_action(
@@ -200,6 +269,7 @@ def register_oscar_routes(app: Flask) -> None:
                 details={"keys": saved},
             )
         msg = "Modellval sparat" if saved else "Inga ändringar"
+        _flash(msg, "ok" if saved else "info")
         return redirect(url_for("oscar_home", msg=msg))
 
     @app.route("/oscar/models/profiles/save", methods=["POST"])
@@ -240,6 +310,7 @@ def register_oscar_routes(app: Flask) -> None:
         try:
             saved = save_profile_override(profile_id, payload)
         except (ValueError, TypeError) as exc:
+            _flash(str(exc), "error")
             return redirect(url_for("oscar_home", err=str(exc)) + "#model-profiles")
         log_action(
             actor=g.actor["name"],
@@ -250,7 +321,9 @@ def register_oscar_routes(app: Flask) -> None:
                 "slots": [f"{m.slot_id}={m.route_id}:{m.model_id}" for m in saved.mounts],
             },
         )
-        return redirect(url_for("oscar_home", msg=f"Profil {saved.profile_id} sparad") + "#model-profiles")
+        msg = f"Profil {saved.profile_id} sparad"
+        _flash(msg, "ok")
+        return redirect(url_for("oscar_home", msg=msg) + "#model-profiles")
 
     @app.route("/oscar/models/profiles/test", methods=["POST"])
     @_oscar_required
@@ -283,6 +356,7 @@ def register_oscar_routes(app: Flask) -> None:
                 model="",
                 provider="",
             )
+            _flash("Slottest misslyckades", "error")
             return redirect(url_for("oscar_home", err="Slottest misslyckades") + "#model-profiles")
         save_last_test(
             route_id=result.route_id,
@@ -309,7 +383,9 @@ def register_oscar_routes(app: Flask) -> None:
                     "cost_kind": "estimated",
                 },
             )
-        return redirect(url_for("oscar_home", msg=f"Slot {profile_id}/{slot_id} ok utan fallback") + "#model-profiles")
+        msg = f"Slot {profile_id}/{slot_id} ok utan fallback"
+        _flash(msg, "ok")
+        return redirect(url_for("oscar_home", msg=msg) + "#model-profiles")
 
     @app.route("/oscar/models/profiles/reset", methods=["POST"])
     @_oscar_required
@@ -326,6 +402,7 @@ def register_oscar_routes(app: Flask) -> None:
             target=f"profile:{target or 'all'}",
             details={},
         )
+        _flash("Profilstandard återställd", "ok")
         return redirect(url_for("oscar_home", msg="Profilstandard återställd") + "#model-profiles")
 
     @app.route("/oscar/models/breaker/reset", methods=["POST"])
@@ -342,6 +419,7 @@ def register_oscar_routes(app: Flask) -> None:
             target=key or "all",
             details={},
         )
+        _flash("Circuit breaker nollställd", "ok")
         return redirect(url_for("oscar_home", msg="Circuit breaker nollställd"))
 
     @app.route("/oscar/behavior", methods=["GET", "POST"])
@@ -351,16 +429,18 @@ def register_oscar_routes(app: Flask) -> None:
         from ecom_ops.prompts import get_prompt, save_prompt_texts
 
         error = None
+        submitted_drafts: dict[str, str] = {}
         if request.method == "POST":
+            updates = {
+                name: request.form.get(name, "")
+                for name in ("chat", "classify", "draft", "product_desc", "wp_coder")
+                if name in request.form
+            }
             try:
-                updates = {
-                    name: request.form.get(name, "")
-                    for name in ("chat", "classify", "draft", "product_desc", "wp_coder")
-                    if name in request.form
-                }
                 changed = save_prompt_texts(updates)
             except ValueError as exc:
                 error = str(exc)
+                submitted_drafts = updates
             else:
                 if changed:
                     log_action(
@@ -370,11 +450,16 @@ def register_oscar_routes(app: Flask) -> None:
                         details={"versions": changed},
                     )
                 msg = "Beteende sparat" if changed else "Inga ändringar"
+                _flash(msg, "ok" if changed else "info")
                 return redirect(url_for("oscar_behavior", msg=msg))
         prompts = {}
         for name in ("chat", "classify", "draft", "product_desc", "wp_coder"):
             system, version = get_prompt(name)
-            prompts[name] = {"system": system, "version": version}
+            prompts[name] = {
+                "system": submitted_drafts[name] if name in submitted_drafts else system,
+                "default_system": system,
+                "version": version,
+            }
         return render_template(
             "oscar_behavior.html",
             **_dashboard_context(prompts=prompts, error=error),
@@ -418,7 +503,16 @@ def register_oscar_routes(app: Flask) -> None:
     def oscar_telegram_probe():
         single = run_probe("telegram")
         _merge_probe_last(single)
-        return redirect(url_for("oscar_telegram", msg="Telegram-probe körd"))
+        if single.status == "error":
+            msg = f"Telegram-probe fel: {single.message}"
+            _flash(msg, "error")
+            return redirect(url_for("oscar_telegram") + f"?{_flash_q(err=msg)}")
+        if single.status in {"warn", "missing"}:
+            msg = f"Telegram-probe ({single.status}): {single.message}"
+            _flash(msg, "warn")
+            return redirect(url_for("oscar_telegram") + f"?{_flash_q(warn=msg)}")
+        _flash("Telegram-probe körd", "ok")
+        return redirect(url_for("oscar_telegram") + f"?{_flash_q('Telegram-probe körd')}")
 
     @app.route("/oscar/secrets", methods=["GET", "POST"])
     @_oscar_required
@@ -428,12 +522,26 @@ def register_oscar_routes(app: Flask) -> None:
             for key in EDITABLE_SECRET_KEYS:
                 if key in request.form:
                     updates[key] = request.form.get(key, "")
-            saved = save_secrets(updates)
-            msg = f"Sparade+{len(saved)}+nycklar" if saved else "Inga+ändringar"
-            return redirect(url_for("oscar_secrets") + f"?msg={msg}")
+            try:
+                saved = save_secrets(updates)
+            except ValueError as exc:
+                _flash(str(exc), "error")
+                return redirect(url_for("oscar_secrets") + f"?{_flash_q(err=str(exc))}")
+            if saved:
+                from ecom_ops.audit import log_action
+
+                log_action(
+                    actor=g.actor["name"],
+                    action="secrets_save",
+                    target="secrets.env",
+                    details={"keys": saved},
+                )
+            msg = f"Sparade {len(saved)} nycklar" if saved else "Inga ändringar"
+            _flash(msg, "ok" if saved else "info")
+            return redirect(url_for("oscar_secrets") + f"?{_flash_q(msg)}")
         last = _load_probe_last()
-        results = (last or {}).get("results") or [r.to_dict() for r in run_all_probes()]
-        if not last:
+        results = list((last or {}).get("results") or [])
+        if not results:
             live = run_all_probes()
             _save_probe_last(live)
             results = [r.to_dict() for r in live]
@@ -441,6 +549,7 @@ def register_oscar_routes(app: Flask) -> None:
             "oscar_secrets.html",
             **_dashboard_context(
                 secrets=secrets_status(),
+                secret_groups=editable_secret_groups(),
                 editable_keys=EDITABLE_SECRET_KEYS,
                 probe_results=results,
             ),
@@ -454,13 +563,25 @@ def register_oscar_routes(app: Flask) -> None:
         if probe in {"", "all"}:
             results = run_all_probes()
             _save_probe_last(results)
+            display_results = [r.to_dict() for r in results]
         else:
             single = run_probe(probe)
             results = [single]
-            _merge_probe_last(single)
+            display_results = _merge_probe_last(single)
         ok_n = sum(1 for r in results if r.status == "ok")
+        warn_n = sum(1 for r in results if r.status == "warn")
         err_n = sum(1 for r in results if r.status in {"error", "missing"})
-        msg = f"Test+klart:+{ok_n}+ok,+{err_n}+problem"
+        if err_n > 0:
+            level = "error"
+            msg = f"Test klart: {ok_n} ok, {err_n} problem" + (
+                f", {warn_n} varning" if warn_n else ""
+            )
+        elif warn_n > 0:
+            level = "warn"
+            msg = f"Test klart: {ok_n} ok, {warn_n} varning"
+        else:
+            level = "ok"
+            msg = f"Test klart: {ok_n} ok, 0 problem"
         if request.headers.get("Accept") == "application/json" or request.is_json:
             return jsonify(
                 {
@@ -472,9 +593,10 @@ def register_oscar_routes(app: Flask) -> None:
             "oscar_secrets.html",
             **_dashboard_context(
                 secrets=secrets_status(),
+                secret_groups=editable_secret_groups(),
                 editable_keys=EDITABLE_SECRET_KEYS,
-                probe_results=[r.to_dict() for r in results],
-                flash=f"ok:{msg.replace('+', ' ')}",
+                probe_results=display_results,
+                flash=f"{level}:{msg}",
             ),
         )
 
@@ -483,21 +605,51 @@ def register_oscar_routes(app: Flask) -> None:
     def oscar_escalations():
         if request.method == "POST":
             ticket_id = request.form.get("ticket_id", "").strip()
-            show = request.args.get("show", "open")
-            if ticket_id and resolve_escalation(ticket_id):
-                return redirect(
-                    url_for("oscar_escalations", show=show) + "?msg=Markerad+som+löst"
+            show = (request.args.get("show") or "open").strip().lower()
+            if show not in {"open", "resolved", "all"}:
+                show = "open"
+            if ticket_id and resolve_escalation(ticket_id, resolved_by=g.actor["name"]):
+                from ecom_ops.audit import log_action
+
+                log_action(
+                    actor=g.actor["name"],
+                    action="resolve_escalation",
+                    target="escalation",
+                    target_id=ticket_id,
+                    details={},
                 )
+                _flash("Markerad som löst", "ok")
+                return redirect(
+                    url_for("oscar_escalations")
+                    + f"?show={quote(show, safe='')}&{_flash_q('Markerad som löst')}"
+                )
+            _flash("Ticket hittades inte", "error")
             return redirect(
-                url_for("oscar_escalations", show=show) + "?err=Ticket+hittades+inte"
+                url_for("oscar_escalations")
+                + f"?show={quote(show, safe='')}&{_flash_q(err='Ticket hittades inte')}"
             )
-        show = request.args.get("show", "open")
-        rows = _tail_jsonl(_data_dir() / "escalations.jsonl", 200)
-        if show != "all":
-            rows = [e for e in rows if e.get("status", "open") == "open"]
+        show = (request.args.get("show") or "open").strip().lower()
+        if show not in {"open", "resolved", "all"}:
+            show = "open"
+        raw_rows = _tail_jsonl(_data_dir() / "escalations.jsonl", 200)
+        all_rows = [_normalize_escalation(e) for e in raw_rows if isinstance(e, dict)]
+        open_count = sum(1 for e in all_rows if e["status"] == "open")
+        resolved_count = sum(1 for e in all_rows if e["status"] == "resolved")
+        if show == "open":
+            rows = [e for e in all_rows if e["status"] == "open"]
+        elif show == "resolved":
+            rows = [e for e in all_rows if e["status"] == "resolved"]
+        else:
+            rows = all_rows
         return render_template(
             "oscar_escalations.html",
-            **_dashboard_context(rows=rows, show_filter=show),
+            **_dashboard_context(
+                rows=rows,
+                show_filter=show,
+                open_count=open_count,
+                resolved_count=resolved_count,
+                all_count=len(all_rows),
+            ),
         )
 
     @app.route("/oscar/gdpr/delete", methods=["POST"])

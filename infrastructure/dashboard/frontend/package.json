@@ -1,0 +1,19 @@
+{
+  "name": "azom-dashboard-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build-time Tailwind CSS v4, @alpinejs/csp, and self-hosted font assets for Azom dashboard",
+  "scripts": {
+    "sync-assets": "node scripts/sync-assets.mjs",
+    "build:css": "npx @tailwindcss/cli -i src/input.css -o ../static/css/dashboard.css --minify",
+    "build": "npm run sync-assets && npm run build:css"
+  },
+  "devDependencies": {
+    "@alpinejs/csp": "^3.14.8",
+    "@fontsource/jetbrains-mono": "^5.1.1",
+    "@fontsource/sora": "^5.1.1",
+    "@fontsource/source-sans-3": "^5.1.1",
+    "@tailwindcss/cli": "^4.0.0",
+    "tailwindcss": "^4.0.0"
+  }
+}

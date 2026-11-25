@@ -1,48 +1,108 @@
 {% extends "base.html" %}
-{% block title %}Interagera – Azom{% endblock %}
-{% block page_subtitle %}Interagera{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Utkast-sandlåda – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Utkast-sandlåda{% endblock %}
 {% block content %}
 <div class="space-y-5">
-  <div>
-    <h2 class="az-page-title">Interagera</h2>
-    <p class="az-muted mt-1">Genererar utkast via agent. Jonatan kan inte skicka mail.</p>
-  </div>
+  {{ ui.page_header("Utkast-sandlåda", "Testa agentens klassificering och svarsförslag på valfri kundfråga.") }}
 
-  <section class="az-card">
-    <h2 class="az-section-title">Support-draft</h2>
-    <form method="post" action="/interact" class="space-y-4">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <input type="hidden" name="action" value="draft" />
-      <div>
-        <label class="az-label" for="message">Meddelande</label>
-        <textarea class="az-textarea" id="message" name="message" required placeholder="Hej, var är min order?"></textarea>
+  {% if is_oscar %}
+  {{ ui.info_callout('info', 'Sandlådeläge (Oscar)', 'Utkast som genereras här skickas aldrig som kundmail.') }}
+  {% else %}
+  {{ ui.info_callout('info', 'Sandlådeläge (viewer)', 'Jonatan kan generera utkast för granskning, men kundmail skickas bara via explicit ärendegodkännande.') }}
+  {% endif %}
+
+  <div class="grid items-start gap-5 lg:grid-cols-12">
+    <section class="az-card lg:col-span-6">
+      <h2 class="az-section-title">Kundmeddelande</h2>
+      <form method="post" action="/interact" class="space-y-4">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="action" value="draft" />
+        <div>
+          <div class="mb-1.5 flex items-center justify-between gap-2">
+            <label class="az-label mb-0" for="message">Meddelande</label>
+            <span id="interact-char-count" class="font-mono text-xs tabular-nums text-mist-400"></span>
+          </div>
+          <textarea
+            class="az-textarea"
+            id="message"
+            name="message"
+            rows="8"
+            maxlength="4000"
+            required
+            placeholder="Hej, var är min order 1001?"
+            data-char-count="#interact-char-count"
+          >{{ message or '' }}</textarea>
+        </div>
+        <button class="az-btn-primary" type="submit" data-busy-label="Genererar utkast...">
+          {{ icon('terminal', 'sm') }}
+          <span>Skapa utkast</span>
+        </button>
+      </form>
+    </section>
+
+    <section class="az-card lg:col-span-6 space-y-4">
+      <h2 class="az-section-title mb-0">Genererat utkast</h2>
+
+      {% if error %}
+      <div class="az-callout az-callout-danger" role="alert">
+        <span class="mt-0.5 shrink-0">{{ icon('alert-circle', 'sm') }}</span>
+        <span>{{ error }}</span>
       </div>
-      <button class="az-btn-primary" type="submit">Skapa draft</button>
-    </form>
-    {% if error %}
-    <div class="mt-4 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger" role="alert">{{ error }}</div>
-    {% endif %}
-    {% if result %}
-    <div class="mt-6 space-y-3 border-t border-ink-700/80 pt-5">
-      <h3 class="az-section-title">Resultat</h3>
-      <p><strong class="text-mist-100">Kategori:</strong> {{ result.category }}</p>
-      <p><strong class="text-mist-100">OK:</strong> {{ result.ok }} · <strong class="text-mist-100">Eskalerad:</strong> {{ result.escalated }}</p>
-      {% if result.reply %}
-      <pre class="whitespace-pre-wrap rounded-lg border border-ink-700/60 bg-ink-950/60 p-4 font-sans text-sm text-mist-100">{{ result.reply }}</pre>
       {% endif %}
-      <p class="az-muted">{{ result.note }}</p>
-      <div class="flex flex-wrap gap-2 pt-2">
-        <form method="post" action="/interact">
-          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-          <input type="hidden" name="action" value="escalate" />
-          <input type="hidden" name="category" value="{{ result.category }}" />
-          <input type="hidden" name="draft" value="{{ result.reply or '' }}" />
-          <button class="az-btn-oscar" type="submit">Eskalera till Oscar</button>
-        </form>
-        <a class="az-btn-secondary" href="/cases?status=open,escalated">Öppna ärenden</a>
+
+      {% if result %}
+      <div class="space-y-4">
+        <div class="flex flex-wrap items-center gap-2">
+          {{ ui.status_badge('ok' if result.ok else 'error', 'OK' if result.ok else 'Fel', show_icon=True) }}
+          {{ ui.status_badge('info', 'Kategori: ' ~ (result.category or 'okänd')) }}
+          {% if result.escalated %}
+            {{ ui.status_badge('warn', 'Eskalerad: Ja') }}
+          {% else %}
+            {{ ui.status_badge('neutral', 'Eskalerad: Nej') }}
+          {% endif %}
+        </div>
+
+        {% if result.reply %}
+        <div class="space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-xs font-medium text-mist-400">Förslag på svar</span>
+            <button
+              type="button"
+              class="az-btn-secondary az-btn-sm"
+              data-copy-target="#interact-draft-text"
+            >
+              {{ icon('copy', 'xs') }}
+              <span data-copy-label>Kopiera utkast</span>
+            </button>
+          </div>
+          <pre id="interact-draft-text" class="whitespace-pre-wrap rounded-lg border border-ink-700/70 bg-ink-950/75 p-4 font-sans text-sm leading-relaxed text-mist-100">{{ result.reply }}</pre>
+        </div>
+        {% endif %}
+
+        {% if result.note %}
+        <p class="az-muted text-xs">{{ result.note }}</p>
+        {% endif %}
+
+        <div class="flex flex-wrap items-center gap-2 border-t border-ink-700/70 pt-3">
+          {% if not is_oscar %}
+          <form method="post" action="/interact">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input type="hidden" name="action" value="escalate" />
+            <input type="hidden" name="category" value="{{ result.category }}" />
+            <input type="hidden" name="message" value="{{ message or '' }}" />
+            <input type="hidden" name="draft" value="{{ result.reply or '' }}" />
+            <button class="az-btn-oscar az-btn-sm" type="submit" data-busy-label="Eskalerar...">Eskalera till Oscar</button>
+          </form>
+          {% endif %}
+          <a class="az-btn-secondary az-btn-sm" href="/cases?status=open,escalated">Öppna ärenden</a>
+        </div>
       </div>
-    </div>
-    {% endif %}
-  </section>
+      {% elif not error %}
+      {{ ui.empty_state('Inget utkast genererat ännu', 'Skriv in ett kundmeddelande till vänster och klicka på "Skapa utkast".', icon_name='message-square') }}
+      {% endif %}
+    </section>
+  </div>
 </div>
 {% endblock %}

@@ -39,8 +39,15 @@ def secrets_checklist() -> list[dict[str, Any]]:
     return out
 
 
+def _safe_error(exc: Exception) -> str:
+    """Return a short exception label without leaking paths, URLs, or credentials."""
+    return f"{type(exc).__name__}: kontroll misslyckades"
+
+
 def runtime_status() -> dict[str, Any]:
-    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    from ecom_ops.runtime_env import env_flag
+
+    mock = env_flag("AZOM_USE_MOCK", default=False)
     store = GmailOAuthStore()
     try:
         cfg = load_app_config()
@@ -49,13 +56,9 @@ def runtime_status() -> dict[str, Any]:
         budget_cap = cfg.customer.budget_cap_llm
         openrouter_cap = cfg.limits.openrouter_cap
     except Exception as exc:
-        customer = "unknown"
-        domains = []
-        budget_cap = 0.0
-        openrouter_cap = 100.0
         return {
             "ok": False,
-            "error": str(exc),
+            "error": _safe_error(exc),
             "mock_mode": mock,
         }
 
@@ -101,7 +104,7 @@ def health_probe() -> dict[str, Any]:
             }
         )
     except Exception as exc:
-        checks.append({"name": "ssh_health", "ok": False, "detail": str(exc)[:120]})
+        checks.append({"name": "ssh_health", "ok": False, "detail": _safe_error(exc)})
 
     try:
         from ecom_ops.integrations.mail import client_from_env
@@ -109,7 +112,7 @@ def health_probe() -> dict[str, Any]:
         client_from_env(use_mock=True)
         checks.append({"name": "mail_mock", "ok": True, "detail": "mock client ok"})
     except Exception as exc:
-        checks.append({"name": "mail_mock", "ok": False, "detail": str(exc)[:120]})
+        checks.append({"name": "mail_mock", "ok": False, "detail": _safe_error(exc)})
 
     all_ok = all(c["ok"] for c in checks)
     return {"ok": all_ok, "checks": checks, "runtime": runtime}

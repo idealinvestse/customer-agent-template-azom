@@ -10,7 +10,10 @@ from status import health_probe, runtime_status
 from support import (
     _dashboard_context,
     _data_dir,
+    _flash,
+    _flash_q,
     _load_probe_last,
+    _normalize_escalation,
     _presence_integrations,
     _tail_jsonl,
 )
@@ -73,9 +76,21 @@ def _telemetry_rows(
         row["prompt_tokens"] = meta.get("prompt_tokens")
         row["completion_tokens"] = meta.get("completion_tokens")
         row["error_class"] = error_class
+        row["meta"] = safe_meta
         row["safe_meta"] = safe_meta
         shown.append(row)
     return shown
+
+
+def _sanitize_escalation_json(raw: dict) -> dict:
+    from ecom_ops.security import redact_secrets
+
+    norm = _normalize_escalation(raw)
+    if not getattr(g, "actor", {}).get("is_oscar"):
+        norm["details"] = {}
+    else:
+        norm["details"] = redact_secrets(norm["details"])
+    return norm
 
 
 def register_core_routes(app: Flask) -> None:
@@ -155,6 +170,7 @@ def register_core_routes(app: Flask) -> None:
         cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
         presence = _presence_integrations(runtime)
         last_probe = _load_probe_last()
+        section_errors: dict[str, str] = {}
         budget = None
         try:
             from ecom_ops.budget import budget_status
@@ -164,8 +180,9 @@ def register_core_routes(app: Flask) -> None:
             if budget.get("used_usd") is not None:
                 cost = float(budget["used_usd"])
                 cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
-        except Exception:
+        except Exception as exc:
             budget = None
+            section_errors["budget"] = f"Budgetstatus otillgänglig ({type(exc).__name__})"
         kpis = None
         try:
             from ecom_ops.kpis import support_kpis_last_days
@@ -175,20 +192,24 @@ def register_core_routes(app: Flask) -> None:
                 telemetry=_Tel(path=_data_dir() / "telemetry.jsonl"),
                 days=7,
             )
-        except Exception:
+        except Exception as exc:
             kpis = None
+            section_errors["kpis"] = f"Support-KPI otillgänglig ({type(exc).__name__})"
         readiness = None
         try:
             from ecom_ops.ops_status import readiness_from_last_poll
 
             readiness = readiness_from_last_poll()
-        except Exception:
+        except Exception as exc:
             readiness = None
+            section_errors["readiness"] = f"Poll-beredskap otillgänglig ({type(exc).__name__})"
         return render_template(
             "index.html",
             **_dashboard_context(
-                telemetry=telemetry,
-                escalations=escalations,
+                telemetry=_telemetry_rows(
+                    telemetry, action_filter="", route_filter="", errors_only=False
+                ),
+                escalations=[_normalize_escalation(e) for e in escalations],
                 cost_usd=round(cost, 4),
                 openrouter_cap=runtime.get("openrouter_cap", 100),
                 budget_cap_llm=runtime.get("budget_cap_llm", 80),
@@ -198,15 +219,25 @@ def register_core_routes(app: Flask) -> None:
                 budget=budget,
                 support_kpis=kpis,
                 readiness=readiness,
+                section_errors=section_errors,
             ),
         )
 
     @app.route("/onboarding")
     @_auth_required
     def onboarding():
+        secs = secrets_status()
+        health = health_probe()
         return render_template(
             "onboarding.html",
-            **_dashboard_context(secrets=secrets_status(), health=health_probe()),
+            **_dashboard_context(
+                secrets=secs,
+                health=health,
+                checks=health.get("checks") or [],
+                health_ok=bool(health.get("ok")),
+                secrets_missing=sum(1 for s in secs if not s.get("present")),
+                secrets_total=len(secs),
+            ),
         )
 
     @app.route("/onboarding/status")
@@ -245,10 +276,16 @@ def register_core_routes(app: Flask) -> None:
                 current = load_settings_view()
                 form["mock_mode"] = "1" if current.get("mock_mode") else "0"
             try:
-                save_settings(form)
-                return redirect(url_for("settings") + "?msg=Sparat")
-            except ValueError as exc:
-                return redirect(url_for("settings") + f"?err={exc}")
+                saved = save_settings(form)
+                if saved.get("mock_mode_ignored"):
+                    warn_msg = "Sparat, men mock-läge är låst i live-drift (AZOM_USE_MOCK=0)"
+                    _flash(warn_msg, "warn")
+                    return redirect(url_for("settings") + f"?{_flash_q(warn=warn_msg)}")
+                _flash("Sparat", "ok")
+                return redirect(url_for("settings") + f"?{_flash_q('Sparat')}")
+            except (ValueError, TypeError) as exc:
+                _flash(str(exc), "error")
+                return redirect(url_for("settings") + f"?{_flash_q(err=str(exc))}")
         return render_template(
             "settings.html",
             **_dashboard_context(settings=load_settings_view()),
@@ -266,7 +303,8 @@ def register_core_routes(app: Flask) -> None:
             if not keys:
                 keys = [k for k in request.form.getlist("key") if k]
             if not keys:
-                return redirect(url_for("secrets_page") + "?err=Välj+minst+en+nyckel")
+                _flash("Välj minst en nyckel", "error")
+                return redirect(url_for("secrets_page") + f"?{_flash_q(err='Välj minst en nyckel')}")
             from ecom_ops.escalation import EscalationService
 
             EscalationService().escalate_critical(
@@ -277,7 +315,8 @@ def register_core_routes(app: Flask) -> None:
                     "actor": g.actor["name"],
                 },
             )
-            return redirect(url_for("secrets_page") + "?msg=Begäran+skickad+till+Oscar")
+            _flash("Begäran skickad till Oscar", "ok")
+            return redirect(url_for("secrets_page") + f"?{_flash_q('Begäran skickad till Oscar')}")
         return render_template(
             "secrets.html",
             **_dashboard_context(secrets=secrets_status()),
@@ -289,12 +328,37 @@ def register_core_routes(app: Flask) -> None:
         action_filter = (request.args.get("action") or "").strip()[:80]
         route_filter = (request.args.get("route") or "").strip()[:80]
         errors_only = request.args.get("errors") == "1"
+        raw_rows = _tail_jsonl(_data_dir() / "telemetry.jsonl", 200)
         rows = _telemetry_rows(
-            _tail_jsonl(_data_dir() / "telemetry.jsonl", 200),
+            raw_rows,
             action_filter=action_filter,
             route_filter=route_filter,
             errors_only=errors_only,
         )
+        error_count = sum(
+            1
+            for r in rows
+            if r.get("error_class") or "error" in str(r.get("action") or "").lower()
+        )
+        total_cost = 0.0
+        total_tokens = 0
+        for r in rows:
+            try:
+                total_cost += float(r.get("cost_usd") or 0)
+            except (TypeError, ValueError):
+                pass
+            for tk in ("prompt_tokens", "completion_tokens"):
+                val = r.get(tk)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    total_tokens += int(val)
+        summary = {
+            "count": len(rows),
+            "error_count": error_count,
+            "total_cost_usd": round(total_cost, 4),
+            "total_tokens": total_tokens,
+            "cap": 200,
+            "capped": len(raw_rows) >= 200,
+        }
         return render_template(
             "data_telemetry.html",
             **_dashboard_context(
@@ -302,6 +366,12 @@ def register_core_routes(app: Flask) -> None:
                 action_filter=action_filter,
                 route_filter=route_filter,
                 errors_only=errors_only,
+                summary=summary,
+                total_cost_usd=summary["total_cost_usd"],
+                error_count=error_count,
+                total_tokens=total_tokens,
+                row_cap=200,
+                capped=summary["capped"],
             ),
         )
 
@@ -310,19 +380,73 @@ def register_core_routes(app: Flask) -> None:
     def data_audit():
         from ecom_ops.audit import read_audit_log
 
-        rows = read_audit_log(limit=200)
+        actor_filter = (request.args.get("actor") or "").strip()[:80]
+        action_filter = (request.args.get("action") or "").strip()[:80]
+        only_failed = (
+            request.args.get("only_failed") == "1" or request.args.get("failed") == "1"
+        )
+        raw_rows = read_audit_log(limit=200)
+        rows = []
+        actor_q = actor_filter.lower()
+        action_q = action_filter.lower()
+        for r in raw_rows:
+            if not isinstance(r, dict):
+                continue
+            if actor_q and actor_q not in str(r.get("actor") or "").lower():
+                continue
+            if action_q and action_q not in str(r.get("action") or "").lower():
+                continue
+            if only_failed and bool(r.get("success", True)):
+                continue
+            rows.append(r)
+        error_count = sum(1 for r in rows if not bool(r.get("success", True)))
+        summary = {
+            "count": len(rows),
+            "error_count": error_count,
+            "cap": 200,
+            "capped": len(raw_rows) >= 200,
+        }
         return render_template(
             "data_audit.html",
-            **_dashboard_context(rows=rows),
+            **_dashboard_context(
+                rows=rows,
+                actor_filter=actor_filter,
+                action_filter=action_filter,
+                only_failed=only_failed,
+                summary=summary,
+                error_count=error_count,
+                row_cap=200,
+                capped=summary["capped"],
+            ),
         )
 
     @app.route("/data/escalations")
     @_auth_required
     def data_escalations():
-        rows = _tail_jsonl(_data_dir() / "escalations.jsonl", 200)
+        show = (request.args.get("show") or "open").strip().lower()
+        if show not in {"open", "resolved", "all"}:
+            show = "open"
+        raw_rows = _tail_jsonl(_data_dir() / "escalations.jsonl", 200)
+        all_rows = [_normalize_escalation(e) for e in raw_rows if isinstance(e, dict)]
+        open_count = sum(1 for e in all_rows if e["status"] == "open")
+        resolved_count = sum(1 for e in all_rows if e["status"] == "resolved")
+        if show == "open":
+            rows = [e for e in all_rows if e["status"] == "open"]
+        elif show == "resolved":
+            rows = [e for e in all_rows if e["status"] == "resolved"]
+        else:
+            rows = all_rows
         return render_template(
             "data_escalations.html",
-            **_dashboard_context(rows=rows),
+            **_dashboard_context(
+                rows=rows,
+                show_filter=show,
+                open_count=open_count,
+                resolved_count=resolved_count,
+                all_count=len(all_rows),
+                row_cap=200,
+                capped=len(raw_rows) >= 200,
+            ),
         )
 
     @app.route("/interact", methods=["GET", "POST"])
@@ -330,11 +454,13 @@ def register_core_routes(app: Flask) -> None:
     def interact():
         result = None
         error = None
+        message = ""
         if request.method == "POST":
-            action = request.form.get("action", "draft")
+            action = (request.form.get("action") or "draft").strip()
             if action == "escalate":
                 draft = (request.form.get("draft") or "").strip()[:2000]
                 category = (request.form.get("category") or "").strip()[:80]
+                orig_message = (request.form.get("message") or "").strip()[:2000]
                 from ecom_ops.escalation import EscalationService
 
                 EscalationService().escalate_critical(
@@ -342,16 +468,18 @@ def register_core_routes(app: Flask) -> None:
                     details={
                         "actor": g.actor["name"],
                         "category": category,
+                        "message": orig_message,
                         "draft": draft,
                     },
                 )
-                return redirect(url_for("interact") + "?msg=Eskalerat+till+Oscar")
+                _flash("Eskalerat till Oscar", "ok")
+                return redirect(url_for("interact") + f"?{_flash_q('Eskalerat till Oscar')}")
 
             message = (
                 request.form.get("message")
                 or (request.get_json(silent=True) or {}).get("message")
                 or ""
-            ).strip()
+            ).strip()[:4000]
             if not message:
                 if request.is_json:
                     return jsonify({"ok": False, "error": "message required"}), 400
@@ -362,40 +490,66 @@ def register_core_routes(app: Flask) -> None:
 
                     out = SupportService().handle(message, actor="agent", language="sv")
                     result = out.to_dict()
-                    result["note"] = "Draft only; send kräver operator/Oscar."
+                    result["note"] = (
+                        "Sandlådeutkast — kundmail skickas aldrig härifrån."
+                        if g.actor.get("is_oscar")
+                        else "Draft only; send kräver operator/Oscar."
+                    )
                     if request.is_json:
                         return jsonify(result)
                 except Exception as exc:
+                    safe_err = (
+                        str(exc)[:200]
+                        if g.actor.get("is_oscar")
+                        else f"Kunde inte generera utkast ({type(exc).__name__})"
+                    )
                     if request.is_json:
-                        return jsonify({"ok": False, "error": str(exc)}), 500
-                    error = str(exc)
+                        return jsonify({"ok": False, "error": safe_err}), 500
+                    error = safe_err
         if request.method == "GET" and request.accept_mimetypes.best == "application/json":
             return jsonify({"hint": "POST message for support draft"})
         return render_template(
             "interact.html",
-            **_dashboard_context(result=result, error=error),
+            **_dashboard_context(result=result, error=error, message=message),
         )
 
     @app.route("/logs")
     @_auth_required
     def logs():
         data = _data_dir()
-        return jsonify(
-            {
-                "telemetry": _tail_jsonl(data / "telemetry.jsonl", 100),
-                "escalations": _tail_jsonl(data / "escalations.jsonl", 100),
-            }
+        tel = _telemetry_rows(
+            _tail_jsonl(data / "telemetry.jsonl", 100),
+            action_filter="",
+            route_filter="",
+            errors_only=False,
         )
+        esc = [
+            _sanitize_escalation_json(e)
+            for e in _tail_jsonl(data / "escalations.jsonl", 100)
+            if isinstance(e, dict)
+        ]
+        return jsonify({"telemetry": tel, "escalations": esc})
 
     @app.route("/telemetry")
     @_auth_required
     def telemetry_json():
-        return jsonify(_tail_jsonl(_data_dir() / "telemetry.jsonl", 200))
+        rows = _telemetry_rows(
+            _tail_jsonl(_data_dir() / "telemetry.jsonl", 200),
+            action_filter="",
+            route_filter="",
+            errors_only=False,
+        )
+        return jsonify(rows)
 
     @app.route("/escalations")
     @_auth_required
     def escalations_json():
-        return jsonify(_tail_jsonl(_data_dir() / "escalations.jsonl", 200))
+        rows = [
+            _sanitize_escalation_json(e)
+            for e in _tail_jsonl(_data_dir() / "escalations.jsonl", 200)
+            if isinstance(e, dict)
+        ]
+        return jsonify(rows)
 
     @app.route("/manage")
     @_auth_required

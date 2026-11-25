@@ -1,45 +1,97 @@
 {% extends "base.html" %}
-{% block title %}Oscar eskaleringar – Azom{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Oscar · Eskaleringar – Azom{% endblock %}
 {% block page_subtitle %}Oscar eskaleringar{% endblock %}
 {% block content %}
-<div class="space-y-5">
-  <div class="flex flex-wrap items-end justify-between gap-3">
-    <div>
-      <h2 class="az-page-title">Oscar eskaleringar</h2>
-      <p class="az-muted mt-1">Markera tickets som lösta.</p>
-    </div>
-    <div class="flex flex-wrap gap-2">
-      <a class="az-btn-secondary {{ 'ring-1 ring-oscar-500' if show_filter != 'all' else '' }}" href="/oscar/escalations?show=open">Öppna</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-oscar-500' if show_filter == 'all' else '' }}" href="/oscar/escalations?show=all">Visa lösta</a>
-    </div>
-  </div>
+<div class="space-y-6">
+  {% call ui.page_header(
+    "Oscar · Eskaleringar",
+    "Granska och markera eskalerade ärenden och systemvarningar som lösta.",
+    badge_text="Öppna: " ~ open_count,
+    badge_tone="warn" if open_count else "ok"
+  ) %}
+    <a class="az-btn-secondary az-btn-sm {{ 'ring-1 ring-oscar-500 bg-oscar-600/20 text-oscar-300' if show_filter == 'open' else '' }}" href="/oscar/escalations?show=open">Öppna ({{ open_count }})</a>
+    <a class="az-btn-secondary az-btn-sm {{ 'ring-1 ring-oscar-500 bg-oscar-600/20 text-oscar-300' if show_filter == 'resolved' else '' }}" href="/oscar/escalations?show=resolved">Lösta ({{ resolved_count }})</a>
+    <a class="az-btn-secondary az-btn-sm {{ 'ring-1 ring-oscar-500 bg-oscar-600/20 text-oscar-300' if show_filter == 'all' else '' }}" href="/oscar/escalations?show=all">Alla ({{ all_count }})</a>
+    <a class="az-btn-secondary az-btn-sm" href="/oscar">{{ icon('arrow-left', 'xs') }}<span>Tillbaka</span></a>
+  {% endcall %}
 
-  <section class="az-card border-oscar-600/35">
-    <h2 class="az-section-title text-oscar-400/80">Eskaleringar ({{ show_filter or 'open' }})</h2>
+  <section class="az-card-oscar space-y-4">
+    <h2 class="font-display text-base font-semibold text-oscar-300">
+      Eskaleringar · {{ 'Öppna' if show_filter == 'open' else ('Lösta' if show_filter == 'resolved' else 'Alla') }}
+    </h2>
+
     {% if rows %}
-    <div class="overflow-x-auto">
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Lista över eskaleringar">
       <table class="az-table">
         <thead>
-          <tr><th>When</th><th>Status</th><th>Severity</th><th>Summary</th><th>Action</th></tr>
+          <tr>
+            <th scope="col">Tid</th>
+            <th scope="col">ID</th>
+            <th scope="col">Status</th>
+            <th scope="col">Allvarlighetsgrad</th>
+            <th scope="col">Orsak</th>
+            <th scope="col">Sammanfattning</th>
+            <th scope="col">Detaljer</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
         </thead>
         <tbody>
           {% for e in rows %}
           <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
-            <td>{{ e.get('status', 'open') }}</td>
-            <td>{{ e.get('severity', '') }}</td>
+            <td class="text-xs text-mist-300 tabular-nums whitespace-nowrap">{{ fmt_dt(e.get('created_at')) or e.get('created_at', '')[:19] }}</td>
             <td>
-              {{ e.get('summary', '') }}
-              {% if e.get('details') %}
-              <div class="az-muted mt-1">{{ e.get('details') }}</div>
+              {% if e.get('id') %}
+              <code class="az-code font-mono text-xs" title="{{ e.get('id') }}">{{ e.get('id')[:8] }}</code>
+              {% else %}
+              <span class="az-muted">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if e.get('status') == 'resolved' %}
+                {{ ui.status_badge('resolved', 'Löst') }}
+              {% else %}
+                {{ ui.status_badge('warn', 'Öppen') }}
+              {% endif %}
+            </td>
+            <td>
+              {% set sev = (e.get('severity') or '') | lower %}
+              {{ ui.status_badge('error' if sev in ['critical', 'high'] else ('warn' if sev == 'medium' else 'neutral'), e.get('severity') or '—') }}
+            </td>
+            <td class="text-xs text-mist-300">{{ e.get('reason') or '—' }}</td>
+            <td class="max-w-md">
+              <div class="text-sm text-mist-100">{{ e.get('summary', '') }}</div>
+              {% if e.get('resolved_at') %}
+              <div class="mt-1 text-xs text-mist-400 tabular-nums">
+                Löst {{ fmt_dt(e.get('resolved_at')) }}{% if e.get('resolved_by') %} av {{ e.get('resolved_by') }}{% endif %}
+              </div>
+              {% endif %}
+            </td>
+            <td>
+              {% set det_json = fmt_json(e.get('details')) %}
+              {% if det_json %}
+              <details>
+                <summary class="cursor-pointer text-xs text-oscar-300 hover:underline">Visa detaljer</summary>
+                <pre class="mt-1.5 max-w-sm overflow-x-auto rounded-lg border border-ink-700 bg-ink-950 p-2 font-mono text-xs text-mist-300">{{ det_json }}</pre>
+              </details>
+              {% else %}
+              <span class="az-muted">—</span>
               {% endif %}
             </td>
             <td>
               {% if e.get('status', 'open') == 'open' and e.get('id') %}
-              <form method="post" action="/oscar/escalations?show={{ show_filter or 'open' }}" class="inline">
+              <form
+                method="post"
+                action="/oscar/escalations?show={{ show_filter or 'open' }}"
+                class="inline"
+                data-confirm="Markera eskaleringen {{ e.get('id')[:8] }} som löst?"
+                data-confirm-title="Markera löst"
+                data-confirm-ok="Markera löst"
+              >
                 <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
                 <input type="hidden" name="ticket_id" value="{{ e.get('id') }}" />
-                <button class="az-btn-oscar" type="submit">Markera löst</button>
+                <button class="az-btn-oscar az-btn-sm" type="submit" data-busy-label="Sparar...">Markera löst</button>
               </form>
               {% else %}
               <span class="az-muted">—</span>
@@ -51,7 +103,11 @@
       </table>
     </div>
     {% else %}
-    <p class="az-muted">Inga eskaleringar{% if show_filter != 'all' %} öppna{% endif %}.</p>
+      {{ ui.empty_state(
+        "Inga eskaleringar",
+        "Inga eskaleringar matchar filtret." if show_filter != 'open' else "Det finns inga öppna eskaleringar just nu.",
+        icon_name="check-circle"
+      ) }}
     {% endif %}
   </section>
 </div>

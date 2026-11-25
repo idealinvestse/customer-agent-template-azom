@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 from flask import Flask, Response, g, redirect, render_template, request, url_for
 
 from auth import _auth_required
-from support import _dashboard_context, _flash_q
+from support import _dashboard_context, _flash, _flash_q, _fmt_dt
 
 _PLAN_ID = re.compile(r"^fe-[a-f0-9]{12}$")
 _REVIEW_ID = re.compile(r"^wr-[a-f0-9]{12}$")
@@ -71,6 +71,7 @@ def register_wp_routes(app: Flask) -> None:
             return Response("Saknar behörighet", 403)
         if not result.ok and (result.data or {}).get("error_class") == "UnknownSite":
             return Response("Okänd webbplats", 404)
+        _flash(result.message, "ok" if result.ok else "error")
         frag = _flash_q(result.message) if result.ok else _flash_q(err=result.message)
         return redirect(url_for("wp_site_detail", site_id=site_id) + f"?{frag}")
 
@@ -250,7 +251,9 @@ def _post_ssh(site_id: str):
     if blocked is not None:
         return blocked
     if result.ok:
+        _flash(result.message, "ok")
         return redirect(url_for("wp_ssh", site_id=site_id) + f"?{_flash_q(result.message)}")
+    _flash(result.message, "error")
     return redirect(url_for("wp_ssh", site_id=site_id) + f"?{_flash_q(err=result.message)}")
 
 
@@ -292,7 +295,9 @@ def _redirect_site(site_id: str, result: object):
     if not getattr(result, "ok", False) and data.get("error_class") == "UnknownSite":
         return Response("Okänd webbplats", 404)
     message = getattr(result, "message", "")
-    frag = _flash_q(message) if getattr(result, "ok", False) else _flash_q(err=message)
+    ok = getattr(result, "ok", False)
+    _flash(message, "ok" if ok else "error")
+    frag = _flash_q(message) if ok else _flash_q(err=message)
     return redirect(url_for("wp_site_detail", site_id=site_id) + f"?{frag}")
 
 
@@ -549,10 +554,19 @@ def _review_http(result: object):
     return None
 
 
-def _render_review(site_id: str, plan_id: str, *, error_class: str = "", result: dict | None = None):
+def _render_review(
+    site_id: str,
+    plan_id: str,
+    *,
+    error_class: str = "",
+    result: dict | None = None,
+    result_obj: object | None = None,
+    action_name: str = "",
+):
     if not _REVIEW_ID.fullmatch(plan_id):
         return Response("Okänd plan", 404)
     admin = _file_admin()
+    drill = _can_drill()
     shown = _review_ops().show(site_id, plan_id, actor=g.actor["name"], include_diff=admin)
     blocked = _review_http(shown)
     if blocked is not None:
@@ -569,15 +583,33 @@ def _render_review(site_id: str, plan_id: str, *, error_class: str = "", result:
         for row in (plan.get("checks") or [])
     )
     outcome = result or {}
+    effective_err = error_class or str(outcome.get("error_class") or "")
+    review_feedback = None
+    if result_obj is not None:
+        review_feedback = {
+            "ok": bool(getattr(result_obj, "ok", False)),
+            "action": action_name,
+            "message": str(getattr(result_obj, "message", "") or ""),
+            "error_class": effective_err,
+            "production_untouched": (
+                action_name == "production"
+                or effective_err in {"BackupNotVerified", "RestoreNotInMvp"}
+            ),
+        }
     return render_template(
         "wp_review.html",
         **_dashboard_context(
             plan=plan,
             diff=diff,
             can_review=admin,
+            can_drill=drill,
+            comments=list(plan.get("comments") or []),
+            sandbox=dict(plan.get("sandbox") or {}),
+            expires_at_fmt=_fmt_dt(plan.get("expires_at")),
+            review_feedback=review_feedback,
             screenshots=screenshots,
             has_rendered_preview=bool(screenshots and browser_passed),
-            error_class=error_class or str(outcome.get("error_class") or ""),
+            error_class=effective_err,
             executed=outcome.get("executed") is True,
             bytes_copied=False,
             restore=str(outcome.get("restore") or ""),
@@ -600,7 +632,13 @@ def _post_review_comment(site_id: str, plan_id: str):
     blocked = _review_http(result)
     if blocked is not None:
         return blocked
-    return _render_review(site_id, plan_id, result=result.data or {})
+    return _render_review(
+        site_id,
+        plan_id,
+        result=result.data or {},
+        result_obj=result,
+        action_name="comment",
+    )
 
 
 def _post_review_staging(site_id: str, plan_id: str):
@@ -615,7 +653,15 @@ def _post_review_staging(site_id: str, plan_id: str):
     blocked = _review_http(result)
     if blocked is not None:
         return blocked
-    return _render_review(site_id, plan_id, error_class=str((result.data or {}).get("error_class") or ""), result=result.data or {})
+    data = result.data or {}
+    return _render_review(
+        site_id,
+        plan_id,
+        error_class=str(data.get("error_class") or ""),
+        result=data,
+        result_obj=result,
+        action_name="staging",
+    )
 
 
 def _post_review_production(site_id: str, plan_id: str):
@@ -631,7 +677,14 @@ def _post_review_production(site_id: str, plan_id: str):
     if blocked is not None:
         return blocked
     data = result.data or {}
-    return _render_review(site_id, plan_id, error_class=str(data.get("error_class") or "BackupNotVerified"), result=data)
+    return _render_review(
+        site_id,
+        plan_id,
+        error_class=str(data.get("error_class") or "BackupNotVerified"),
+        result=data,
+        result_obj=result,
+        action_name="production",
+    )
 
 
 def _post_review_extend(site_id: str, plan_id: str):
@@ -643,7 +696,13 @@ def _post_review_extend(site_id: str, plan_id: str):
     blocked = _review_http(result)
     if blocked is not None:
         return blocked
-    return _render_review(site_id, plan_id, result=result.data or {})
+    return _render_review(
+        site_id,
+        plan_id,
+        result=result.data or {},
+        result_obj=result,
+        action_name="extend",
+    )
 
 
 def _post_review_checks(site_id: str, plan_id: str):
@@ -661,6 +720,8 @@ def _post_review_checks(site_id: str, plan_id: str):
         plan_id,
         error_class=str(data.get("error_class") or ""),
         result=data,
+        result_obj=result,
+        action_name="checks",
     )
 
 
@@ -679,4 +740,6 @@ def _post_review_preview(site_id: str, plan_id: str):
         plan_id,
         error_class=str(data.get("error_class") or ""),
         result=data,
+        result_obj=result,
+        action_name="preview",
     )

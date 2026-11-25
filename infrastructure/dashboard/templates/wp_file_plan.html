@@ -1,50 +1,106 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
 {% block title %}Filplan – Azom{% endblock %}
 {% block page_subtitle %}Filplan{% endblock %}
 {% block content %}
-<div class="space-y-5" data-live-calls="false" data-executed="false" data-error="{{ error_class or '' }}">
-  <section class="az-card">
-    <h2 class="az-page-title">Granskning av diffplan</h2>
-    <p class="az-muted mt-2 text-sm">
-      Planen är granskningsdata. Den här sidan skriver inte produktion.
-      Backup och återställning är inte verifierade.
-    </p>
-    {% if error_class %}
-    <p class="mt-3 text-warn" data-deploy="{{ error_class }}">{{ error_class }}. Ingen fil ändrades.</p>
-    {% endif %}
+<div class="space-y-6" data-live-calls="false" data-executed="false" data-error="{{ error_class or '' }}">
+  {% if site or plan %}
+  {% set s_id = site.id if site else (plan.site_id if plan else '') %}
+  {{ ui.breadcrumb([
+    {'label': 'Webbplatser', 'href': url_for('wp_sites')},
+    {'label': site.display_name if site else s_id, 'href': url_for('wp_site_detail', site_id=s_id) if s_id else none},
+    {'label': 'Filer', 'href': url_for('wp_files', site_id=s_id) if s_id else none},
+    {'label': plan.plan_id if plan else 'Filplan'}
+  ]) }}
+  {% endif %}
+
+  {% call ui.page_header(
+    "Granskning av diffplan",
+    "Planen är granskningsdata. Den här sidan skriver inte produktion; backup och återställning är inte verifierade.",
+    badge_text=plan.status if plan else none,
+    badge_tone='warn'
+  ) %}
     {% if plan %}
-    <dl class="mt-4 space-y-1 text-sm">
-      <div>Plan {{ plan.plan_id }}</div>
-      <div>Sajt {{ plan.site_id }} · {{ plan.environment }}</div>
-      <div>{{ plan.kind }} / {{ plan.slug }} / {{ plan.relative_path }}</div>
-      <div>Risk {{ plan.risk }} · status {{ plan.status }}</div>
-      <div>Före {{ plan.before_digest }}</div>
-      <div>Efter {{ plan.after_digest }}</div>
-      {% if plan.summary %}<div>{{ plan.summary }}</div>{% endif %}
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_files', site_id=plan.site_id, kind=plan.kind, slug=plan.slug, path=plan.relative_path) }}">{{ icon('arrow-left', 'xs') }}<span>Tillbaka till filen</span></a>
+    {% endif %}
+  {% endcall %}
+
+  {% if error_class %}
+    <div data-deploy="{{ error_class }}">
+      {{ ui.info_callout('warn', error_class ~ ' — ingen fil ändrades', 'Produktionsbegäran blockerades av serverns hash- eller backupkontroll.') }}
+    </div>
+  {% endif %}
+
+  {{ ui.info_callout(
+    'warn',
+    'Produktion blockerad (BackupNotVerified / RestoreNotInMvp)',
+    'Produktionsdeploy kräver verifierad backup och fungerande produktionsåterställning. Båda är spärrade i nuvarande version.'
+  ) }}
+
+  {% if plan %}
+  <section class="az-card space-y-4">
+    <h2 class="font-display text-base font-semibold text-mist-100">Planmetadata</h2>
+    <dl class="grid gap-3 sm:grid-cols-2 text-sm">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Plan-ID</dt>
+        <dd class="mt-1 font-mono text-xs text-mist-100 break-all">{{ plan.plan_id }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Sajt &amp; Miljö</dt>
+        <dd class="mt-1 font-mono text-xs text-mist-100">{{ plan.site_id }} · {{ plan.environment }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 sm:col-span-2">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Målfil</dt>
+        <dd class="mt-1 font-mono text-xs text-steel-300 break-all">{{ plan.kind }} / {{ plan.slug }} / {{ plan.relative_path }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Risk &amp; Status</dt>
+        <dd class="mt-1 flex flex-wrap gap-2">
+          {{ ui.status_badge('warn' if plan.risk in ['high', 'critical'] else 'info', 'Risk: ' ~ (plan.risk or '—')) }}
+          {{ ui.status_badge('neutral', 'Status: ' ~ (plan.status or '—')) }}
+        </dd>
+      </div>
+      {% if plan.summary %}
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Sammanfattning</dt>
+        <dd class="mt-1 text-sm text-mist-200">{{ plan.summary }}</dd>
+      </div>
+      {% endif %}
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Före-digest (SHA-256)</dt>
+        <dd class="mt-1 font-mono text-xs text-mist-300 break-all">{{ plan.before_digest }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Efter-digest (SHA-256)</dt>
+        <dd class="mt-1 font-mono text-xs text-mist-300 break-all">{{ plan.after_digest }}</dd>
+      </div>
     </dl>
-    {% endif %}
   </section>
-  <section class="az-card">
-    <h2 class="az-section-title">Sparad diff</h2>
+  {% endif %}
+
+  <section class="az-card space-y-3">
+    <h2 class="font-display text-base font-semibold text-mist-100">Sparad diff</h2>
     {% if diff %}
-    <pre class="mt-3 whitespace-pre-wrap text-sm">{{ diff }}</pre>
+    <pre class="overflow-x-auto rounded-lg border border-ink-700 bg-ink-950 p-4 font-mono text-xs text-mist-100 whitespace-pre-wrap">{{ diff }}</pre>
     {% else %}
-    <p class="az-muted mt-3 text-sm">Ingen diff finns kvar för den här planen.</p>
+    <p class="az-muted">Ingen diff finns kvar för den här planen.</p>
     {% endif %}
   </section>
+
   {% if plan and plan.environment == 'production' %}
-  <section class="az-card">
-    <h2 class="az-section-title">Produktion</h2>
-    <form class="mt-3" method="post" action="{{ url_for('wp_file_deploy', site_id=plan.site_id) }}">
+  <section class="az-card border-warn/35 space-y-3">
+    <h2 class="font-display text-base font-semibold text-warn">Produktion (spärrad tills backup &amp; restore verifierats)</h2>
+    <p class="az-muted">Knappen ändrar ingen fil förrän backup och återställning är verifierade.</p>
+    <form method="post" action="{{ url_for('wp_file_deploy', site_id=plan.site_id) }}">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <input type="hidden" name="plan_id" value="{{ plan.plan_id }}" />
       <input type="hidden" name="before_digest" value="{{ plan.before_digest }}" />
       <input type="hidden" name="after_digest" value="{{ plan.after_digest }}" />
       <input type="hidden" name="environment" value="{{ plan.environment }}" />
       <input type="hidden" name="path" value="{{ plan.relative_path }}" />
-      <button class="az-btn-primary" type="submit" data-file-action="deploy">Begär produktion</button>
+      <button class="az-btn-secondary border-warn/40 text-warn hover:bg-warn/10" type="submit" data-file-action="deploy" data-busy-label="Kontrollerar...">Begär produktion</button>
     </form>
-    <p class="az-muted mt-2 text-sm">Knappen ändrar ingen fil förrän backup och återställning är verifierade.</p>
   </section>
   {% endif %}
 </div>

@@ -1,0 +1,200 @@
+{% from "_icons.html" import icon %}
+
+{% macro status_badge(status, label=None, title=None, show_icon=False, extra_class='') %}
+  {%- set s = (status or 'neutral') | string | lower -%}
+  {%- if s in ['ok', 'verified', 'active', 'closed_breaker', 'resolved', 'present', 'connected', 'pass'] -%}
+    {%- set tone_cls = 'az-badge-ok' -%}
+    {%- set icon_name = 'check-circle' -%}
+  {%- elif s in ['warn', 'warning', 'attention', 'mock_verified', 'partial', 'escalated', 'unavailable', 'pending', 'skipped', 'open_breaker', 'stale'] -%}
+    {%- set tone_cls = 'az-badge-warn' -%}
+    {%- set icon_name = 'alert-triangle' -%}
+  {%- elif s in ['error', 'fail', 'failed', 'missing', 'rejected', 'danger', 'open_critical', 'blocked'] -%}
+    {%- set tone_cls = 'az-badge-danger' -%}
+    {%- set icon_name = 'alert-circle' -%}
+  {%- elif s in ['info', 'suggest', 'open', 'draft'] -%}
+    {%- set tone_cls = 'az-badge-info' -%}
+    {%- set icon_name = 'info' -%}
+  {%- elif s in ['oscar', 'custom', 'anpassad'] -%}
+    {%- set tone_cls = 'az-badge-oscar' -%}
+    {%- set icon_name = 'shield' -%}
+  {%- else -%}
+    {%- set tone_cls = 'az-badge-neutral' -%}
+    {%- set icon_name = 'info' -%}
+  {%- endif -%}
+  <span class="az-badge {{ tone_cls }} {{ extra_class }}"{% if title %} title="{{ title }}"{% endif %}>
+    {%- if show_icon %}{{ icon(icon_name, 'xs') }}{% endif -%}
+    <span>{{ label if label is not none else status }}</span>
+  </span>
+{% endmacro %}
+
+{% macro page_header(title, subtitle='', badge_text=None, badge_tone='neutral') %}
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div class="min-w-0">
+      <div class="flex flex-wrap items-center gap-2.5">
+        <h1 class="az-page-title">{{ title }}</h1>
+        {% if badge_text %}
+          {{ status_badge(badge_tone, badge_text) }}
+        {% endif %}
+      </div>
+      {% if subtitle %}
+      <p class="az-muted mt-1">{{ subtitle }}</p>
+      {% endif %}
+    </div>
+    {% if caller is defined %}
+    <div class="flex flex-wrap items-center gap-2">
+      {{ caller() }}
+    </div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro breadcrumb(items) %}
+  {% if items %}
+  <nav aria-label="Brödsmula" class="flex flex-wrap items-center gap-1.5 text-xs text-mist-400">
+    {% for item in items %}
+      {% set lbl = item.label if item is mapping else item[0] %}
+      {% set href = item.href if item is mapping else (item[1] if item|length > 1 else None) %}
+      {% if not loop.first %}
+      <span class="text-mist-500" aria-hidden="true">{{ icon('chevron-right', 'xs') }}</span>
+      {% endif %}
+      {% if href and not loop.last %}
+      <a href="{{ href }}" class="rounded px-1 py-0.5 text-mist-300 transition hover:text-mist-100">{{ lbl }}</a>
+      {% else %}
+      <span class="px-1 py-0.5 font-medium text-mist-100" aria-current="page">{{ lbl }}</span>
+      {% endif %}
+    {% endfor %}
+  </nav>
+  {% endif %}
+{% endmacro %}
+
+{% macro kpi_card(label, value, hint='', tone='neutral', href=None, link_label=None, icon_name=None, oscar=False) %}
+  {%- set ring = '' -%}
+  {%- if tone == 'ok' -%}{%- set ring = 'border-ok/30' -%}
+  {%- elif tone == 'warn' -%}{%- set ring = 'border-warn/35' -%}
+  {%- elif tone in ['error', 'danger'] -%}{%- set ring = 'border-danger/35' -%}
+  {%- elif tone == 'info' -%}{%- set ring = 'border-steel-500/35' -%}
+  {%- endif -%}
+  <section class="{{ 'az-card-oscar' if oscar else 'az-card' }} flex flex-col justify-between {{ ring }}">
+    <div>
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="az-section-title mb-0 {{ 'text-oscar-400/90' if oscar else '' }}">{{ label }}</h2>
+        {% if icon_name %}
+        <span class="text-mist-400">{{ icon(icon_name, 'sm') }}</span>
+        {% endif %}
+      </div>
+      <div class="az-stat mt-2">{{ value }}</div>
+      {% if hint %}
+      <p class="az-muted mt-1">{{ hint }}</p>
+      {% endif %}
+    </div>
+    {% if href %}
+    <div class="mt-4">
+      <a class="{{ 'az-btn-oscar' if oscar else 'az-btn-secondary' }} az-btn-sm" href="{{ href }}">
+        <span>{{ link_label or 'Öppna' }}</span>
+        {{ icon('arrow-right', 'xs') }}
+      </a>
+    </div>
+    {% endif %}
+  </section>
+{% endmacro %}
+
+{% macro info_callout(tone='info', title='', body='', role='note') %}
+  {%- set t = (tone or 'info') | lower -%}
+  {%- if t in ['error', 'danger'] -%}
+    {%- set cls = 'az-callout-danger' -%}
+    {%- set ic = 'alert-circle' -%}
+  {%- elif t in ['warn', 'warning', 'attention'] -%}
+    {%- set cls = 'az-callout-warn' -%}
+    {%- set ic = 'alert-triangle' -%}
+  {%- elif t == 'ok' -%}
+    {%- set cls = 'az-callout-ok' -%}
+    {%- set ic = 'check-circle' -%}
+  {%- else -%}
+    {%- set cls = 'az-callout-info' -%}
+    {%- set ic = 'info' -%}
+  {%- endif -%}
+  <div class="az-callout {{ cls }}"{% if role %} role="{{ role }}"{% endif %}>
+    <span class="mt-0.5 shrink-0">{{ icon(ic, 'sm') }}</span>
+    <div class="min-w-0 flex-1 space-y-1">
+      {% if title %}<p class="font-semibold">{{ title }}</p>{% endif %}
+      {% if body %}<p class="opacity-95">{{ body }}</p>{% endif %}
+      {% if caller is defined %}{{ caller() }}{% endif %}
+    </div>
+  </div>
+{% endmacro %}
+
+{% macro empty_state(title, description='', action_label=None, action_href=None, icon_name='inbox') %}
+  <div class="flex flex-col items-center justify-center rounded-xl border border-dashed border-ink-600/80 bg-ink-900/40 px-6 py-10 text-center">
+    <div class="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-ink-800 text-mist-400">
+      {{ icon(icon_name, 'md') }}
+    </div>
+    <h2 class="font-display text-base font-semibold text-mist-100">{{ title }}</h2>
+    {% if description %}
+    <p class="az-muted mt-1 max-w-md">{{ description }}</p>
+    {% endif %}
+    {% if action_label and action_href %}
+    <div class="mt-4">
+      <a class="az-btn-secondary az-btn-sm" href="{{ action_href }}">{{ action_label }}</a>
+    </div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro flash_banner(kind='info', text='', dismissible=True) %}
+  {%- set k = (kind or 'info') | lower -%}
+  {%- if k in ['error', 'danger'] -%}
+    {%- set norm = 'error' -%}
+    {%- set aria_role = 'alert' -%}
+    {%- set ic = 'alert-circle' -%}
+  {%- elif k in ['warn', 'warning'] -%}
+    {%- set norm = 'warn' -%}
+    {%- set aria_role = 'status' -%}
+    {%- set ic = 'alert-triangle' -%}
+  {%- elif k in ['ok', 'success'] -%}
+    {%- set norm = 'ok' -%}
+    {%- set aria_role = 'status' -%}
+    {%- set ic = 'check-circle' -%}
+  {%- else -%}
+    {%- set norm = 'info' -%}
+    {%- set aria_role = 'status' -%}
+    {%- set ic = 'info' -%}
+  {%- endif -%}
+  {% if text %}
+  <div class="az-flash az-flash-{{ norm }}" role="{{ aria_role }}" data-flash-banner>
+    <div class="flex items-start gap-2.5 min-w-0">
+      <span class="mt-0.5 shrink-0">{{ icon(ic, 'sm') }}</span>
+      <span class="min-w-0 break-words">{{ text }}</span>
+    </div>
+    {% if dismissible %}
+    <button
+      type="button"
+      class="shrink-0 rounded p-0.5 opacity-75 transition hover:bg-ink-800/60 hover:opacity-100"
+      data-dismiss-flash
+      aria-label="Stäng meddelande"
+    >
+      {{ icon('x', 'sm') }}
+    </button>
+    {% endif %}
+  </div>
+  {% endif %}
+{% endmacro %}
+
+{% macro render_flashes(legacy_flash=None) %}
+  {%- set session_flashes = get_flashed_messages(with_categories=true) if get_flashed_messages is defined else [] -%}
+  {%- for cat, msg in session_flashes -%}
+    {{ flash_banner(cat, msg) }}
+  {%- endfor -%}
+  {%- if legacy_flash -%}
+    {%- if legacy_flash.startswith('error:') -%}
+      {{ flash_banner('error', legacy_flash[6:]) }}
+    {%- elif legacy_flash.startswith('warn:') -%}
+      {{ flash_banner('warn', legacy_flash[5:]) }}
+    {%- elif legacy_flash.startswith('info:') -%}
+      {{ flash_banner('info', legacy_flash[5:]) }}
+    {%- elif legacy_flash.startswith('ok:') -%}
+      {{ flash_banner('ok', legacy_flash[3:]) }}
+    {%- else -%}
+      {{ flash_banner('ok', legacy_flash) }}
+    {%- endif -%}
+  {%- endif -%}
+{% endmacro %}

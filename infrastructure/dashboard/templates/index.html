@@ -1,186 +1,391 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Översikt – Azom Agent Dashboard{% endblock %}
 {% block page_subtitle %}Översikt{% endblock %}
 {% block content %}
-<div class="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-  <section class="az-card {% if budget and budget.near_cap %}ring-1 ring-warn/50{% endif %}">
-    <h2 class="az-section-title">Telemetry cost</h2>
-    <div class="az-stat">${{ cost_usd }}</div>
-    <p class="az-muted mt-1">Cap: ${{ openrouter_cap }} · LLM budget: ${{ budget_cap_llm }}</p>
-    {% if budget and budget.near_cap %}
-    <p class="mt-2 text-sm text-warn">{{ budget.message }}</p>
-    {% endif %}
-    <div class="az-progress mt-3"><span style="width: {{ cost_pct }}%"></span></div>
-  </section>
+<div class="space-y-5">
+  {{ ui.page_header("Översikt", "Ärenden, poll-beredskap, LLM-budget och driftstatus.") }}
 
-  <section class="az-card">
-    <h2 class="az-section-title">Ärenden</h2>
-    <div class="az-stat">{{ open_cases }}</div>
-    <p class="az-muted mt-1">Öppna · Eskalerade: <strong class="text-mist-100">{{ escalated_cases }}</strong>
-      {% if suggest_cases %} · ★ <strong class="text-steel-200">{{ suggest_cases }}</strong> föreslå{% endif %}
-    </p>
-    <div class="mt-4 flex flex-wrap gap-2">
-      <a class="az-btn-primary" href="/cases?status=open,escalated">Öppna kön →</a>
-      {% if suggest_cases %}
-      <a class="az-btn-secondary" href="/cases?status=open,escalated&amp;suggest=1">★ Föreslå ({{ suggest_cases }})</a>
-      {% endif %}
-    </div>
-  </section>
-
-  {% if support_kpis %}
-  <section class="az-card">
-    <h2 class="az-section-title">Support KPI 7d</h2>
-    <p class="text-sm text-mist-100">{{ support_kpis.message }}</p>
-    <p class="az-muted mt-2 text-xs">
-      Approves: {{ support_kpis.n_case_approved }}
-      {% if support_kpis.median_time_to_approve_sec is not none %}
-      · median TTA: {{ support_kpis.median_time_to_approve_sec }}s
-      {% endif %}
-      {% if support_kpis.mean_draft_edit_distance is not none %}
-      · mean edit: {{ support_kpis.mean_draft_edit_distance }}
-      {% endif %}
-    </p>
-  </section>
-  {% endif %}
-
-  {% if readiness %}
-  <section class="az-card {% if not readiness.ok %}ring-1 ring-warn/50{% endif %}">
-    <h2 class="az-section-title">Cases poll readiness</h2>
-    <p class="text-sm">
-      {% if readiness.ok %}<span class="az-present">OK</span>
-      {% elif readiness.partial %}<span class="az-badge bg-warn/15 text-warn">PARTIAL</span>
-      {% elif readiness.stale %}<span class="az-badge bg-warn/15 text-warn">STALE</span>
-      {% else %}<span class="az-missing">NOT READY</span>{% endif %}
-    </p>
-    <p class="az-muted mt-2 text-xs">
-      {% if readiness.last_poll_age_sec is not none %}Ålder: {{ readiness.last_poll_age_sec }}s · {% endif %}
-      errors: {{ readiness.errors or 0 }}
-      {% if readiness.created is not none %} · created: {{ readiness.created }}{% endif %}
-    </p>
-    {% if readiness.detail %}
-    <p class="mt-2 text-sm text-warn">{{ readiness.detail }}</p>
-    {% endif %}
-    {% if readiness.partial %}
-    <p class="mt-2 text-xs text-warn">Se runbook: docs/runbooks/mail-poll-stuck.md</p>
-    {% endif %}
-  </section>
-  {% endif %}
-
-  <section class="az-card">
-    <h2 class="az-section-title">Integrationer</h2>
-    <p class="az-muted text-xs">Presence (inga live-probes på översikt)</p>
-    {% if integrations %}
-    <p class="az-muted mt-2">
-      ok {{ integrations.counts.ok }} ·
-      partial {{ integrations.counts.partial }} ·
-      missing {{ integrations.counts.missing }}
-    </p>
-    <ul class="az-muted mt-3 list-disc space-y-1 pl-4">
-      {% for r in integrations.results %}
-      <li>
-        {% if r.status == 'ok' %}<span class="az-present">{{ r.label }}</span>
-        {% elif r.status == 'partial' %}<span class="az-badge bg-warn/15 text-warn">{{ r.label }}</span>
-        {% else %}<span class="az-missing">{{ r.label }}</span>{% endif %}
-      </li>
+  {% if section_errors %}
+  {% call ui.info_callout('warn', 'Vissa mätvärden kunde inte läsas in') %}
+    <ul class="mt-1 list-disc space-y-0.5 pl-4 text-xs">
+      {% for key, msg in section_errors.items() %}
+      <li><span class="font-mono">{{ key }}</span>: {{ msg }}</li>
       {% endfor %}
     </ul>
-    {% if last_probe and last_probe.results %}
-    <p class="az-muted mt-3 text-xs">
-      Senaste Oscar-test (cache{% if last_probe.checked_at %}, {{ last_probe.checked_at[:19] }}{% endif %}) — kan vara inaktuell
-    </p>
-    <ul class="az-muted mt-2 list-disc space-y-1 pl-4 text-xs">
-      {% for r in last_probe.results[:8] %}
-      <li>
-        {% if r.status == 'ok' %}<span class="az-present">{{ r.label or r.id }}</span>
-        {% elif r.status == 'missing' %}<span class="az-missing">{{ r.label or r.id }}</span>
-        {% else %}<span class="az-badge bg-warn/15 text-warn">{{ r.label or r.id }} · {{ r.status }}</span>{% endif %}
-      </li>
-      {% endfor %}
-    </ul>
-    {% elif last_probe and last_probe.checked_at %}
-    <p class="az-muted mt-3 text-xs">Senaste Oscar-test: {{ last_probe.checked_at[:19] }}</p>
-    {% endif %}
-    {% if is_oscar %}
-    <p class="mt-4"><a class="az-btn-oscar" href="/oscar/secrets">Testa secrets →</a></p>
-    {% else %}
-    <p class="mt-4"><a class="az-btn-secondary" href="/secrets">Secrets-status →</a></p>
-    {% endif %}
-    {% else %}
-    <p class="az-muted">Ingen status.</p>
-    {% endif %}
-    <p class="mt-3"><a class="az-btn-secondary" href="/data/escalations">Eskaleringar ({{ open_escalations }}) →</a></p>
-  </section>
+  {% endcall %}
+  {% endif %}
 
-  <section class="az-card">
-    <h2 class="az-section-title">Runtime</h2>
-    <p><strong class="text-mist-100">{{ runtime.customer }}</strong> · {{ runtime.domains | join(', ') }}</p>
-    <p class="az-muted mt-2">Mail: {{ runtime.mail_provider }}</p>
-    <p class="az-muted mt-1">
-      Gmail:
-      {% if runtime.gmail_tokens_stored %}<span class="az-present">connected</span>
-      {% elif runtime.gmail_oauth_configured %}<span class="az-badge bg-warn/15 text-warn">configured</span>
-      {% else %}<span class="az-missing">not configured</span>{% endif %}
-    </p>
-    <p class="az-muted mt-1">Öppna eskaleringar: <strong class="text-mist-100">{{ open_escalations }}</strong></p>
-  </section>
+  <!-- Top 4 equal-height KPI cards -->
+  <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <section class="az-card flex flex-col justify-between border-steel-500/35">
+      <div>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="az-section-title mb-0">Öppna ärenden</h2>
+          <span class="text-mist-400">{{ icon('inbox', 'sm') }}</span>
+        </div>
+        <div class="az-stat mt-2">{{ open_cases }}</div>
+        <p class="az-muted mt-1">
+          Eskalerade: <strong class="font-semibold text-mist-100 tabular-nums">{{ escalated_cases }}</strong>
+          {% if suggest_cases %}
+          · <span class="text-steel-200 font-medium tabular-nums">★ {{ suggest_cases }} föreslå</span>
+          {% endif %}
+        </p>
+      </div>
+      <div class="mt-4 flex flex-wrap gap-2">
+        <a class="az-btn-primary az-btn-sm" href="/cases?status=open,escalated">
+          <span>Öppna kön</span>
+          {{ icon('arrow-right', 'xs') }}
+        </a>
+        {% if suggest_cases %}
+        <a class="az-btn-secondary az-btn-sm" href="/cases?status=open,escalated&amp;suggest=1">
+          ★ Föreslå ({{ suggest_cases }})
+        </a>
+        {% endif %}
+      </div>
+    </section>
 
+    <section class="az-card flex flex-col justify-between {% if readiness and not readiness.ok %}border-warn/40{% endif %}">
+      <div>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="az-section-title mb-0">Poll-beredskap</h2>
+          <span class="text-mist-400">{{ icon('activity', 'sm') }}</span>
+        </div>
+        <div class="mt-2.5 flex flex-wrap items-center gap-2">
+          {% if readiness %}
+            {% if readiness.ok %}
+              {{ ui.status_badge('ok', 'OK', show_icon=True) }}
+            {% elif readiness.partial %}
+              {{ ui.status_badge('warn', 'PARTIAL', show_icon=True) }}
+            {% elif readiness.stale %}
+              {{ ui.status_badge('warn', 'STALE', show_icon=True) }}
+            {% else %}
+              {{ ui.status_badge('error', 'NOT READY', show_icon=True) }}
+            {% endif %}
+          {% else %}
+            {{ ui.status_badge('neutral', 'Okänd') }}
+          {% endif %}
+        </div>
+        {% if readiness %}
+        <p class="az-muted mt-2 text-xs font-mono tabular-nums">
+          {% if readiness.last_poll_age_sec is defined and readiness.last_poll_age_sec is not none %}Ålder: {{ readiness.last_poll_age_sec }}s · {% endif %}
+          Fel: {{ readiness.errors or 0 }}
+          {% if readiness.created is defined and readiness.created is not none %} · Skapade: {{ readiness.created }}{% endif %}
+        </p>
+        {% if readiness.detail %}
+        <p class="mt-1.5 text-xs text-warn">{{ readiness.detail }}</p>
+        {% endif %}
+        {% if readiness.partial %}
+        <p class="mt-1.5 text-xs text-warn">
+          Se runbook: <code class="az-code">docs/runbooks/mail-poll-stuck.md</code>
+        </p>
+        {% endif %}
+        {% else %}
+        <p class="az-muted mt-2 text-xs">Ingen poll-status loggad ännu.</p>
+        {% endif %}
+      </div>
+      <div class="mt-4">
+        <a class="az-btn-secondary az-btn-sm" href="/cases?status=open,escalated">
+          <span>Gå till ärenden</span>
+          {{ icon('arrow-right', 'xs') }}
+        </a>
+      </div>
+    </section>
+
+    <section class="az-card flex flex-col justify-between {% if budget and budget.near_cap %}border-warn/40{% endif %}">
+      <div>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="az-section-title mb-0">LLM-kostnad</h2>
+          <span class="text-mist-400">{{ icon('trending-up', 'sm') }}</span>
+        </div>
+        <div class="az-stat mt-2 font-mono">{{ fmt_usd(cost_usd) }}</div>
+        <p class="az-muted mt-1 font-mono tabular-nums">
+          Tak: {{ fmt_usd(openrouter_cap) }}
+          {% if budget_cap_llm is defined and budget_cap_llm != openrouter_cap %}
+          · Sites: {{ fmt_usd(budget_cap_llm) }}
+          {% endif %}
+        </p>
+        {% if budget and budget.near_cap %}
+        <p class="mt-1.5 text-xs text-warn">{{ budget.message }}</p>
+        {% endif %}
+      </div>
+      <div class="mt-4 space-y-2">
+        <div class="az-progress" aria-label="Förbrukad LLM-budget {{ cost_pct }}%">
+          <span style="width: {{ cost_pct }}%"></span>
+        </div>
+        <a class="az-btn-secondary az-btn-sm" href="/data/telemetry">
+          <span>Telemetri</span>
+          {{ icon('arrow-right', 'xs') }}
+        </a>
+      </div>
+    </section>
+
+    <section class="az-card flex flex-col justify-between {% if open_escalations %}border-warn/35{% endif %}">
+      <div>
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="az-section-title mb-0">Öppna eskaleringar</h2>
+          <span class="text-mist-400">{{ icon('alert-triangle', 'sm') }}</span>
+        </div>
+        <div class="az-stat mt-2">{{ open_escalations }}</div>
+        <p class="az-muted mt-1">
+          {% if open_escalations %}
+          Väntar på åtgärd av Oscar.
+          {% else %}
+          Inga öppna eskaleringar.
+          {% endif %}
+        </p>
+      </div>
+      <div class="mt-4">
+        <a class="az-btn-secondary az-btn-sm" href="/data/escalations">
+          <span>Visa eskaleringar</span>
+          {{ icon('arrow-right', 'xs') }}
+        </a>
+      </div>
+    </section>
+  </div>
+
+  <!-- Balanced 2-column mid row -->
+  <div class="grid gap-5 lg:grid-cols-2">
+    <section class="az-card flex flex-col justify-between">
+      <div>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="az-section-title mb-0">Integrationer</h2>
+          {% if integrations %}
+          <span class="text-xs text-mist-400 tabular-nums">
+            OK {{ integrations.counts.ok }} · Delvis {{ integrations.counts.partial }} · Saknas {{ integrations.counts.missing }}
+          </span>
+          {% endif %}
+        </div>
+        <p class="az-muted mt-1 text-xs">Konfigurationsnärvaro (inga live-anrop på översikten).</p>
+
+        {% if integrations and integrations.results %}
+        <div class="mt-3 flex flex-wrap gap-1.5">
+          {% for r in integrations.results %}
+            {% if r.status == 'ok' %}
+              {{ ui.status_badge('ok', r.label, show_icon=True) }}
+            {% elif r.status == 'partial' %}
+              {{ ui.status_badge('warn', r.label, show_icon=True) }}
+            {% else %}
+              {{ ui.status_badge('error', r.label, show_icon=True) }}
+            {% endif %}
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="az-muted mt-3">Ingen integrationsstatus tillgänglig.</p>
+        {% endif %}
+
+        {% if last_probe and (last_probe.results or last_probe.checked_at) %}
+        <div class="mt-4 border-t border-ink-700/70 pt-3">
+          <p class="text-xs text-mist-400">
+            Senaste Oscar-test
+            {% if last_probe.checked_at %}
+            (<span class="font-mono tabular-nums">{{ fmt_dt(last_probe.checked_at) }}</span>)
+            {% endif %}
+            — kan vara inaktuell
+          </p>
+          {% if last_probe.results %}
+          <div class="mt-2 flex flex-wrap gap-1.5">
+            {% for r in last_probe.results[:8] %}
+              {% set lbl = r.label or r.id %}
+              {% if r.status == 'ok' %}
+                {{ ui.status_badge('ok', lbl) }}
+              {% elif r.status == 'missing' %}
+                {{ ui.status_badge('error', lbl ~ ' · saknas') }}
+              {% else %}
+                {{ ui.status_badge('warn', lbl ~ ' · ' ~ r.status) }}
+              {% endif %}
+            {% endfor %}
+            {% if last_probe.results | length > 8 %}
+            <span class="az-badge az-badge-neutral tabular-nums">+{{ last_probe.results | length - 8 }} fler</span>
+            {% endif %}
+          </div>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="mt-4 flex flex-wrap gap-2">
+        {% if is_oscar %}
+        <a class="az-btn-oscar az-btn-sm" href="/oscar/secrets">
+          <span>Testa secrets</span>
+          {{ icon('arrow-right', 'xs') }}
+        </a>
+        {% else %}
+        <a class="az-btn-secondary az-btn-sm" href="/secrets">
+          <span>Secrets-status</span>
+          {{ icon('arrow-right', 'xs') }}
+        </a>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="az-card flex flex-col justify-between">
+      <div class="space-y-4">
+        <div>
+          <h2 class="az-section-title">Runtime &amp; Support KPI 7d</h2>
+          <dl class="grid gap-3 text-sm sm:grid-cols-2">
+            <div>
+              <dt class="text-xs text-mist-400">Kund &amp; domäner</dt>
+              <dd class="mt-0.5 font-medium text-mist-100">
+                {{ runtime.customer }} · <span class="font-mono text-xs text-mist-300">{{ runtime.domains | join(', ') }}</span>
+              </dd>
+            </div>
+            <div>
+              <dt class="text-xs text-mist-400">Mailleverantör</dt>
+              <dd class="mt-0.5 font-mono text-xs text-mist-200">{{ runtime.mail_provider }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-mist-400">Gmail OAuth</dt>
+              <dd class="mt-0.5">
+                {% if runtime.gmail_tokens_stored %}
+                  {{ ui.status_badge('ok', 'Ansluten', show_icon=True) }}
+                {% elif runtime.gmail_oauth_configured %}
+                  {{ ui.status_badge('warn', 'Konfigurerad', show_icon=True) }}
+                {% else %}
+                  {{ ui.status_badge('error', 'Ej konfigurerad', show_icon=True) }}
+                {% endif %}
+              </dd>
+            </div>
+            <div>
+              <dt class="text-xs text-mist-400">Driftläge</dt>
+              <dd class="mt-0.5">
+                {% if runtime.mock_mode %}
+                  {{ ui.status_badge('warn', 'Mock-läge') }}
+                {% else %}
+                  {{ ui.status_badge('ok', 'Live') }}
+                {% endif %}
+              </dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="border-t border-ink-700/70 pt-3">
+          <h3 class="az-section-heading mb-1.5">Support KPI (7 dagar)</h3>
+          {% if support_kpis %}
+          <p class="text-sm text-mist-200">{{ support_kpis.message }}</p>
+          <p class="az-muted mt-1.5 text-xs font-mono tabular-nums">
+            Godkända: {{ support_kpis.n_case_approved }}
+            {% if support_kpis.median_time_to_approve_sec is not none %}
+            · Median TTA: {{ support_kpis.median_time_to_approve_sec }}s
+            {% endif %}
+            {% if support_kpis.mean_draft_edit_distance is not none %}
+            · Snittredigering: {{ support_kpis.mean_draft_edit_distance }}
+            {% endif %}
+          </p>
+          {% else %}
+          <p class="az-muted text-xs">Support-KPI ej tillgänglig.</p>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="mt-4 flex flex-wrap gap-2">
+        <a class="az-btn-secondary az-btn-sm" href="/onboarding">Onboarding</a>
+        <a class="az-btn-secondary az-btn-sm" href="/settings">Inställningar</a>
+      </div>
+    </section>
+  </div>
+
+  <!-- Recent telemetry (columns aligned with /data/telemetry) -->
   <section class="az-card">
-    <h2 class="az-section-title">Hantera</h2>
-    <div class="flex flex-wrap gap-2">
-      <a class="az-btn-secondary" href="/settings">Inställningar</a>
-      <a class="az-btn-secondary" href="/secrets">Secrets</a>
-      <a class="az-btn-secondary" href="/interact">Support-draft</a>
-      <a class="az-btn-secondary" href="/cases">Ärenden</a>
-      {% if is_oscar %}
-      <a class="az-btn-oscar" href="/oscar">Oscar-panel →</a>
-      {% endif %}
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 id="recent-tel-heading" class="az-section-title mb-0">Senaste telemetri</h2>
+      <a class="text-xs font-medium text-steel-300 hover:text-steel-200" href="/data/telemetry">Visa alla →</a>
     </div>
-  </section>
-
-  <section class="az-card sm:col-span-2 xl:col-span-3">
-    <h2 class="az-section-title">Recent telemetry</h2>
     {% if telemetry %}
-    <div class="overflow-x-auto">
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="recent-tel-heading">
       <table class="az-table">
-        <thead><tr><th>When</th><th>Action</th><th>Site</th><th>Units</th></tr></thead>
+        <thead>
+          <tr>
+            <th scope="col">Tid</th>
+            <th scope="col">Händelse</th>
+            <th scope="col">Rutt</th>
+            <th scope="col">Modell</th>
+            <th scope="col">Tokens</th>
+            <th scope="col">Kostnad</th>
+            <th scope="col">Fel</th>
+          </tr>
+        </thead>
         <tbody>
           {% for e in telemetry %}
           <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums text-mist-300">{{ fmt_dt(e.get('created_at')) }}</td>
             <td><code class="az-code">{{ e.get('action', '') }}</code></td>
-            <td>{{ e.get('site', '') }}</td>
-            <td>{{ e.get('units', '') }} {{ e.get('unit_type', '') }}</td>
+            <td class="font-mono text-xs text-mist-300">{{ e.get('route_id', '') or '—' }}</td>
+            <td class="font-mono text-xs text-mist-300">{{ e.get('model', '') or '—' }}</td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums text-mist-300">
+              {% if e.get('prompt_tokens') is not none or e.get('completion_tokens') is not none %}
+              {{ e.get('prompt_tokens', 0) }}/{{ e.get('completion_tokens', 0) }}
+              {% else %}
+              —
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums">{{ fmt_usd(e.get('cost_usd')) }}</td>
+            <td>
+              {% if e.get('error_class') %}
+              {{ ui.status_badge('error', e.get('error_class')) }}
+              {% else %}
+              <span class="text-mist-500">—</span>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    <p class="mt-3"><a class="text-sm text-steel-400 hover:text-steel-300" href="/data/telemetry">Visa alla →</a></p>
     {% else %}
-    <p class="az-muted">Inga telemetry-events ännu.</p>
+    {{ ui.empty_state('Inga telemetrihändelser ännu', 'Händelser visas här så snart agenten kör anrop.', icon_name='activity') }}
     {% endif %}
   </section>
 
-  <section class="az-card sm:col-span-2 xl:col-span-3">
-    <h2 class="az-section-title">Escalations → Oscar</h2>
+  <!-- Recent escalations -->
+  <section class="az-card">
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 id="recent-esc-heading" class="az-section-title mb-0">Eskaleringar → Oscar</h2>
+      <a class="text-xs font-medium text-steel-300 hover:text-steel-200" href="/data/escalations">Visa alla →</a>
+    </div>
     {% if escalations %}
-    <div class="overflow-x-auto">
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="recent-esc-heading">
       <table class="az-table">
-        <thead><tr><th>When</th><th>Status</th><th>Severity</th><th>Summary</th></tr></thead>
+        <thead>
+          <tr>
+            <th scope="col">Tid</th>
+            <th scope="col">Status</th>
+            <th scope="col">Allvarlighetsgrad</th>
+            <th scope="col">Sammanfattning</th>
+          </tr>
+        </thead>
         <tbody>
           {% for e in escalations %}
           <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
-            <td>{{ e.get('status', 'open') }}</td>
-            <td>{{ e.get('severity', '') }}</td>
-            <td>{{ e.get('summary', '') }}</td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums text-mist-300">{{ fmt_dt(e.get('created_at')) }}</td>
+            <td>
+              {% if e.get('status') == 'resolved' %}
+                {{ ui.status_badge('ok', 'Löst') }}
+              {% else %}
+                {{ ui.status_badge('warn', 'Öppen') }}
+              {% endif %}
+            </td>
+            <td>
+              {% set sev = (e.get('severity') or '') | lower %}
+              {% if sev in ('critical', 'high', 'error') %}
+                {{ ui.status_badge('error', e.get('severity')) }}
+              {% elif sev in ('warn', 'warning', 'medium') %}
+                {{ ui.status_badge('warn', e.get('severity')) }}
+              {% elif sev %}
+                {{ ui.status_badge('neutral', e.get('severity')) }}
+              {% else %}
+                <span class="text-mist-500">—</span>
+              {% endif %}
+            </td>
+            <td class="text-sm text-mist-100">{{ e.get('summary', '') }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
-    <p class="mt-3"><a class="text-sm text-steel-400 hover:text-steel-300" href="/data/escalations">Visa alla →</a></p>
     {% else %}
-    <p class="az-muted">Inga eskaleringar.</p>
+    {{ ui.empty_state('Inga eskaleringar', 'Allt flyter på utan öppna eskaleringar.', icon_name='check-circle') }}
     {% endif %}
   </section>
 </div>

@@ -10,7 +10,7 @@ from functools import wraps
 from time import time as _time
 from typing import Any
 
-from flask import Flask, Response, g, request, session
+from flask import Flask, Response, abort, g, request, session
 from werkzeug.security import check_password_hash
 
 from settings_store import apply_env_overlays
@@ -151,7 +151,17 @@ def _login_rate_limited(ip: str) -> bool:
 
 
 def _record_login_failure(ip: str) -> None:
-    _login_failures[ip].append(_time())
+    now = _time()
+    cutoff = now - _LOGIN_WINDOW_SEC
+    if len(_login_failures) > 1000:
+        stale = [
+            key
+            for key, stamps in _login_failures.items()
+            if not any(t > cutoff for t in stamps)
+        ]
+        for key in stale:
+            _login_failures.pop(key, None)
+    _login_failures[ip].append(now)
 
 
 def _auth_required(view):
@@ -175,13 +185,16 @@ def _auth_required(view):
                 _record_login_failure(ip)
         if actor is None:
             return Response(
-                "Authentication required (jonatan or oscar)",
+                "Authentication required",
                 401,
                 {"WWW-Authenticate": 'Basic realm="Azom Dashboard"'},
             )
         g.actor = actor
         _ensure_csrf_token()
-        session_timeout_h = int(os.environ.get("DASHBOARD_SESSION_TIMEOUT_H", "8"))
+        try:
+            session_timeout_h = max(1, int(os.environ.get("DASHBOARD_SESSION_TIMEOUT_H", "8")))
+        except ValueError:
+            session_timeout_h = 8
         last_seen = session.get("_last_seen")
         now = datetime.now(UTC)
         if last_seen:
@@ -213,7 +226,7 @@ def _oscar_required(view):
     @_auth_required
     def wrapper(*args, **kwargs):
         if not g.actor.get("is_oscar"):
-            return Response("Oscar only", 403)
+            abort(403)
         return view(*args, **kwargs)
 
     return wrapper
