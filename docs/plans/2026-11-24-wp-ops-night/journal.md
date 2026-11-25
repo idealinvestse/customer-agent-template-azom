@@ -119,3 +119,5 @@ The WordPress file list, with `AZOM_USE_MOCK=1` and `AZOM_WP_SANDBOX=0`:
 ```
 
 Exit 0. `126 passed, 1 skipped in 7.47s`. The skip is `AZOM_WP_RUNTIME_E2E` unset. PHP is still missing. No container and no browser run.
+
+A clipped hit still appended the next candidate, including a later parent file, before selection stopped. `page.php` was listed twice when it was also the assigned template. The loop now stops before that read. Each classic name is listed once. The same WordPress file list then exited 0: `127 passed, 1 skipped in 8.50s`.

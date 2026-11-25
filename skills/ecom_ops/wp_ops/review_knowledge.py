@@ -64,5 +64,7 @@ def hierarchy_candidates(
         candidates.append(f"page-{safe_slug}.php")
     if safe_id and f"page-{safe_id}.php" not in candidates:
         candidates.append(f"page-{safe_id}.php")
-    candidates.extend(("page.php", "singular.php", "index.php"))
+    for name in ("page.php", "singular.php", "index.php"):
+        if name not in candidates:
+            candidates.append(name)
     return tuple(candidates)

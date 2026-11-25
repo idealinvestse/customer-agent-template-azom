@@ -291,6 +291,21 @@ def test_clipped_front_page_does_not_select_a_later_parent_file(tmp_path: Path):
     assert home["selected_template"] in {None, ""}
     assert home["selection"] == "unavailable"
     assert all(not str(item.get("path") or "").endswith("home.php") for item in home["findings"])
+    assert all(not str(row["path"]).endswith("home.php") for row in home["candidate_hits"])
+
+
+def test_assigned_page_php_is_not_repeated():
+    from ecom_ops.wp_ops.review_knowledge import hierarchy_candidates
+
+    rows = hierarchy_candidates(
+        show_on_front="page",
+        block_theme=False,
+        slug="hem",
+        page_id="2",
+        assigned_template="page.php",
+    )
+    assert rows.count("page.php") == 1
+    assert rows[:2] == ("front-page.php", "page.php")
 
 
 def test_unknown_active_theme_does_not_invent_a_template(tmp_path: Path):

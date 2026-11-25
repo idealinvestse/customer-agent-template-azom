@@ -354,6 +354,8 @@ def step_home(ctx: ReviewContext) -> dict[str, Any]:
     hierarchy_blocked = False
     if root is not None and ctx.transport is not None and candidates:
         for relative in candidates:
+            if hierarchy_blocked:
+                break
             absolute = root + "/" + relative
             text = _read_relative(ctx, root, relative, role="stylesheet")
             role = "stylesheet"
