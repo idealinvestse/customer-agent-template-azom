@@ -14,10 +14,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.bot.steer_router import decide_message_routing
 from ecom_ops.wp_ops.page_review_intent import is_page_review
 
 MAX_STEERS_PER_JOB = 3
-MAX_QUEUED_PER_CHAT = 8
+MAX_QUEUED_PER_CHAT = 12
+MAX_CONCURRENT_TASKS_PER_CHAT = 3
 JOB_LEASE_SECONDS = 120
 JOB_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
@@ -28,9 +30,10 @@ _ACTION_COMMAND = re.compile(
 _ACTION_CALLBACK = re.compile(
     r"^(?:cases:approve:|cases:regen:|order:set:|product:desc:|action:yes$|"
     r"escalate:yes$|wpfile:stage:fe-[a-f0-9]{12}$|"
-    r"wpreview:stage:wr-[a-f0-9]{12}$)",
+    r"wpreview:stage:wr-[a-f0-9]{12}$|proposal:yes:pr-[0-9a-f]{12}$)",
     re.I,
 )
+_PROPOSAL_YES_CALLBACK = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
 
 
 def _now() -> float:
@@ -95,6 +98,7 @@ class TelegramJobStore:
                 );
                 CREATE TABLE IF NOT EXISTS bot_jobs (
                     job_id TEXT PRIMARY KEY,
+                    task_id TEXT,
                     conversation_id TEXT NOT NULL,
                     chat_id TEXT NOT NULL,
                     source_update_id INTEGER UNIQUE,
@@ -117,6 +121,8 @@ class TelegramJobStore:
                     reconciled_by TEXT,
                     reconciled_at REAL,
                     delivery_state TEXT NOT NULL DEFAULT 'pending',
+                    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+                    next_delivery_at REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     started_at REAL,
                     completed_at REAL,
@@ -124,8 +130,6 @@ class TelegramJobStore:
                     FOREIGN KEY(source_update_id) REFERENCES telegram_inbox(update_id)
                         ON DELETE SET NULL
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS bot_jobs_one_running_per_conversation
-                    ON bot_jobs(conversation_id) WHERE state='running';
                 CREATE INDEX IF NOT EXISTS bot_jobs_queue_order
                     ON bot_jobs(state, sequence, created_at);
                 CREATE INDEX IF NOT EXISTS bot_jobs_conversation
@@ -158,6 +162,26 @@ class TelegramJobStore:
                     owner TEXT NOT NULL,
                     expires_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS bot_proposals (
+                    proposal_id TEXT PRIMARY KEY,
+                    chat_id TEXT NOT NULL,
+                    task_id TEXT,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    domain TEXT,
+                    site_id TEXT,
+                    state TEXT NOT NULL DEFAULT 'open',
+                    created_at REAL NOT NULL,
+                    consumed_at REAL
+                );
+                CREATE INDEX IF NOT EXISTS bot_proposals_chat_state
+                    ON bot_proposals(chat_id, state);
+                CREATE TABLE IF NOT EXISTS bot_resource_locks (
+                    resource_key TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    expires_at REAL NOT NULL
+                );
                 """
             )
             inbox_columns = {
@@ -183,6 +207,22 @@ class TelegramJobStore:
                     conn.execute(f"ALTER TABLE bot_jobs ADD COLUMN {column} TEXT")
             if "reconciled_at" not in job_columns:
                 conn.execute("ALTER TABLE bot_jobs ADD COLUMN reconciled_at REAL")
+            if "task_id" not in job_columns:
+                conn.execute("ALTER TABLE bot_jobs ADD COLUMN task_id TEXT")
+            if "delivery_attempts" not in job_columns:
+                conn.execute(
+                    "ALTER TABLE bot_jobs ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0"
+                )
+            if "next_delivery_at" not in job_columns:
+                conn.execute(
+                    "ALTER TABLE bot_jobs ADD COLUMN next_delivery_at REAL NOT NULL DEFAULT 0"
+                )
+            conn.execute("UPDATE bot_jobs SET task_id=job_id WHERE task_id IS NULL")
+            conn.execute("DROP INDEX IF EXISTS bot_jobs_one_running_per_conversation")
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS bot_jobs_one_running_per_task "
+                "ON bot_jobs(conversation_id, task_id) WHERE state='running'"
+            )
         try:
             os.chmod(self.path, 0o600)
         except OSError:
@@ -228,12 +268,15 @@ class TelegramJobStore:
         text = message.get("text")
         if chat_id is None or not isinstance(text, str):
             return {"update_id": update_id, "kind": "ignored"}
+        reply_to = message.get("reply_to_message")
+        reply_to_id = reply_to.get("message_id") if isinstance(reply_to, dict) else None
         return {
             "update_id": update_id,
             "kind": "message",
             "chat_id": str(chat_id),
             "text": text[:8000],
             "message_id": message.get("message_id"),
+            "reply_to_message_id": reply_to_id,
         }
 
     @staticmethod
@@ -323,8 +366,13 @@ class TelegramJobStore:
 
             chat_id = parsed["chat_id"]
             conversation_id = f"telegram:{chat_id}"
+            parallel = False
+            source_message_id: int | None = None
+            task_id: str | None = None
+
             if parsed["kind"] == "message":
                 text = parsed["text"]
+                source_message_id = parsed.get("message_id")
                 control = _CONTROL.fullmatch(text.strip())
                 if control:
                     action = control.group(1).lower()
@@ -343,38 +391,69 @@ class TelegramJobStore:
                     conn.commit()
                     return {"disposition": "control", "control": control_payload}
 
-                running = conn.execute(
-                    "SELECT job_id,kind FROM bot_jobs WHERE conversation_id=? "
-                    "AND state='running' LIMIT 1",
+                running_rows = conn.execute(
+                    "SELECT j.job_id, j.task_id, j.kind, j.payload_json, "
+                    "j.status_message_id, j.answer_message_ids_json, "
+                    "(SELECT COUNT(*) FROM bot_job_steers s "
+                    " WHERE s.job_id=j.job_id AND s.consumed_at IS NOT NULL) AS steer_used, "
+                    "(SELECT COUNT(*) FROM bot_job_steers s "
+                    " WHERE s.job_id=j.job_id AND s.consumed_at IS NULL) AS steer_pending "
+                    "FROM bot_jobs j WHERE j.conversation_id=? AND j.state='running' "
+                    "ORDER BY j.started_at ASC, j.sequence ASC",
                     (conversation_id,),
-                ).fetchone()
-                is_command = text.lstrip().startswith("/")
-                if running and running["kind"] in {"read_turn", "page_review"} and not is_command:
-                    consumed = conn.execute(
-                        "SELECT COUNT(*) AS n FROM bot_job_steers WHERE job_id=? "
-                        "AND consumed_at IS NOT NULL",
-                        (running["job_id"],),
-                    ).fetchone()["n"]
-                    pending = conn.execute(
-                        "SELECT COUNT(*) AS n FROM bot_job_steers WHERE job_id=? "
-                        "AND consumed_at IS NULL",
-                        (running["job_id"],),
-                    ).fetchone()["n"]
+                ).fetchall()
+                running_jobs = [
+                    {
+                        "job_id": r["job_id"],
+                        "task_id": r["task_id"] or r["job_id"],
+                        "kind": r["kind"],
+                        "payload": _decode_json(r["payload_json"], {}),
+                        "status_message_id": r["status_message_id"],
+                        "answer_message_ids": _decode_json(r["answer_message_ids_json"], []),
+                        "steer_used": int(r["steer_used"] or 0),
+                        "steer_pending": int(r["steer_pending"] or 0),
+                    }
+                    for r in running_rows
+                ]
+                parallel = bool(running_jobs)
+                decision = decide_message_routing(
+                    text,
+                    reply_to_message_id=parsed.get("reply_to_message_id"),
+                    running_jobs=running_jobs,
+                    max_steers_per_job=MAX_STEERS_PER_JOB,
+                )
+                if decision.mode == "steer" and decision.target_job_id:
+                    target = next(
+                        (j for j in running_jobs if j["job_id"] == decision.target_job_id),
+                        None,
+                    )
                     queued = conn.execute(
                         "SELECT COUNT(*) AS n FROM bot_jobs WHERE conversation_id=? "
                         "AND state='queued'",
                         (conversation_id,),
                     ).fetchone()["n"]
+                    reserved_steers = conn.execute(
+                        "SELECT COUNT(*) AS n FROM bot_job_steers s JOIN bot_jobs j "
+                        "ON j.job_id=s.job_id WHERE j.conversation_id=? AND j.state='running' "
+                        "AND s.consumed_at IS NULL",
+                        (conversation_id,),
+                    ).fetchone()["n"]
                     if (
-                        consumed + pending < MAX_STEERS_PER_JOB
-                        and queued + pending + 1 <= MAX_QUEUED_PER_CHAT
+                        target is not None
+                        and (target["steer_used"] + target["steer_pending"]) < MAX_STEERS_PER_JOB
+                        and queued + reserved_steers + 1 <= MAX_QUEUED_PER_CHAT
                     ):
                         conn.execute(
                             "INSERT INTO bot_job_steers(job_id,source_update_id,text,created_at) "
                             "VALUES(?,?,?,?)",
-                            (running["job_id"], update_id, text, now),
+                            (decision.target_job_id, update_id, decision.cleaned_text, now),
                         )
-                        self._event(conn, running["job_id"], "steer_queued", "Följdfråga mottagen")
+                        self._event(
+                            conn,
+                            decision.target_job_id,
+                            "steer_queued",
+                            "Följdfråga mottagen",
+                        )
                         conn.execute(
                             "UPDATE telegram_inbox SET state='steer',disposition='steer',"
                             "payload_json=NULL WHERE update_id=?",
@@ -383,21 +462,26 @@ class TelegramJobStore:
                         conn.commit()
                         return {
                             "disposition": "steer",
-                            "job_id": running["job_id"],
+                            "job_id": decision.target_job_id,
                             "chat_id": chat_id,
                             "update_id": update_id,
+                            "source_message_id": source_message_id,
                         }
-                if _ACTION_COMMAND.match(text.strip()):
+
+                cleaned_text = decision.cleaned_text
+                if _ACTION_COMMAND.match(cleaned_text.strip()):
                     kind = "action"
-                elif is_page_review(text):
+                elif is_page_review(cleaned_text):
                     kind = "page_review"
                 else:
                     kind = "read_turn"
+                task_id = uuid.uuid4().hex
                 payload = {
                     "type": "message",
                     "chat_id": chat_id,
-                    "text": text,
-                    "source_message_id": parsed.get("message_id"),
+                    "text": cleaned_text,
+                    "source_message_id": source_message_id,
+                    "reply_to_message_id": parsed.get("reply_to_message_id"),
                 }
                 approval_key = self._approval_key(chat_id, payload) if kind == "action" else None
                 job_id = self._insert_job(
@@ -409,19 +493,32 @@ class TelegramJobStore:
                     kind=kind,
                     payload=payload,
                     approval_key=approval_key,
+                    task_id=task_id,
                     now=now,
                 )
             else:
                 data = parsed["data"]
+                source_message_id = parsed.get("source_message_id")
+                has_running = (
+                    conn.execute(
+                        "SELECT 1 FROM bot_jobs WHERE conversation_id=? AND state='running' LIMIT 1",
+                        (conversation_id,),
+                    ).fetchone()
+                    is not None
+                )
+                parallel = has_running
                 kind = "action" if _ACTION_CALLBACK.match(data) else "callback"
                 payload = {
                     "type": "callback",
                     "chat_id": chat_id,
                     "data": data,
                     "callback_query_id": parsed["callback_query_id"],
-                    "source_message_id": parsed.get("source_message_id"),
+                    "source_message_id": source_message_id,
                 }
-                if data in {"action:yes", "escalate:yes"} or data.startswith(
+                proposal_match = _PROPOSAL_YES_CALLBACK.fullmatch(data)
+                if proposal_match:
+                    payload["proposal_id"] = proposal_match.group(1).lower()
+                elif data in {"action:yes", "escalate:yes"} or data.startswith(
                     ("wpfile:stage:", "wpreview:stage:")
                 ):
                     state_row = conn.execute(
@@ -452,6 +549,7 @@ class TelegramJobStore:
                             "chat_id": chat_id,
                             "update_id": update_id,
                         }
+                task_id = uuid.uuid4().hex
                 job_id = self._insert_job(
                     conn,
                     conversation_id=conversation_id,
@@ -461,8 +559,10 @@ class TelegramJobStore:
                     kind=kind,
                     payload=payload,
                     approval_key=approval_key,
+                    task_id=task_id,
                     now=now,
                 )
+
             queued = conn.execute(
                 "SELECT COUNT(*) AS n FROM bot_jobs WHERE conversation_id=? "
                 "AND state='queued'",
@@ -496,8 +596,11 @@ class TelegramJobStore:
             return {
                 "disposition": "queued",
                 "job_id": job_id,
+                "task_id": task_id,
                 "chat_id": chat_id,
                 "update_id": update_id,
+                "parallel": parallel,
+                "source_message_id": source_message_id,
             }
 
     @staticmethod
@@ -512,6 +615,7 @@ class TelegramJobStore:
         payload: dict[str, Any],
         approval_key: str | None,
         now: float,
+        task_id: str | None = None,
     ) -> str:
         sequence = conn.execute(
             "SELECT COALESCE(MAX(sequence),0)+1 AS n FROM bot_jobs "
@@ -519,12 +623,14 @@ class TelegramJobStore:
             (conversation_id,),
         ).fetchone()["n"]
         job_id = uuid.uuid4().hex
+        resolved_task_id = task_id or job_id
         conn.execute(
-            "INSERT INTO bot_jobs(job_id,conversation_id,chat_id,source_update_id,"
+            "INSERT INTO bot_jobs(job_id,task_id,conversation_id,chat_id,source_update_id,"
             "callback_query_id,approval_key,kind,payload_json,state,sequence,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,'queued',?,?,?)",
+            "VALUES(?,?,?,?,?,?,?,?,?,'queued',?,?,?)",
             (
                 job_id,
+                resolved_task_id,
                 conversation_id,
                 chat_id,
                 update_id,
@@ -568,6 +674,14 @@ class TelegramJobStore:
         )
         return result
 
+    @staticmethod
+    def _proposal(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        result = dict(row)
+        result["payload"] = _decode_json(result.pop("payload_json", None), {})
+        return result
+
     def get_job(self, job_id: str, *, chat_id: str | None = None) -> dict[str, Any] | None:
         with self._connection() as conn:
             if chat_id is None:
@@ -585,12 +699,26 @@ class TelegramJobStore:
             self._begin(conn)
             row = conn.execute(
                 "SELECT q.* FROM bot_jobs q WHERE q.state='queued' "
-                "AND NOT EXISTS (SELECT 1 FROM bot_jobs r WHERE "
-                "r.conversation_id=q.conversation_id AND r.state='running') "
-                "AND (q.kind!='action' OR NOT EXISTS (SELECT 1 FROM bot_jobs r "
-                "WHERE r.conversation_id=q.conversation_id "
-                "AND r.state='needs_reconciliation')) "
-                "ORDER BY q.sequence,q.created_at LIMIT 1"
+                "AND (SELECT COUNT(*) FROM bot_jobs r "
+                "     WHERE r.conversation_id=q.conversation_id AND r.state='running') < ? "
+                "AND NOT EXISTS ("
+                "    SELECT 1 FROM bot_jobs r "
+                "    WHERE r.conversation_id=q.conversation_id AND r.state='running' "
+                "    AND COALESCE(r.task_id, r.job_id)=COALESCE(q.task_id, q.job_id)"
+                ") "
+                "AND (q.kind!='action' OR ("
+                "    NOT EXISTS ("
+                "        SELECT 1 FROM bot_jobs r "
+                "        WHERE r.conversation_id=q.conversation_id "
+                "        AND r.state='running' AND r.kind='action'"
+                "    ) AND NOT EXISTS ("
+                "        SELECT 1 FROM bot_jobs r "
+                "        WHERE r.conversation_id=q.conversation_id "
+                "        AND r.state='needs_reconciliation'"
+                "    )"
+                ")) "
+                "ORDER BY q.sequence,q.created_at LIMIT 1",
+                (MAX_CONCURRENT_TASKS_PER_CHAT,),
             ).fetchone()
             if row is None:
                 conn.commit()
@@ -695,10 +823,19 @@ class TelegramJobStore:
             ).fetchone()
         return self._job(row)
 
+    def active_jobs(self, chat_id: str | int) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM bot_jobs WHERE chat_id=? AND state='running' "
+                "ORDER BY started_at ASC, sequence ASC",
+                (str(chat_id),),
+            ).fetchall()
+        return [job for row in rows if (job := self._job(row)) is not None]
+
     def conversation_jobs(self, chat_id: str | int) -> list[dict[str, Any]]:
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT job_id,kind,state,sequence,created_at,updated_at,completed_at "
+                "SELECT job_id,task_id,kind,state,sequence,created_at,updated_at,completed_at "
                 "FROM bot_jobs WHERE chat_id=? AND state IN "
                 "('queued','running','needs_reconciliation') ORDER BY sequence LIMIT 10",
                 (str(chat_id),),
@@ -760,7 +897,7 @@ class TelegramJobStore:
     def list_jobs(self, chat_id: str | int, *, limit: int = 8) -> list[dict[str, Any]]:
         with self._connection() as conn:
             rows = conn.execute(
-                "SELECT job_id,kind,state,sequence,created_at,updated_at,completed_at "
+                "SELECT job_id,task_id,kind,state,sequence,created_at,updated_at,completed_at "
                 "FROM bot_jobs WHERE chat_id=? ORDER BY sequence DESC LIMIT ?",
                 (str(chat_id), max(1, min(int(limit), 20))),
             ).fetchall()
@@ -828,24 +965,29 @@ class TelegramJobStore:
             self._begin(conn)
             if job_id:
                 prefix = str(job_id).strip().lower()
-                if not re.fullmatch(r"[0-9a-f]{8,32}", prefix):
+                if not re.fullmatch(r"[0-9a-f]{4,32}", prefix):
                     conn.commit()
                     return "not_found"
                 rows = conn.execute(
                     "SELECT job_id,state,kind,side_effect_started,source_update_id FROM bot_jobs "
-                    "WHERE substr(job_id,1,?)=? AND chat_id=? LIMIT 2",
-                    (len(prefix), prefix, str(chat_id)),
+                    "WHERE (substr(job_id,1,?)=? OR substr(COALESCE(task_id,''),1,?)=?) "
+                    "AND chat_id=? LIMIT 2",
+                    (len(prefix), prefix, len(prefix), prefix, str(chat_id)),
                 ).fetchall()
                 if len(rows) > 1:
                     conn.commit()
                     return "ambiguous"
                 row = rows[0] if rows else None
             else:
-                row = conn.execute(
+                running_rows = conn.execute(
                     "SELECT job_id,state,kind,side_effect_started,source_update_id FROM bot_jobs "
-                    "WHERE chat_id=? AND state='running' ORDER BY started_at DESC LIMIT 1",
+                    "WHERE chat_id=? AND state='running' ORDER BY started_at DESC LIMIT 2",
                     (str(chat_id),),
-                ).fetchone()
+                ).fetchall()
+                if len(running_rows) > 1:
+                    conn.commit()
+                    return "ambiguous_running"
+                row = running_rows[0] if running_rows else None
                 if row is None:
                     row = conn.execute(
                         "SELECT job_id,state,kind,side_effect_started,source_update_id FROM bot_jobs "
@@ -941,25 +1083,29 @@ class TelegramJobStore:
         with self._connection() as conn:
             self._begin(conn)
             row = conn.execute(
-                "SELECT conversation_id,source_update_id,kind FROM bot_jobs "
+                "SELECT conversation_id,chat_id,task_id,source_update_id,kind FROM bot_jobs "
                 "WHERE job_id=? AND state='running'",
                 (job_id,),
             ).fetchone()
             if not row:
                 conn.commit()
                 return []
+            parent_task_id = row["task_id"] or job_id
             conn.execute(
                 "UPDATE bot_jobs SET state=?,result_json=?,failure_class=?,"
                 "lease_owner=NULL,lease_until=NULL,completed_at=?,updated_at=?,"
-                "delivery_state='pending' WHERE job_id=?",
+                "delivery_state='pending',next_delivery_at=0 WHERE job_id=?",
                 (state, _json(result), failure_class, now, now, job_id),
             )
+            conn.execute("DELETE FROM bot_resource_locks WHERE job_id=?", (job_id,))
             if row["source_update_id"] is not None:
                 conn.execute(
                     "UPDATE telegram_inbox SET state='done' WHERE update_id=?",
                     (row["source_update_id"],),
                 )
-            self._event(conn, job_id, state, "Svar klart" if state == "completed" else "Jobbet avslutades")
+            self._event(
+                conn, job_id, state, "Svar klart" if state == "completed" else "Jobbet avslutades"
+            )
             leftover = conn.execute(
                 "SELECT steer_id,source_update_id,text FROM bot_job_steers "
                 "WHERE job_id=? AND consumed_at IS NULL ORDER BY steer_id",
@@ -986,18 +1132,16 @@ class TelegramJobStore:
                     (row["conversation_id"],),
                 ).fetchone()["n"]
                 next_id = uuid.uuid4().hex
-                job_row = conn.execute(
-                    "SELECT chat_id FROM bot_jobs WHERE job_id=?", (job_id,)
-                ).fetchone()
-                payload = {"type": "message", "chat_id": job_row["chat_id"], "text": steer["text"]}
+                payload = {"type": "message", "chat_id": row["chat_id"], "text": steer["text"]}
                 conn.execute(
-                    "INSERT INTO bot_jobs(job_id,conversation_id,chat_id,source_update_id,"
+                    "INSERT INTO bot_jobs(job_id,task_id,conversation_id,chat_id,source_update_id,"
                     "kind,payload_json,state,sequence,created_at,updated_at) "
-                    "VALUES(?,?,?,?,? ,?,'queued',?,?,?)",
+                    "VALUES(?,?,?,?,?,?,?,'queued',?,?,?)",
                     (
                         next_id,
+                        parent_task_id,
                         row["conversation_id"],
-                        job_row["chat_id"],
+                        row["chat_id"],
                         steer["source_update_id"],
                         "read_turn",
                         _json(payload),
@@ -1016,7 +1160,13 @@ class TelegramJobStore:
                     (steer["source_update_id"],),
                 )
                 self._event(conn, next_id, "queued", "Följdfråga köad som ny tur")
-                queued.append({"job_id": next_id, "chat_id": job_row["chat_id"]})
+                queued.append(
+                    {
+                        "job_id": next_id,
+                        "task_id": parent_task_id,
+                        "chat_id": row["chat_id"],
+                    }
+                )
             consumed_ids = conn.execute(
                 "SELECT source_update_id FROM bot_job_steers WHERE job_id=? "
                 "AND consumed_at IS NOT NULL",
@@ -1033,6 +1183,163 @@ class TelegramJobStore:
             conn.commit()
         return queued
 
+    def create_proposal(
+        self,
+        chat_id: str | int,
+        *,
+        kind: str,
+        payload: dict[str, Any],
+        task_id: str | None = None,
+        domain: str | None = None,
+        site_id: str | None = None,
+    ) -> dict[str, Any]:
+        proposal_id = f"pr-{uuid.uuid4().hex[:12]}"
+        now = _now()
+        with self._connection() as conn:
+            self._begin(conn)
+            conn.execute(
+                "INSERT INTO bot_proposals("
+                "proposal_id,chat_id,task_id,kind,payload_json,domain,site_id,state,created_at"
+                ") VALUES(?,?,?,?,?,?,?,'open',?)",
+                (
+                    proposal_id,
+                    str(chat_id),
+                    task_id,
+                    str(kind),
+                    _json(payload),
+                    domain,
+                    site_id,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM bot_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+            conn.commit()
+        return self._proposal(row) or {}
+
+    def get_proposal(
+        self, proposal_id: str, *, chat_id: str | int | None = None
+    ) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            if chat_id is None:
+                row = conn.execute(
+                    "SELECT * FROM bot_proposals WHERE proposal_id=?",
+                    (proposal_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM bot_proposals WHERE proposal_id=? AND chat_id=?",
+                    (proposal_id, str(chat_id)),
+                ).fetchone()
+        return self._proposal(row)
+
+    def consume_proposal(
+        self, proposal_id: str, *, chat_id: str | int | None = None
+    ) -> dict[str, Any] | None:
+        now = _now()
+        with self._connection() as conn:
+            self._begin(conn)
+            if chat_id is None:
+                changed = conn.execute(
+                    "UPDATE bot_proposals SET state='consumed',consumed_at=? "
+                    "WHERE proposal_id=? AND state='open'",
+                    (now, proposal_id),
+                ).rowcount
+            else:
+                changed = conn.execute(
+                    "UPDATE bot_proposals SET state='consumed',consumed_at=? "
+                    "WHERE proposal_id=? AND chat_id=? AND state='open'",
+                    (now, proposal_id, str(chat_id)),
+                ).rowcount
+            if changed != 1:
+                conn.commit()
+                return None
+            row = conn.execute(
+                "SELECT * FROM bot_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+            conn.commit()
+        return self._proposal(row)
+
+    def cancel_proposal(
+        self, proposal_id: str, *, chat_id: str | int | None = None
+    ) -> bool:
+        now = _now()
+        with self._connection() as conn:
+            self._begin(conn)
+            if chat_id is None:
+                changed = conn.execute(
+                    "UPDATE bot_proposals SET state='cancelled',consumed_at=? "
+                    "WHERE proposal_id=? AND state='open'",
+                    (now, proposal_id),
+                ).rowcount
+            else:
+                changed = conn.execute(
+                    "UPDATE bot_proposals SET state='cancelled',consumed_at=? "
+                    "WHERE proposal_id=? AND chat_id=? AND state='open'",
+                    (now, proposal_id, str(chat_id)),
+                ).rowcount
+            conn.commit()
+        return changed == 1
+
+    def acquire_resource_lock(
+        self,
+        resource_key: str,
+        *,
+        job_id: str,
+        ttl_seconds: int = JOB_LEASE_SECONDS,
+    ) -> bool:
+        now = _now()
+        with self._connection() as conn:
+            self._begin(conn)
+            conn.execute(
+                "DELETE FROM bot_resource_locks "
+                "WHERE expires_at<=? "
+                "OR job_id NOT IN (SELECT job_id FROM bot_jobs WHERE state='running')",
+                (now,),
+            )
+            existing = conn.execute(
+                "SELECT job_id,owner,expires_at FROM bot_resource_locks WHERE resource_key=?",
+                (resource_key,),
+            ).fetchone()
+            if existing is not None:
+                if existing["job_id"] == job_id and existing["owner"] == self.owner:
+                    conn.execute(
+                        "UPDATE bot_resource_locks SET expires_at=? WHERE resource_key=?",
+                        (now + ttl_seconds, resource_key),
+                    )
+                    conn.commit()
+                    return True
+                conn.commit()
+                return False
+            conn.execute(
+                "INSERT INTO bot_resource_locks(resource_key,job_id,owner,expires_at) "
+                "VALUES(?,?,?,?)",
+                (resource_key, job_id, self.owner, now + ttl_seconds),
+            )
+            conn.commit()
+        return True
+
+    def release_resource_lock(
+        self, resource_key: str, *, job_id: str | None = None
+    ) -> bool:
+        with self._connection() as conn:
+            self._begin(conn)
+            if job_id is None:
+                changed = conn.execute(
+                    "DELETE FROM bot_resource_locks WHERE resource_key=?",
+                    (resource_key,),
+                ).rowcount
+            else:
+                changed = conn.execute(
+                    "DELETE FROM bot_resource_locks WHERE resource_key=? AND job_id=?",
+                    (resource_key, job_id),
+                ).rowcount
+            conn.commit()
+        return changed > 0
+
     def mark_delivered(self, job_id: str) -> None:
         with self._connection() as conn:
             conn.execute(
@@ -1040,16 +1347,62 @@ class TelegramJobStore:
                 (_now(), job_id),
             )
 
+    def record_delivery_attempt(
+        self,
+        job_id: str,
+        *,
+        backoff_seconds: float = 4.0,
+        max_attempts: int = 8,
+    ) -> str:
+        now = _now()
+        with self._connection() as conn:
+            self._begin(conn)
+            row = conn.execute(
+                "SELECT delivery_state,delivery_attempts FROM bot_jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return "not_found"
+            if row["delivery_state"] != "pending":
+                conn.commit()
+                return str(row["delivery_state"])
+            attempts = int(row["delivery_attempts"] or 0) + 1
+            if attempts >= max_attempts:
+                conn.execute(
+                    "UPDATE bot_jobs SET delivery_attempts=?,delivery_state='failed',"
+                    "next_delivery_at=0,updated_at=? WHERE job_id=?",
+                    (attempts, now, job_id),
+                )
+                self._event(
+                    conn,
+                    job_id,
+                    "delivery_failed",
+                    "Leverans misslyckades efter max försök",
+                )
+                conn.commit()
+                return "failed"
+            delay = min(float(backoff_seconds) * (2 ** (attempts - 1)), 300.0)
+            conn.execute(
+                "UPDATE bot_jobs SET delivery_attempts=?,next_delivery_at=?,updated_at=? "
+                "WHERE job_id=?",
+                (attempts, now + delay, now, job_id),
+            )
+            conn.commit()
+            return "retry"
+
     def undelivered_results(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        now = _now()
         with self._connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM bot_jobs WHERE state IN "
                 "('completed','failed','cancelled','needs_reconciliation') "
                 "AND result_json IS NOT NULL AND delivery_state='pending' "
+                "AND next_delivery_at<=? "
                 "ORDER BY completed_at LIMIT ?",
-                (max(1, min(int(limit), 100)),),
+                (now, max(1, min(int(limit), 100))),
             ).fetchall()
-        return [self._job(row) for row in rows if row]
+        return [job for row in rows if (job := self._job(row)) is not None]
 
     def pending_controls(self, *, limit: int = 50) -> list[dict[str, Any]]:
         with self._connection() as conn:
@@ -1116,7 +1469,8 @@ class TelegramJobStore:
             )
 
     def purge(self, *, retention_seconds: int = JOB_RETENTION_SECONDS) -> int:
-        cutoff = _now() - max(60, retention_seconds)
+        now = _now()
+        cutoff = now - max(60, retention_seconds)
         with self._connection() as conn:
             conn.execute(
                 "DELETE FROM telegram_inbox WHERE created_at<? AND state!='control'",
@@ -1127,5 +1481,16 @@ class TelegramJobStore:
                 "OR (state='reconciled' AND reconciliation_outcome='not_applied')) "
                 "AND completed_at IS NOT NULL AND completed_at<?",
                 (cutoff,),
+            )
+            conn.execute(
+                "DELETE FROM bot_proposals "
+                "WHERE state!='open' AND COALESCE(consumed_at, created_at)<?",
+                (cutoff,),
+            )
+            conn.execute(
+                "DELETE FROM bot_resource_locks "
+                "WHERE expires_at<=? "
+                "OR job_id NOT IN (SELECT job_id FROM bot_jobs WHERE state='running')",
+                (now,),
             )
             return int(cur.rowcount)

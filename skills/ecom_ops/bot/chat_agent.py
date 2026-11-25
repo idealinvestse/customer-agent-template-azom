@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -11,7 +12,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ecom_ops.bot.catalog import catalog_read_turn, catalog_tool_result, catalog_write_turn
+from ecom_ops.bot.catalog import (
+    catalog_read_turn,
+    catalog_tool_result,
+    catalog_write_turn,
+    parse_catalog_read,
+    parse_catalog_write,
+)
 from ecom_ops.bot.dialog_actions import (
     PendingAction,
     parse_order_status_intent,
@@ -19,6 +26,11 @@ from ecom_ops.bot.dialog_actions import (
     parse_regenerate_nl,
     wants_case_followup,
     wants_order_followup,
+)
+from ecom_ops.bot.progress_events import (
+    ProgressCallback,
+    ProgressEvent,
+    emit_progress,
 )
 from ecom_ops.bot.site_content import site_content_turn, site_tool_result
 from ecom_ops.bot.store import clamp_messages
@@ -248,9 +260,11 @@ class _SafeTextStream:
         self,
         on_text_delta: Callable[[str], None] | None,
         on_text_reset: Callable[[], None] | None,
+        on_stream_clear: Callable[[], None] | None = None,
     ) -> None:
         self.on_text_delta = on_text_delta
         self.on_text_reset = on_text_reset
+        self.on_stream_clear = on_stream_clear or on_text_reset
         self.pending = ""
         self.emitted = ""
         self.blocked = False
@@ -301,8 +315,18 @@ class _SafeTextStream:
         elif self.emitted and content.startswith(self.emitted):
             self._emit(content[len(self.emitted) :])
         elif content and self.emitted != content:
-            self.reset()
+            self.clear()
             self._emit(content)
+
+    def clear(self) -> None:
+        self.pending = ""
+        self.emitted = ""
+        self.blocked = False
+        if self.on_stream_clear:
+            try:
+                self.on_stream_clear()
+            except Exception:
+                pass
 
     def reset(self) -> None:
         self.pending = ""
@@ -315,40 +339,231 @@ class _SafeTextStream:
                 pass
 
 
+def _accepts_kwarg(fn: Any, kwarg: str) -> bool:
+    """Return True if ``fn`` accepts ``kwarg`` explicitly or via ``**kwargs``."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    if kwarg in sig.parameters:
+        return True
+    return any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()
+    )
+
+
+def _provenance() -> str:
+    return (
+        "mock"
+        if os.environ.get("AZOM_USE_MOCK", "0").strip().lower() in {"1", "true", "yes"}
+        else "live"
+    )
+
+
+_HTTP_ERR_RE = re.compile(r"\bHTTP\s+([45]\d{2})\b", re.I)
+_HTTP_ERR_PREFIX_RE = re.compile(r"\bHTTP\s+([45])\b", re.I)
+_SOFT_ERROR_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"order lookup failed", re.I), "orderuppslag misslyckades"),
+    (re.compile(r"cases list failed", re.I), "ärendelista misslyckades"),
+    (re.compile(r"case show failed", re.I), "ärendeuppslag misslyckades"),
+    (re.compile(r"ops snapshot failed", re.I), "driftstatus misslyckades"),
+    (re.compile(r"marketing snapshot failed", re.I), "marketing-uppslag misslyckades"),
+    (
+        re.compile(r"saknar\s+(?:behörighet|rättighet)|lacks permission", re.I),
+        "saknar behörighet",
+    ),
+    (re.compile(r"svarade inte", re.I), "tjänsten svarade inte"),
+    (
+        re.compile(
+            r"hittade\s+(?:ingen|inte)|ingen\s+(?:sida|produkt|plugin)\s+matchar",
+            re.I,
+        ),
+        "ingen träff hittades",
+    ),
+    (re.compile(r"kunde inte", re.I), "kunde inte hämtas"),
+    (re.compile(r"fel vid", re.I), "fel vid uppslag"),
+    (re.compile(r"nätverksfel", re.I), "nätverksfel"),
+    (re.compile(r"\bmisslyckades\b", re.I), "åtgärden misslyckades"),
+)
+
+
+def _inspect_tool_outcome(tool: str, result_text: str) -> tuple[bool, str]:
+    """Classify tool output into (ok, safe_short_summary) with zero PII/amounts."""
+    text = str(result_text or "")
+    http_m = _HTTP_ERR_RE.search(text)
+    if http_m:
+        return False, f"HTTP {http_m.group(1)}"
+    http_p = _HTTP_ERR_PREFIX_RE.search(text)
+    if http_p:
+        return False, f"HTTP {http_p.group(1)}xx"
+    for rx, desc in _SOFT_ERROR_PATTERNS:
+        if rx.search(text):
+            return False, desc
+
+    row_count = sum(1 for ln in text.splitlines() if ln.lstrip().startswith("- "))
+    name = (tool or "").strip().lower()
+    if name == "lookup_order":
+        return True, "Woo svarade"
+    if name == "list_recent_orders":
+        return True, f"{row_count} ordrar" if row_count else "0 ordrar"
+    if name == "list_cases":
+        return True, f"{row_count} ärenden" if row_count else "0 öppna ärenden"
+    if name == "show_case":
+        return True, "ärende hämtat"
+    if name == "list_products":
+        return True, f"{row_count} produkter" if row_count else "0 produkter"
+    if name == "show_product":
+        return True, "produkt hämtad"
+    if name == "list_pages":
+        return True, f"{row_count} sidor" if row_count else "0 sidor"
+    if name == "show_page":
+        return True, "sida hämtad"
+    if name == "list_posts":
+        return True, f"{row_count} inlägg" if row_count else "0 inlägg"
+    if name == "show_post":
+        return True, "inlägg hämtat"
+    if name == "show_site":
+        return True, "sajtdata hämtad"
+    if name == "list_themes":
+        return True, f"{row_count} teman" if row_count else "0 teman"
+    if name == "list_plugins":
+        return True, f"{row_count} plugins" if row_count else "0 plugins"
+    if name == "ops_snapshot":
+        return True, "driftstatus hämtad"
+    if name == "marketing_snapshot":
+        return True, "marketing-data hämtad"
+    if name == "catalog_write" or name.startswith("propose_"):
+        return True, "förslag skapat"
+    if row_count:
+        return True, f"{row_count} rader"
+    return True, "resultat mottaget"
+
+
+def _extract_result_text(result: Any) -> str:
+    if isinstance(result, str):
+        return result
+    if isinstance(result, tuple) and result and isinstance(result[0], str):
+        return result[0]
+    results_attr = getattr(result, "results", None)
+    if isinstance(results_attr, list) and results_attr:
+        return "\n".join(str(body) for _name, body in results_attr if body)
+    return ""
+
+
 def _report_tool(
-    callback: Callable[[str], None] | None,
+    callback: ProgressCallback | None,
     label: str,
     action: Callable[[], Any],
+    *,
+    tool: str = "tool",
+    step_id: str | None = None,
+    detail: str | None = None,
+    step_index: int | None = None,
+    step_total: int | None = None,
 ) -> Any:
-    if callback:
-        try:
-            callback(f"🔧 {label} pågår…")
-        except Exception:
-            pass
+    sid = step_id or f"tool-{tool}-{detail or label}".lower().replace(" ", "_")[:72]
+    prov = _provenance()
+    emit_progress(
+        callback,
+        ProgressEvent(
+            step_id=sid,
+            tool=tool,
+            label=label,
+            phase="started",
+            step_index=step_index,
+            step_total=step_total,
+            provenance=prov,
+            detail=detail,
+            legacy_text=f"🔧 {label} pågår…",
+        ),
+    )
+    t0 = time.monotonic()
     try:
         result = action()
-    except Exception:
-        if callback:
-            try:
-                callback(f"⚠️ {label} misslyckades")
-            except Exception:
-                pass
+    except Exception as exc:
+        elapsed_ms = int(round((time.monotonic() - t0) * 1000))
+        emit_progress(
+            callback,
+            ProgressEvent(
+                step_id=sid,
+                tool=tool,
+                label=label,
+                phase="failed",
+                step_index=step_index,
+                step_total=step_total,
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                detail=detail,
+                outcome="misslyckades",
+                error_class=type(exc).__name__,
+                legacy_text=f"⚠️ {label} misslyckades",
+            ),
+        )
         raise
-    if callback:
-        try:
-            callback(f"✓ {label}: resultat mottaget")
-        except Exception:
-            pass
+    elapsed_ms = int(round((time.monotonic() - t0) * 1000))
+    if hasattr(result, "consumed") and not result.consumed:
+        emit_progress(
+            callback,
+            ProgressEvent(
+                step_id=sid,
+                tool=tool,
+                label=label,
+                phase="skipped",
+                step_index=step_index,
+                step_total=step_total,
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                detail=detail,
+                outcome="ej aktuell",
+            ),
+        )
+        return result
+    result_text = _extract_result_text(result)
+    effective_tool = tool
+    results_attr = getattr(result, "results", None)
+    if isinstance(results_attr, list) and results_attr:
+        effective_tool = str(results_attr[0][0] or tool)
+    ok, outcome = _inspect_tool_outcome(effective_tool, result_text)
+    if ok:
+        emit_progress(
+            callback,
+            ProgressEvent(
+                step_id=sid,
+                tool=effective_tool,
+                label=label,
+                phase="completed",
+                step_index=step_index,
+                step_total=step_total,
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                detail=detail,
+                outcome=outcome,
+                legacy_text=f"✓ {label}: {outcome}",
+            ),
+        )
+    else:
+        emit_progress(
+            callback,
+            ProgressEvent(
+                step_id=sid,
+                tool=effective_tool,
+                label=label,
+                phase="failed",
+                step_index=step_index,
+                step_total=step_total,
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                detail=detail,
+                outcome=outcome,
+                error_class="soft_error",
+                legacy_text=f"⚠️ {label}: {outcome}",
+            ),
+        )
     return result
 
 
-def _say(callback: Callable[[str], None] | None, message: str) -> None:
-    if not callback:
-        return
-    try:
-        callback(message)
-    except Exception:
-        pass
+def _say(callback: ProgressCallback | None, message: str) -> None:
+    emit_progress(callback, message)
 
 
 _MODEL_TOOL_LABELS = {
@@ -439,7 +654,7 @@ _WP_TOOL_LABELS = {
 
 
 def _report_wp_tool_status(
-    callback: Callable[[str], None] | None, name: str, status: str
+    callback: ProgressCallback | None, name: str, status: str
 ) -> None:
     if not callback:
         return
@@ -448,21 +663,57 @@ def _report_wp_tool_status(
         return
     state, _, detail = status.partition("|")
     where = ""
+    detail_str: str | None = None
     if detail:
         site, _, path = detail.partition("|")
         bits = [bit for bit in (site.strip(), path.strip()) if bit]
         if bits:
-            where = " " + " ".join(bits)
+            detail_str = " ".join(bits)
+            where = " " + detail_str
+    step_id = f"wp-{name}-{detail_str or 'site'}".lower().replace(" ", "_")[:72]
+    prov = _provenance()
     if state == "started":
-        message = f"🔧 {label}{where} pågår…"
+        emit_progress(
+            callback,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=label,
+                phase="started",
+                provenance=prov,
+                detail=detail_str,
+                legacy_text=f"🔧 {label}{where} pågår…",
+            ),
+        )
     elif state == "result":
-        message = f"✓ {label}{where}: resultat mottaget"
+        emit_progress(
+            callback,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=label,
+                phase="completed",
+                provenance=prov,
+                detail=detail_str,
+                outcome="resultat mottaget",
+                legacy_text=f"✓ {label}{where}: resultat mottaget",
+            ),
+        )
     else:
-        message = f"⚠️ {label}{where}: resultat kunde inte hämtas"
-    try:
-        callback(message)
-    except Exception:
-        pass
+        emit_progress(
+            callback,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=label,
+                phase="failed",
+                provenance=prov,
+                detail=detail_str,
+                outcome="resultat kunde inte hämtas",
+                error_class="wp_tool_failed",
+                legacy_text=f"⚠️ {label}{where}: resultat kunde inte hämtas",
+            ),
+        )
 
 FALLBACK_NO_KEY = (
     "LLM är inte kopplad just nu (ingen modellroute är konfigurerad), men jag kan "
@@ -713,44 +964,113 @@ def _prefetch_listed_orders(
     text: str,
     history: list[dict[str, Any]] | None,
     *,
-    on_progress: Callable[[str], None] | None,
+    on_progress: ProgressCallback | None,
     domain: str | None,
     started_at: float,
-) -> None:
+    on_checkpoint: Callable[[], list[str]] | None = None,
+) -> list[str]:
     """Fetch a known order list before asking the model to choose."""
+    steers: list[str] = []
     if pref.pending_action is not None:
-        return
+        return steers
     if any(name == "lookup_order" for name, _body in pref.results):
-        return
+        return steers
     ids = _listed_order_ids(history)
     if not wants_listed_order_batch(text, ids):
-        return
+        return steers
     chosen = ids[:_BATCH_ORDER_CAP]
     if len(ids) > len(chosen):
-        _say(
+        emit_progress(
             on_progress,
-            f"Listan har {len(ids)} ordrar. Hämtar de {len(chosen)} första.",
+            ProgressEvent(
+                step_id="prefetch-cap",
+                tool="lookup_order",
+                label="Orderlista",
+                phase="info",
+                outcome=f"hämtar de {len(chosen)} första av {len(ids)}",
+                legacy_text=f"Listan har {len(ids)} ordrar. Hämtar de {len(chosen)} första.",
+            ),
         )
     total = len(chosen)
     last_id: str | None = None
+    prov = _provenance()
     for index, oid in enumerate(chosen, start=1):
+        if on_checkpoint is not None:
+            incoming = on_checkpoint() or []
+            accepted = [str(v).strip()[:8000] for v in incoming if str(v).strip()][:3]
+            if accepted:
+                steers.extend(accepted)
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=f"prefetch-steer-{index}",
+                        tool="steer",
+                        label="Följdfråga infogad",
+                        phase="steer",
+                        outcome="vid kontrollpunkt",
+                        legacy_text="Följdfråga infogad vid säker kontrollpunkt.",
+                    ),
+                )
         if _phase_expired(started_at):
-            _say(
+            emit_progress(
                 on_progress,
-                "Verktygsrundan avbröts. Tidsgränsen på 90 sekunder är nådd. "
-                "Hämtade resultat behålls.",
+                ProgressEvent(
+                    step_id="prefetch-timeout",
+                    tool="lookup_order",
+                    label="Verktygsrunda",
+                    phase="failed",
+                    outcome="tidsgränsen 90s nådd",
+                    error_class="timeout",
+                    legacy_text=(
+                        "Verktygsrundan avbröts. Tidsgränsen på 90 sekunder är nådd. "
+                        "Hämtade resultat behålls."
+                    ),
+                ),
             )
             break
-        _say(on_progress, f"Hämtar order {oid} ({index}/{total}) från Woo.")
+        step_id = f"prefetch-order-{oid}-{index}"
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool="lookup_order",
+                label="Orderuppslag",
+                phase="started",
+                step_index=index,
+                step_total=total,
+                provenance=prov,
+                detail=f"order {oid}",
+                legacy_text=f"Hämtar order {oid} ({index}/{total}) från Woo.",
+            ),
+        )
+        t0 = time.monotonic()
         body = tool_lookup_order(oid, domain=domain)
-        answered = not str(body).startswith("Order lookup failed")
-        state = "Woo svarade" if answered else "Woo svarade inte"
-        _say(on_progress, f"Order {oid} ({index}/{total}): {state}.")
+        elapsed_ms = int(round((time.monotonic() - t0) * 1000))
+        ok, outcome = _inspect_tool_outcome("lookup_order", str(body))
+        state = "Woo svarade" if ok else "Woo svarade inte"
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool="lookup_order",
+                label="Orderuppslag",
+                phase="completed" if ok else "failed",
+                step_index=index,
+                step_total=total,
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                detail=f"order {oid}",
+                outcome=outcome,
+                error_class=None if ok else "order_lookup_failed",
+                legacy_text=f"Order {oid} ({index}/{total}): {state}.",
+            ),
+        )
         pref.results.append(("lookup_order", body))
         last_id = oid
     if last_id:
         pref.sticky_order_id = last_id
         pref.digest = _make_digest(pref.results)
+    return steers[:3]
 
 
 def _use_read_tool_loop(
@@ -1094,6 +1414,66 @@ def _apply_catalog(pref: ToolPrefetch, turn: Any, woo_domain: str | None) -> Too
     return pref
 
 
+_SITE_CONTENT_HINT_RE = re.compile(
+    r"\b(?:plugins?|till[äa]gg(?:en|et)?|tema(?:n|t|r)?|themes?|"
+    r"inl[äa]gg(?:et|en|ets|ens)?|blogginl[äa]gg(?:et)?|posts?|"
+    r"tagline(?:n)?|undertitel(?:n)?|sajttitel|sajtens\s+titel|"
+    r"webbplatsens\s+titel|sajtbeskrivning(?:en)?|vad\s+heter\s+sajten|"
+    r"temafil(?:er)?|pluginfil(?:er)?)\b|functions\.php|style\.css",
+    re.I,
+)
+
+
+def _emit_consumed_turn_progress(
+    on_progress: ProgressCallback | None,
+    *,
+    label: str,
+    tool: str,
+    turn: Any,
+    elapsed_ms: int,
+    detail: str | None = None,
+) -> None:
+    """Emit started + completed/failed when a turn matched without a pre-hint."""
+    if not on_progress:
+        return
+    sid = f"tool-{tool}-{detail or label}".lower().replace(" ", "_")[:72]
+    prov = _provenance()
+    results_attr = getattr(turn, "results", None)
+    effective_tool = (
+        str(results_attr[0][0] or tool)
+        if isinstance(results_attr, list) and results_attr
+        else tool
+    )
+    ok, outcome = _inspect_tool_outcome(effective_tool, _extract_result_text(turn))
+    emit_progress(
+        on_progress,
+        ProgressEvent(
+            step_id=sid,
+            tool=effective_tool,
+            label=label,
+            phase="started",
+            provenance=prov,
+            detail=detail,
+            legacy_text=f"🔧 {label} pågår…",
+        ),
+    )
+    emit_progress(
+        on_progress,
+        ProgressEvent(
+            step_id=sid,
+            tool=effective_tool,
+            label=label,
+            phase="completed" if ok else "failed",
+            elapsed_ms=elapsed_ms,
+            provenance=prov,
+            detail=detail,
+            outcome=outcome,
+            error_class=None if ok else "soft_error",
+            legacy_text=f"{'✓' if ok else '⚠️'} {label}: {outcome}",
+        ),
+    )
+
+
 def gather_tool_results(
     user_message: str,
     *,
@@ -1104,7 +1484,7 @@ def gather_tool_results(
     sticky_page_id: str | None = None,
     sticky_post_id: str | None = None,
     listed_offset: int = 0,
-    on_progress: Callable[[str], None] | None = None,
+    on_progress: ProgressCallback | None = None,
     has_wp_site_context: bool = False,
 ) -> ToolPrefetch:
     """Tool prefetch with sticky multi-turn context (OpenClaw-like follow-ups)."""
@@ -1123,13 +1503,7 @@ def gather_tool_results(
     wp_code_bypass = has_wp_site_context and bool(WP_CODE_INTENT_RE.search(text))
 
     if not wp_code_bypass:
-        site_intent = bool(
-            re.search(
-                r"\b(wordpress|wp|plugin|plugins|tema|teman|inlägg|tagline|sajttitel)\b",
-                text,
-                re.I,
-            )
-        )
+        site_intent = bool(_SITE_CONTENT_HINT_RE.search(text))
 
         def site_action() -> Any:
             return site_content_turn(
@@ -1139,11 +1513,26 @@ def gather_tool_results(
                 allow_wp_ops_fallthrough=has_wp_site_context,
             )
 
-        site_turn = (
-            _report_tool(on_progress, "WordPress-innehåll", site_action)
-            if site_intent
-            else site_action()
-        )
+        if site_intent:
+            site_turn = _report_tool(
+                on_progress,
+                "WordPress-innehåll",
+                site_action,
+                tool="site_content",
+                detail=woo_domain,
+            )
+        else:
+            t0 = time.monotonic()
+            site_turn = site_action()
+            if site_turn.consumed:
+                _emit_consumed_turn_progress(
+                    on_progress,
+                    label="WordPress-innehåll",
+                    tool="site_content",
+                    turn=site_turn,
+                    elapsed_ms=int(round((time.monotonic() - t0) * 1000)),
+                    detail=woo_domain,
+                )
         if site_turn.consumed:
             return _apply_catalog(pref, site_turn, woo_domain)
 
@@ -1159,6 +1548,8 @@ def gather_tool_results(
                     on_progress,
                     "Orderuppslag",
                     lambda: tool_lookup_order(order_intent["order_id"], domain=woo_domain),
+                    tool="lookup_order",
+                    detail=f"order {order_intent['order_id']}",
                 ),
             )
         )
@@ -1176,12 +1567,43 @@ def gather_tool_results(
         return pref
 
     if not wp_code_bypass:
-        write_turn = catalog_write_turn(
-            text,
-            domain=woo_domain,
-            sticky_product_id=sticky_product_id,
-            sticky_page_id=sticky_page_id,
+        write_hint = (
+            parse_catalog_write(
+                text,
+                sticky_product_id=sticky_product_id,
+                sticky_page_id=sticky_page_id,
+            )
+            is not None
         )
+
+        def write_action() -> Any:
+            return catalog_write_turn(
+                text,
+                domain=woo_domain,
+                sticky_product_id=sticky_product_id,
+                sticky_page_id=sticky_page_id,
+            )
+
+        if write_hint:
+            write_turn = _report_tool(
+                on_progress,
+                "Katalogförslag",
+                write_action,
+                tool="catalog_write",
+                detail=woo_domain,
+            )
+        else:
+            t0 = time.monotonic()
+            write_turn = write_action()
+            if write_turn.consumed:
+                _emit_consumed_turn_progress(
+                    on_progress,
+                    label="Katalogförslag",
+                    tool="catalog_write",
+                    turn=write_turn,
+                    elapsed_ms=int(round((time.monotonic() - t0) * 1000)),
+                    detail=woo_domain,
+                )
         if write_turn.consumed:
             return _apply_catalog(pref, write_turn, woo_domain)
 
@@ -1202,7 +1624,13 @@ def gather_tool_results(
 
     regen_id = parse_regenerate_nl(text)
     if regen_id:
-        body, case_id8, market = tool_show_case(regen_id)
+        body, case_id8, market = _report_tool(
+            on_progress,
+            "Ärendeuppslag",
+            lambda: tool_show_case(regen_id),
+            tool="show_case",
+            detail=regen_id,
+        )
         if market:
             woo_domain = market
         pref.results.append(("show_case", body))
@@ -1226,7 +1654,13 @@ def gather_tool_results(
     # NL approve → show case + confirm button only
     approve_id = parse_approve_nl(text)
     if approve_id:
-        body, case_id8, market = tool_show_case(approve_id)
+        body, case_id8, market = _report_tool(
+            on_progress,
+            "Ärendeuppslag",
+            lambda: tool_show_case(approve_id),
+            tool="show_case",
+            detail=approve_id,
+        )
         if market:
             woo_domain = market
         pref.results.append(("show_case", body))
@@ -1238,9 +1672,7 @@ def gather_tool_results(
         return pref
 
     if not wp_code_bypass:
-        catalog_intent = bool(
-            re.search(r"\b(produkt|produkter|produktdata|sida|sidor|page|pages)\b", text, re.I)
-        )
+        catalog_intent = parse_catalog_read(text) is not None
 
         def catalog_action() -> Any:
             return catalog_read_turn(
@@ -1250,11 +1682,26 @@ def gather_tool_results(
                 sticky_page_id=sticky_page_id,
             )
 
-        read_turn = (
-            _report_tool(on_progress, "Produkt- eller siduppslag", catalog_action)
-            if catalog_intent
-            else catalog_action()
-        )
+        if catalog_intent:
+            read_turn = _report_tool(
+                on_progress,
+                "Produkt- eller siduppslag",
+                catalog_action,
+                tool="catalog_read",
+                detail=woo_domain,
+            )
+        else:
+            t0 = time.monotonic()
+            read_turn = catalog_action()
+            if read_turn.consumed:
+                _emit_consumed_turn_progress(
+                    on_progress,
+                    label="Produkt- eller siduppslag",
+                    tool="catalog_read",
+                    turn=read_turn,
+                    elapsed_ms=int(round((time.monotonic() - t0) * 1000)),
+                    detail=woo_domain,
+                )
         if read_turn.consumed:
             return _apply_catalog(pref, read_turn, woo_domain)
 
@@ -1278,6 +1725,8 @@ def gather_tool_results(
                     on_progress,
                     "Orderuppslag",
                     lambda: tool_lookup_order(oid, domain=woo_domain),
+                    tool="lookup_order",
+                    detail=f"order {oid}",
                 ),
             )
         )
@@ -1300,7 +1749,11 @@ def gather_tool_results(
     if show_case and id_m and len(pref.results) < 3:
         cid = id_m.group(1) if hasattr(id_m, "group") else sticky_case_id8
         body, case_id8, market = _report_tool(
-            on_progress, "Ärendeuppslag", lambda: tool_show_case(str(cid))
+            on_progress,
+            "Ärendeuppslag",
+            lambda: tool_show_case(str(cid)),
+            tool="show_case",
+            detail=str(cid),
         )
         if market:
             woo_domain = market
@@ -1309,13 +1762,19 @@ def gather_tool_results(
         pref.sticky_case_id8 = case_id8 or sticky_case_id8
     elif SUGGEST_INTENT_RE.search(text) and len(pref.results) < 3:
         body, suggest_ids = _report_tool(
-            on_progress, "Föreslagna ärenden", lambda: tool_list_cases(suggest_only=True)
+            on_progress,
+            "Föreslagna ärenden",
+            lambda: tool_list_cases(suggest_only=True),
+            tool="list_cases",
         )
         pref.results.append(("list_cases", body))
         pref.suggest_case_ids = suggest_ids
     elif CASES_INTENT_RE.search(text) and len(pref.results) < 3:
         body, suggest_ids = _report_tool(
-            on_progress, "Ärendelista", lambda: tool_list_cases()
+            on_progress,
+            "Ärendelista",
+            lambda: tool_list_cases(),
+            tool="list_cases",
         )
         pref.results.append(("list_cases", body))
         pref.suggest_case_ids = suggest_ids
@@ -1324,7 +1783,12 @@ def gather_tool_results(
         pref.results.append(
             (
                 "marketing_snapshot",
-                _report_tool(on_progress, "Google Ads/GA4-uppslag", tool_marketing_snapshot),
+                _report_tool(
+                    on_progress,
+                    "Google Ads/GA4-uppslag",
+                    tool_marketing_snapshot,
+                    tool="marketing_snapshot",
+                ),
             )
         )
 
@@ -1332,7 +1796,15 @@ def gather_tool_results(
         pref.results.append(("capabilities", tool_capabilities()))
     elif OPS_INTENT_RE.search(text) and len(pref.results) < 3:
         pref.results.append(
-            ("ops_snapshot", _report_tool(on_progress, "Driftstatus", tool_ops_snapshot))
+            (
+                "ops_snapshot",
+                _report_tool(
+                    on_progress,
+                    "Driftstatus",
+                    tool_ops_snapshot,
+                    tool="ops_snapshot",
+                ),
+            )
         )
 
     continuation = bool(MORE_ORDERS_RE.search(text)) and not _CATALOG_WORD_RE.search(text)
@@ -1355,6 +1827,8 @@ def gather_tool_results(
             on_progress,
             "Orderlista",
             lambda: tool_list_recent_orders(domain=woo_domain, limit=limit, offset=offset),
+            tool="list_recent_orders",
+            detail=woo_domain,
         )
         pref.results.append(("list_recent_orders", body))
         pref.order_list_shown = shown
@@ -1462,9 +1936,11 @@ def _run_fast_read_loop(
     complete_fast: Callable[[list[dict[str, str]]], tuple[str, float]],
     domain: str | None,
     offset: int,
-    on_progress: Callable[[str], None] | None,
+    on_progress: ProgressCallback | None,
     on_text_reset: Callable[[], None] | None,
     started_at: float,
+    on_stream_clear: Callable[[], None] | None = None,
+    on_checkpoint: Callable[[], list[str]] | None = None,
 ) -> tuple[str, float, int | None]:
     """Ask the fast model for one read at a time, then run that read."""
     calls = 0
@@ -1472,27 +1948,107 @@ def _run_fast_read_loop(
     content = ""
     shown: int | None = None
     cursor = offset
+    clear_stream = on_stream_clear or on_text_reset
+    steer_seq = 0
+
+    def _poll_checkpoint() -> None:
+        nonlocal steer_seq
+        if not on_checkpoint:
+            return
+        incoming = on_checkpoint() or []
+        accepted = [str(v).strip()[:8000] for v in incoming if str(v).strip()][:3]
+        if not accepted:
+            return
+        for value in accepted:
+            messages.append({"role": "user", "content": value})
+        steer_seq += 1
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=f"read-loop-steer-{steer_seq}",
+                tool="steer",
+                label="Följdfråga infogad",
+                phase="steer",
+                outcome=(
+                    "1 ny instruktion"
+                    if len(accepted) == 1
+                    else f"{len(accepted)} nya instruktioner"
+                ),
+                legacy_text="Följdfråga infogad vid säker kontrollpunkt.",
+            ),
+        )
+
     while True:
+        _poll_checkpoint()
         if _phase_expired(started_at):
-            _say(
+            emit_progress(
                 on_progress,
-                "Verktygsrundan avbröts. Tidsgränsen på 90 sekunder är nådd. "
-                "Hämtade resultat behålls.",
+                ProgressEvent(
+                    step_id="read-loop-timeout",
+                    tool="read_loop",
+                    label="Verktygsrunda",
+                    phase="failed",
+                    outcome="tidsgränsen 90s nådd",
+                    error_class="timeout",
+                    legacy_text=(
+                        "Verktygsrundan avbröts. Tidsgränsen på 90 sekunder är nådd. "
+                        "Hämtade resultat behålls."
+                    ),
+                ),
             )
             raise ModelUnavailableError("Read tool phase timed out")
-        _say(
+        round_no = calls + 1
+        round_step_id = f"fast-model-round-{round_no}"
+        emit_progress(
             on_progress,
-            f"Väntar på den snabba modellen, runda {calls + 1}. "
-            "Den väljer nästa läsning eller skriver svaret.",
+            ProgressEvent(
+                step_id=round_step_id,
+                tool="model_router",
+                label="Snabb modell",
+                phase="running",
+                step_index=round_no,
+                outcome="väljer nästa läsning eller skriver svar",
+                legacy_text=(
+                    f"Väntar på den snabba modellen, runda {round_no}. "
+                    "Den väljer nästa läsning eller skriver svaret."
+                ),
+            ),
         )
+        round_t0 = time.monotonic()
         try:
             content, added = complete_fast(messages)
-        except ModelRouteError:
-            _say(on_progress, "Modellrundan avbröts. Hämtade resultat behålls.")
+        except ModelRouteError as exc:
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=round_step_id,
+                    tool="model_router",
+                    label="Snabb modell",
+                    phase="failed",
+                    step_index=round_no,
+                    elapsed_ms=int(round((time.monotonic() - round_t0) * 1000)),
+                    outcome="avbröts, hämtade resultat behålls",
+                    error_class=type(exc).__name__,
+                    legacy_text="Modellrundan avbröts. Hämtade resultat behålls.",
+                ),
+            )
             raise
+        round_elapsed_ms = int(round((time.monotonic() - round_t0) * 1000))
         cost += added
         parsed = _TOOL_CALL_RE.search(content or "")
         if not parsed:
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=round_step_id,
+                    tool="model_router",
+                    label="Snabb modell",
+                    phase="completed",
+                    step_index=round_no,
+                    elapsed_ms=round_elapsed_ms,
+                    outcome="svar klart",
+                ),
+            )
             if not (content or "").strip() and tool_bits:
                 return _format_tools_human(tool_bits), cost, shown
             return content, cost, shown
@@ -1513,12 +2069,23 @@ def _run_fast_read_loop(
                 "Ändringar väntar på bekräftelse."
             ), cost, shown
         if calls >= _READ_LOOP_MAX_CALLS:
-            _say(
+            emit_progress(
                 on_progress,
-                "Verktygsrundan stannade efter 5 läsningar. Hämtade resultat behålls.",
+                ProgressEvent(
+                    step_id="read-loop-max-calls",
+                    tool="read_loop",
+                    label="Verktygsrunda",
+                    phase="info",
+                    outcome="stannade efter 5 läsningar",
+                    legacy_text=(
+                        "Verktygsrundan stannade efter 5 läsningar. "
+                        "Hämtade resultat behålls."
+                    ),
+                ),
             )
             text = _format_tools_human(tool_bits) if tool_bits else content
             return text, cost, shown
+        _poll_checkpoint()
         calls += 1
         label = _MODEL_TOOL_LABELS.get(name, name)
         detail = ""
@@ -1530,15 +2097,45 @@ def _run_fast_read_loop(
             order_id = str(raw_id or "").strip()
             if order_id.isdigit():
                 detail = f" för order {order_id}"
-        _say(
+        prov = _provenance()
+        step_id = f"read-loop-tool-{calls}-{name}"
+        event_detail = f"order {order_id}" if order_id.isdigit() else None
+        emit_progress(
             on_progress,
-            f"Modellen bad om {label}{detail} ({calls}/{_READ_LOOP_MAX_CALLS}).",
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=label,
+                phase="started",
+                step_index=calls,
+                step_total=_READ_LOOP_MAX_CALLS,
+                provenance=prov,
+                detail=event_detail,
+                legacy_text=f"Modellen bad om {label}{detail} ({calls}/{_READ_LOOP_MAX_CALLS}).",
+            ),
         )
+        tool_t0 = time.monotonic()
         fulfilled = _fulfill_model_tool_call(content, domain=domain, offset=cursor)
+        tool_elapsed_ms = int(round((time.monotonic() - tool_t0) * 1000))
         if not fulfilled:
-            _say(
+            emit_progress(
                 on_progress,
-                f"{label}: resultatet kunde inte hämtas. Rundan fortsätter inte.",
+                ProgressEvent(
+                    step_id=step_id,
+                    tool=name,
+                    label=label,
+                    phase="failed",
+                    step_index=calls,
+                    step_total=_READ_LOOP_MAX_CALLS,
+                    elapsed_ms=tool_elapsed_ms,
+                    provenance=prov,
+                    detail=event_detail,
+                    outcome="kunde inte hämtas",
+                    error_class="tool_unavailable",
+                    legacy_text=(
+                        f"{label}: resultatet kunde inte hämtas. Rundan fortsätter inte."
+                    ),
+                ),
             )
             text = _format_tools_human(tool_bits) if tool_bits else content
             return text, cost, shown
@@ -1547,18 +2144,32 @@ def _run_fast_read_loop(
         if next_shown is not None:
             shown = next_shown
             cursor = next_shown
+        ok, outcome = _inspect_tool_outcome(name, str(body))
         if name == "lookup_order" and order_id.isdigit():
-            answered = not str(body).startswith("Order lookup failed")
-            state = "Woo svarade" if answered else "Woo svarade inte"
-            _say(on_progress, f"Order {order_id}: {state}.")
+            state = "Woo svarade" if ok else "Woo svarade inte"
+            legacy_done = f"Order {order_id}: {state}."
         else:
-            _say(
-                on_progress,
-                f"{label}: resultat mottaget ({calls}/{_READ_LOOP_MAX_CALLS}).",
-            )
-        if on_text_reset:
+            legacy_done = f"{label}: resultat mottaget ({calls}/{_READ_LOOP_MAX_CALLS})."
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=name,
+                label=label,
+                phase="completed" if ok else "failed",
+                step_index=calls,
+                step_total=_READ_LOOP_MAX_CALLS,
+                elapsed_ms=tool_elapsed_ms,
+                provenance=prov,
+                detail=event_detail,
+                outcome=outcome,
+                error_class=None if ok else "soft_error",
+                legacy_text=legacy_done,
+            ),
+        )
+        if clear_stream:
             try:
-                on_text_reset()
+                clear_stream()
             except Exception:
                 pass
         messages.append({"role": "assistant", "content": (content or "")[:4000]})
@@ -1578,9 +2189,11 @@ def run_chat(
     actor: str = "agent",
     channel: str = "telegram",
     conversation_id: str = "",
-    on_progress: Callable[[str], None] | None = None,
+    on_progress: ProgressCallback | None = None,
     on_text_delta: Callable[[str], None] | None = None,
     on_text_reset: Callable[[], None] | None = None,
+    on_stream_clear: Callable[[], None] | None = None,
+    on_phase_change: Callable[[dict[str, Any]], None] | None = None,
     on_checkpoint: Callable[[], list[str]] | None = None,
 ) -> ChatResult:
     """Run one hybrid chat turn with tools, sticky context, optional LLM."""
@@ -1607,17 +2220,38 @@ def run_chat(
     )
     listed_offset = _session_list_offset(session, hist)
     turn_user_messages = [user_message]
+    clear_stream = on_stream_clear or on_text_reset
 
-    def _checkpoint() -> list[str]:
+    def _safe_clear_stream() -> None:
+        if clear_stream:
+            try:
+                clear_stream()
+            except Exception:
+                pass
+
+    def _collect_checkpoint(*, announce: bool = True) -> list[str]:
         if not on_checkpoint:
             return []
         incoming = on_checkpoint() or []
-        accepted = [str(value).strip()[:8000] for value in incoming if str(value).strip()]
+        accepted = [str(value).strip()[:8000] for value in incoming if str(value).strip()][:3]
         if accepted:
-            turn_user_messages.extend(accepted[:3])
-            if on_progress:
-                on_progress("Följdfråga infogad vid säker kontrollpunkt.")
-        return accepted[:3]
+            turn_user_messages.extend(accepted)
+            if announce:
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=f"steer-{len(turn_user_messages)}",
+                        tool="steer",
+                        label="Följdfråga infogad",
+                        phase="steer",
+                        outcome="vid kontrollpunkt",
+                        legacy_text="Följdfråga infogad vid säker kontrollpunkt.",
+                    ),
+                )
+        return accepted
+
+    def _checkpoint() -> list[str]:
+        return _collect_checkpoint(announce=True)
 
     def _with_turn(assistant: str) -> list[dict[str, str]]:
         messages = list(hist)
@@ -1639,13 +2273,18 @@ def run_chat(
             site_id = str(bound.get("site_id") or "")
         from ecom_ops.bot.page_review_runtime import page_review_client
 
-        outcome = run_bounded_page_review_loop(
-            site_id=site_id,
-            actor=actor,
-            client=page_review_client(site_id, actor) if site_id else None,
-            on_progress=on_progress,
-            target_page=extract_page_review_target(user_message),
-        )
+        page_review_kwargs: dict[str, Any] = {
+            "site_id": site_id,
+            "actor": actor,
+            "client": page_review_client(site_id, actor) if site_id else None,
+            "on_progress": on_progress,
+            "target_page": extract_page_review_target(user_message),
+        }
+        if on_checkpoint is not None and _accepts_kwarg(
+            run_bounded_page_review_loop, "on_checkpoint"
+        ):
+            page_review_kwargs["on_checkpoint"] = on_checkpoint
+        outcome = run_bounded_page_review_loop(**page_review_kwargs)
         text = outcome.text
         return ChatResult(
             text=text,
@@ -1681,6 +2320,7 @@ def run_chat(
         on_progress=on_progress,
         domain=pref.sticky_market or (str(sticky_market) if sticky_market else None),
         started_at=phase_started,
+        on_checkpoint=(lambda: _collect_checkpoint(announce=False)) if on_checkpoint else None,
     )
     tool_bits = pref.results
     case_id8 = pref.case_id8
@@ -1820,13 +2460,20 @@ def run_chat(
                 else playbook_hints
             )
 
+    def _phase_kwargs() -> dict[str, Any]:
+        if on_phase_change is not None and _accepts_kwarg(
+            chat_completion, "on_phase_change"
+        ):
+            return {"on_phase_change": on_phase_change}
+        return {}
+
     def _complete_stream(
         prompt_messages: list[dict[str, str]],
         *,
         timeout: int = 30,
         max_tokens: int | None = None,
     ) -> tuple[str, float]:
-        stream = _SafeTextStream(on_text_delta, on_text_reset)
+        stream = _SafeTextStream(on_text_delta, on_text_reset, clear_stream)
         content, cost = chat_completion(
             prompt_messages,
             model=model,
@@ -1839,6 +2486,7 @@ def run_chat(
             actor=actor,
             on_text_delta=stream.push if on_text_delta else None,
             on_text_reset=stream.reset if on_text_delta else None,
+            **_phase_kwargs(),
         )
         stream.finish(content)
         return content, cost
@@ -1879,7 +2527,7 @@ def run_chat(
 
     def _complete_fast(prompt_messages: list[dict[str, str]]) -> tuple[str, float]:
         fast_model = _FAST_TOOL_MODEL if _xai_round() else model
-        stream = _SafeTextStream(on_text_delta, on_text_reset)
+        stream = _SafeTextStream(on_text_delta, on_text_reset, clear_stream)
         content, added = chat_completion(
             prompt_messages,
             model=fast_model,
@@ -1894,6 +2542,7 @@ def run_chat(
             on_text_reset=stream.reset if on_text_delta else None,
             reasoning_effort=_FAST_TOOL_EFFORT if _xai_round() else None,
             hard_timeout=_TOOL_ROUND_HARD if _xai_round() else None,
+            **_phase_kwargs(),
         )
         stream.finish(content)
         return content, added
@@ -1918,6 +2567,10 @@ def run_chat(
                 ),
                 on_progress=on_progress,
                 on_text_reset=on_text_reset,
+                on_stream_clear=clear_stream,
+                on_checkpoint=(lambda: _collect_checkpoint(announce=False))
+                if on_checkpoint
+                else None,
                 started_at=phase_started,
             )
             if shown is not None:
@@ -1948,8 +2601,16 @@ def run_chat(
             )
         )
         try:
-            if on_progress:
-                on_progress("💭 Formulerar svar…")
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id="model-draft",
+                    tool="model_router",
+                    label="Formulerar svar",
+                    phase="running",
+                    legacy_text="💭 Formulerar svar…",
+                ),
+            )
             content, cost = _complete_stream(messages, max_tokens=initial_max_tokens)
         except ModelRouteError as exc:
             tel.record(
@@ -1968,8 +2629,7 @@ def run_chat(
         # model-created WordPress tool request is permitted to run.
         initial_steers = _checkpoint()
         if initial_steers:
-            if on_text_reset:
-                on_text_reset()
+            _safe_clear_stream()
             messages.append({"role": "assistant", "content": content[:4000]})
             messages.extend(
                 {"role": "user", "content": value} for value in initial_steers
@@ -1989,27 +2649,31 @@ def run_chat(
 
         def _steers_before_tool() -> list[str]:
             values = _checkpoint()
-            if values and on_text_reset:
-                on_text_reset()
+            if values:
+                _safe_clear_stream()
             return values
 
         loop_context = wp_ops_context if has_wp_site_context else None
         if _use_file_tool_loop(content):
-            wp_loop = run_bounded_file_tool_loop(
-                content,
-                messages,
-                complete=lambda followup_messages: _complete_stream(
+            file_loop_kwargs: dict[str, Any] = {
+                "complete": lambda followup_messages: _complete_stream(
                     followup_messages, timeout=30, max_tokens=file_tokens
                 ),
-                actor=actor,
-                channel=channel,
-                conversation_id=conversation_id,
-                context=loop_context,
-                on_tool_status=lambda name, status: _report_wp_tool_status(
-                    on_progress, name, status
-                ),
-                before_tool=lambda: _steers_before_tool(),
-            )
+                "actor": actor,
+                "channel": channel,
+                "conversation_id": conversation_id,
+                "context": loop_context,
+                "before_tool": lambda: _steers_before_tool(),
+            }
+            if on_progress is not None and _accepts_kwarg(
+                run_bounded_file_tool_loop, "on_progress"
+            ):
+                file_loop_kwargs["on_progress"] = on_progress
+            elif on_progress is not None:
+                file_loop_kwargs["on_tool_status"] = (
+                    lambda name, status: _report_wp_tool_status(on_progress, name, status)
+                )
+            wp_loop = run_bounded_file_tool_loop(content, messages, **file_loop_kwargs)
             if wp_loop.stage_plan_id:
                 file_stage_plan_id = wp_loop.stage_plan_id
             found_review_id = getattr(wp_loop, "review_stage_plan_id", None)
@@ -2018,26 +2682,30 @@ def run_chat(
             if wp_loop.handled:
                 attachments = wp_loop.attachments[:4]
         else:
-            wp_loop = run_bounded_wp_tool_loop(
-                content,
-                messages,
-                complete=lambda followup_messages: _complete_stream(
+            wp_loop_kwargs: dict[str, Any] = {
+                "complete": lambda followup_messages: _complete_stream(
                     followup_messages, timeout=30, max_tokens=wp_tokens
                 ),
-                actor=actor,
-                channel=channel,
-                conversation_id=conversation_id,
-                context=loop_context,
-                wp_intent=bool(
+                "actor": actor,
+                "channel": channel,
+                "conversation_id": conversation_id,
+                "context": loop_context,
+                "wp_intent": bool(
                     WP_OPS_INTENT_RE.search(user_message)
                     or has_wp_code_intent
                 )
                 or has_wp_site_context,
-                on_tool_status=lambda name, status: _report_wp_tool_status(
-                    on_progress, name, status
-                ),
-                before_tool=lambda: _steers_before_tool(),
-            )
+                "before_tool": lambda: _steers_before_tool(),
+            }
+            if on_progress is not None and _accepts_kwarg(
+                run_bounded_wp_tool_loop, "on_progress"
+            ):
+                wp_loop_kwargs["on_progress"] = on_progress
+            elif on_progress is not None:
+                wp_loop_kwargs["on_tool_status"] = (
+                    lambda name, status: _report_wp_tool_status(on_progress, name, status)
+                )
+            wp_loop = run_bounded_wp_tool_loop(content, messages, **wp_loop_kwargs)
         if wp_loop.handled:
             content = wp_loop.content
             cost += wp_loop.followup_cost_usd
@@ -2070,21 +2738,67 @@ def run_chat(
                 except (json.JSONDecodeError, TypeError):
                     tool_name = ""
             tool_label = _MODEL_TOOL_LABELS.get(tool_name)
-            if tool_label and on_progress:
-                on_progress(f"🔧 {tool_label} pågår…")
+            prov = _provenance()
+            step_id = f"model-tool-{tool_name or 'call'}"
+            if tool_label:
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool=tool_name or "tool",
+                        label=tool_label,
+                        phase="started",
+                        provenance=prov,
+                        legacy_text=f"🔧 {tool_label} pågår…",
+                    ),
+                )
+            tool_t0 = time.monotonic()
             fulfilled = _fulfill_model_tool_call(
                 content,
                 domain=pref.sticky_market or sticky_market,
                 offset=listed_offset,
             )
+            tool_elapsed_ms = int(round((time.monotonic() - tool_t0) * 1000))
             if fulfilled:
-                if tool_label and on_progress:
-                    on_progress(f"✓ {tool_label}: resultat mottaget")
-                content, shown = fulfilled
+                body_out, shown = fulfilled
+                if tool_label:
+                    ok, outcome = _inspect_tool_outcome(tool_name or "tool", str(body_out))
+                    emit_progress(
+                        on_progress,
+                        ProgressEvent(
+                            step_id=step_id,
+                            tool=tool_name or "tool",
+                            label=tool_label,
+                            phase="completed" if ok else "failed",
+                            elapsed_ms=tool_elapsed_ms,
+                            provenance=prov,
+                            outcome=outcome,
+                            error_class=None if ok else "soft_error",
+                            legacy_text=(
+                                f"✓ {tool_label}: {outcome}"
+                                if ok
+                                else f"⚠️ {tool_label}: {outcome}"
+                            ),
+                        ),
+                    )
+                content = body_out
                 if shown is not None:
                     pref.order_list_shown = shown
-            elif tool_label and on_progress:
-                on_progress(f"⚠️ {tool_label}: resultat kunde inte hämtas")
+            elif tool_label:
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool=tool_name or "tool",
+                        label=tool_label,
+                        phase="failed",
+                        elapsed_ms=tool_elapsed_ms,
+                        provenance=prov,
+                        outcome="resultat kunde inte hämtas",
+                        error_class="tool_unavailable",
+                        legacy_text=f"⚠️ {tool_label}: resultat kunde inte hämtas",
+                    ),
+                )
             elif "<tool_call>" in (content or "").lower():
                 content = (
                     "Det anropet kördes inte. Säg vad du vill se eller ändra, "

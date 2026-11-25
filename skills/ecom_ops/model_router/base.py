@@ -21,8 +21,20 @@ class ModelRequest:
     actor: str | None = None
     on_text_delta: Callable[[str], None] | None = None
     on_text_reset: Callable[[], None] | None = None
+    on_phase_change: Callable[[dict[str, Any]], None] | None = None
     reasoning_effort: str | None = None
     hard_timeout: int | None = None
+
+
+def emit_phase(request: ModelRequest, info: dict[str, Any]) -> None:
+    """Safely notify ``request.on_phase_change`` without ever breaking model execution."""
+    callback = request.on_phase_change
+    if callback is None:
+        return
+    try:
+        callback(dict(info))
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True)

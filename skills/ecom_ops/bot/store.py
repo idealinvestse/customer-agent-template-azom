@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sqlite3
+import threading
 import time
+from collections.abc import Iterable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -17,7 +20,9 @@ DEFAULT_TTL_SECONDS = 24 * 3600
 MAX_MESSAGES = 40
 
 
-def clamp_messages(messages: list[dict[str, Any]] | None, *, max_n: int = MAX_MESSAGES) -> list[dict[str, str]]:
+def clamp_messages(
+    messages: list[dict[str, Any]] | None, *, max_n: int = MAX_MESSAGES
+) -> list[dict[str, str]]:
     """Return sanitized message history capped to the newest ``max_n`` turns."""
     out: list[dict[str, str]] = []
     for m in messages or []:
@@ -31,6 +36,50 @@ def clamp_messages(messages: list[dict[str, Any]] | None, *, max_n: int = MAX_ME
     if len(out) > max_n:
         out = out[-max_n:]
     return out
+
+
+def _apply_turn_updates(
+    existing: dict[str, Any] | None,
+    *,
+    new_messages: list[dict[str, Any]] | None,
+    session_updates: dict[str, Any] | None,
+    pop_session_keys: Iterable[str],
+    tool_digest: str | None,
+    clear_tool_digest: bool,
+    flow_updates: dict[str, Any] | None,
+    now: float,
+) -> dict[str, Any]:
+    state: dict[str, Any] = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+
+    prior_messages = state.get("messages")
+    messages = list(prior_messages) if isinstance(prior_messages, list) else []
+    if new_messages:
+        messages.extend(new_messages)
+    if "messages" in state or new_messages:
+        state["messages"] = clamp_messages(messages)
+
+    prior_session = state.get("session")
+    session = dict(prior_session) if isinstance(prior_session, dict) else {}
+    for key in pop_session_keys:
+        session.pop(key, None)
+    if session_updates:
+        session.update(session_updates)
+    state["session"] = session
+
+    if clear_tool_digest:
+        state["tool_digest"] = ""
+    elif tool_digest is not None:
+        state["tool_digest"] = str(tool_digest)
+
+    # Only modify flow/step/slots when explicitly requested so parallel read tasks
+    # never clobber another task's pending_action state.
+    if flow_updates is not None:
+        for key in ("flow", "step", "slots"):
+            if key in flow_updates:
+                state[key] = copy.deepcopy(flow_updates[key])
+
+    state["updated_at"] = now
+    return state
 
 
 class ConversationStore:
@@ -47,67 +96,105 @@ class ConversationStore:
             path = base / "telegram_state.json"
         self.path = path
         self.ttl_seconds = ttl_seconds
+        self._lock = threading.RLock()
         self._data: dict[str, dict[str, Any]] = {}
         self._load()
 
     def _load(self) -> None:
-        if not self.path.is_file():
-            self._data = {}
-            return
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self._data = raw if isinstance(raw, dict) else {}
-        except (json.JSONDecodeError, OSError):
-            self._data = {}
-        self.cleanup_expired()
+        with self._lock:
+            if not self.path.is_file():
+                self._data = {}
+                return
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                self._data = raw if isinstance(raw, dict) else {}
+            except (json.JSONDecodeError, OSError):
+                self._data = {}
+            self.cleanup_expired()
 
     def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(self._data, indent=2, ensure_ascii=False)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, self.path)
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self._data, indent=2, ensure_ascii=False)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, self.path)
 
     def get(self, chat_id: str | int) -> dict[str, Any] | None:
-        key = str(chat_id)
-        entry = self._data.get(key)
-        if not entry:
-            return None
-        updated = float(entry.get("updated_at", 0))
-        if time.time() - updated > self.ttl_seconds:
-            self.clear(chat_id)
-            return None
-        out = dict(entry)
-        if "messages" in out:
-            out["messages"] = clamp_messages(out.get("messages"))
-        return out
+        with self._lock:
+            key = str(chat_id)
+            entry = self._data.get(key)
+            if not entry:
+                return None
+            updated = float(entry.get("updated_at", 0))
+            if time.time() - updated > self.ttl_seconds:
+                self.clear(chat_id)
+                return None
+            out = dict(entry)
+            if "messages" in out:
+                out["messages"] = clamp_messages(out.get("messages"))
+            return out
 
     def set(self, chat_id: str | int, state: dict[str, Any]) -> None:
-        key = str(chat_id)
-        state = dict(state)
-        if "messages" in state:
-            state["messages"] = clamp_messages(state.get("messages"))
-        state["updated_at"] = time.time()
-        self._data[key] = state
-        self._save()
+        with self._lock:
+            key = str(chat_id)
+            state = dict(state)
+            if "messages" in state:
+                state["messages"] = clamp_messages(state.get("messages"))
+            state["updated_at"] = time.time()
+            self._data[key] = state
+            self._save()
 
     def clear(self, chat_id: str | int) -> None:
-        key = str(chat_id)
-        if key in self._data:
-            del self._data[key]
-            self._save()
+        with self._lock:
+            key = str(chat_id)
+            if key in self._data:
+                del self._data[key]
+                self._save()
 
     def cleanup_expired(self) -> int:
-        now = time.time()
-        removed = 0
-        for key in list(self._data.keys()):
-            updated = float(self._data[key].get("updated_at", 0))
-            if now - updated > self.ttl_seconds:
-                del self._data[key]
-                removed += 1
-        if removed:
+        with self._lock:
+            now = time.time()
+            removed = 0
+            for key in list(self._data.keys()):
+                updated = float(self._data[key].get("updated_at", 0))
+                if now - updated > self.ttl_seconds:
+                    del self._data[key]
+                    removed += 1
+            if removed:
+                self._save()
+            return removed
+
+    def append_turn_atomic(
+        self,
+        chat_id: str | int,
+        *,
+        new_messages: list[dict[str, Any]] | None = None,
+        session_updates: dict[str, Any] | None = None,
+        pop_session_keys: Iterable[str] = (),
+        tool_digest: str | None = None,
+        clear_tool_digest: bool = False,
+        flow_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            now = time.time()
+            key = str(chat_id)
+            existing = self._data.get(key)
+            if existing and now - float(existing.get("updated_at", 0)) > self.ttl_seconds:
+                existing = None
+            updated = _apply_turn_updates(
+                existing,
+                new_messages=new_messages,
+                session_updates=session_updates,
+                pop_session_keys=pop_session_keys,
+                tool_digest=tool_digest,
+                clear_tool_digest=clear_tool_digest,
+                flow_updates=flow_updates,
+                now=now,
+            )
+            self._data[key] = updated
             self._save()
-        return removed
+            return copy.deepcopy(updated)
 
 
 class TelegramConversationStore:
@@ -236,3 +323,49 @@ class TelegramConversationStore:
                 "DELETE FROM telegram_conversations WHERE updated_at<?", (cutoff,)
             )
             return int(result.rowcount)
+
+    def append_turn_atomic(
+        self,
+        chat_id: str | int,
+        *,
+        new_messages: list[dict[str, Any]] | None = None,
+        session_updates: dict[str, Any] | None = None,
+        pop_session_keys: Iterable[str] = (),
+        tool_digest: str | None = None,
+        clear_tool_digest: bool = False,
+        flow_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        key = str(chat_id)
+        now = time.time()
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT state_json,updated_at FROM telegram_conversations WHERE chat_id=?",
+                (key,),
+            ).fetchone()
+            existing: dict[str, Any] | None = None
+            if row is not None and now - float(row["updated_at"] or 0) <= self.ttl_seconds:
+                try:
+                    parsed = json.loads(row["state_json"])
+                    if isinstance(parsed, dict):
+                        existing = parsed
+                except (TypeError, json.JSONDecodeError):
+                    existing = None
+            updated = _apply_turn_updates(
+                existing,
+                new_messages=new_messages,
+                session_updates=session_updates,
+                pop_session_keys=pop_session_keys,
+                tool_digest=tool_digest,
+                clear_tool_digest=clear_tool_digest,
+                flow_updates=flow_updates,
+                now=now,
+            )
+            conn.execute(
+                "INSERT INTO telegram_conversations(chat_id,state_json,updated_at) "
+                "VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET "
+                "state_json=excluded.state_json,updated_at=excluded.updated_at",
+                (key, json.dumps(updated, ensure_ascii=False), now),
+            )
+            conn.commit()
+        return copy.deepcopy(updated)

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ecom_ops.model_router.base import ModelRequest, ModelResult
+from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
     ModelConfigError,
@@ -110,6 +111,15 @@ class ModelRouter:
                 return route_id
         return ""
 
+    def _next_configured_route(self, remaining: list[str]) -> str:
+        for candidate in remaining:
+            try:
+                if self._route(candidate).is_configured():
+                    return candidate
+            except ModelConfigError:
+                continue
+        return ""
+
     def complete_route(
         self,
         route_id: str,
@@ -121,7 +131,13 @@ class ModelRouter:
         route = self._route(route_id)
         if not route.is_configured():
             raise ModelConfigError(f"{route_id} is not configured")
-        return route.complete(request, telemetry=telemetry)
+        _emit_phase(request, {"phase": "starting", "route_id": route_id})
+        result = route.complete(request, telemetry=telemetry)
+        _emit_phase(
+            request,
+            {"phase": "completed", "route_id": result.route_id, "model": result.model},
+        )
+        return result
 
     def complete(
         self,
@@ -131,7 +147,8 @@ class ModelRouter:
     ) -> ModelResult:
         tel = telemetry or default_telemetry
         errors: list[str] = []
-        for route_id in self.ordered_route_ids():
+        ordered = self.ordered_route_ids()
+        for idx, route_id in enumerate(ordered):
             try:
                 route = self._route(route_id)
             except ModelConfigError:
@@ -148,9 +165,21 @@ class ModelRouter:
             if not route.is_configured():
                 errors.append(f"{route_id}: not_configured")
                 continue
+            _emit_phase(request, {"phase": "starting", "route_id": route_id})
             try:
                 result = route.complete(request, telemetry=tel)
             except ModelRateLimitError as exc:
+                next_route_id = self._next_configured_route(ordered[idx + 1 :])
+                _emit_phase(
+                    request,
+                    {
+                        "phase": "route_switch",
+                        "from_route": route_id,
+                        "error_class": type(exc).__name__,
+                        "error_code": getattr(exc, "code", ""),
+                        "to_route": next_route_id,
+                    },
+                )
                 self._reset_partial_stream(request)
                 errors.append(f"{route_id}: ModelRateLimitError")
                 tel.record(
@@ -167,6 +196,17 @@ class ModelRouter:
                 )
                 continue
             except (ModelAuthError, ModelConfigError, ModelUnavailableError) as exc:
+                next_route_id = self._next_configured_route(ordered[idx + 1 :])
+                _emit_phase(
+                    request,
+                    {
+                        "phase": "route_switch",
+                        "from_route": route_id,
+                        "error_class": type(exc).__name__,
+                        "error_code": getattr(exc, "code", ""),
+                        "to_route": next_route_id,
+                    },
+                )
                 self._reset_partial_stream(request)
                 errors.append(f"{route_id}: {type(exc).__name__}")
                 tel.record(
@@ -182,6 +222,10 @@ class ModelRouter:
                     },
                 )
                 continue
+            _emit_phase(
+                request,
+                {"phase": "completed", "route_id": result.route_id, "model": result.model},
+            )
             tel.record(
                 action="model_route_selected",
                 site=request.site,

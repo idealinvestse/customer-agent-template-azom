@@ -10,6 +10,7 @@ import contextvars
 import json
 import re
 from collections.abc import Callable
+from typing import Any
 
 from ecom_ops.model_router import get_model_router
 from ecom_ops.model_router.base import ModelRequest
@@ -61,6 +62,7 @@ def _complete_request(
     route_id: str | None = None,
     on_text_delta: Callable[[str], None] | None = None,
     on_text_reset: Callable[[], None] | None = None,
+    on_phase_change: Callable[[dict[str, Any]], None] | None = None,
     reasoning_effort: str | None = None,
     hard_timeout: int | None = None,
 ):
@@ -80,6 +82,7 @@ def _complete_request(
         actor=actor,
         on_text_delta=on_text_delta,
         on_text_reset=on_text_reset,
+        on_phase_change=on_phase_change,
         reasoning_effort=reasoning_effort,
         hard_timeout=hard_timeout,
     )
@@ -103,6 +106,7 @@ def chat_completion(
     route_id: str | None = None,
     on_text_delta: Callable[[str], None] | None = None,
     on_text_reset: Callable[[], None] | None = None,
+    on_phase_change: Callable[[dict[str, Any]], None] | None = None,
     reasoning_effort: str | None = None,
     hard_timeout: int | None = None,
 ) -> tuple[str, float]:
@@ -124,6 +128,7 @@ def chat_completion(
         route_id=route_id,
         on_text_delta=on_text_delta,
         on_text_reset=on_text_reset,
+        on_phase_change=on_phase_change,
         reasoning_effort=reasoning_effort,
         hard_timeout=hard_timeout,
     )

@@ -12,6 +12,7 @@ from typing import Any
 import requests
 
 from ecom_ops.model_router.base import ModelRequest, ModelResult
+from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
     ModelConfigError,
@@ -67,6 +68,10 @@ class XaiApiKeyRoute:
             "temperature": request.temperature,
             "stream": streaming,
         }
+        _emit_phase(
+            request,
+            {"phase": "waiting", "route_id": self.route_id, "model": model},
+        )
         try:
             response = requests.post(
                 XAI_CHAT_URL,
@@ -94,9 +99,30 @@ class XaiApiKeyRoute:
 
         try:
             if streaming:
+                delta_cb = request.on_text_delta
+                if request.on_phase_change is not None:
+                    saw_delta = False
+                    orig_delta = request.on_text_delta
+
+                    def _wrapped_delta(chunk: str) -> None:
+                        nonlocal saw_delta
+                        if not saw_delta:
+                            saw_delta = True
+                            _emit_phase(
+                                request,
+                                {
+                                    "phase": "streaming",
+                                    "route_id": self.route_id,
+                                    "model": model,
+                                },
+                            )
+                        if orig_delta is not None:
+                            orig_delta(chunk)
+
+                    delta_cb = _wrapped_delta
                 content, usage = read_chat_completion_sse(
                     response.iter_lines(decode_unicode=True),
-                    on_text_delta=request.on_text_delta,
+                    on_text_delta=delta_cb,
                 )
             else:
                 data = response.json()

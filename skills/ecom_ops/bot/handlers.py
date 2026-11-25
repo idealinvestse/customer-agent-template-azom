@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from ecom_ops.bot.actors import (
@@ -17,6 +18,9 @@ from ecom_ops.bot.catalog import execute_page_update, execute_product_update
 from ecom_ops.bot.chat_agent import (
     SOFT_ESCALATE_NUDGE,
     ChatResult,
+    _accepts_kwarg,
+    _inspect_tool_outcome,
+    _provenance,
     run_chat,
     tool_lookup_order,
     wants_escalate,
@@ -30,6 +34,11 @@ from ecom_ops.bot.dialog_actions import (
     execute_product_desc,
 )
 from ecom_ops.bot.openclaw_commands import dispatch_openclaw_command
+from ecom_ops.bot.progress_events import (
+    ProgressCallback,
+    ProgressEvent,
+    emit_progress,
+)
 from ecom_ops.bot.recovery import (
     FOOTER_UNKNOWN_CALLBACK,
     deny_actor_reply,
@@ -45,6 +54,7 @@ from ecom_ops.bot.reply import (
     bot_reply,
     order_status_confirm_actions,
     product_desc_confirm_actions,
+    proposal_confirm_actions,
     safe_workspace_attachments,
     triage_cases_actions,
     yes_no_actions,
@@ -64,6 +74,19 @@ ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
 _FILE_PLAN_ID = re.compile(r"fe-[a-f0-9]{12}")
 _REVIEW_PLAN_ID = re.compile(r"wr-[a-f0-9]{12}")
 _MAX_REVIEW_HASH_CACHE = 8
+_PROPOSAL_YES_RE = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
+_PROPOSAL_NO_RE = re.compile(r"^proposal:no:(pr-[0-9a-f]{12})$", re.I)
+
+_PENDING_PROGRESS_LABELS: dict[str, tuple[str, str, str]] = {
+    "order_status": ("Orderstatus", "Uppdaterar orderstatus i Woo", "Orderstatus uppdaterad"),
+    "product_desc": ("Produktbeskrivning", "Genererar produktbeskrivning", "Produktbeskrivning klar"),
+    "product_update": ("Produktuppdatering", "Uppdaterar produkt i Woo", "Produkt uppdaterad"),
+    "page_update": ("Siduppdatering", "Uppdaterar sida i WordPress", "Sida uppdaterad"),
+    "post_update": ("Inläggsuppdatering", "Uppdaterar inlägg i WordPress", "Inlägg uppdaterat"),
+    "site_update": ("Sajtinställningar", "Uppdaterar sajtinställningar", "Sajtinställningar uppdaterade"),
+    "plugin_status": ("WordPress-plugin", "Ändrar plugin-status", "Plugin-status uppdaterad"),
+    "case_regenerate": ("Ärendeutkast", "Skapar nytt svarsutkast", "Nytt utkast sparat"),
+}
 
 
 def _wpreview_stage_actions(
@@ -187,6 +210,58 @@ def _drop_review_hash(session: dict[str, Any], plan_id: str) -> bool:
     return True
 
 
+def _prune_review_hashes(
+    session: dict[str, Any], *, actor: str
+) -> tuple[dict[str, Any], bool]:
+    """Drop wp_review_hashes entries belonging to another actor; return (kept, changed)."""
+    hashes = session.get("wp_review_hashes")
+    if not isinstance(hashes, dict):
+        return {}, False
+    kept = {
+        pid: row
+        for pid, row in hashes.items()
+        if isinstance(row, dict) and row.get("actor") == actor
+    }
+    if len(kept) == len(hashes):
+        return kept, False
+    if kept:
+        session["wp_review_hashes"] = kept
+    else:
+        session.pop("wp_review_hashes", None)
+    return kept, True
+
+
+def _slash_command_meta(raw: str) -> tuple[str, str, str, str] | None:
+    """Return (step_id, label, detail, tool_name) for operational slash commands."""
+    text = (raw or "").strip()
+    if not text.startswith("/"):
+        return None
+    parts = text.split()
+    cmd = parts[0].split("@", 1)[0].lower()
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    if cmd == "/health":
+        return ("cmd:health", "Systemhälsa", "Kontrollerar systemstatus", "health")
+    if cmd == "/brief":
+        return ("cmd:brief", "Daglig sammanfattning", "Sammanställer lägesbild", "brief")
+    if cmd == "/marketing":
+        return ("cmd:marketing", "Marknadsföring", "Hämtar marknadsföringsdata", "marketing")
+    if cmd == "/cases":
+        if sub in {"approve", "send"}:
+            return ("cmd:cases_approve", "Ärende", "Godkänner utkast", "cases_approve")
+        if sub == "close":
+            return ("cmd:cases_close", "Ärende", "Stänger ärende", "cases_close")
+        if sub == "show":
+            return ("cmd:cases_show", "Ärende", "Hämtar ärendedetaljer", "case_lookup")
+        return ("cmd:cases", "Ärenden", "Hämtar ärenden", "case_list")
+    return None
+
+
+def _reply_text(value: Any) -> str:
+    if isinstance(value, BotReply):
+        return value.text
+    return str(value or "")
+
+
 def _stored_tool_digest(result: ChatResult, prior_digest: str) -> str:
     """Keep an explicit empty digest when a page review clears the order summary."""
     if result.clear_tool_digest:
@@ -207,10 +282,12 @@ class BotHandler:
         escalation: EscalationService | None = None,
         *,
         channel: str = "telegram",
+        proposal_store: Any | None = None,
     ) -> None:
         self.store = store or ConversationStore()
         self.escalation = escalation or default_escalation
         self.channel = (channel or "telegram").strip().lower()
+        self.proposal_store = proposal_store
 
     def _peer_allowed(self, peer_id: str | int) -> bool:
         return channel_peer_allowed(self.channel, peer_id)
@@ -323,15 +400,196 @@ class BotHandler:
             return
         self.store.set(chat_id, state)
 
+    def _update_session_atomic(
+        self,
+        chat_id: str | int,
+        *,
+        session_updates: dict[str, Any] | None = None,
+        pop_session_keys: Iterable[str] = (),
+    ) -> None:
+        if hasattr(self.store, "append_turn_atomic"):
+            self.store.append_turn_atomic(
+                chat_id,
+                session_updates=session_updates or None,
+                pop_session_keys=pop_session_keys,
+            )
+            return
+        prev = self.store.get(chat_id) or {}
+        session = dict(prev.get("session") or {})
+        for key in pop_session_keys:
+            session.pop(key, None)
+        if session_updates:
+            session.update(session_updates)
+        self._merge_state(
+            chat_id,
+            session=session,
+            messages=prev.get("messages"),
+            tool_digest=prev.get("tool_digest"),
+        )
+
+    def _persist_review_hashes(
+        self, chat_id: str | int, session: dict[str, Any]
+    ) -> None:
+        remaining = session.get("wp_review_hashes")
+        if isinstance(remaining, dict) and remaining:
+            self._update_session_atomic(
+                chat_id,
+                session_updates={"wp_review_hashes": dict(remaining)},
+            )
+        else:
+            self._update_session_atomic(
+                chat_id,
+                pop_session_keys=("wp_review_hashes",),
+            )
+
+    def _lookup_order_with_progress(
+        self,
+        chat_id: str | int,
+        oid: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> str:
+        prov = _provenance()
+        step_id = f"order:{oid}"
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool="order_lookup",
+                phase="started",
+                label=f"Order #{oid}",
+                detail="Hämtar från Woo",
+                provenance=prov,
+                legacy_text=f"Hämtar order #{oid} från Woo...",
+            ),
+        )
+        t0 = time.monotonic()
+        try:
+            out = tool_lookup_order(oid, domain=self._session_market(chat_id))
+        except Exception:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="order_lookup",
+                    phase="failed",
+                    label=f"Order #{oid}",
+                    outcome="hämtning misslyckades",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text=f"Order #{oid}: hämtning misslyckades.",
+                ),
+            )
+            raise
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        ok, outcome = _inspect_tool_outcome("order_lookup", out)
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool="order_lookup",
+                phase="completed" if ok else "failed",
+                label=f"Order #{oid}",
+                outcome=outcome,
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                legacy_text=f"Order #{oid}: {outcome}.",
+            ),
+        )
+        return out
+
+    def _dispatch_oc_with_progress(
+        self,
+        chat_id: str | int,
+        raw: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> Any:
+        meta = _slash_command_meta(raw)
+        if meta is None:
+            return dispatch_openclaw_command(
+                chat_id, raw, self.store, channel=self.channel
+            )
+        step_id, label, detail, tool_name = meta
+        prov = _provenance()
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=tool_name,
+                phase="started",
+                label=label,
+                detail=detail,
+                provenance=prov,
+                legacy_text=f"{detail}...",
+            ),
+        )
+        t0 = time.monotonic()
+        try:
+            oc = dispatch_openclaw_command(
+                chat_id, raw, self.store, channel=self.channel
+            )
+        except Exception:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool=tool_name,
+                    phase="failed",
+                    label=label,
+                    outcome="misslyckades",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text=f"{label}: misslyckades.",
+                ),
+            )
+            raise
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        if oc is None:
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool=tool_name,
+                    phase="failed",
+                    label=label,
+                    outcome="inget svar",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text=f"{label}: inget svar.",
+                ),
+            )
+            return None
+        ok, outcome = _inspect_tool_outcome(tool_name, _reply_text(oc))
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=tool_name,
+                phase="completed" if ok else "failed",
+                label=label,
+                outcome=outcome,
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                legacy_text=f"{label}: {outcome}.",
+            ),
+        )
+        return oc
+
     def handle(
         self,
         chat_id: str | int,
         text: str,
         *,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
         on_text_delta: Callable[[str], None] | None = None,
         on_text_reset: Callable[[], None] | None = None,
+        on_stream_clear: Callable[[], None] | None = None,
+        on_phase_change: Callable[[dict[str, Any]], None] | None = None,
         on_checkpoint: Callable[[], list[str]] | None = None,
+        task_id: str | None = None,
     ) -> BotReply:
         if not self._peer_allowed(chat_id):
             return self._deny_allowlist()
@@ -344,13 +602,13 @@ class BotHandler:
         if not raw:
             return BotReply(text="Skriv /help eller /commands — eller bara fråga.")
 
-        wp_command = self._wp_context_command(chat_id, raw)
+        wp_command = self._wp_context_command(chat_id, raw, on_progress=on_progress)
         if wp_command is not None:
             return wp_command
 
         # OpenClaw slash commands first
-        oc = dispatch_openclaw_command(
-            chat_id, raw, self.store, channel=self.channel
+        oc = self._dispatch_oc_with_progress(
+            chat_id, raw, on_progress=on_progress
         )
         if oc is not None:
             if oc == "__ORDER_PROMPT__":
@@ -362,27 +620,43 @@ class BotHandler:
                 oid = oc.split(":", 1)[1]
                 self._touch_session_order(chat_id, oid)
                 return BotReply(
-                    text=tool_lookup_order(oid, domain=self._session_market(chat_id))
+                    text=self._lookup_order_with_progress(
+                        chat_id, oid, on_progress=on_progress
+                    )
                 )
             return as_reply(oc)
 
         # Continue multi-turn flows (confirm writes, escalate, order id prompt)
         state = self.store.get(chat_id)
         if state and state.get("flow"):
-            return as_reply(self._continue_flow(chat_id, raw, state))
+            return as_reply(
+                self._continue_flow(
+                    chat_id,
+                    raw,
+                    state,
+                    on_progress=on_progress,
+                    on_text_delta=on_text_delta,
+                    on_text_reset=on_text_reset,
+                    on_stream_clear=on_stream_clear,
+                    on_phase_change=on_phase_change,
+                    on_checkpoint=on_checkpoint,
+                    task_id=task_id,
+                )
+            )
 
         # Ultra-short order shortcut
         fast = ORDER_FAST_RE.match(raw)
         if fast:
-            self._touch_session_order(chat_id, fast.group(1))
+            oid = fast.group(1)
+            self._touch_session_order(chat_id, oid)
             return BotReply(
-                text=tool_lookup_order(
-                    fast.group(1), domain=self._session_market(chat_id)
+                text=self._lookup_order_with_progress(
+                    chat_id, oid, on_progress=on_progress
                 )
             )
 
         if wants_hard_escalate_confirm(raw):
-            return self._start_escalate_confirm(chat_id, raw)
+            return self._start_escalate_confirm(chat_id, raw, task_id=task_id)
 
         return self._run_llm_chat(
             chat_id,
@@ -390,10 +664,19 @@ class BotHandler:
             on_progress=on_progress,
             on_text_delta=on_text_delta,
             on_text_reset=on_text_reset,
+            on_stream_clear=on_stream_clear,
+            on_phase_change=on_phase_change,
             on_checkpoint=on_checkpoint,
+            task_id=task_id,
         )
 
-    def handle_callback(self, chat_id: str | int, data: str) -> BotReply:
+    def handle_callback(
+        self,
+        chat_id: str | int,
+        data: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> BotReply:
         if not self._peer_allowed(chat_id):
             return self._deny_allowlist()
         try:
@@ -402,14 +685,65 @@ class BotHandler:
             return self._deny_actor()
         self._clear_mismatched_wp_context(chat_id, actor)
         raw = (data or "").strip()
+
+        prop_yes = _PROPOSAL_YES_RE.fullmatch(raw)
+        if prop_yes:
+            proposal_id = prop_yes.group(1).lower()
+            if self.proposal_store is None:
+                return BotReply(
+                    text=with_recovery(
+                        "Förslagslagring är inte aktiverad.",
+                        footer=FOOTER_UNKNOWN_CALLBACK,
+                    )
+                )
+            prop = self.proposal_store.consume_proposal(proposal_id, chat_id=chat_id)
+            if prop is None:
+                return BotReply(
+                    text="Förslaget är redan hanterat eller utgånget. Ingen ändring utfördes."
+                )
+            if str(prop.get("kind") or "") == "escalate":
+                payload = dict(prop.get("payload") or {})
+                return as_reply(
+                    self._execute_escalate(
+                        chat_id,
+                        message=str(payload.get("message") or ""),
+                        draft=str(payload.get("reply") or ""),
+                        proposal_id=proposal_id,
+                        on_progress=on_progress,
+                    )
+                )
+            pending = PendingAction.from_dict(prop.get("payload"))
+            if pending is None:
+                return BotReply(text="Ogiltigt förslag. Ingen ändring utfördes.")
+            if prop.get("domain") and not pending.payload.get("domain"):
+                pending.payload["domain"] = str(prop["domain"])
+            if prop.get("site_id") and not pending.payload.get("site_id"):
+                pending.payload["site_id"] = str(prop["site_id"])
+            return self._exec_pending(
+                chat_id,
+                pending,
+                on_progress=on_progress,
+                proposal_id=proposal_id,
+            )
+
+        prop_no = _PROPOSAL_NO_RE.fullmatch(raw)
+        if prop_no:
+            proposal_id = prop_no.group(1).lower()
+            if self.proposal_store is not None:
+                self.proposal_store.cancel_proposal(proposal_id, chat_id=chat_id)
+            self._clear_pending(chat_id, proposal_id=proposal_id)
+            return BotReply(text="Avbrutet — ingen ändring utförd.")
+
         if raw == "escalate:yes":
-            return as_reply(self._confirm_escalate(chat_id, yes=True))
+            return as_reply(
+                self._confirm_escalate(chat_id, yes=True, on_progress=on_progress)
+            )
         if raw == "escalate:no":
             return as_reply(self._confirm_escalate(chat_id, yes=False))
         if raw == "cases:list":
             return as_reply(
-                dispatch_openclaw_command(
-                    chat_id, "/cases list", self.store, channel=self.channel
+                self._dispatch_oc_with_progress(
+                    chat_id, "/cases list", on_progress=on_progress
                 )
                 or with_recovery("Kunde inte lista ärenden.")
             )
@@ -417,8 +751,8 @@ class BotHandler:
             id8 = raw.split(":", 2)[2].strip()
             self._touch_session_case(chat_id, id8)
             return as_reply(
-                dispatch_openclaw_command(
-                    chat_id, f"/cases show {id8}", self.store, channel=self.channel
+                self._dispatch_oc_with_progress(
+                    chat_id, f"/cases show {id8}", on_progress=on_progress
                 )
                 or with_recovery(f"Hittade inte {id8}.")
             )
@@ -428,11 +762,10 @@ class BotHandler:
                 return blocked
             id8 = raw.split(":", 2)[2].strip()
             return as_reply(
-                dispatch_openclaw_command(
+                self._dispatch_oc_with_progress(
                     chat_id,
                     f"/cases approve {id8}",
-                    self.store,
-                    channel=self.channel,
+                    on_progress=on_progress,
                 )
                 or with_recovery("Kunde inte godkänna.")
             )
@@ -441,6 +774,7 @@ class BotHandler:
             return self._exec_pending(
                 chat_id,
                 PendingAction(kind="case_regenerate", payload={"case_id": id8}),
+                on_progress=on_progress,
             )
         if raw.startswith("order:set:"):
             blocked = self._mutations_blocked_reply()
@@ -460,6 +794,7 @@ class BotHandler:
                             "domain": self._session_market(chat_id),
                         },
                     ),
+                    on_progress=on_progress,
                 )
         if raw == "order:cancel":
             self._clear_pending(chat_id)
@@ -482,6 +817,7 @@ class BotHandler:
                             "language": "sv",
                         },
                     ),
+                    on_progress=on_progress,
                 )
         if raw == "product:cancel":
             self._clear_pending(chat_id)
@@ -501,13 +837,57 @@ class BotHandler:
                 return BotReply(text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK))
             from ecom_ops.wp_ops import WpOpsService
 
+            prov = _provenance()
+            step_id = f"wpfile:{plan_id}"
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wpfile_stage",
+                    phase="started",
+                    label="Staging-filändring",
+                    detail="Skriver godkänd filändring i staging",
+                    provenance=prov,
+                    legacy_text="Skriver godkänd filändring i staging...",
+                ),
+            )
+            t0 = time.monotonic()
             staged = WpOpsService().stage_file_plan(plan_id, actor=actor)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
             if staged.ok and (staged.data or {}).get("executed") is True:
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool="wpfile_stage",
+                        phase="completed",
+                        label="Staging-filändring",
+                        outcome="fil skriven i staging",
+                        elapsed_ms=elapsed_ms,
+                        provenance=prov,
+                        legacy_text="Staging-filändring: klar.",
+                    ),
+                )
                 return BotReply(text="Filen är skriven i staging. Produktionen är oförändrad.")
             error = str((staged.data or {}).get("error_class") or "OperationUnavailable")
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wpfile_stage",
+                    phase="failed",
+                    label="Staging-filändring",
+                    outcome=f"skrevs inte ({error})",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text=f"Staging-filändring: misslyckades ({error}).",
+                ),
+            )
             return BotReply(text=f"Staging skrevs inte ({error}). Ingen fil ändrades.")
         if raw == "wpreview:no" or raw.startswith(("wpreview:no:", "wpreview:stage:")):
-            return self._handle_wpreview_callback(chat_id, actor, raw)
+            return self._handle_wpreview_callback(
+                chat_id, actor, raw, on_progress=on_progress
+            )
         if raw == "action:yes":
             blocked = self._mutations_blocked_reply()
             if blocked:
@@ -524,7 +904,9 @@ class BotHandler:
                     "plugin_status",
                 }:
                     return blocked
-            return self._confirm_pending_text(chat_id, yes=True)
+            return self._confirm_pending_text(
+                chat_id, yes=True, on_progress=on_progress
+            )
         if raw == "action:no":
             return self._confirm_pending_text(chat_id, yes=False)
         return BotReply(
@@ -532,16 +914,16 @@ class BotHandler:
         )
 
     def _touch_session_order(self, chat_id: str | int, order_id: str) -> None:
-        prev = self.store.get(chat_id) or {}
-        session = dict(prev.get("session") or {})
-        session["last_order_id"] = str(order_id)
-        self._merge_state(chat_id, session=session)
+        self._update_session_atomic(
+            chat_id, session_updates={"last_order_id": str(order_id)}
+        )
 
     def _clear_mismatched_wp_context(self, chat_id: str | int, actor: str) -> None:
         state = self.store.get(chat_id) or {}
         session = dict(state.get("session") or {})
         context = session.get("wp_ops_context")
-        changed = False
+        pop_keys: list[str] = []
+        updates: dict[str, Any] = {}
         if context is not None and not context_matches(
             context,
             actor=actor,
@@ -549,37 +931,35 @@ class BotHandler:
             conversation_id=f"{self.channel}:{chat_id}",
         ):
             session.pop("wp_ops_context", None)
-            changed = True
-        hashes = session.get("wp_review_hashes")
-        if isinstance(hashes, dict):
-            kept = {
-                pid: row
-                for pid, row in hashes.items()
-                if isinstance(row, dict) and row.get("actor") == actor
-            }
-            if len(kept) != len(hashes):
-                if kept:
-                    session["wp_review_hashes"] = kept
-                else:
-                    session.pop("wp_review_hashes", None)
-                changed = True
-        if not changed:
+            pop_keys.append("wp_ops_context")
+        kept, hashes_changed = _prune_review_hashes(session, actor=actor)
+        if hashes_changed:
+            if kept:
+                updates["wp_review_hashes"] = kept
+            else:
+                pop_keys.append("wp_review_hashes")
+        if not updates and not pop_keys:
             return
-        self._merge_state(
+        self._update_session_atomic(
             chat_id,
-            session=session,
-            messages=state.get("messages"),
-            tool_digest=state.get("tool_digest"),
+            session_updates=updates or None,
+            pop_session_keys=pop_keys,
         )
 
     def _touch_session_case(self, chat_id: str | int, case_id8: str) -> None:
-        prev = self.store.get(chat_id) or {}
-        session = dict(prev.get("session") or {})
-        session["last_case_id8"] = str(case_id8)
-        self._merge_state(chat_id, session=session)
+        self._update_session_atomic(
+            chat_id, session_updates={"last_case_id8": str(case_id8)}
+        )
 
-    def _clear_pending(self, chat_id: str | int) -> None:
+    def _clear_pending(
+        self, chat_id: str | int, *, proposal_id: str | None = None
+    ) -> None:
         prev = self.store.get(chat_id) or {}
+        if proposal_id is not None:
+            slots = dict(prev.get("slots") or {})
+            stored_pid = str(slots.get("proposal_id") or "").strip().lower()
+            if stored_pid and stored_pid != proposal_id.strip().lower():
+                return
         session = dict(prev.get("session") or {})
         self._merge_state(
             chat_id,
@@ -592,7 +972,18 @@ class BotHandler:
         )
 
     def _continue_flow(
-        self, chat_id: str | int, text: str, state: dict[str, Any]
+        self,
+        chat_id: str | int,
+        text: str,
+        state: dict[str, Any],
+        *,
+        on_progress: ProgressCallback | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        on_text_reset: Callable[[], None] | None = None,
+        on_stream_clear: Callable[[], None] | None = None,
+        on_phase_change: Callable[[dict[str, Any]], None] | None = None,
+        on_checkpoint: Callable[[], list[str]] | None = None,
+        task_id: str | None = None,
     ) -> str | BotReply:
         flow = state.get("flow")
         step = state.get("step")
@@ -608,19 +999,46 @@ class BotHandler:
                 )
             self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
             self._touch_session_order(chat_id, oid)
-            return tool_lookup_order(oid, domain=self._session_market(chat_id))
+            return self._lookup_order_with_progress(
+                chat_id, oid, on_progress=on_progress
+            )
 
         if flow == "escalate_confirm" and step == "confirm":
             answer = text.strip().lower()
+            proposal_id = str(slots.get("proposal_id") or "").strip()
             if answer in {"ja", "yes", "y", "j"}:
-                return self._confirm_escalate(chat_id, yes=True)
+                if self.channel == "telegram" and self.proposal_store is not None:
+                    return bot_reply(
+                        "Tryck på Ja-knappen på det aktuella förslaget för att bekräfta eskaleringen.",
+                        actions=proposal_confirm_actions(proposal_id) if proposal_id else None,
+                    )
+                return self._confirm_escalate(
+                    chat_id, yes=True, on_progress=on_progress
+                )
             if answer in {"nej", "no", "n"}:
+                if self.proposal_store is not None and proposal_id:
+                    self.proposal_store.cancel_proposal(proposal_id, chat_id=chat_id)
                 return self._confirm_escalate(chat_id, yes=False)
             if not wants_escalate(text) and len(text) > 12:
                 self._merge_state(
                     chat_id, flow=None, step=None, slots={}, session=session
                 )
-                return self._run_llm_chat(chat_id, text)
+                return self._run_llm_chat(
+                    chat_id,
+                    text,
+                    on_progress=on_progress,
+                    on_text_delta=on_text_delta,
+                    on_text_reset=on_text_reset,
+                    on_stream_clear=on_stream_clear,
+                    on_phase_change=on_phase_change,
+                    on_checkpoint=on_checkpoint,
+                    task_id=task_id,
+                )
+            if self.proposal_store is not None and proposal_id:
+                return bot_reply(
+                    "Tryck på Ja- eller Nej-knappen på det aktuella förslaget, eller /stop.",
+                    actions=proposal_confirm_actions(proposal_id),
+                )
             return bot_reply(
                 "Svara ja eller nej (eller tryck knappen), eller /stop.",
                 actions=yes_no_actions(
@@ -630,16 +1048,41 @@ class BotHandler:
 
         if flow == "pending_action" and step == "confirm":
             answer = text.strip().lower()
+            proposal_id = str(slots.get("proposal_id") or "").strip()
             if answer in {"ja", "yes", "y", "j", "ok", "kör", "bekrafta", "bekräfta"}:
-                return self._confirm_pending_text(chat_id, yes=True)
+                if self.channel == "telegram" and self.proposal_store is not None:
+                    return bot_reply(
+                        "Tryck på Ja-knappen på det aktuella förslaget för att bekräfta ändringen.",
+                        actions=proposal_confirm_actions(proposal_id) if proposal_id else None,
+                    )
+                return self._confirm_pending_text(
+                    chat_id, yes=True, on_progress=on_progress
+                )
             if answer in {"nej", "no", "n", "avbryt", "cancel"}:
+                if self.proposal_store is not None and proposal_id:
+                    self.proposal_store.cancel_proposal(proposal_id, chat_id=chat_id)
                 return self._confirm_pending_text(chat_id, yes=False)
             # Free text mid-confirm → drop pending and chat
             if len(text) > 8:
                 self._merge_state(
                     chat_id, flow=None, step=None, slots={}, session=session
                 )
-                return self._run_llm_chat(chat_id, text)
+                return self._run_llm_chat(
+                    chat_id,
+                    text,
+                    on_progress=on_progress,
+                    on_text_delta=on_text_delta,
+                    on_text_reset=on_text_reset,
+                    on_stream_clear=on_stream_clear,
+                    on_phase_change=on_phase_change,
+                    on_checkpoint=on_checkpoint,
+                    task_id=task_id,
+                )
+            if self.proposal_store is not None and proposal_id:
+                return bot_reply(
+                    "Tryck på Ja- eller Nej-knappen på det aktuella förslaget för att bekräfta ändringen.",
+                    actions=proposal_confirm_actions(proposal_id),
+                )
             pending = PendingAction.from_dict(slots.get("pending"))
             try:
                 actor_obj = self._actor_obj(chat_id)
@@ -651,51 +1094,175 @@ class BotHandler:
             )
 
         self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
-        return self._run_llm_chat(chat_id, text)
+        return self._run_llm_chat(
+            chat_id,
+            text,
+            on_progress=on_progress,
+            on_text_delta=on_text_delta,
+            on_text_reset=on_text_reset,
+            on_stream_clear=on_stream_clear,
+            on_phase_change=on_phase_change,
+            on_checkpoint=on_checkpoint,
+            task_id=task_id,
+        )
 
-    def _start_escalate_confirm(self, chat_id: str | int, message: str) -> BotReply:
+    def _start_escalate_confirm(
+        self,
+        chat_id: str | int,
+        message: str,
+        *,
+        task_id: str | None = None,
+        prompt_text: str | None = None,
+        attachments: tuple[str, ...] = (),
+    ) -> BotReply:
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
+        attachment_kwargs = {"attachments": attachments} if attachments else {}
+        body = prompt_text or (
+            "Eskalera till Oscar?\n\n"
+            f"Meddelande: {message[:300]}\n\n"
+            "Bekräfta med Ja/Nej."
+        )
+        if self.proposal_store is not None:
+            domain = self._session_market(chat_id)
+            wp_ctx = session.get("wp_ops_context")
+            site_id = (
+                str(wp_ctx.get("site_id")).strip()
+                if isinstance(wp_ctx, dict) and wp_ctx.get("site_id")
+                else None
+            )
+            prop = self.proposal_store.create_proposal(
+                chat_id,
+                kind="escalate",
+                payload={"message": message[:500]},
+                task_id=task_id,
+                domain=domain,
+                site_id=site_id,
+            )
+            proposal_id = str(prop.get("proposal_id") or "")
+            self._merge_state(
+                chat_id,
+                flow="escalate_confirm",
+                step="confirm",
+                slots={"message": message[:500], "proposal_id": proposal_id},
+                session=session,
+                messages=prev.get("messages"),
+                tool_digest=prev.get("tool_digest"),
+            )
+            return bot_reply(
+                body,
+                actions=proposal_confirm_actions(proposal_id),
+                needs_typing=True,
+                **attachment_kwargs,
+            )
         self._merge_state(
             chat_id,
             flow="escalate_confirm",
             step="confirm",
             slots={"message": message[:500]},
             session=session,
+            messages=prev.get("messages"),
+            tool_digest=prev.get("tool_digest"),
         )
         return bot_reply(
-            (
-                "Eskalera till Oscar?\n\n"
-                f"Meddelande: {message[:300]}\n\n"
-                "Bekräfta med Ja/Nej."
-            ),
+            body,
             actions=yes_no_actions(yes_data="escalate:yes", no_data="escalate:no"),
+            needs_typing=True,
+            **attachment_kwargs,
         )
 
-    def _confirm_escalate(self, chat_id: str | int, *, yes: bool) -> str:
-        state = self.store.get(chat_id) or {}
-        slots = dict(state.get("slots") or {})
-        session = dict(state.get("session") or {})
-        if yes:
-            try:
-                actor = self._resolve_actor(chat_id)
-            except (TelegramActorDenied, ChannelActorDenied):
-                return (
-                    "Din chat saknar actor-mapping. "
-                    "Be Oscar uppdatera actor-map för kanalen."
-                )
+    def _execute_escalate(
+        self,
+        chat_id: str | int,
+        *,
+        message: str,
+        draft: str = "",
+        proposal_id: str | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> str:
+        try:
+            actor = self._resolve_actor(chat_id)
+        except (TelegramActorDenied, ChannelActorDenied):
+            return (
+                "Din chat saknar actor-mapping. "
+                "Be Oscar uppdatera actor-map för kanalen."
+            )
+        prov = _provenance()
+        step_id = "action:escalate"
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool="escalate",
+                phase="started",
+                label="Eskalering",
+                detail="Skickar eskalering till Oscar",
+                provenance=prov,
+                legacy_text="Eskalerar till Oscar...",
+            ),
+        )
+        t0 = time.monotonic()
+        try:
             ticket = self.escalation.escalate_critical(
                 f"{self.channel} escalation by {actor}",
                 details={
                     "channel": self.channel,
                     "chat_id": str(chat_id),
                     "actor": actor,
-                    "message": slots.get("message", "")[:500],
-                    "draft": (slots.get("reply") or "")[:500],
+                    "message": message[:500],
+                    "draft": draft[:500],
                 },
             )
-            self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
-            return f"Eskalerat till Oscar. Ticket: {ticket.id}"
+        except Exception:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="escalate",
+                    phase="failed",
+                    label="Eskalering",
+                    outcome="eskalering misslyckades",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text="Eskalering misslyckades.",
+                ),
+            )
+            raise
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool="escalate",
+                phase="completed",
+                label="Eskalering",
+                outcome="eskalerad till Oscar",
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                legacy_text="Eskalerat till Oscar.",
+            ),
+        )
+        self._clear_pending(chat_id, proposal_id=proposal_id)
+        return f"Eskalerat till Oscar. Ticket: {ticket.id}"
+
+    def _confirm_escalate(
+        self,
+        chat_id: str | int,
+        *,
+        yes: bool,
+        on_progress: ProgressCallback | None = None,
+    ) -> str:
+        state = self.store.get(chat_id) or {}
+        slots = dict(state.get("slots") or {})
+        session = dict(state.get("session") or {})
+        if yes:
+            return self._execute_escalate(
+                chat_id,
+                message=str(slots.get("message") or ""),
+                draft=str(slots.get("reply") or ""),
+                on_progress=on_progress,
+            )
         self._merge_state(chat_id, flow=None, step=None, slots={}, session=session)
         return "Inte eskalerad. Fortsätt chatta — eller /cases · /help"
 
@@ -726,10 +1293,12 @@ class BotHandler:
         text: str,
         *,
         actor: Actor,
+        task_id: str | None = None,
         attachments: tuple[str, ...] = (),
     ) -> BotReply:
         if not self._pending_allowed(actor, pending):
             return BotReply(text=f"{text}\n\n{self._deny_pending_reply(pending)}")
+        attachment_kwargs = {"attachments": attachments} if attachments else {}
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
         if pending.kind == "order_status" and pending.payload.get("order_id"):
@@ -742,6 +1311,51 @@ class BotHandler:
             session["last_page_id"] = str(pending.payload["page_id"])
         if pending.kind == "post_update" and pending.payload.get("post_id"):
             session["last_post_id"] = str(pending.payload["post_id"])
+
+        if self.proposal_store is not None:
+            raw_domain = pending.payload.get("domain") or self._session_market(chat_id)
+            domain = str(raw_domain).strip() if raw_domain else None
+            wp_ctx = session.get("wp_ops_context")
+            site_id = (
+                str(wp_ctx.get("site_id")).strip()
+                if isinstance(wp_ctx, dict) and wp_ctx.get("site_id")
+                else None
+            )
+            frozen_payload = dict(pending.payload)
+            if domain and not frozen_payload.get("domain"):
+                frozen_payload["domain"] = domain
+            if site_id and not frozen_payload.get("site_id"):
+                frozen_payload["site_id"] = site_id
+            frozen_pending = PendingAction(kind=pending.kind, payload=frozen_payload)
+            prop = self.proposal_store.create_proposal(
+                chat_id,
+                kind=pending.kind,
+                payload=frozen_pending.to_dict(),
+                task_id=task_id,
+                domain=domain,
+                site_id=site_id,
+            )
+            proposal_id = str(prop.get("proposal_id") or "")
+            self._merge_state(
+                chat_id,
+                flow="pending_action",
+                step="confirm",
+                slots={
+                    "pending": frozen_pending.to_dict(),
+                    "proposal_id": proposal_id,
+                    "prompt": text[:500],
+                },
+                session=session,
+                messages=prev.get("messages"),
+                tool_digest=prev.get("tool_digest"),
+            )
+            return bot_reply(
+                text,
+                actions=proposal_confirm_actions(proposal_id),
+                needs_typing=True,
+                **attachment_kwargs,
+            )
+
         self._merge_state(
             chat_id,
             flow="pending_action",
@@ -751,7 +1365,6 @@ class BotHandler:
             messages=prev.get("messages"),
             tool_digest=prev.get("tool_digest"),
         )
-        attachment_kwargs = {"attachments": attachments} if attachments else {}
         return bot_reply(
             text,
             actions=self._actions_for_pending(pending, actor=actor),
@@ -759,28 +1372,41 @@ class BotHandler:
             **attachment_kwargs,
         )
 
-    def _confirm_pending_text(self, chat_id: str | int, *, yes: bool) -> BotReply:
+    def _confirm_pending_text(
+        self,
+        chat_id: str | int,
+        *,
+        yes: bool,
+        on_progress: ProgressCallback | None = None,
+    ) -> BotReply:
         state = self.store.get(chat_id) or {}
         slots = dict(state.get("slots") or {})
         pending = PendingAction.from_dict(slots.get("pending"))
         if not yes or not pending:
             self._clear_pending(chat_id)
             return BotReply(text="Avbrutet — ingen ändring utförd.")
-        return self._exec_pending(chat_id, pending)
+        return self._exec_pending(chat_id, pending, on_progress=on_progress)
 
-    def _exec_pending(self, chat_id: str | int, pending: PendingAction) -> BotReply:
+    def _exec_pending(
+        self,
+        chat_id: str | int,
+        pending: PendingAction,
+        *,
+        on_progress: ProgressCallback | None = None,
+        proposal_id: str | None = None,
+    ) -> BotReply:
         try:
             actor = self._resolve_actor(chat_id)
         except (TelegramActorDenied, ChannelActorDenied):
-            self._clear_pending(chat_id)
+            self._clear_pending(chat_id, proposal_id=proposal_id)
             return self._deny_actor()
         try:
             actor_obj = resolve_actor(actor)
         except Exception:
-            self._clear_pending(chat_id)
+            self._clear_pending(chat_id, proposal_id=proposal_id)
             return self._deny_actor()
         if not self._pending_allowed(actor_obj, pending):
-            self._clear_pending(chat_id)
+            self._clear_pending(chat_id, proposal_id=proposal_id)
             return BotReply(text=self._deny_pending_reply(pending))
         if pending.kind in {
             "order_status",
@@ -794,93 +1420,141 @@ class BotHandler:
             blocked = self._mutations_blocked_reply()
             if blocked:
                 return blocked
+        label, detail, ok_outcome = _PENDING_PROGRESS_LABELS.get(
+            pending.kind, ("Åtgärd", "Utför godkänd åtgärd", "Åtgärd utförd")
+        )
+        prov = _provenance()
+        step_id = f"action:{pending.kind}"
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=pending.kind,
+                phase="started",
+                label=label,
+                detail=detail,
+                provenance=prov,
+                legacy_text=f"{detail}...",
+            ),
+        )
+        t0 = time.monotonic()
         ok = False
         msg = "Okänd action"
-        if pending.kind == "order_status":
-            domain = pending.payload.get("domain") or self._session_market(chat_id)
-            ok, msg = execute_order_status(
-                order_id=str(pending.payload.get("order_id") or ""),
-                status=str(pending.payload.get("status") or ""),
-                actor=actor,
-                domain=str(domain) if domain else None,
-            )
-            if ok and pending.payload.get("order_id"):
-                self._touch_session_order(chat_id, str(pending.payload["order_id"]))
-        elif pending.kind == "product_desc":
-            ok, msg = execute_product_desc(
-                product_id=str(pending.payload.get("product_id") or ""),
-                language=str(pending.payload.get("language") or "sv"),
-                publish=bool(pending.payload.get("publish")),
-                actor=actor,
-            )
-        elif pending.kind == "product_update":
-            domain = pending.payload.get("domain") or self._session_market(chat_id)
-            ok, msg = execute_product_update(
-                product_id=str(pending.payload.get("product_id") or ""),
-                fields=dict(pending.payload.get("fields") or {}),
-                actor=actor,
-                domain=str(domain) if domain else None,
-            )
-        elif pending.kind == "page_update":
-            domain = pending.payload.get("domain") or self._session_market(chat_id)
-            ok, msg = execute_page_update(
-                page_id=str(pending.payload.get("page_id") or ""),
-                fields=dict(pending.payload.get("fields") or {}),
-                actor=actor,
-                domain=str(domain) if domain else None,
-            )
-        elif pending.kind == "post_update":
-            domain = pending.payload.get("domain") or self._session_market(chat_id)
-            ok, msg = execute_post_update(
-                post_id=str(pending.payload.get("post_id") or ""),
-                fields=dict(pending.payload.get("fields") or {}),
-                actor=actor,
-                domain=str(domain) if domain else None,
-            )
-        elif pending.kind == "site_update":
-            domain = pending.payload.get("domain") or self._session_market(chat_id)
-            ok, msg = execute_site_update(
-                fields=dict(pending.payload.get("fields") or {}),
-                actor=actor,
-                domain=str(domain) if domain else None,
-            )
-        elif pending.kind == "plugin_status":
-            domain = pending.payload.get("domain") or self._session_market(chat_id)
-            ok, msg = execute_plugin_status(
-                plugin=str(pending.payload.get("plugin") or ""),
-                status=str(pending.payload.get("status") or ""),
-                actor=actor,
-                domain=str(domain) if domain else None,
-            )
-        elif pending.kind == "case_regenerate":
-            # Prefer full id via store if only id8
-            case_key = str(pending.payload.get("case_id") or "")
-            case = None
-            try:
-                from ecom_ops.cases.service import CaseService
-
-                svc = CaseService()
-                case = svc.store.resolve_id_prefix(case_key) or svc.get(case_key)
-                if case:
-                    case_key = case.id
-            except Exception:
-                pass
-            ok, msg = execute_case_regenerate(case_id=case_key, actor=actor)
-            if ok:
-                self._touch_session_case(chat_id, case_key[:8])
+        try:
+            if pending.kind == "order_status":
+                domain = pending.payload.get("domain") or self._session_market(chat_id)
+                ok, msg = execute_order_status(
+                    order_id=str(pending.payload.get("order_id") or ""),
+                    status=str(pending.payload.get("status") or ""),
+                    actor=actor,
+                    domain=str(domain) if domain else None,
+                )
+                if ok and pending.payload.get("order_id"):
+                    self._touch_session_order(chat_id, str(pending.payload["order_id"]))
+            elif pending.kind == "product_desc":
+                ok, msg = execute_product_desc(
+                    product_id=str(pending.payload.get("product_id") or ""),
+                    language=str(pending.payload.get("language") or "sv"),
+                    publish=bool(pending.payload.get("publish")),
+                    actor=actor,
+                )
+            elif pending.kind == "product_update":
+                domain = pending.payload.get("domain") or self._session_market(chat_id)
+                ok, msg = execute_product_update(
+                    product_id=str(pending.payload.get("product_id") or ""),
+                    fields=dict(pending.payload.get("fields") or {}),
+                    actor=actor,
+                    domain=str(domain) if domain else None,
+                )
+            elif pending.kind == "page_update":
+                domain = pending.payload.get("domain") or self._session_market(chat_id)
+                ok, msg = execute_page_update(
+                    page_id=str(pending.payload.get("page_id") or ""),
+                    fields=dict(pending.payload.get("fields") or {}),
+                    actor=actor,
+                    domain=str(domain) if domain else None,
+                )
+            elif pending.kind == "post_update":
+                domain = pending.payload.get("domain") or self._session_market(chat_id)
+                ok, msg = execute_post_update(
+                    post_id=str(pending.payload.get("post_id") or ""),
+                    fields=dict(pending.payload.get("fields") or {}),
+                    actor=actor,
+                    domain=str(domain) if domain else None,
+                )
+            elif pending.kind == "site_update":
+                domain = pending.payload.get("domain") or self._session_market(chat_id)
+                ok, msg = execute_site_update(
+                    fields=dict(pending.payload.get("fields") or {}),
+                    actor=actor,
+                    domain=str(domain) if domain else None,
+                )
+            elif pending.kind == "plugin_status":
+                domain = pending.payload.get("domain") or self._session_market(chat_id)
+                ok, msg = execute_plugin_status(
+                    plugin=str(pending.payload.get("plugin") or ""),
+                    status=str(pending.payload.get("status") or ""),
+                    actor=actor,
+                    domain=str(domain) if domain else None,
+                )
+            elif pending.kind == "case_regenerate":
+                # Prefer full id via store if only id8
+                case_key = str(pending.payload.get("case_id") or "")
+                case = None
                 try:
-                    from ecom_ops.order_context import woo_domain_from_market
+                    from ecom_ops.cases.service import CaseService
 
-                    if case and getattr(case, "market", None):
-                        market = woo_domain_from_market(case.market)
-                        if market:
-                            prev = self.store.get(chat_id) or {}
-                            session = dict(prev.get("session") or {})
-                            session["last_market"] = market
-                            self._merge_state(chat_id, session=session)
+                    svc = CaseService()
+                    case = svc.store.resolve_id_prefix(case_key) or svc.get(case_key)
+                    if case:
+                        case_key = case.id
                 except Exception:
                     pass
-        self._clear_pending(chat_id)
+                ok, msg = execute_case_regenerate(case_id=case_key, actor=actor)
+                if ok:
+                    self._touch_session_case(chat_id, case_key[:8])
+                    try:
+                        from ecom_ops.order_context import woo_domain_from_market
+
+                        if case and getattr(case, "market", None):
+                            market = woo_domain_from_market(case.market)
+                            if market:
+                                self._update_session_atomic(
+                                    chat_id, session_updates={"last_market": market}
+                                )
+                    except Exception:
+                        pass
+        except Exception:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool=pending.kind,
+                    phase="failed",
+                    label=label,
+                    outcome="misslyckades",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text=f"{label}: misslyckades.",
+                ),
+            )
+            raise
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool=pending.kind,
+                phase="completed" if ok else "failed",
+                label=label,
+                outcome=ok_outcome if ok else "misslyckades",
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                legacy_text=f"{label}: {ok_outcome if ok else 'misslyckades'}.",
+            ),
+        )
+        self._clear_pending(chat_id, proposal_id=proposal_id)
         prefix = "Klart." if ok else "Misslyckades."
         # RBAC denies are common for jonatan on order update
         if not ok and ("lacks permission" in msg.lower() or "access" in msg.lower()):
@@ -901,53 +1575,53 @@ class BotHandler:
         chat_id: str | int,
         message: str,
         *,
-        on_progress: Callable[[str], None] | None = None,
+        on_progress: ProgressCallback | None = None,
         on_text_delta: Callable[[str], None] | None = None,
         on_text_reset: Callable[[], None] | None = None,
+        on_stream_clear: Callable[[], None] | None = None,
+        on_phase_change: Callable[[dict[str, Any]], None] | None = None,
         on_checkpoint: Callable[[], list[str]] | None = None,
+        task_id: str | None = None,
     ) -> BotReply:
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
         actor = self._resolve_actor(chat_id)
         conversation_id = f"{self.channel}:{chat_id}"
         wp_context = session.get("wp_ops_context")
-        if not context_matches(
+        pop_session_keys: list[str] = []
+        session_updates: dict[str, Any] = {}
+        if wp_context is not None and not context_matches(
             wp_context, actor=actor, channel=self.channel, conversation_id=conversation_id
         ):
             session.pop("wp_ops_context", None)
+            pop_session_keys.append("wp_ops_context")
+        kept_hashes, hashes_changed = _prune_review_hashes(session, actor=actor)
+        if hashes_changed:
+            if kept_hashes:
+                session_updates["wp_review_hashes"] = kept_hashes
+            else:
+                pop_session_keys.append("wp_review_hashes")
         history = list(prev.get("messages") or [])
         prior_digest = str(prev.get("tool_digest") or "")
-        result = run_chat(
-            message,
-            history=history,
-            session=session,
-            prior_digest=prior_digest,
-            sticky_order_id=session.get("last_order_id"),
-            sticky_case_id8=session.get("last_case_id8"),
-            actor=actor,
-            channel=self.channel,
-            conversation_id=conversation_id,
-            on_progress=on_progress,
-            on_text_delta=on_text_delta,
-            on_text_reset=on_text_reset,
-            on_checkpoint=on_checkpoint,
-        )
-        if result.sticky_order_id:
-            session["last_order_id"] = str(result.sticky_order_id)
-        if result.sticky_case_id8:
-            session["last_case_id8"] = str(result.sticky_case_id8)
-        if result.sticky_market:
-            session["last_market"] = str(result.sticky_market)
-        if result.order_list_shown is not None:
-            session["order_list_shown"] = int(result.order_list_shown)
-        if result.sticky_product_id:
-            session["last_product_id"] = str(result.sticky_product_id)
-        if result.sticky_page_id:
-            session["last_page_id"] = str(result.sticky_page_id)
-        if result.sticky_post_id:
-            session["last_post_id"] = str(result.sticky_post_id)
-        if result.wp_ops_context is not None:
-            session["wp_ops_context"] = result.wp_ops_context
+        chat_kwargs: dict[str, Any] = {
+            "history": history,
+            "session": session,
+            "prior_digest": prior_digest,
+            "sticky_order_id": session.get("last_order_id"),
+            "sticky_case_id8": session.get("last_case_id8"),
+            "actor": actor,
+            "channel": self.channel,
+            "conversation_id": conversation_id,
+            "on_progress": on_progress,
+            "on_text_delta": on_text_delta,
+            "on_text_reset": on_text_reset,
+            "on_checkpoint": on_checkpoint,
+        }
+        if on_stream_clear is not None and _accepts_kwarg(run_chat, "on_stream_clear"):
+            chat_kwargs["on_stream_clear"] = on_stream_clear
+        if on_phase_change is not None and _accepts_kwarg(run_chat, "on_phase_change"):
+            chat_kwargs["on_phase_change"] = on_phase_change
+        result = run_chat(message, **chat_kwargs)
 
         review_plan_id = getattr(result, "review_stage_plan_id", None)
         review_plan_row: dict[str, Any] | None = None
@@ -958,18 +1632,58 @@ class BotHandler:
                 review_plan_row = ReviewPlans().get(review_plan_id)
                 if isinstance(review_plan_row, dict):
                     _with_review_hashes(session, actor=actor, plan=review_plan_row)
+                    if isinstance(session.get("wp_review_hashes"), dict):
+                        session_updates["wp_review_hashes"] = dict(
+                            session["wp_review_hashes"]
+                        )
+                        if "wp_review_hashes" in pop_session_keys:
+                            pop_session_keys.remove("wp_review_hashes")
             except Exception:
                 review_plan_row = None
 
-        self._merge_state(
-            chat_id,
-            flow=None,
-            step=None,
-            slots={},
-            session=session,
-            messages=result.messages,
-            tool_digest=_stored_tool_digest(result, prior_digest),
-        )
+        if result.sticky_order_id:
+            session_updates["last_order_id"] = str(result.sticky_order_id)
+        if result.sticky_case_id8:
+            session_updates["last_case_id8"] = str(result.sticky_case_id8)
+        if result.sticky_market:
+            session_updates["last_market"] = str(result.sticky_market)
+        if result.order_list_shown is not None:
+            session_updates["order_list_shown"] = int(result.order_list_shown)
+        if result.sticky_product_id:
+            session_updates["last_product_id"] = str(result.sticky_product_id)
+        if result.sticky_page_id:
+            session_updates["last_page_id"] = str(result.sticky_page_id)
+        if result.sticky_post_id:
+            session_updates["last_post_id"] = str(result.sticky_post_id)
+        if result.wp_ops_context is not None:
+            session_updates["wp_ops_context"] = result.wp_ops_context
+            if "wp_ops_context" in pop_session_keys:
+                pop_session_keys.remove("wp_ops_context")
+        session.update(session_updates)
+
+        if hasattr(self.store, "append_turn_atomic"):
+            if len(result.messages) >= len(history):
+                delta_messages = list(result.messages[len(history) :])
+            else:
+                delta_messages = list(result.messages)
+            self.store.append_turn_atomic(
+                chat_id,
+                new_messages=delta_messages,
+                session_updates=session_updates or None,
+                pop_session_keys=pop_session_keys,
+                tool_digest=result.tool_digest or None,
+                clear_tool_digest=bool(result.clear_tool_digest),
+            )
+        else:
+            self._merge_state(
+                chat_id,
+                flow=None,
+                step=None,
+                slots={},
+                session=session,
+                messages=result.messages,
+                tool_digest=_stored_tool_digest(result, prior_digest),
+            )
 
         text = result.text
         actions = None
@@ -983,23 +1697,13 @@ class BotHandler:
         )
 
         if result.offer_escalate:
-            self._merge_state(
-                chat_id,
-                flow="escalate_confirm",
-                step="confirm",
-                slots={"message": message[:500]},
-                session=session,
-                messages=result.messages,
-                tool_digest=_stored_tool_digest(result, prior_digest),
-            )
             if "eskalera" not in text.lower():
                 text = f"{text}\n\nVill du eskalera till Oscar?"
-            return bot_reply(
-                text,
-                actions=yes_no_actions(
-                    yes_data="escalate:yes", no_data="escalate:no"
-                ),
-                needs_typing=True,
+            return self._start_escalate_confirm(
+                chat_id,
+                message,
+                task_id=task_id,
+                prompt_text=text,
                 **attachment_kwargs,
             )
 
@@ -1039,6 +1743,7 @@ class BotHandler:
                 result.pending_action,
                 text,
                 actor=actor_obj,
+                task_id=task_id,
                 **attachment_kwargs,
             )
 
@@ -1062,7 +1767,12 @@ class BotHandler:
         )
 
     def _handle_wpreview_callback(
-        self, chat_id: str | int, actor: str, raw: str
+        self,
+        chat_id: str | int,
+        actor: str,
+        raw: str,
+        *,
+        on_progress: ProgressCallback | None = None,
     ) -> BotReply:
         if raw == "wpreview:no" or raw.startswith("wpreview:no:"):
             plan_id = raw.split(":", 2)[2] if raw.startswith("wpreview:no:") else ""
@@ -1074,12 +1784,7 @@ class BotHandler:
                 prev = self.store.get(chat_id) or {}
                 session = dict(prev.get("session") or {})
                 if _drop_review_hash(session, plan_id):
-                    self._merge_state(
-                        chat_id,
-                        session=session,
-                        messages=prev.get("messages"),
-                        tool_digest=prev.get("tool_digest"),
-                    )
+                    self._persist_review_hashes(chat_id, session)
                 return BotReply(
                     text=f"Avbrutet ({plan_id}). Ingen ändring skrevs till staging eller produktion."
                 )
@@ -1127,27 +1832,68 @@ class BotHandler:
             base_sha = str(plan.get("base_sha256") or "")
             work_sha = str(plan.get("work_sha256") or "")
 
-        ws_status = plans.workspace_status(site_id, plan_id, actor=actor)
-        changed_files = (
-            list((ws_status.data or {}).get("changed_files") or [])
-            if ws_status.ok
-            else []
+        prov = _provenance()
+        step_id = f"wpreview:{plan_id}"
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool="wpreview_stage",
+                phase="started",
+                label="Staging-granskningsplan",
+                detail="Skriver godkänd granskningsplan i staging",
+                provenance=prov,
+                legacy_text="Skriver godkänd granskningsplan i staging...",
+            ),
         )
-        staged = plans.approve_staging(
-            site_id,
-            plan_id,
-            actor=actor,
-            base_sha256=base_sha,
-            work_sha256=work_sha,
-        )
+        t0 = time.monotonic()
+        try:
+            ws_status = plans.workspace_status(site_id, plan_id, actor=actor)
+            changed_files = (
+                list((ws_status.data or {}).get("changed_files") or [])
+                if ws_status.ok
+                else []
+            )
+            staged = plans.approve_staging(
+                site_id,
+                plan_id,
+                actor=actor,
+                base_sha256=base_sha,
+                work_sha256=work_sha,
+            )
+        except Exception:
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wpreview_stage",
+                    phase="failed",
+                    label="Staging-granskningsplan",
+                    outcome="misslyckades",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text="Staging-granskningsplan: misslyckades.",
+                ),
+            )
+            raise
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         if staged.ok and (staged.data or {}).get("executed") is True:
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wpreview_stage",
+                    phase="completed",
+                    label="Staging-granskningsplan",
+                    outcome="ändringar skrivna i staging",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text="Staging-granskningsplan: klar.",
+                ),
+            )
             if _drop_review_hash(session, plan_id):
-                self._merge_state(
-                    chat_id,
-                    session=session,
-                    messages=prev.get("messages"),
-                    tool_digest=prev.get("tool_digest"),
-                )
+                self._persist_review_hashes(chat_id, session)
             lines = [
                 f"Ändringarna för {plan_id} är skrivna i staging ({site_id}, mock). Produktionen är oförändrad."
             ]
@@ -1163,6 +1909,19 @@ class BotHandler:
             return BotReply(text="\n".join(lines))
 
         error = str((staged.data or {}).get("error_class") or "OperationUnavailable")
+        emit_progress(
+            on_progress,
+            ProgressEvent(
+                step_id=step_id,
+                tool="wpreview_stage",
+                phase="failed",
+                label="Staging-granskningsplan",
+                outcome=f"skrevs inte ({error})",
+                elapsed_ms=elapsed_ms,
+                provenance=prov,
+                legacy_text=f"Staging-granskningsplan: misslyckades ({error}).",
+            ),
+        )
         detail = str(staged.message or "").strip()
         msg = f"Staging skrevs inte ({error}). Ingen ändring utfördes."
         if detail and detail != error:
@@ -1304,12 +2063,7 @@ class BotHandler:
             prev = self.store.get(chat_id) or {}
             session = dict(prev.get("session") or {})
             _with_review_hashes(session, actor=actor, plan=raw_plan)
-            self._merge_state(
-                chat_id,
-                session=session,
-                messages=prev.get("messages"),
-                tool_digest=prev.get("tool_digest"),
-            )
+            self._persist_review_hashes(chat_id, session)
             return bot_reply(
                 "\n".join(lines),
                 actions=_wpreview_stage_actions(plan_id, review_url=url),
@@ -1318,23 +2072,23 @@ class BotHandler:
             lines.append("Staging kräver Oscar (WP_OPS_ADMIN + CODE_EDIT).")
         return BotReply(text="\n".join(lines))
 
-    def _wp_context_command(self, chat_id: str | int, text: str) -> BotReply | None:
+    def _wp_context_command(
+        self,
+        chat_id: str | int,
+        text: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+    ) -> BotReply | None:
         """Minimal user controls for the sticky, actor-scoped WordPress site."""
         match = re.fullmatch(r"/wp(?:@\w+)?(?:\s+(.*))?", text.strip(), re.I)
         if not match:
             return None
         parts = (match.group(1) or "").strip().split()
         action = parts[0].lower() if parts else "help"
-        state = self.store.get(chat_id) or {}
-        session = dict(state.get("session") or {})
         if action == "clear" and len(parts) == 1:
-            session.pop("wp_ops_context", None)
-            session.pop("wp_review_hashes", None)
-            self._merge_state(
+            self._update_session_atomic(
                 chat_id,
-                session=session,
-                messages=state.get("messages"),
-                tool_digest=state.get("tool_digest"),
+                pop_session_keys=("wp_ops_context", "wp_review_hashes"),
             )
             return BotReply(text="WordPress-sajtkontexten är rensad.")
         if action == "help" and len(parts) == 1:
@@ -1350,7 +2104,22 @@ class BotHandler:
         if action == "plan" and len(parts) == 2:
             return self._wp_plan_command(chat_id, actor, parts)
         tools = WpAgentTools()
+        prov = _provenance()
         if action == "sites" and len(parts) == 1:
+            step_id = "cmd:wp:sites"
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wp_list_sites",
+                    phase="started",
+                    label="WordPress-sajter",
+                    detail="Hämtar registrerade sajter",
+                    provenance=prov,
+                    legacy_text="Hämtar WordPress-sajter...",
+                ),
+            )
+            t0 = time.monotonic()
             output = tools.execute(
                 "wp_list_sites",
                 {},
@@ -1358,9 +2127,36 @@ class BotHandler:
                 channel=self.channel,
                 conversation_id=f"{self.channel}:{chat_id}",
             )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
             if output.data.get("ok") is not True:
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool="wp_list_sites",
+                        phase="failed",
+                        label="WordPress-sajter",
+                        outcome="saknar behörighet",
+                        elapsed_ms=elapsed_ms,
+                        provenance=prov,
+                        legacy_text="WordPress-sajter: saknar behörighet.",
+                    ),
+                )
                 return BotReply(text="Du saknar rättighet att läsa WordPress-sajter.")
             sites = output.data.get("sites", [])
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wp_list_sites",
+                    phase="completed",
+                    label="WordPress-sajter",
+                    outcome=f"{len(sites)} sajter",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text=f"WordPress-sajter: {len(sites)} sajter.",
+                ),
+            )
             if not sites:
                 return BotReply(text="Inga registrerade WordPress-sajter.")
             lines = ["Registrerade WordPress-sajter:"]
@@ -1372,6 +2168,20 @@ class BotHandler:
             return BotReply(text="\n".join(lines))
         if action == "use" and len(parts) == 2:
             site_id = parts[1]
+            step_id = f"cmd:wp:use:{site_id}"
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wp_site_status",
+                    phase="started",
+                    label="WordPress-sajt",
+                    detail=f"Kontrollerar {site_id}",
+                    provenance=prov,
+                    legacy_text=f"Kontrollerar WordPress-sajt {site_id}...",
+                ),
+            )
+            t0 = time.monotonic()
             output = tools.execute(
                 "wp_site_status",
                 {"site_id": site_id},
@@ -1379,7 +2189,21 @@ class BotHandler:
                 channel=self.channel,
                 conversation_id=f"{self.channel}:{chat_id}",
             )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
             if output.data.get("ok") is not True:
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool="wp_site_status",
+                        phase="failed",
+                        label="WordPress-sajt",
+                        outcome="okänd sajt eller saknar behörighet",
+                        elapsed_ms=elapsed_ms,
+                        provenance=prov,
+                        legacy_text="WordPress-sajt: okänd eller saknar behörighet.",
+                    ),
+                )
                 return BotReply(text="Sajten är okänd eller du saknar rättighet att läsa den.")
             context = context_for_storage(
                 actor=actor,
@@ -1389,13 +2213,36 @@ class BotHandler:
                 operation_ids=output.operation_ids,
             )
             if context is None:
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool="wp_site_status",
+                        phase="failed",
+                        label="WordPress-sajt",
+                        outcome="kunde inte väljas",
+                        elapsed_ms=elapsed_ms,
+                        provenance=prov,
+                        legacy_text="WordPress-sajt: kunde inte väljas.",
+                    ),
+                )
                 return BotReply(text="WordPress-sajten kunde inte väljas.")
-            session["wp_ops_context"] = context
-            self._merge_state(
+            self._update_session_atomic(
                 chat_id,
-                session=session,
-                messages=state.get("messages"),
-                tool_digest=state.get("tool_digest"),
+                session_updates={"wp_ops_context": context},
+            )
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wp_site_status",
+                    phase="completed",
+                    label="WordPress-sajt",
+                    outcome=f"aktiv sajt: {site_id}",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text=f"Aktiv WordPress-sajt: {site_id}.",
+                ),
             )
             return BotReply(text=f"Aktiv WordPress-sajt: {site_id}. Fråga om status, backup eller uppdateringar.")
         return BotReply(
