@@ -284,3 +284,18 @@ The document root and SSH login are set in the dashboard at `/wp/<id>/ssh`, not 
 - Mail setup (Swedish): [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md)
 - Marketing Google: [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md)
 - System map: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)
+
+## System Launcher (`ecom_ops.launcher`)
+
+Preflight check (Python, config, `.env`, OAuth, model router, circuit breaker, dashboard ports, Telegram/Messenger allowlists) and interactive/headless launcher:
+
+```bash
+# Bash (Ubuntu/Linux/macOS) or PowerShell (Windows)
+./bin/launch.sh
+.\bin\launch.ps1
+
+# Direct CLI
+python -m ecom_ops.launcher --check [--mode mock|live] [--json]
+python -m ecom_ops.launcher --init-env
+python -m ecom_ops.launcher --target all|dashboard|bot [--dry-run]
+```
