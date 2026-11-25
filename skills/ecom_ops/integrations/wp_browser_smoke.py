@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -129,6 +130,7 @@ class _LoopbackCdpClient:
         self._buf = bytearray()
         self._next_id = 1
         self.events: list[dict[str, Any]] = []
+        self.event_hook: Callable[[dict[str, Any]], bool] | None = None
         path = parsed.path or "/"
         if parsed.query:
             path = f"{path}?{parsed.query}"
@@ -209,11 +211,20 @@ class _LoopbackCdpClient:
             if fin:
                 return b"".join(fragments).decode("utf-8", errors="replace")
 
-    def call(self, method: str, params: dict[str, Any] | None = None, *, timeout_s: float = 15.0) -> dict[str, Any]:
+    def _record_event(self, data: dict[str, Any]) -> None:
+        if self.event_hook is not None and self.event_hook(data):
+            return
+        self.events.append(data)
+
+    def send(self, method: str, params: dict[str, Any] | None = None) -> int:
         msg_id = self._next_id
         self._next_id += 1
         payload = json.dumps({"id": msg_id, "method": method, "params": params or {}}).encode("utf-8")
         self._send_frame(0x1, payload)
+        return msg_id
+
+    def call(self, method: str, params: dict[str, Any] | None = None, *, timeout_s: float = 15.0) -> dict[str, Any]:
+        msg_id = self.send(method, params)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             remaining = max(0.2, deadline - time.monotonic())
@@ -225,7 +236,7 @@ class _LoopbackCdpClient:
                     raise RuntimeError(f"CDP error for {method}: {data['error']}")
                 return dict(data.get("result") or {})
             if "method" in data:
-                self.events.append(data)
+                self._record_event(data)
         raise TimeoutError(f"CDP timeout waiting for {method}")
 
     def wait_for_event(self, method: str, *, timeout_s: float = 15.0) -> bool:
@@ -245,7 +256,7 @@ class _LoopbackCdpClient:
             if data.get("method") == method:
                 return True
             if "method" in data:
-                self.events.append(data)
+                self._record_event(data)
         return False
 
     def drain_events(self, *, duration_s: float = 0.35) -> None:
@@ -259,7 +270,7 @@ class _LoopbackCdpClient:
                 return
             data = json.loads(raw)
             if "method" in data:
-                self.events.append(data)
+                self._record_event(data)
 
     def close(self) -> None:
         try:
@@ -623,6 +634,29 @@ def _probe_loopback_http(url: str) -> dict[str, Any]:
     }
 
 
+def _classify_theme_render(
+    revisions: dict[str, Any],
+    *,
+    slug: str,
+    php_errors: dict[str, list[str]],
+    synthetic_parent: bool = False,
+) -> tuple[bool, str | None]:
+    """Return ``(representative, reason)`` for a local sandbox theme render."""
+    for rev in revisions.values():
+        if not isinstance(rev, dict):
+            continue
+        for vp in (rev.get("viewports") or {}).values():
+            if not isinstance(vp, dict):
+                continue
+            if vp.get("theme_marker") == "azom-plugin-host" and slug != "azom-plugin-host":
+                return False, "sandbox_not_representative"
+    if synthetic_parent:
+        work_errors = "\n".join(str(line) for line in (php_errors.get("work") or []))
+        if "Call to undefined function" in work_errors:
+            return False, "sandbox_not_representative"
+    return True, None
+
+
 def run_vertical_theme_render(
     *,
     site: object,
@@ -714,6 +748,12 @@ def run_vertical_theme_render(
     browser_executed = all(revisions.get(k, {}).get("executed") is True for k in ("base", "work"))
     browser_ok = browser_executed and all(revisions.get(k, {}).get("ok") is True for k in ("base", "work"))
     browser_cmd = revisions.get("work", {}).get("command") or revisions.get("base", {}).get("command")
+    representative, non_rep_reason = _classify_theme_render(
+        revisions,
+        slug=slug,
+        php_errors=all_php_errors,
+        synthetic_parent=bool(parent_theme_slug is not None and parent_theme_dir is None),
+    )
 
     if not browser_executed:
         browser_row: dict[str, Any] = {
@@ -731,6 +771,14 @@ def run_vertical_theme_render(
             "simulated": False,
         }
     else:
+        if not representative:
+            for png_name in ("base-desktop.png", "base-mobile.png", "work-desktop.png", "work-mobile.png"):
+                png_path = Path(artifact_dir) / png_name
+                try:
+                    if png_path.is_file() or png_path.is_symlink():
+                        png_path.unlink()
+                except OSError:
+                    pass
         browser_artifact = artifact_dir / "browser_smoke.json"
         browser_artifact.write_text(
             json.dumps(
@@ -738,6 +786,8 @@ def run_vertical_theme_render(
                     "job": "browser_smoke",
                     "wordpress_version": manifest["wordpress_version"],
                     "php_version": manifest["php_version"],
+                    "representative": representative,
+                    "reason": non_rep_reason,
                     "revisions": revisions,
                 },
                 ensure_ascii=False,
@@ -745,22 +795,38 @@ def run_vertical_theme_render(
             ),
             encoding="utf-8",
         )
-        browser_row = {
-            "job": "browser_smoke",
-            "status": "passed" if browser_ok else "failed",
-            "summary": (
-                "browser_smoke passed: base and work rendered at desktop and mobile"
-                if browser_ok
-                else "browser_smoke failed: render or PHP error detected"
-            ),
-            "command": browser_cmd,
-            "started_at": browser_started,
-            "finished_at": browser_finished,
-            "exit_code": 0 if browser_ok else 1,
-            "artifact_path": str(browser_artifact),
-            "executed": True,
-            "simulated": False,
-        }
+        if not representative:
+            browser_row = {
+                "job": "browser_smoke",
+                "status": "unavailable",
+                "availability": "unavailable",
+                "reason": non_rep_reason or "sandbox_not_representative",
+                "summary": "browser_smoke unavailable: sandlådan saknar temats föräldratema/plugins (bara på servern); se live-förhandsvisning",
+                "command": browser_cmd,
+                "started_at": browser_started,
+                "finished_at": browser_finished,
+                "exit_code": None,
+                "artifact_path": str(browser_artifact),
+                "executed": True,
+                "simulated": False,
+            }
+        else:
+            browser_row = {
+                "job": "browser_smoke",
+                "status": "passed" if browser_ok else "failed",
+                "summary": (
+                    "browser_smoke passed: base and work rendered at desktop and mobile"
+                    if browser_ok
+                    else "browser_smoke failed: render or PHP error detected"
+                ),
+                "command": browser_cmd,
+                "started_at": browser_started,
+                "finished_at": browser_finished,
+                "exit_code": 0 if browser_ok else 1,
+                "artifact_path": str(browser_artifact),
+                "executed": True,
+                "simulated": False,
+            }
 
     egress_row = _write_egress_probe(
         artifact_dir,

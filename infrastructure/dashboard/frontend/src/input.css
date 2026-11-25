@@ -1,0 +1,585 @@
+@import "tailwindcss";
+@source "../../templates/**/*.html";
+@source "../../static/js/**/*.js";
+
+/* Self-hosted fonts (Sora, Source Sans 3, JetBrains Mono) */
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../fonts/sora-latin-ext-400-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../fonts/sora-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("../fonts/sora-latin-ext-500-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("../fonts/sora-latin-500-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("../fonts/sora-latin-ext-600-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("../fonts/sora-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("../fonts/sora-latin-ext-700-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Sora";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("../fonts/sora-latin-700-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../fonts/source-sans-3-latin-ext-400-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../fonts/source-sans-3-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../fonts/source-sans-3-latin-ext-400-italic.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: italic;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../fonts/source-sans-3-latin-400-italic.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("../fonts/source-sans-3-latin-ext-500-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("../fonts/source-sans-3-latin-500-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("../fonts/source-sans-3-latin-ext-600-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("../fonts/source-sans-3-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("../fonts/source-sans-3-latin-ext-700-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("../fonts/source-sans-3-latin-700-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../fonts/jetbrains-mono-latin-ext-400-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("../fonts/jetbrains-mono-latin-ext-500-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("../fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("../fonts/jetbrains-mono-latin-ext-600-normal.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("../fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@theme {
+  /* Nordic Ops Control Room — Obsidian & Slate surfaces */
+  --color-ink-950: #090d14;
+  --color-ink-900: #0e141f;
+  --color-ink-850: #131b29;
+  --color-ink-800: #192436;
+  --color-ink-700: #223044;
+  --color-ink-600: #2f4059;
+
+  /* Steel blue scale (100..950) */
+  --color-steel-100: #e0edff;
+  --color-steel-200: #bfd9ff;
+  --color-steel-300: #93bffc;
+  --color-steel-400: #5b9ecf;
+  --color-steel-500: #3d8bfd;
+  --color-steel-600: #2563eb;
+  --color-steel-700: #1d4ed8;
+  --color-steel-800: #1e3a6e;
+  --color-steel-900: #142647;
+  --color-steel-950: #0c172b;
+
+  /* Teal accent */
+  --color-teal-400: #2dd4bf;
+  --color-teal-500: #14b8a6;
+
+  /* Mist text scale — mist-500 raised to #7e93ad (>= 4.8:1 AA on ink-850/900) */
+  --color-mist-100: #e8eef6;
+  --color-mist-200: #c8d5e6;
+  --color-mist-300: #a8b8cc;
+  --color-mist-400: #8a9db5;
+  --color-mist-500: #7e93ad;
+
+  /* Oscar admin violet scale */
+  --color-oscar-300: #ddd6fe;
+  --color-oscar-400: #c4b5fd;
+  --color-oscar-500: #a78bfa;
+  --color-oscar-600: #7c5cbf;
+
+  /* Semantic status colors */
+  --color-ok: #3dd68c;
+  --color-warn: #f5a524;
+  --color-danger: #e11d48;
+  --color-danger-text: #fb7185;
+
+  /* Typography */
+  --font-display: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Elevation & Motion */
+  --shadow-panel: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset, 0 10px 28px -12px rgba(0, 0, 0, 0.55);
+  --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    scrollbar-color: #2f4059 #090d14;
+    scrollbar-width: auto;
+  }
+
+  html {
+    line-height: 1.5;
+  }
+
+  body {
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(61, 139, 253, 0.12), transparent 55%),
+      radial-gradient(900px 500px at 90% 0%, rgba(20, 184, 166, 0.08), transparent 50%),
+      linear-gradient(165deg, #090d14 0%, #0e141f 45%, #090d14 100%);
+    color: var(--color-mist-100);
+    font-family: var(--font-sans);
+    overflow-wrap: break-word;
+  }
+
+  ::selection {
+    background-color: rgba(61, 139, 253, 0.35);
+    color: #ffffff;
+  }
+
+  /* Custom subtle dark scrollbars for WebKit/Chromium */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #090d14;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2f4059;
+    border-radius: 999px;
+    border: 2px solid #090d14;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #425a7c;
+  }
+
+  /* Prevent sticky header overlap on hash navigation */
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+
+  /* Modern user-interaction validation (never flags untouched required fields on load) */
+  :is(input, textarea, select):not([type="checkbox"]):not([type="radio"]):not([type="range"]):user-invalid {
+    border-color: var(--color-danger);
+    box-shadow: 0 0 0 2px rgba(225, 29, 72, 0.25);
+  }
+
+  /* Accessible focus indicators */
+  :focus-visible {
+    outline: 2px solid var(--color-steel-400);
+    outline-offset: 2px;
+  }
+
+  /* Native modal <dialog> scroll containment & backdrop */
+  dialog:modal {
+    overscroll-behavior: contain;
+  }
+  dialog::backdrop {
+    background: rgba(5, 8, 14, 0.74);
+    backdrop-filter: blur(4px);
+    overflow: hidden;
+    overscroll-behavior: contain;
+  }
+}
+
+[x-cloak] {
+  display: none !important;
+}
+
+@layer components {
+  .az-card {
+    @apply rounded-xl border border-ink-700/80 bg-ink-850/90 p-5 shadow-panel backdrop-blur-sm;
+  }
+  .az-card-oscar {
+    @apply rounded-xl border border-oscar-600/35 bg-ink-850/90 p-5 shadow-panel backdrop-blur-sm;
+  }
+
+  .az-label {
+    @apply mb-1.5 block text-sm font-medium text-mist-300;
+  }
+
+  .az-input,
+  .az-textarea,
+  .az-select {
+    @apply w-full rounded-lg border border-ink-600 bg-ink-950 px-3 py-2 text-sm text-mist-100
+           placeholder:text-mist-500
+           focus:border-steel-500 focus:outline-none focus:ring-2 focus:ring-steel-500/35
+           disabled:cursor-not-allowed disabled:opacity-60
+           transition duration-200 ease-soft;
+  }
+
+  .az-textarea {
+    @apply min-h-[7rem] resize-y;
+  }
+
+  .az-select {
+    @apply appearance-none pr-9 bg-no-repeat;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%238a9db5' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 8l4 4 4-4'/%3E%3C/svg%3E");
+    background-position: right 0.75rem center;
+    background-size: 1rem 1rem;
+  }
+
+  .az-checkbox {
+    @apply h-4 w-4 rounded border-ink-600 bg-ink-950 accent-steel-500 text-steel-500
+           focus-visible:ring-2 focus-visible:ring-steel-500/40 cursor-pointer;
+  }
+
+  .az-btn,
+  .az-btn-primary,
+  .az-btn-secondary,
+  .az-btn-danger,
+  .az-btn-oscar {
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold
+           transition duration-200 ease-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2
+           focus-visible:ring-offset-ink-900 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* WCAG AA: #1d5fd6 + white >= 5.4:1 */
+  .az-btn-primary {
+    @apply bg-[#1d5fd6] text-white hover:bg-[#184fb8] focus-visible:ring-steel-400/60;
+  }
+
+  .az-btn-secondary {
+    @apply border border-ink-600 bg-ink-800 text-mist-100 hover:border-mist-500/60 hover:bg-ink-700
+           focus-visible:ring-steel-400/40;
+  }
+
+  /* WCAG AA: #be123c + white >= 5.9:1 */
+  .az-btn-danger {
+    @apply bg-[#be123c] text-white hover:bg-[#9f1239] focus-visible:ring-danger-text/50;
+  }
+
+  .az-btn-oscar {
+    @apply bg-oscar-600 text-white hover:bg-[#6d4eb0] focus-visible:ring-oscar-400/50;
+  }
+
+  .az-btn-sm {
+    @apply px-2.5 py-1.5 text-xs;
+  }
+
+  /* Badges */
+  .az-badge {
+    @apply inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium tracking-wide;
+  }
+  .az-badge-ok {
+    @apply bg-ok/15 text-ok ring-1 ring-inset ring-ok/25;
+  }
+  .az-badge-warn {
+    @apply bg-warn/15 text-warn ring-1 ring-inset ring-warn/30;
+  }
+  .az-badge-danger {
+    @apply bg-danger/15 text-danger-text ring-1 ring-inset ring-danger/30;
+  }
+  .az-badge-info {
+    @apply bg-steel-600/25 text-steel-200 ring-1 ring-inset ring-steel-500/35;
+  }
+  .az-badge-oscar {
+    @apply bg-oscar-600/20 text-oscar-300 ring-1 ring-inset ring-oscar-500/35;
+  }
+  .az-badge-neutral {
+    @apply bg-ink-700/80 text-mist-200 ring-1 ring-inset ring-ink-600/80;
+  }
+
+  /* Navigation */
+  .az-nav-link {
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-mist-300
+           transition duration-200 ease-soft hover:bg-ink-800 hover:text-mist-100;
+  }
+  .az-nav-link-active {
+    @apply bg-ink-800 font-medium text-steel-200 ring-1 ring-steel-500/30;
+  }
+  .az-nav-link-oscar {
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-oscar-400
+           transition duration-200 ease-soft hover:bg-oscar-600/15 hover:text-oscar-300;
+  }
+  .az-nav-link-oscar-active {
+    @apply bg-oscar-600/20 font-medium text-oscar-300 ring-1 ring-oscar-500/35;
+  }
+
+  /* Tables */
+  .az-table-wrap {
+    @apply relative overflow-x-auto rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steel-500/40;
+  }
+  .az-table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+  .az-table th {
+    @apply border-b border-ink-700 pb-2.5 pr-3 text-xs font-semibold tracking-wide text-mist-300;
+    text-wrap: balance;
+  }
+  .az-table td {
+    @apply border-b border-ink-700/70 py-2.5 pr-3 align-top text-mist-100;
+  }
+  .az-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+  .az-table tbody tr:hover td {
+    @apply bg-ink-800/40;
+  }
+
+  /* Code & Technical Identifiers */
+  .az-code {
+    @apply rounded border border-ink-700/70 bg-ink-950 px-1.5 py-0.5 font-mono text-xs text-steel-300;
+    overflow-wrap: anywhere;
+  }
+
+  .az-present {
+    @apply font-medium text-ok;
+  }
+  /* WCAG AA: #fb7185 >= 6.8:1 on ink-850/900 */
+  .az-missing {
+    @apply font-medium text-danger-text;
+  }
+  .az-muted {
+    @apply text-sm text-mist-400;
+  }
+  .az-stat {
+    @apply font-display text-3xl font-semibold tracking-tight text-mist-100 tabular-nums;
+  }
+  .az-section-title {
+    @apply mb-3 font-display text-xs font-semibold uppercase tracking-[0.08em] text-mist-400;
+  }
+  /* Non-uppercase heading for case-sensitive paths / technical titles */
+  .az-section-heading {
+    @apply mb-3 font-display text-sm font-semibold text-mist-200;
+  }
+  .az-page-title {
+    @apply font-display text-xl font-semibold tracking-tight text-mist-100 sm:text-2xl;
+    text-wrap: balance;
+  }
+
+  /* Callouts & Flash banners */
+  .az-callout {
+    @apply flex items-start gap-3 rounded-xl border px-4 py-3 text-sm;
+  }
+  .az-callout-info {
+    @apply border-steel-500/35 bg-steel-950/60 text-steel-100;
+  }
+  .az-callout-warn {
+    @apply border-warn/35 bg-warn/10 text-warn;
+  }
+  .az-callout-danger {
+    @apply border-danger/40 bg-danger/10 text-danger-text;
+  }
+  .az-callout-ok {
+    @apply border-ok/35 bg-ok/10 text-ok;
+  }
+
+  .az-flash {
+    @apply flex items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm;
+  }
+  .az-flash-ok {
+    @apply border-ok/35 bg-ok/10 text-ok;
+  }
+  .az-flash-info {
+    @apply border-steel-500/35 bg-steel-950/70 text-steel-100;
+  }
+  .az-flash-warn {
+    @apply border-warn/35 bg-warn/10 text-warn;
+  }
+  .az-flash-error {
+    @apply border-danger/40 bg-danger/10 text-danger-text;
+  }
+
+  /* Native <dialog> panel */
+  .az-dialog {
+    @apply m-auto w-[min(32rem,calc(100vw-2rem))] rounded-2xl border border-ink-600/80 bg-ink-900 p-0 text-mist-100 shadow-2xl;
+    opacity: 0;
+    transform: scale(0.97) translateY(4px);
+    transition:
+      opacity 180ms var(--ease-soft),
+      transform 180ms var(--ease-soft),
+      display 180ms allow-discrete,
+      overlay 180ms allow-discrete;
+  }
+  .az-dialog[open] {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  @starting-style {
+    .az-dialog[open] {
+      opacity: 0;
+      transform: scale(0.97) translateY(4px);
+    }
+  }
+
+  /* Progress bar */
+  .az-progress {
+    @apply h-2 overflow-hidden rounded-full bg-ink-950 ring-1 ring-inset ring-ink-700/70;
+  }
+  .az-progress > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #3d8bfd, #14b8a6);
+    transition: width 0.4s var(--ease-soft);
+  }
+
+  /* Keyboard shortcut hint */
+  .az-kbd {
+    @apply inline-flex items-center rounded border border-ink-600 bg-ink-950 px-1.5 py-0.5 font-mono text-[0.7rem] text-mist-300;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .az-dialog,
+  .az-progress > span {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .az-card,
+  .az-card-oscar,
+  .az-btn,
+  .az-btn-primary,
+  .az-btn-secondary,
+  .az-btn-danger,
+  .az-btn-oscar,
+  .az-badge,
+  .az-dialog {
+    border: 1px solid CanvasText;
+  }
+}

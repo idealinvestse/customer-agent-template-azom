@@ -97,7 +97,7 @@ Azom is its own public OAuth client. Endpoints come from env:
 | `OPENAI_SIWC_REDIRECT_URI` | Dashboard callback, exact match. Default `http://127.0.0.1:<DASHBOARD_PORT>/oauth/openai/callback` |
 | `OPENAI_SIWC_AUTHORIZATION_URL` | Authorize endpoint. Default `https://auth.openai.com/api/accounts/authorize` |
 | `OPENAI_SIWC_TOKEN_URL` | Token endpoint. Default `https://auth.openai.com/api/accounts/oauth/token` |
-| `OPENAI_SIWC_HOST_ID` | Stable opaque host id. Default is created once in `AZOM_DATA_DIR/openai_siwc_host_id` |
+| `OPENAI_SIWC_HOST_ID` | Stable host URI (`urn:uuid:...`, `urn:ietf:params:oauth:jwk-thumbprint:...`, or `did:key:...`). Default generates `urn:uuid:<uuid4>` once in `AZOM_DATA_DIR/openai_siwc_host_id` |
 | `OPENAI_MODEL` | Responses model. Default `gpt-5.2` when unset. |
 | `OPENAI_SIWC_SCOPE` | Optional. Default includes `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`. |
 | `OPENAI_SIWC_RESOURCE` | Optional. Default `https://api.openai.com/v1`. |

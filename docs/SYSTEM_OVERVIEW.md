@@ -167,6 +167,12 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 
 Auth: Basic Auth usernames come from `config/profile.yaml` actors (Azom defaults `jonatan` / `oscar`). Passwords or Werkzeug hashes via `DASHBOARD_PASSWORD*` / `DASHBOARD_OSCAR_PASSWORD*`. `DASHBOARD_USER` in `.env` is documentation-only — code does not read it. CSRF on browser POSTs (`DASHBOARD_SECRET_KEY`). `/metrics` is **token-only** (`METRICS_SCRAPE_TOKEN` Bearer). `/live` is liveness; `/ready` is 503 when cases poll is stale.
 
+### Dashboard frontend & strict CSP
+
+- **Build-time-only assets:** `infrastructure/dashboard/frontend/` builds Tailwind CSS v4 (`src/input.css` scanning `templates/**/*.html`) and syncs `@alpinejs/csp` plus self-hosted WOFF2 fonts (`Sora`, `Source Sans 3`, `JetBrains Mono`) into `infrastructure/dashboard/static/` (`css/dashboard.css`, `js/alpine-csp.min.js`, `js/dashboard.js`, `fonts/*.woff2`, `favicon.svg`). **Zero Node** is required at runtime or in Docker/systemd.
+- **Templates & macros:** `templates/base.html` provides the global shell, mobile navigation drawer, command palette (`<dialog id="az-cmd-dialog">`), and HITL confirmation modal (`<dialog id="az-confirm-dialog">`). Reusable UI components live in `templates/_ui.html` (`page_header`, `breadcrumb`, `kpi_card`, `status_badge`, `info_callout`, `empty_state`, `flash_banner`, `render_flashes`), SVG icon macros in `templates/_icons.html`, and authenticated HTTP 403/404 views in `templates/error.html`.
+- **Strict CSP (`infrastructure/dashboard/app.py`):** `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https:; connect-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'` — no external CDNs, no `'unsafe-eval'`, and no inline `<script>` tags or `on*=` attributes in templates.
+
 Operator procedures: [`PILOT_OPS.md`](PILOT_OPS.md) (Swedish).
 
 ## 7. CLI map

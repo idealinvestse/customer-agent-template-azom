@@ -73,6 +73,7 @@ class PageReviewOutcome:
     order_tools_called: tuple[str, ...] = ()
     wrote: bool = False
     layers: dict[str, Any] = field(default_factory=dict)
+    attachments: tuple[str, ...] = ()
 
 
 def _arm_io_timeout(ctx: Any, remaining: float) -> None:
@@ -238,12 +239,21 @@ def run_bounded_page_review_loop(
             elapsed_ms=elapsed_ms,
         )
     text = _format(ctx.site_id or site_id, steps)
+    attachments: list[str] = []
+    preview_row = next((row for row in steps if row.get("tool") == "wp_page_review_preview"), None)
+    if isinstance(preview_row, dict) and isinstance(preview_row.get("rendered_dom"), dict):
+        rdom = preview_row["rendered_dom"]
+        for key in ("desktop_screenshot", "mobile_screenshot"):
+            val = rdom.get(key)
+            if isinstance(val, str) and val.strip() and val not in attachments:
+                attachments.append(val)
     return PageReviewOutcome(
         text=text,
         steps=tuple(steps),
         refused=tuple(refused),
         wrote=any(bool(row.get("wrote")) for row in steps),
         layers=_layers(steps),
+        attachments=tuple(attachments),
     )
 
 
@@ -409,12 +419,20 @@ def _format(site_id: str, steps: list[dict[str, Any]]) -> str:
     )
     lines.append("Källfil: " + _source_line(steps))
     rendered = _layers(steps)["rendered_dom"]
-    lines.append(
-        "Renderad DOM: not_run/unavailable. Desktop-bild: saknas. Mobilbild: saknas. "
-        "Konsol: not_run/unavailable. Nätverk: not_run/unavailable."
-        if rendered.get("status") != "read"
-        else "Renderad DOM lästes."
-    )
+    if rendered.get("status") != "read":
+        lines.append(
+            "Renderad DOM: not_run/unavailable. Desktop-bild: saknas. Mobilbild: saknas. "
+            "Konsol: not_run/unavailable. Nätverk: not_run/unavailable."
+        )
+    else:
+        d_label = "bifogad" if rendered.get("desktop_screenshot") else "saknas"
+        m_label = "bifogad" if rendered.get("mobile_screenshot") else "saknas"
+        n_console = len(rendered.get("console_errors") or [])
+        n_net = len(rendered.get("network_errors") or [])
+        lines.append(
+            f"Renderad DOM: läst (live read-only). Desktop-bild: {d_label}. Mobilbild: {m_label}. "
+            f"Konsolfel: {n_console}. Nätverksfel: {n_net}."
+        )
     lines.append("")
     lines.append("Fynd:")
     any_finding = False

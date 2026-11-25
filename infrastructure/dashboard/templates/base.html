@@ -1,358 +1,256 @@
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
 <!DOCTYPE html>
 <html lang="sv" class="h-full">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Azom Agent Dashboard{% endblock %}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            ink: {
-              950: '#0b1017',
-              900: '#0f1621',
-              850: '#131c2a',
-              800: '#182334',
-              700: '#223044',
-              600: '#2c3d55',
-            },
-            steel: {
-              300: '#8eb6d8',
-              400: '#5b9ecf',
-              500: '#3d8bfd',
-              600: '#2f74d8',
-            },
-            teal: {
-              400: '#2dd4bf',
-              500: '#14b8a6',
-            },
-            mist: {
-              100: '#e8eef6',
-              300: '#a8b8cc',
-              400: '#8496ad',
-              500: '#6b7f97',
-            },
-            oscar: {
-              400: '#c4b5fd',
-              500: '#a78bfa',
-              600: '#7c5cbf',
-            },
-            ok: '#3dd68c',
-            warn: '#f5a524',
-            danger: '#f31260',
-          },
-          fontFamily: {
-            display: ['Sora', 'ui-sans-serif', 'sans-serif'],
-            sans: ['"Source Sans 3"', 'ui-sans-serif', 'sans-serif'],
-          },
-          boxShadow: {
-            panel: '0 1px 0 0 rgba(255,255,255,0.04) inset, 0 8px 24px -12px rgba(0,0,0,0.45)',
-          },
-          transitionTimingFunction: {
-            soft: 'cubic-bezier(0.22, 1, 0.36, 1)',
-          },
-        },
-      },
-    };
-  </script>
-  <style type="text/tailwindcss">
-    @layer components {
-      .az-card {
-        @apply rounded-xl border border-ink-700/80 bg-ink-850/90 p-5 shadow-panel backdrop-blur-sm;
-      }
-      .az-label {
-        @apply mb-1.5 block text-sm font-medium text-mist-400;
-      }
-      .az-input {
-        @apply w-full max-w-md rounded-lg border border-ink-600 bg-ink-950 px-3 py-2.5 text-sm text-mist-100
-               placeholder:text-mist-500
-               focus:border-steel-500 focus:outline-none focus:ring-2 focus:ring-steel-500/35
-               transition duration-200 ease-soft;
-      }
-      .az-textarea {
-        @apply az-input max-w-none min-h-[7rem];
-      }
-      .az-select {
-        @apply az-input appearance-none;
-      }
-      .az-btn {
-        @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold
-               transition duration-200 ease-soft focus:outline-none focus:ring-2 focus:ring-offset-2
-               focus:ring-offset-ink-900 disabled:opacity-50;
-      }
-      .az-btn-primary {
-        @apply az-btn bg-steel-500 text-white hover:bg-steel-600 focus:ring-steel-400/50;
-      }
-      .az-btn-secondary {
-        @apply az-btn border border-ink-600 bg-ink-800 text-mist-100 hover:border-ink-600 hover:bg-ink-700
-               focus:ring-steel-400/30;
-      }
-      .az-btn-danger {
-        @apply az-btn bg-danger text-white hover:brightness-110 focus:ring-danger/40;
-      }
-      .az-btn-oscar {
-        @apply az-btn bg-oscar-600 text-white hover:brightness-110 focus:ring-oscar-500/40;
-      }
-      .az-badge {
-        @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium tracking-wide;
-      }
-      .az-nav-link {
-        @apply flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-mist-300
-               transition duration-200 ease-soft hover:bg-ink-800 hover:text-mist-100;
-      }
-      .az-nav-link-active {
-        @apply bg-ink-800 text-steel-300 ring-1 ring-steel-500/25;
-      }
-      .az-nav-link-oscar {
-        @apply text-oscar-400 hover:bg-oscar-600/10 hover:text-oscar-400;
-      }
-      .az-nav-link-oscar-active {
-        @apply bg-oscar-600/15 text-oscar-400 ring-1 ring-oscar-500/30;
-      }
-      .az-table {
-        @apply w-full border-collapse text-left text-sm;
-      }
-      .az-table th {
-        @apply border-b border-ink-700 pb-2 pr-3 font-medium text-mist-400;
-      }
-      .az-table td {
-        @apply border-b border-ink-700/70 py-2.5 pr-3 align-top text-mist-100;
-      }
-      .az-code {
-        @apply rounded bg-ink-950 px-1.5 py-0.5 font-mono text-xs text-steel-300;
-      }
-      .az-present { @apply font-medium text-ok; }
-      .az-missing { @apply font-medium text-danger; }
-      .az-muted { @apply text-sm text-mist-400; }
-      .az-stat { @apply font-display text-3xl font-semibold tracking-tight text-mist-100; }
-      .az-section-title {
-        @apply mb-3 font-display text-xs font-semibold uppercase tracking-[0.08em] text-mist-400;
-      }
-      .az-page-title {
-        @apply font-display text-xl font-semibold tracking-tight text-mist-100 sm:text-2xl;
-      }
-    }
-  </style>
-  <style>
-    [x-cloak] { display: none !important; }
-    body {
-      background:
-        radial-gradient(1200px 600px at 10% -10%, rgba(61, 139, 253, 0.12), transparent 55%),
-        radial-gradient(900px 500px at 90% 0%, rgba(20, 184, 166, 0.08), transparent 50%),
-        linear-gradient(165deg, #0b1017 0%, #0f1621 42%, #0b1017 100%);
-    }
-    .az-progress {
-      height: 0.5rem;
-      border-radius: 999px;
-      background: #0b1017;
-      overflow: hidden;
-    }
-    .az-progress > span {
-      display: block;
-      height: 100%;
-      border-radius: inherit;
-      background: linear-gradient(90deg, #3d8bfd, #14b8a6);
-      transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1);
-    }
-  </style>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
   {% block head %}{% endblock %}
 </head>
-<body
-  class="h-full font-sans text-mist-100 antialiased"
-  x-data="{ navOpen: false }"
-  @keydown.escape.window="navOpen = false"
->
+<body class="h-full font-sans text-mist-100 antialiased">
   {% set path = request.path %}
-  <!-- Mobile overlay -->
+  {% set is_suggest_view = path.startswith('/cases') and request.args.get('suggest') == '1' %}
+  {% set actor_user = user | default('?') %}
+  {% set actor_role = role | default('') %}
+  {% set oscar_mode = is_oscar | default(false) %}
+
+  <a
+    href="#main-content"
+    class="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[60] focus:rounded-lg focus:bg-ink-900 focus:px-3 focus:py-2 focus:text-sm focus:font-semibold focus:text-mist-100 focus:ring-2 focus:ring-steel-400"
+  >Hoppa till innehåll</a>
+
+  <!-- Mobile backdrop -->
   <div
-    x-show="navOpen"
-    x-cloak
-    x-transition:enter="transition ease-soft duration-200"
-    x-transition:enter-start="opacity-0"
-    x-transition:enter-end="opacity-100"
-    x-transition:leave="transition ease-soft duration-150"
-    x-transition:leave-start="opacity-100"
-    x-transition:leave-end="opacity-0"
-    class="fixed inset-0 z-40 bg-ink-950/70 backdrop-blur-sm lg:hidden"
-    @click="navOpen = false"
+    id="navOverlay"
+    class="hidden fixed inset-0 z-40 bg-ink-950/75 backdrop-blur-sm lg:hidden"
+    aria-hidden="true"
   ></div>
 
   <div class="flex min-h-full">
-    <!-- Sidebar -->
+    <!-- Sidebar / Mobile Drawer -->
     <aside
-      class="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-ink-700/80 bg-ink-900/95 backdrop-blur-md
+      id="navDrawer"
+      class="fixed inset-y-0 left-0 z-50 flex w-64 -translate-x-full flex-col border-r border-ink-700/80 bg-ink-900/95 backdrop-blur-md
              transition-transform duration-300 ease-soft lg:static lg:translate-x-0"
-      :class="navOpen ? 'translate-x-0' : '-translate-x-full'"
       aria-label="Huvudnavigering"
     >
-      <div class="flex h-16 items-center gap-2.5 border-b border-ink-700/80 px-5">
-        <span class="font-display text-lg font-bold tracking-tight text-mist-100">Azom</span>
-        <span class="text-xs font-medium text-mist-500">Agent</span>
+      <div class="flex h-16 items-center justify-between gap-2.5 border-b border-ink-700/80 px-4">
+        <a href="/" class="flex items-center gap-2.5 rounded-lg px-1 py-1 text-mist-100 hover:text-steel-200">
+          <span class="flex h-7 w-7 items-center justify-center rounded-md bg-ink-800 ring-1 ring-ink-600/80 font-display text-sm font-bold text-steel-300">A</span>
+          <span class="font-display text-lg font-bold tracking-tight">Azom</span>
+          <span class="text-xs font-medium text-mist-500">Ops</span>
+        </a>
+        <button
+          id="navClose"
+          type="button"
+          class="az-btn-secondary !p-1.5 lg:hidden"
+          aria-label="Stäng meny"
+        >
+          {{ icon('x', 'sm') }}
+        </button>
       </div>
 
       <nav class="flex-1 space-y-6 overflow-y-auto px-3 py-4">
-        <div>
-          <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Översikt</p>
-          <a href="/" class="az-nav-link {{ 'az-nav-link-active' if path == '/' else '' }}">Översikt</a>
-          <a href="/onboarding" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/onboarding') else '' }}">Onboarding</a>
+        <div data-nav-group="Översikt">
+          <p class="mb-1.5 px-3 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Översikt</p>
+          <a href="/" class="az-nav-link {{ 'az-nav-link-active' if path == '/' else '' }}"{% if path == '/' %} aria-current="page"{% endif %}>
+            {{ icon('home', 'sm') }}
+            <span data-nav-label>Start</span>
+          </a>
+          <a href="/onboarding" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/onboarding') else '' }}"{% if path.startswith('/onboarding') %} aria-current="page"{% endif %}>
+            {{ icon('rocket', 'sm') }}
+            <span data-nav-label>Onboarding</span>
+          </a>
         </div>
 
-        <div>
-          <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Drift</p>
-          <a href="/settings" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/settings') else '' }}">Inställningar</a>
-          <a href="/secrets" class="az-nav-link {{ 'az-nav-link-active' if path == '/secrets' else '' }}">Secrets</a>
-          <a href="/data/telemetry" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/telemetry') else '' }}">Telemetry</a>
-          <a href="/data/audit" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/audit') else '' }}">Historik</a>
-          <a href="/wp" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/wp') else '' }}">Webbplatser</a>
-          <div
-            class="px-1"
-            x-data="{ connected: {{ 'true' if gmail_connected else 'false' }}, email: '' }"
-            x-init="fetch('/oauth/gmail/status').then(r => r.json()).then(d => { connected = !!d.connected; email = d.email || ''; }).catch(() => {})"
+        <div data-nav-group="Support &amp; Ärenden">
+          <p class="mb-1.5 px-3 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Support &amp; Ärenden</p>
+          <a
+            href="/cases?status=open,escalated"
+            class="az-nav-link justify-between {{ 'az-nav-link-active' if (path.startswith('/cases') and not is_suggest_view) else '' }}"
+            {% if path.startswith('/cases') and not is_suggest_view %} aria-current="page"{% endif %}
           >
-            <a
-              href="/oauth/gmail/start"
-              class="az-nav-link"
-              x-show="!connected"
-              x-cloak
-            >Gmail · anslut</a>
-            <a
-              href="/oauth/gmail/start"
-              class="az-nav-link"
-              x-show="connected"
-              title="Förnya Gmail OAuth"
-            >
-              <span x-text="email ? ('Gmail · ' + email) : 'Gmail · connected'"></span>
-            </a>
-          </div>
-        </div>
-
-        <div>
-          <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Support</p>
-          <a href="/cases?status=open,escalated" class="az-nav-link flex items-center justify-between gap-2 {{ 'az-nav-link-active' if path.startswith('/cases') else '' }}">
-            <span>Ärenden</span>
+            <span class="flex items-center gap-2.5 min-w-0">
+              {{ icon('inbox', 'sm') }}
+              <span data-nav-label>Ärenden</span>
+            </span>
             <span class="flex items-center gap-1">
               {% if suggest_cases %}
-              <span class="az-badge bg-steel-600/40 text-steel-100" title="Föreslå godkänn">★{{ suggest_cases }}</span>
+              <span class="az-badge bg-steel-600/40 text-steel-100 tabular-nums" title="Föreslå godkänn">★{{ suggest_cases }}</span>
               {% endif %}
               {% if queue_cases %}
-              <span class="az-badge bg-steel-500/20 text-steel-300">{{ queue_cases }}</span>
+              <span class="az-badge bg-steel-500/20 text-steel-200 tabular-nums">{{ queue_cases }}</span>
               {% endif %}
             </span>
           </a>
           {% if suggest_cases %}
-          <a href="/cases?status=open,escalated&amp;suggest=1" class="az-nav-link text-steel-300">★ Föreslå godkänn ({{ suggest_cases }})</a>
+          <a
+            href="/cases?status=open,escalated&amp;suggest=1"
+            class="az-nav-link justify-between {{ 'az-nav-link-active' if is_suggest_view else 'text-steel-300' }}"
+            {% if is_suggest_view %} aria-current="page"{% endif %}
+          >
+            <span class="flex items-center gap-2.5 min-w-0">
+              {{ icon('star', 'sm') }}
+              <span data-nav-label>Föreslå godkänn</span>
+            </span>
+            <span class="az-badge bg-steel-600/35 text-steel-100 tabular-nums">★{{ suggest_cases }}</span>
+          </a>
           {% endif %}
-          <a href="/marketing" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/marketing') else '' }}">Marketing</a>
-          <a href="/interact" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/interact') else '' }}">Interagera</a>
-          <a href="/data/escalations" class="az-nav-link flex items-center justify-between gap-2 {{ 'az-nav-link-active' if path.startswith('/data/escalations') else '' }}">
-            <span>Eskaleringar</span>
+          <a href="/interact" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/interact') else '' }}"{% if path.startswith('/interact') %} aria-current="page"{% endif %}>
+            {{ icon('terminal', 'sm') }}
+            <span data-nav-label>Utkast-sandlåda</span>
+          </a>
+          <a
+            href="/data/escalations"
+            class="az-nav-link justify-between {{ 'az-nav-link-active' if (path.startswith('/data/escalations') or path.startswith('/oscar/escalations')) else '' }}"
+            {% if path.startswith('/data/escalations') or path.startswith('/oscar/escalations') %} aria-current="page"{% endif %}
+          >
+            <span class="flex items-center gap-2.5 min-w-0">
+              {{ icon('alert-triangle', 'sm') }}
+              <span data-nav-label>Eskaleringar</span>
+            </span>
             {% if open_escalations %}
-            <span class="az-badge bg-warn/15 text-warn">{{ open_escalations }}</span>
+            <span class="az-badge bg-warn/15 text-warn tabular-nums">{{ open_escalations }}</span>
             {% endif %}
           </a>
         </div>
 
-        {% if is_oscar %}
-        <div>
-          <p class="mb-1.5 px-3 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-oscar-500/80">Oscar</p>
-          <a href="/oscar" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path == '/oscar' else '' }}">Oscar</a>
-          <a href="/oscar/behavior" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/behavior') else '' }}">Beteende</a>
-          <a href="/oscar/telegram" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/telegram') else '' }}">Telegram</a>
-          <a href="/oscar/secrets" class="az-nav-link az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/secrets') else '' }}">Oscar secrets</a>
-          <a href="/oscar/escalations" class="az-nav-link az-nav-link-oscar flex items-center justify-between gap-2 {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/escalations') else '' }}">
-            <span>Oscar eskaleringar</span>
-            {% if open_escalations %}
-            <span class="az-badge bg-oscar-600/25 text-oscar-400">{{ open_escalations }}</span>
-            {% endif %}
+        <div data-nav-group="Tillväxt">
+          <p class="mb-1.5 px-3 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Tillväxt</p>
+          <a href="/marketing" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/marketing') else '' }}"{% if path.startswith('/marketing') %} aria-current="page"{% endif %}>
+            {{ icon('trending-up', 'sm') }}
+            <span data-nav-label>Marknadsföring</span>
+          </a>
+        </div>
+
+        <div data-nav-group="Drift &amp; Webbplatser">
+          <p class="mb-1.5 px-3 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-mist-500">Drift &amp; Webbplatser</p>
+          <a href="/wp" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/wp') else '' }}"{% if path.startswith('/wp') %} aria-current="page"{% endif %}>
+            {{ icon('globe', 'sm') }}
+            <span data-nav-label>Webbplatser</span>
+          </a>
+          <a href="/settings" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/settings') else '' }}"{% if path.startswith('/settings') %} aria-current="page"{% endif %}>
+            {{ icon('settings', 'sm') }}
+            <span data-nav-label>Inställningar</span>
+          </a>
+          {% set secrets_href = '/oscar/secrets' if oscar_mode else '/secrets' %}
+          {% set secrets_active = path.startswith('/oscar/secrets') or path == '/secrets' %}
+          <a href="{{ secrets_href }}" class="az-nav-link {{ 'az-nav-link-active' if secrets_active else '' }}"{% if secrets_active %} aria-current="page"{% endif %}>
+            {{ icon('key', 'sm') }}
+            <span data-nav-label>Secrets &amp; Integrationer</span>
+          </a>
+          <a href="/data/telemetry" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/telemetry') else '' }}"{% if path.startswith('/data/telemetry') %} aria-current="page"{% endif %}>
+            {{ icon('activity', 'sm') }}
+            <span data-nav-label>Telemetri</span>
+          </a>
+          <a href="/data/audit" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/data/audit') else '' }}"{% if path.startswith('/data/audit') %} aria-current="page"{% endif %}>
+            {{ icon('clipboard-list', 'sm') }}
+            <span data-nav-label>Granskningslogg</span>
+          </a>
+        </div>
+
+        {% if oscar_mode %}
+        <div data-nav-group="Oscar">
+          <p class="mb-1.5 px-3 text-[0.7rem] font-semibold uppercase tracking-[0.12em] text-oscar-400">Oscar</p>
+          <a href="/oscar" class="az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path == '/oscar' else '' }}"{% if path == '/oscar' %} aria-current="page"{% endif %}>
+            {{ icon('cpu', 'sm') }}
+            <span data-nav-label>Modellrouter</span>
+          </a>
+          <a href="/oscar#model-profiles" class="az-nav-link-oscar">
+            {{ icon('sliders', 'sm') }}
+            <span data-nav-label>Modellprofiler</span>
+          </a>
+          <a href="/oscar/behavior" class="az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/behavior') else '' }}"{% if path.startswith('/oscar/behavior') %} aria-current="page"{% endif %}>
+            {{ icon('message-square', 'sm') }}
+            <span data-nav-label>Beteende &amp; Prompter</span>
+          </a>
+          <a href="/oscar/telegram" class="az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/oscar/telegram') else '' }}"{% if path.startswith('/oscar/telegram') %} aria-current="page"{% endif %}>
+            {{ icon('send', 'sm') }}
+            <span data-nav-label>Telegram &amp; Kanaler</span>
           </a>
         </div>
         {% endif %}
       </nav>
 
       <div class="border-t border-ink-700/80 px-4 py-3">
-        <p class="truncate text-xs text-mist-400">{{ user }} · {{ role }}</p>
+        <p class="truncate text-xs text-mist-400">{{ actor_user }}{% if actor_role %} · {{ actor_role }}{% endif %}</p>
       </div>
     </aside>
 
     <!-- Main column -->
-    <div class="flex min-w-0 flex-1 flex-col">
-      <header class="sticky top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-ink-700/80 bg-ink-900/80 px-4 backdrop-blur-md sm:px-6">
-        <div class="flex items-center gap-3">
+    <div id="appMain" class="flex min-w-0 flex-1 flex-col">
+      <header class="sticky top-0 z-30 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-ink-700/80 bg-ink-900/85 px-4 py-2 backdrop-blur-md sm:px-6">
+        <div class="flex items-center gap-3 min-w-0">
           <button
+            id="navToggle"
             type="button"
             class="az-btn-secondary !px-2.5 lg:hidden"
-            @click="navOpen = !navOpen"
-            :aria-expanded="navOpen.toString()"
+            aria-expanded="false"
+            aria-controls="navDrawer"
             aria-label="Öppna meny"
           >
-            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
+            {{ icon('menu', 'md') }}
           </button>
-          <div>
-            <h1 class="font-display text-base font-semibold tracking-tight text-mist-100 sm:text-lg">
+          <div class="min-w-0">
+            <a href="/" class="block truncate font-display text-base font-semibold tracking-tight text-mist-100 hover:text-steel-200 sm:text-lg">
               Azom Agent Dashboard
-            </h1>
-            <p class="hidden text-xs text-mist-500 sm:block">{% block page_subtitle %}Ops control room{% endblock %}</p>
+            </a>
+            <p class="hidden truncate text-xs text-mist-500 sm:block">{% block page_subtitle %}Driftpanel{% endblock %}</p>
           </div>
         </div>
+
         <div class="flex flex-wrap items-center justify-end gap-2">
-          {% if is_oscar %}
-          <span class="az-badge bg-oscar-600/20 text-oscar-400">Oscar · full_admin</span>
+          <button
+            type="button"
+            class="az-btn-secondary az-btn-sm hidden sm:inline-flex"
+            data-cmd-open
+            title="Snabbnavigering (Ctrl+K)"
+          >
+            {{ icon('search', 'xs') }}
+            <span>Sök</span>
+            <kbd class="az-kbd">Ctrl+K</kbd>
+          </button>
+          <button
+            type="button"
+            class="az-btn-secondary !p-1.5 sm:hidden"
+            data-cmd-open
+            aria-label="Snabbnavigering"
+          >
+            {{ icon('search', 'sm') }}
+          </button>
+
+          {% if oscar_mode %}
+          <span class="az-badge az-badge-oscar">{{ actor_user }} · {{ actor_role or 'full_admin' }}</span>
           {% else %}
-          <span class="az-badge bg-ok/15 text-ok">Jonatan · viewer</span>
+          <span class="az-badge az-badge-ok">{{ actor_user }} · {{ actor_role or 'viewer' }}</span>
           {% endif %}
           {% if runtime and runtime.mock_mode %}
-          <span class="az-badge bg-warn/15 text-warn">mock</span>
+          <span class="az-badge az-badge-warn">mock</span>
           {% endif %}
           {% if null_send_active %}
-          <span class="az-badge bg-warn/15 text-warn" title="Kundmail skickas inte">null-send</span>
+          <span class="az-badge az-badge-warn" title="Kundmail skickas inte">null-send</span>
           {% endif %}
         </div>
       </header>
 
-      <main class="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+      <main id="main-content" tabindex="-1" class="flex-1 px-4 py-6 sm:px-6 lg:px-8 focus:outline-none">
         <div class="mx-auto max-w-6xl space-y-5">
           {% if null_send_active %}
           <div
-            class="rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn"
-            role="status"
+            class="az-callout az-callout-warn"
+            role="note"
           >
-            Null-send aktiv — kundmail skickas inte (Shadow Live Ledger). Oscar: <span class="az-code">cases shadow-report</span>.
+            <span class="mt-0.5 shrink-0">{{ icon('alert-triangle', 'sm') }}</span>
+            <div class="min-w-0">
+              Null-send aktiv — kundmail skickas inte (Shadow Live Ledger).{% if oscar_mode %} Oscar: <code class="az-code">cases shadow-report</code>.{% endif %}
+            </div>
           </div>
           {% endif %}
-          {% if flash is defined and flash %}
-          <div
-            x-data="{ show: true }"
-            x-show="show"
-            x-transition:leave="transition ease-soft duration-150"
-            x-transition:leave-start="opacity-100"
-            x-transition:leave-end="opacity-0"
-            class="flex items-start justify-between gap-3 rounded-xl border px-4 py-3 text-sm
-              {% if flash.startswith('error:') %}
-                border-danger/30 bg-danger/10 text-danger
-              {% else %}
-                border-ok/30 bg-ok/10 text-ok
-              {% endif %}"
-            role="status"
-          >
-            <span>
-              {% if flash.startswith('error:') %}{{ flash[6:] }}
-              {% elif flash.startswith('ok:') %}{{ flash[3:] }}
-              {% else %}{{ flash }}{% endif %}
-            </span>
-            <button type="button" class="shrink-0 opacity-70 hover:opacity-100" @click="show = false" aria-label="Stäng">
-              <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-          {% endif %}
+
+          {{ ui.render_flashes(flash | default(none)) }}
 
           {% block content %}{% endblock %}
         </div>
@@ -360,6 +258,56 @@
     </div>
   </div>
 
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+  <!-- Command Palette Dialog -->
+  <dialog id="az-cmd-dialog" class="az-dialog" closedby="any" aria-labelledby="az-cmd-title">
+    <div class="border-b border-ink-700/80 p-4">
+      <div class="flex items-center justify-between gap-3">
+        <h2 id="az-cmd-title" class="font-display text-sm font-semibold text-mist-200">Snabbnavigering</h2>
+        <button type="button" class="az-btn-secondary !p-1.5" data-dialog-close aria-label="Stäng snabbnavigering">
+          {{ icon('x', 'xs') }}
+        </button>
+      </div>
+      <div class="relative mt-3">
+        <input
+          id="az-cmd-input"
+          type="text"
+          class="az-input"
+          placeholder="Sök vy eller sökväg (t.ex. ärenden, wp, oscar)..."
+          aria-label="Sök vy eller sökväg"
+          autocomplete="off"
+          autofocus
+        />
+      </div>
+    </div>
+    <div class="max-h-72 overflow-y-auto p-2">
+      <ul id="az-cmd-list" class="space-y-1"></ul>
+      <p id="az-cmd-empty" class="hidden px-3 py-6 text-center text-sm text-mist-400">Inga matchande vyer.</p>
+    </div>
+    <div class="flex items-center justify-between border-t border-ink-700/80 px-4 py-2.5 text-xs text-mist-500">
+      <span>Piltangenter + Enter för att öppna</span>
+      <span>Esc för att stänga</span>
+    </div>
+  </dialog>
+
+  <!-- HITL Confirmation Dialog -->
+  <dialog id="az-confirm-dialog" class="az-dialog" aria-labelledby="az-confirm-title" aria-describedby="az-confirm-msg">
+    <div class="p-5 space-y-4">
+      <div class="flex items-start gap-3">
+        <span class="mt-0.5 rounded-lg bg-warn/15 p-2 text-warn">{{ icon('alert-triangle', 'md') }}</span>
+        <div class="min-w-0 space-y-1">
+          <h2 id="az-confirm-title" class="font-display text-base font-semibold text-mist-100">Bekräfta åtgärd</h2>
+          <p id="az-confirm-msg" class="text-sm text-mist-300"></p>
+        </div>
+      </div>
+      <div class="flex flex-wrap justify-end gap-2 pt-2">
+        <button type="button" class="az-btn-secondary" data-dialog-close autofocus>Avbryt</button>
+        <button id="az-confirm-ok" type="button" class="az-btn-primary" data-confirm-accept>Bekräfta</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script defer src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+  <script defer src="{{ url_for('static', filename='js/alpine-csp.min.js') }}"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

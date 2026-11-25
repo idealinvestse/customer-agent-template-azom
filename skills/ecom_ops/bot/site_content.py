@@ -111,26 +111,44 @@ _PACKAGE_FALLTHROUGH_REFUSE_RE = re.compile(
 )
 _WP_CODE_FALLTHROUGH_RE = re.compile(
     r"functions\.php|style\.css|theme\.json|header\.php|footer\.php|"
-    r"single\.php|page\.php|front-page\.php|archive\.php|woocommerce/|"
+    r"single\.php|single-product\.php|content-single-product\.php|"
+    r"page\.php|front-page\.php|archive\.php|woocommerce/|/(?:produkt|product)/|"
     r"\b(?:[a-z0-9_-]+\.(?:php|css|scss|js|json|html)|"
     r"temafil(?:er)?|pluginfil(?:er)?|temakod|pluginkod|k[äa]llkod(?:en)?|"
     r"barntema(?:t|n)?|child[\s_-]?theme|modertema(?:t)?|f[öo]r[äa]ldratema(?:t)?|parent[\s_-]?theme|"
     r"blocktema(?:t)?|block[\s_-]?theme|block\.json|mallhierarki|template[\s_-]?hierarch\w*|"
     r"hooks?|hookar|filters?|actions?|add_action|add_filter|do_action|apply_filters|"
     r"register_rest_route|register_block_type|wp_enqueue_(?:script|style)|"
-    r"shortcodes?|snippets?|overrides?|templates?|mall(?:ar|en)?|"
+    r"shortcodes?|snippets?|overrides?|templates?|mall(?:ar|en)?|produktmall(?:ar|en)?|"
+    r"produktsid(?:a|an|or|orna|e|en|er)|product[\s_-]?page|k[öo]pknapp(?:en)?|add[\s_-]?to[\s_-]?cart|"
+    r"inring(?:a|ad|at|ade|ning|ningen)?|bifogad\s+bild|sandboxsid(?:a|an)|"
+    r"(?:redigera|ändra|andra)\s+(?:en\s+|den\s+)?produkt(?:en|er|sid(?:a|an))?|"
     r"hpos|custom_order_tables|wc_tested_up_to|"
     r"arbetsyta(?:n)?|workspace|refaktor(?:era|ering)|bulk[\s_-]?replace|mass[äa]ndr\w*|"
     r"sajtplugin|site[\s_-]?plugin|azom-site-|scaffold|"
     r"static[\s_-]?checks?|statisk(?:a)?\s+kontroll(?:er)?|sandbox|"
+    r"sandl[åa]da(?:n)?|sk[äa]rmdump(?:ar|en)?|screenshot(?:s)?|"
+    r"print(?:screen)?|html(?:-?kod(?:en)?)?|rendera(?:d|t|r)?|f[öo]rhandsvisning(?:en)?|"
     r"component[\s_-]?intel|wp\.org|wordpress\.org|playbook|"
     r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|theme_overview|plugin_overview|"
-    r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file)|"
+    r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file|"
+    r"list_products|get_product|fetch_page_html|preview_page)|"
     r"wc_template_overrides_audit|"
     r"skapa\s+(?:ett\s+)?(?:nytt\s+)?(?:plugin|till[äa]gg|barntema)|"
     r"granska\s+(?:plugin(?:et)?|till[äa]gg(?:et)?|tema(?:t)?|koden)|"
     r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|"
     r"kod(?:en)?|css|php|scss)\b",
+    re.I,
+)
+_WP_WORKSPACE_INTENT_RE = re.compile(
+    r"single-product\.php|content-single-product\.php|"
+    r"\b(?:arbetsyta(?:n)?|workspace|sandl[åa]da(?:n)?|sandbox|sandboxsid(?:a|an)|"
+    r"produktsid(?:a|an|or|orna)|product[\s_-]?page|"
+    r"inring(?:a|ad|at|ade|ning|ningen)?|bifogad\s+bild|"
+    r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|"
+    r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|"
+    r"theme_overview|plugin_overview|code_index|template_hierarchy|"
+    r"read_theme_plugin_file|list_products|get_product|fetch_page_html|preview_page))\b",
     re.I,
 )
 _CRITICAL_PLUGIN_SLUGS = frozenset(
@@ -200,10 +218,11 @@ def site_content_turn(
     allow_wp_ops_fallthrough: bool = False,
 ) -> SiteTurn:
     raw = text or ""
-    refusal = _refusal(raw, allow_wp_ops_fallthrough=allow_wp_ops_fallthrough)
+    effective_fallthrough = allow_wp_ops_fallthrough or bool(_WP_WORKSPACE_INTENT_RE.search(raw))
+    refusal = _refusal(raw, allow_wp_ops_fallthrough=effective_fallthrough)
     if refusal:
         return SiteTurn(consumed=True, results=[("site_content", refusal)])
-    if allow_wp_ops_fallthrough and (
+    if effective_fallthrough and (
         _FILE_RE.search(raw) or _WP_CODE_FALLTHROUGH_RE.search(raw)
     ):
         return SiteTurn(consumed=False)
@@ -216,6 +235,8 @@ def site_content_turn(
         if write.kind == "site_update":
             return _propose_site(write, domain=domain)
         return _propose_plugin(write, domain=domain)
+    if _WP_CODE_FALLTHROUGH_RE.search(raw):
+        return SiteTurn(consumed=False)
     read_name, target = _parse_read(raw)
     if read_name is None:
         return SiteTurn(consumed=False)

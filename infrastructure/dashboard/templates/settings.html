@@ -1,108 +1,178 @@
 {% extends "base.html" %}
-{% block title %}Inställningar – Azom{% endblock %}
+{% import "_ui.html" as ui %}
+{% block title %}Inställningar – Azom Agent Dashboard{% endblock %}
 {% block page_subtitle %}Inställningar{% endblock %}
 {% block content %}
-<div class="space-y-5">
-  <div>
-    <h2 class="az-page-title">Inställningar</h2>
-    <p class="az-muted mt-1">Icke-hemliga inställningar. Secrets hanteras under Secrets / Oscar.</p>
-  </div>
+{% set role_display = 'viewer' if settings.jonatan_role in ('read_only', 'viewer') else settings.jonatan_role %}
 
-  <section class="az-card">
-    <h2 class="az-section-title">Icke-hemliga inställningar</h2>
-    <form method="post" action="/settings" class="space-y-5">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <div class="grid gap-5 sm:grid-cols-2">
+<div class="space-y-5">
+  {{ ui.page_header("Inställningar", "Icke-hemliga driftinställningar. Secrets och API-nycklar hanteras separat.") }}
+
+  <form method="post" action="/settings" class="space-y-5">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+
+    <!-- Section 1: Customer & LLM Budget -->
+    <section class="az-card space-y-4">
+      <h2 class="az-section-title mb-0">Kund &amp; LLM-budget</h2>
+      <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <label class="az-label" for="customer">Kund (customer)</label>
-          <input class="az-input" id="customer" type="text" name="customer" value="{{ settings.customer }}" required />
+          <input
+            class="az-input"
+            id="customer"
+            type="text"
+            name="customer"
+            value="{{ settings.customer }}"
+            maxlength="64"
+            autocomplete="organization"
+            placeholder="azom"
+            required
+          />
         </div>
+
         <div>
           <label class="az-label" for="domains">Domäner (kommaseparerade)</label>
-          <input class="az-input" id="domains" type="text" name="domains" value="{{ settings.domains }}" required />
+          <input
+            class="az-input font-mono"
+            id="domains"
+            type="text"
+            name="domains"
+            value="{{ settings.domains }}"
+            placeholder="se, no, dk"
+            required
+          />
         </div>
-        <div>
-          <label class="az-label" for="budget_cap_llm">LLM budget cap (sites)</label>
-          <input class="az-input" id="budget_cap_llm" type="number" step="0.1" name="budget_cap_llm" value="{{ settings.budget_cap_llm }}" />
-        </div>
-        <div>
-          <label class="az-label" for="openrouter_cap">OpenRouter cap (USD)</label>
-          <input class="az-input" id="openrouter_cap" type="number" step="0.1" name="openrouter_cap" value="{{ settings.openrouter_cap }}" />
-        </div>
-        <div>
-          <label class="az-label" for="mail_provider">Mail provider</label>
-          <select class="az-select" id="mail_provider" name="mail_provider">
-            {% for p in settings.mail_providers %}
-            <option value="{{ p }}" {% if p == settings.mail_provider %}selected{% endif %}>{{ p }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div>
-          <label class="az-label" for="jonatan_role">Jonatan-roll (read-only)</label>
-          <input class="az-input opacity-60" id="jonatan_role" type="text" value="{{ settings.jonatan_role }}" disabled />
-        </div>
-      </div>
 
-      <div x-data="{ open: true }" class="rounded-xl border border-ink-700/80 bg-ink-950/40 p-4">
-        <button
-          type="button"
-          class="flex w-full items-center justify-between text-left"
-          @click="open = !open"
-        >
-          <h3 class="az-section-title !mb-0">Flaggor</h3>
-          <svg class="h-4 w-4 text-mist-400 transition duration-200" :class="open && 'rotate-180'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
-        <div x-show="open" class="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {% if is_oscar %}
-          <label class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-mist-200 hover:bg-ink-800/60">
-            <input
-              class="h-4 w-4 rounded border-ink-600 bg-ink-950 text-steel-500 focus:ring-steel-500/40"
-              type="checkbox"
-              name="mock_mode"
-              value="1"
-              {% if settings.mock_mode %}checked{% endif %}
-            />
-            Mock-läge (AZOM_USE_MOCK)
-          </label>
-          {% else %}
-          <p class="text-sm text-mist-400 sm:col-span-2">
-            Mock-läge styrs av Oscar (AZOM_USE_MOCK).
-            Nuvarande: {% if settings.mock_mode %}på{% else %}av{% endif %}.
+        <div>
+          <label class="az-label" for="openrouter_cap">LLM-budgettak / OpenRouter cap (USD)</label>
+          <input
+            class="az-input font-mono tabular-nums"
+            id="openrouter_cap"
+            type="number"
+            min="0.1"
+            max="100000"
+            step="0.1"
+            name="openrouter_cap"
+            value="{{ settings.openrouter_cap }}"
+            required
+          />
+          <p class="mt-1 text-xs text-mist-400">
+            Gäller som både <code class="az-code">openrouter_cap</code> och <code class="az-code">budget_cap_llm</code>.
           </p>
-          {% endif %}
-          {% for key, label in [
-            ('email_enabled', 'Email enabled'),
-            ('email_smtp', 'SMTP'),
-            ('email_imap', 'IMAP'),
-            ('email_pop3', 'POP3'),
-            ('mailcow', 'Mailcow'),
-            ('order_api', 'Order API'),
-            ('selenium', 'Selenium'),
-            ('woocommerce_api', 'WooCommerce API'),
-            ('wordpress_api', 'WordPress API'),
-            ('smart_handling', 'Smart handling'),
-            ('full_agent_tools', 'Full agent tools'),
-          ] %}
-          <label class="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-mist-200 hover:bg-ink-800/60">
-            <input
-              class="h-4 w-4 rounded border-ink-600 bg-ink-950 text-steel-500 focus:ring-steel-500/40"
-              type="checkbox"
-              name="{{ key }}"
-              value="1"
-              {% if settings[key] %}checked{% endif %}
-            />
-            {{ label }}
-          </label>
-          {% endfor %}
+        </div>
+
+        <div>
+          <span class="az-label">Jonatans roll</span>
+          <div class="mt-1.5 flex items-center gap-2 rounded-lg border border-ink-700/80 bg-ink-950/60 px-3 py-2 text-sm">
+            {{ ui.status_badge('info', role_display) }}
+            <span class="text-xs text-mist-400">Skrivskyddad i UI (styrs av <code class="az-code">config/rbac.yaml</code>)</span>
+          </div>
         </div>
       </div>
+    </section>
 
-      <div>
-        <button class="az-btn-primary" type="submit">Spara</button>
+    <!-- Section 2: Mail Provider -->
+    <section class="az-card space-y-4">
+      <h2 class="az-section-title mb-0">Mailleverantör</h2>
+      <div class="max-w-md">
+        <label class="az-label" for="mail_provider">Aktiv mailleverantör</label>
+        <select class="az-select" id="mail_provider" name="mail_provider">
+          {% set provider_labels = {
+            'gmail': 'Gmail (OAuth)',
+            'outlook': 'Outlook / Microsoft 365',
+            'exchange_graph': 'Microsoft Exchange (Graph API)',
+            'generic_imap': 'Generisk IMAP / SMTP',
+            'generic_pop3': 'Generisk POP3 / SMTP',
+          } %}
+          {% for p in settings.mail_providers %}
+          <option value="{{ p }}" {% if p == settings.mail_provider %}selected{% endif %}>
+            {{ provider_labels.get(p, p) }} ({{ p }})
+          </option>
+          {% endfor %}
+        </select>
+        <p class="mt-1.5 text-xs text-mist-400">Används vid inkommande ärendehämtning och godkända utskick.</p>
       </div>
-    </form>
-  </section>
+    </section>
+
+    <!-- Section 3: Integrations & Agent Flags -->
+    <section class="az-card space-y-4">
+      <h2 class="az-section-title mb-0">Integrationer &amp; agentflaggor</h2>
+
+      {% if is_oscar %}
+        {% if settings.live_locked %}
+        {{ ui.info_callout('warn', 'Mock-läge är låst i live-drift', 'AZOM_USE_MOCK=0 är satt i processmiljön. Mock-läge kan inte slås på från dashboarden för att skydda fail-closed-kontroller.') }}
+        <label class="flex items-start gap-3 rounded-lg border border-ink-700/70 bg-ink-950/50 p-3 opacity-65">
+          <input class="az-checkbox mt-0.5" type="checkbox" id="flag-mock_mode" disabled />
+          <span class="text-sm">
+            <strong class="block text-mist-100">Mock-läge (AZOM_USE_MOCK)</strong>
+            <span class="text-xs text-mist-400">Avstängt och låst i live-läge.</span>
+          </span>
+        </label>
+        {% else %}
+        <label for="flag-mock_mode" class="flex cursor-pointer items-start gap-3 rounded-lg border border-ink-700/70 bg-ink-950/50 p-3 hover:bg-ink-800/50">
+          <input
+            class="az-checkbox mt-0.5"
+            type="checkbox"
+            id="flag-mock_mode"
+            name="mock_mode"
+            value="1"
+            {% if settings.mock_mode %}checked{% endif %}
+          />
+          <span class="text-sm">
+            <strong class="block text-mist-100">Mock-läge (AZOM_USE_MOCK)</strong>
+            <span class="text-xs text-mist-400">Använder syntetisk testdata lokalt utan anrop till externa API:er.</span>
+          </span>
+        </label>
+        {% endif %}
+      {% else %}
+      <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ink-700/70 bg-ink-950/50 px-3 py-2.5 text-sm">
+        <div>
+          <strong class="text-mist-100">Mock-läge (AZOM_USE_MOCK)</strong>
+          <p class="text-xs text-mist-400">Styrs av Oscar / processmiljön.</p>
+        </div>
+        {{ ui.status_badge('warn' if settings.mock_mode else 'ok', 'På' if settings.mock_mode else 'Av') }}
+      </div>
+      {% endif %}
+
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {% for key, label, desc in [
+          ('email_enabled', 'E-post aktiverad', 'Tillåter ärendepolling och godkända svar via mail.'),
+          ('email_smtp', 'SMTP-utskick', 'Använd SMTP när generisk mailleverantör är vald.'),
+          ('email_imap', 'IMAP-hämtning', 'Läs inkommande mail via IMAP.'),
+          ('email_pop3', 'POP3-hämtning', 'Läs inkommande mail via POP3 (legacy).'),
+          ('mailcow', 'Mailcow-integration', 'Stöd för Mailcow-brevlådor och alias.'),
+          ('order_api', 'Order-API', 'Slå upp orderstatus och spårning vid ärenden.'),
+          ('woocommerce_api', 'WooCommerce API', 'Hämta order-, produkt- och kunddata från Woo.'),
+          ('wordpress_api', 'WordPress API', 'Läsnings- och innehållsverktyg mot WordPress REST.'),
+          ('smart_handling', 'Smart hantering', 'Aktivera klassificering och föreslå-godkänn-bedömning.'),
+          ('selenium', 'Selenium / webbläsare', 'Tillåt headless-kontroller där det stöds.'),
+          ('full_agent_tools', 'Utökade agentverktyg', 'Exponerar full uppsättning operativa verktyg för agenten.'),
+        ] %}
+        <label
+          for="flag-{{ key }}"
+          class="flex cursor-pointer items-start gap-3 rounded-lg border border-ink-700/70 bg-ink-950/40 p-3 transition hover:bg-ink-800/50"
+        >
+          <input
+            class="az-checkbox mt-0.5"
+            type="checkbox"
+            id="flag-{{ key }}"
+            name="{{ key }}"
+            value="1"
+            {% if settings[key] %}checked{% endif %}
+          />
+          <span class="min-w-0 text-sm">
+            <strong class="block font-medium text-mist-100">{{ label }}</strong>
+            <span class="mt-0.5 block text-xs text-mist-400">{{ desc }}</span>
+          </span>
+        </label>
+        {% endfor %}
+      </div>
+    </section>
+
+    <div class="flex flex-wrap items-center gap-3">
+      <button class="az-btn-primary" type="submit" data-busy-label="Sparar...">Spara inställningar</button>
+      <a class="az-btn-secondary" href="/">Avbryt</a>
+    </div>
+  </form>
 </div>
 {% endblock %}

@@ -578,11 +578,12 @@ def detect_change_ambiguity(
     has_tool_results: bool = False,
     has_wp_site_context: bool = False,
     clarification_confirmed: bool = False,
+    has_images: bool = False,
 ) -> ChangeAssessment:
     """Assess whether ``text`` is an ambiguous change request needing clarification."""
     del has_tool_results, has_wp_site_context  # accepted for caller contract parity
     raw = (text or "").strip()
-    mentions_screenshot = bool(_SCREENSHOT_ANNOTATION_RE.search(raw))
+    mentions_screenshot = bool(has_images) or bool(_SCREENSHOT_ANNOTATION_RE.search(raw))
 
     if not raw or raw.startswith("/"):
         return ChangeAssessment(False, False, "general_change", (), False)

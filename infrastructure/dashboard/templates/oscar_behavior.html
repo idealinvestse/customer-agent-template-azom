@@ -1,33 +1,77 @@
 {% extends "base.html" %}
-{% block title %}Beteende – Azom{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Oscar · Beteende &amp; Prompter – Azom{% endblock %}
 {% block page_subtitle %}Beteende{% endblock %}
 {% block content %}
-<div class="space-y-5">
-  <div>
-    <h2 class="az-page-title">Beteende</h2>
-    <p class="az-muted mt-1">Promptar för chatt, klassning, kundutkast och produkttext. Chattens fasta runtime-regler och serversidans behörigheter går inte att ändra här. En ändrad prompt får en ny version; kundmail skickas inte härifrån.</p>
-  </div>
+<div class="space-y-6">
+  {% call ui.page_header(
+    "Oscar · Beteende & Prompter",
+    "Systemprompter för chatt, klassificering, kundutkast, produkttext och WP-kodare. En ändrad prompt får en ny version; kundmail skickas aldrig härifrån.",
+    badge_text="Endast Oscar",
+    badge_tone="oscar"
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/settings">Flaggor i Inställningar</a>
+    <a class="az-btn-secondary az-btn-sm" href="/oscar">{{ icon('arrow-left', 'xs') }}<span>Tillbaka</span></a>
+  {% endcall %}
 
   {% if error %}
-  <div class="rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger" role="alert">{{ error }}</div>
+    {{ ui.flash_banner('error', error, dismissible=False) }}
   {% endif %}
 
-  <section class="az-card border-oscar-600/35">
-    <form method="post" action="/oscar/behavior" class="space-y-5">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      {% for name, label in [('chat', 'Chat'), ('classify', 'Klassning'), ('draft', 'Kundutkast'), ('product_desc', 'Produkttext'), ('wp_coder', 'WP-kodare')] %}
-      {% set row = prompts.get(name, {}) %}
+  <form method="post" action="/oscar/behavior" class="space-y-5">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+
+    {% for name, label, desc in [
+      ('chat', 'Chatt', 'Intern ops-chatt i Messenger, Telegram och utkast-sandlådan.'),
+      ('classify', 'Klassificering', 'Kategorisering och språk-/riskbedömning av inkommande kundärenden.'),
+      ('draft', 'Kundutkast', 'Svarsutkast som alltid kräver mänskligt godkännande före utskick.'),
+      ('product_desc', 'Produkttext', 'Generering och förbättring av produktbeskrivningar.'),
+      ('wp_coder', 'WP-kodare', 'Föreslagna ändringar i WordPress-teman och plugins (granskningsdata).')
+    ] %}
+    {% set row = prompts.get(name, {}) %}
+    {% set text_val = row.get('system', '') %}
+    <section id="prompt-{{ name }}" class="az-card-oscar scroll-mt-20 space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="font-display text-base font-semibold text-oscar-300">{{ label }}</h2>
+          <code class="az-code font-mono">{{ name }}</code>
+        </div>
+        {{ ui.status_badge('oscar', 'version ' ~ (row.get('version', '') or '—')) }}
+      </div>
+      <p class="az-muted">{{ desc }}</p>
+
       <div>
-        <label class="az-label" for="prompt-{{ name }}">{{ label }} · version {{ row.get('version', '') }}</label>
-        <textarea class="az-textarea" id="prompt-{{ name }}" name="{{ name }}" required maxlength="8000">{{ row.get('system', '') }}</textarea>
+        <label class="sr-only" for="prompt-input-{{ name }}">{{ label }}</label>
+        <textarea
+          class="az-textarea font-mono text-xs leading-relaxed"
+          id="prompt-input-{{ name }}"
+          name="{{ name }}"
+          rows="10"
+          required
+          maxlength="8000"
+          data-char-count="#count-{{ name }}"
+        >{{ text_val }}</textarea>
+        <div class="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-xs text-mist-400">
+          <span>Chattens fasta runtime-regler och serversidans behörigheter kan inte åsidosättas här.</span>
+          <span id="count-{{ name }}" class="font-mono tabular-nums">{{ (text_val or '') | length }} / 8000</span>
+        </div>
       </div>
-      {% endfor %}
-      <div class="flex flex-wrap gap-2">
-        <button class="az-btn-oscar" type="submit">Spara beteende</button>
-        <a class="az-btn-secondary" href="/settings">Flaggor i Inställningar</a>
-        <a class="az-btn-secondary" href="/oscar">Tillbaka</a>
-      </div>
-    </form>
-  </section>
+
+      {% if row.get('default_system') %}
+      <details class="rounded-lg border border-ink-700/80 bg-ink-950/60 p-3">
+        <summary class="cursor-pointer text-xs font-medium text-mist-300 hover:text-mist-100">Visa sparad version</summary>
+        <pre class="mt-2 whitespace-pre-wrap font-mono text-xs text-mist-300">{{ row.get('default_system', '') }}</pre>
+      </details>
+      {% endif %}
+    </section>
+    {% endfor %}
+
+    <div class="flex flex-wrap gap-2">
+      <button class="az-btn-oscar" type="submit" data-busy-label="Sparar...">Spara beteende</button>
+      <a class="az-btn-secondary" href="/settings">Flaggor i Inställningar</a>
+      <a class="az-btn-secondary" href="/oscar">Tillbaka</a>
+    </div>
+  </form>
 </div>
 {% endblock %}

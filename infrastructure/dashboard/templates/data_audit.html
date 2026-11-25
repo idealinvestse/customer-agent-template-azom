@@ -1,49 +1,123 @@
 {% extends "base.html" %}
-{% block title %}Historik – Azom{% endblock %}
-{% block page_subtitle %}Historik{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Granskningslogg – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Granskningslogg{% endblock %}
 {% block content %}
+{% set has_filter = actor_filter or action_filter or only_failed %}
 <div class="space-y-5">
-  <div>
-    <h2 class="az-page-title">Historik</h2>
-    <p class="az-muted mt-1">Skrivande åtgärder. Details är redigerade. Prompttext och tokens visas inte.</p>
+  {{ ui.page_header("Granskningslogg", "Skrivande åtgärder. Detaljer är maskerade. Prompttext och tokens visas inte.") }}
+
+  <!-- Summary KPI Strip -->
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {{ ui.kpi_card('Visade rader', (rows | length) ~ (' / ' ~ row_cap if capped else ''), 'Max ' ~ row_cap ~ ' senaste poster' if capped else 'Alla matchande poster visas', icon_name='clipboard-list') }}
+    {{ ui.kpi_card('Misslyckade åtgärder', error_count | default(0), 'Åtgärder där success = nej', tone='error' if (error_count | default(0)) > 0 else 'ok', icon_name='alert-circle') }}
+    {{ ui.kpi_card('Maskering', 'Aktiv', 'Tokens och hemligheter loggas aldrig', tone='ok', icon_name='shield') }}
   </div>
 
+  {% if capped %}
+  {{ ui.info_callout('info', 'Radtak aktivt (' ~ row_cap ~ ' rader)', 'Loggen visar de senaste ' ~ row_cap ~ ' granskningsposterna.') }}
+  {% endif %}
+
+  <!-- Filter Bar -->
   <section class="az-card">
+    <form method="get" action="/data/audit" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+      <div>
+        <label class="az-label" for="actor">Aktör</label>
+        <input
+          class="az-input"
+          id="actor"
+          type="text"
+          name="actor"
+          maxlength="80"
+          value="{{ actor_filter }}"
+          placeholder="t.ex. oscar, jonatan"
+        />
+      </div>
+      <div>
+        <label class="az-label" for="action">Åtgärd (action)</label>
+        <input
+          class="az-input font-mono"
+          id="action"
+          type="text"
+          name="action"
+          maxlength="80"
+          value="{{ action_filter }}"
+          placeholder="t.ex. åtgärdsnamn"
+        />
+      </div>
+      <label class="flex items-center gap-2.5 pb-2 text-sm text-mist-200 cursor-pointer">
+        <input class="az-checkbox" type="checkbox" id="only_failed" name="only_failed" value="1" {% if only_failed %}checked{% endif %} />
+        <span>Bara misslyckade</span>
+      </label>
+      <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+        <button class="az-btn-primary az-btn-sm" type="submit">
+          {{ icon('filter', 'xs') }}
+          <span>Filtrera</span>
+        </button>
+        {% if has_filter %}
+        <a class="az-btn-secondary az-btn-sm" href="/data/audit">Rensa filter</a>
+        {% endif %}
+      </div>
+    </form>
+  </section>
+
+  <!-- Audit Table -->
+  <section class="az-card">
+    <h2 id="audit-table-heading" class="az-section-title">
+      Rader ({{ rows | length }}{% if capped %} / max {{ row_cap }}{% endif %})
+    </h2>
     {% if rows %}
-    <div class="overflow-x-auto">
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="audit-table-heading">
       <table class="az-table">
         <thead>
           <tr>
-            <th>When</th>
-            <th>Aktör</th>
-            <th>Action</th>
-            <th>Mål</th>
-            <th>Lyckad</th>
-            <th>Details</th>
+            <th scope="col">Tid</th>
+            <th scope="col">Aktör</th>
+            <th scope="col">Åtgärd</th>
+            <th scope="col">Mål</th>
+            <th scope="col">Status</th>
+            <th scope="col">Detaljer</th>
           </tr>
         </thead>
         <tbody>
           {% for e in rows %}
+          {% set det_json = fmt_json(e.get('details')) %}
           <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
-            <td>{{ e.get('actor', '') }}</td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums text-mist-300">{{ fmt_dt(e.get('created_at')) }}</td>
+            <td class="font-medium text-mist-200">{{ e.get('actor', '') }}</td>
             <td><code class="az-code">{{ e.get('action', '') }}</code></td>
-            <td>
-              {% if e.get('target') == 'cases' and e.get('target_id') %}
-              <a class="text-steel-300 hover:underline" href="/cases/{{ e.get('target_id') }}">{{ e.get('target_id') }}</a>
+            <td class="text-xs">
+              {% if e.get('target') in ('case', 'cases') and e.get('target_id') %}
+              <a class="font-mono text-steel-300 hover:underline" href="/cases/{{ e.get('target_id') }}">{{ e.get('target_id') }}</a>
               {% else %}
-              {{ e.get('target', '') }}{% if e.get('target_id') %} · {{ e.get('target_id') }}{% endif %}
+              <span class="text-mist-200">{{ e.get('target', '') }}</span>{% if e.get('target_id') %} · <code class="az-code">{{ e.get('target_id') }}</code>{% endif %}
               {% endif %}
             </td>
-            <td>{% if e.get('success') %}<span class="az-present">ja</span>{% else %}<span class="az-missing">nej</span>{% endif %}</td>
-            <td class="az-muted">{{ e.get('details', {}) }}</td>
+            <td class="whitespace-nowrap">
+              {% if e.get('success', True) %}
+                {{ ui.status_badge('ok', 'Lyckad', show_icon=True) }}
+              {% else %}
+                {{ ui.status_badge('error', 'Misslyckad', show_icon=True) }}
+              {% endif %}
+            </td>
+            <td>
+              {% if det_json %}
+              <details>
+                <summary class="cursor-pointer text-xs font-medium text-steel-300 hover:underline">Visa detaljer</summary>
+                <pre class="mt-2 max-w-md overflow-x-auto whitespace-pre-wrap rounded border border-ink-700/70 bg-ink-950/70 p-2 font-mono text-xs text-mist-300">{{ det_json }}</pre>
+              </details>
+              {% else %}
+              <span class="text-mist-500">—</span>
+              {% endif %}
+            </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
     {% else %}
-    <p class="az-muted">Ingen historik.</p>
+    {{ ui.empty_state('Inga granskningsposter matchar filtret' if has_filter else 'Ingen granskningslogg ännu', 'Inga skrivande åtgärder har loggats för urvalet.', action_label='Rensa filter' if has_filter else None, action_href='/data/audit' if has_filter else None, icon_name='clipboard-list') }}
     {% endif %}
   </section>
 </div>

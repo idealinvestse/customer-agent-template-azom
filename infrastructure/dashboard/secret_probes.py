@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -14,7 +15,7 @@ from urllib.request import Request, urlopen
 class ProbeResult:
     id: str
     label: str
-    status: str  # ok | missing | error | skipped
+    status: str  # ok | missing | error | skipped | warn
     message: str
     checked_at: str
 
@@ -26,9 +27,53 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _is_mock() -> bool:
+    from ecom_ops.runtime_env import env_flag
+
+    return env_flag("AZOM_USE_MOCK", default=False)
+
+
+def _scrub_error(exc: Exception | str) -> str:
+    """Scrub URLs, bot tokens, bearer tokens, query params, and basic-auth creds."""
+    text = str(exc or "")
+    text = re.sub(r"(https?://)([^/\s:@]+):([^/\s@]+)@", r"\1***@", text)
+    text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", text)
+    text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer ***", text)
+    text = re.sub(r"https?://[^\s\"'>]+", "[url]", text)
+    text = re.sub(r"\?[^\s\"'>]+", "?***", text)
+    try:
+        from ecom_ops.security import redact_secrets
+
+        text = str(redact_secrets(text))
+    except Exception:
+        pass
+    for key in (
+        "TELEGRAM_BOT_TOKEN",
+        "OPENROUTER_API_KEY",
+        "XAI_API_KEY",
+        "MESSENGER_PAGE_ACCESS_TOKEN",
+        "MESSENGER_APP_SECRET",
+        "WOO_CONSUMER_KEY",
+        "WOO_CONSUMER_SECRET",
+        "WP_APP_PASSWORD",
+        "MAIL_PASSWORD",
+        "SMTP_PASSWORD",
+        "SSH_PASSWORD",
+        "GOOGLE_ADS_DEVELOPER_TOKEN",
+    ):
+        val = os.environ.get(key, "").strip()
+        if val and len(val) >= 4 and val in text:
+            text = text.replace(val, "***")
+    return text[:200]
+
+
 def _result(pid: str, label: str, status: str, message: str) -> ProbeResult:
     return ProbeResult(
-        id=pid, label=label, status=status, message=message, checked_at=_now()
+        id=pid,
+        label=label,
+        status=status,
+        message=_scrub_error(message) if status == "error" else str(message)[:200],
+        checked_at=_now(),
     )
 
 
@@ -45,8 +90,8 @@ def probe_woocommerce() -> ProbeResult:
     try:
         from ecom_ops.integrations.woocommerce import client_from_env
 
-        use_mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
-        client = client_from_env(use_mock=use_mock if use_mock else None)
+        use_mock = _is_mock()
+        client = client_from_env(use_mock=use_mock)
         # List one order — validates credentials without requiring a fixed order id
         orders = client.list_orders(per_page=1)
         if orders:
@@ -59,7 +104,7 @@ def probe_woocommerce() -> ProbeResult:
             )
         return _result("woocommerce", label, "ok", "API ok · orders endpoint reachable")
     except Exception as exc:
-        return _result("woocommerce", label, "error", str(exc)[:200])
+        return _result("woocommerce", label, "error", _scrub_error(exc))
 
 
 def probe_mail() -> ProbeResult:
@@ -72,7 +117,7 @@ def probe_mail() -> ProbeResult:
     try:
         from ecom_ops.integrations.mail import client_from_env
 
-        use_mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+        use_mock = _is_mock()
         # Explicit bool: prod (False) must use real IMAP/Graph transport — never
         # re-interpret None as "maybe mock". Mock mode stays network-free.
         client = client_from_env(use_mock=use_mock)
@@ -90,7 +135,7 @@ def probe_mail() -> ProbeResult:
             f"{disabled} mailbox(es) disabled (not auto-enabled)",
         )
     except Exception as exc:
-        return _result("mail", label, "error", str(exc)[:200])
+        return _result("mail", label, "error", _scrub_error(exc))
 
 
 def probe_telegram() -> ProbeResult:
@@ -98,7 +143,7 @@ def probe_telegram() -> ProbeResult:
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         return _result("telegram", label, "missing", "TELEGRAM_BOT_TOKEN saknas")
-    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    mock = _is_mock()
     if not mock:
         allow = (os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS") or "").strip()
         actor_map = (os.environ.get("TELEGRAM_ACTOR_MAP") or "").strip()
@@ -112,7 +157,7 @@ def probe_telegram() -> ProbeResult:
                 "telegram",
                 label,
                 "error",
-                "Prod fail-open: sätt " + " + ".join(missing),
+                "Prod fail-closed: sätt " + " + ".join(missing),
             )
     if mock:
         return _result("telegram", label, "ok", "Token present (mock — skip getMe)")
@@ -128,7 +173,7 @@ def probe_telegram() -> ProbeResult:
             return _result("telegram", label, "ok", "getMe OK")
         return _result("telegram", label, "error", "getMe failed")
     except Exception as exc:
-        return _result("telegram", label, "error", str(exc)[:200])
+        return _result("telegram", label, "error", _scrub_error(exc))
 
 
 def probe_messenger() -> ProbeResult:
@@ -150,7 +195,7 @@ def probe_messenger() -> ProbeResult:
             "missing",
             "MESSENGER_VERIFY_TOKEN saknas (webhook verify)",
         )
-    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    mock = _is_mock()
     if not mock:
         allow = (os.environ.get("MESSENGER_ALLOWED_PSIDS") or "").strip()
         actor_map = (os.environ.get("MESSENGER_ACTOR_MAP") or "").strip()
@@ -164,7 +209,7 @@ def probe_messenger() -> ProbeResult:
                 "messenger",
                 label,
                 "error",
-                "Prod fail-open: sätt " + " + ".join(missing),
+                "Prod fail-closed: sätt " + " + ".join(missing),
             )
     if mock:
         return _result(
@@ -193,7 +238,7 @@ def probe_messenger() -> ProbeResult:
             return _result("messenger", label, "ok", "Graph /me OK")
         return _result("messenger", label, "error", "Graph /me unexpected")
     except Exception as exc:
-        return _result("messenger", label, "error", str(exc)[:200])
+        return _result("messenger", label, "error", _scrub_error(exc))
 
 
 def probe_openrouter() -> ProbeResult:
@@ -201,7 +246,7 @@ def probe_openrouter() -> ProbeResult:
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
         return _result("openrouter", label, "missing", "OPENROUTER_API_KEY saknas")
-    if os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}:
+    if _is_mock():
         return _result("openrouter", label, "ok", "Key present (mock — skip HTTP)")
     try:
         req = Request(
@@ -215,16 +260,13 @@ def probe_openrouter() -> ProbeResult:
             return _result("openrouter", label, "ok", f"models endpoint HTTP {code}")
         return _result("openrouter", label, "error", f"HTTP {code}")
     except Exception as exc:
-        return _result("openrouter", label, "error", str(exc)[:200])
+        return _result("openrouter", label, "error", _scrub_error(exc))
 
 
 def probe_ssh() -> ProbeResult:
     label = "SSH"
-    if not os.environ.get("SSH_HOST", "").strip() and os.environ.get(
-        "AZOM_USE_MOCK", ""
-    ).lower() not in {"1", "true", "yes"}:
-        # Local mock SSH still works without SSH_HOST
-        pass
+    if not os.environ.get("SSH_HOST", "").strip() and not _is_mock():
+        return _result("ssh", label, "missing", "SSH_HOST saknas")
     try:
         from ecom_ops.actions.ssh_ops import SSHOpsService
 
@@ -237,7 +279,7 @@ def probe_ssh() -> ProbeResult:
             return _result("ssh", label, "ok", f"{ok_n}/{total} commands ok")
         return _result("ssh", label, "error", f"{ok_n}/{total} commands ok")
     except Exception as exc:
-        return _result("ssh", label, "error", str(exc)[:200])
+        return _result("ssh", label, "error", _scrub_error(exc))
 
 
 def probe_gmail_oauth() -> ProbeResult:
@@ -252,7 +294,7 @@ def probe_gmail_oauth() -> ProbeResult:
         bundle = store.load_tokens()
         has = bool(bundle and (bundle.refresh_token or bundle.access_token))
         if has and bundle:
-            mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+            mock = _is_mock()
             if (
                 not mock
                 and bundle.expires_at is not None
@@ -286,7 +328,7 @@ def probe_gmail_oauth() -> ProbeResult:
             "MAIL_OAUTH_CLIENT_ID/SECRET saknas",
         )
     except Exception as exc:
-        return _result("gmail_oauth", label, "error", str(exc)[:200])
+        return _result("gmail_oauth", label, "error", _scrub_error(exc))
 
 
 def probe_wordpress() -> ProbeResult:
@@ -303,8 +345,8 @@ def probe_wordpress() -> ProbeResult:
     try:
         from ecom_ops.integrations.wordpress import wp_client_from_env
 
-        use_mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
-        client = wp_client_from_env(use_mock=use_mock or None)
+        use_mock = _is_mock()
+        client = wp_client_from_env(use_mock=use_mock)
         # Try listing one post — validates credentials + endpoint reachability
         posts = client.list_posts(per_page=1)
         if posts:
@@ -317,12 +359,12 @@ def probe_wordpress() -> ProbeResult:
             )
         return _result("wordpress", label, "ok", "API ok · posts endpoint reachable")
     except Exception as exc:
-        return _result("wordpress", label, "error", str(exc)[:200])
+        return _result("wordpress", label, "error", _scrub_error(exc))
 
 
 def probe_ga4() -> ProbeResult:
     label = "GA4"
-    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    mock = _is_mock()
     try:
         from ecom_ops.integrations.ga4 import client_from_env
         from ecom_ops.marketing.config import load_marketing_config
@@ -345,12 +387,12 @@ def probe_ga4() -> ProbeResult:
             f"Report ok ({mode}) · purchases={dig.get('ecommerce_purchases')}",
         )
     except Exception as exc:
-        return _result("ga4", label, "error", str(exc)[:200])
+        return _result("ga4", label, "error", _scrub_error(exc))
 
 
 def probe_google_ads() -> ProbeResult:
     label = "Google Ads"
-    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    mock = _is_mock()
     try:
         from ecom_ops.integrations.google_ads import client_from_env
         from ecom_ops.marketing.config import load_marketing_config
@@ -380,12 +422,12 @@ def probe_google_ads() -> ProbeResult:
             f"Digest ok ({mode}) · cost={dig.get('cost')}",
         )
     except Exception as exc:
-        return _result("google_ads", label, "error", str(exc)[:200])
+        return _result("google_ads", label, "error", _scrub_error(exc))
 
 
 def probe_merchant() -> ProbeResult:
     label = "Merchant"
-    mock = os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}
+    mock = _is_mock()
     try:
         from ecom_ops.integrations.merchant import client_from_env
 
@@ -399,7 +441,7 @@ def probe_merchant() -> ProbeResult:
             f"List ok ({mode}) · {len(products)} product(s)",
         )
     except Exception as exc:
-        return _result("merchant", label, "error", str(exc)[:200])
+        return _result("merchant", label, "error", _scrub_error(exc))
 
 
 PROBES: dict[str, Callable[[], ProbeResult]] = {

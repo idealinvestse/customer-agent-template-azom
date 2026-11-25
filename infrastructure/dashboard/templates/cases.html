@@ -1,175 +1,263 @@
 {% extends "base.html" %}
-{% block title %}Ärenden – Azom{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Ärenden – Azom Agent Dashboard{% endblock %}
 {% block page_subtitle %}Ärenden{% endblock %}
 {% block content %}
-{% set q_mailbox = ('&mailbox=' ~ mailbox_filter) if mailbox_filter else '' %}
+{% set cur_status = status_filter or 'open,escalated' %}
+{% set q_mailbox = ('&mailbox=' ~ url_quote(mailbox_filter)) if mailbox_filter else '' %}
 {% set q_suggest = '&suggest=1' if suggest_filter else '' %}
-{% set q_category = ('&category=' ~ category_filter) if category_filter else '' %}
-{% set detail_qs = 'status=' ~ (status_filter or 'open,escalated') ~ q_mailbox ~ q_category ~ q_suggest %}
-<div class="space-y-5" x-data="{ filterOpen: {{ 'true' if suggest_filter or category_filter else 'false' }}, polling: false }">
+{% set q_category = ('&category=' ~ url_quote(category_filter)) if category_filter else '' %}
+{% set detail_qs = 'status=' ~ cur_status ~ q_mailbox ~ q_category ~ q_suggest %}
+{% set has_active_filter = (cur_status != 'open,escalated') or mailbox_filter or category_filter or suggest_filter %}
+{% set allow_bulk = cur_status in ('open,escalated', 'open', 'escalated') %}
+
+<div class="space-y-5">
   {% if request.args.get('from') == 'messenger' %}
-  <div class="rounded border border-steel-600/50 bg-steel-900/40 px-4 py-3 text-sm text-mist-100">
-    Öppnad från Messenger — full triage, poll och bulk stäng finns här. Öppna ett ärende för att redigera draft.
-  </div>
+  {{ ui.info_callout('info', 'Öppnad från Messenger', 'Full triage, mail-poll och bulk-stäng finns här. Öppna ett ärende för att granska och godkänna utkast.') }}
   {% endif %}
-  <div class="flex flex-wrap items-end justify-between gap-3">
-    <div>
-      <h2 class="az-page-title">Ärenden</h2>
-      <p class="az-muted mt-1">Mail → case + draft. Godkänn för att skicka. Timer pollar var 5:e minut i prod.</p>
-    </div>
-  </div>
 
-  <section class="az-card">
-    <h2 class="az-section-title">Kö</h2>
-    <div class="flex flex-wrap items-end gap-2">
-      <form method="post" action="/cases/poll" @submit="polling = true">
-        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-        <button class="az-btn-primary" type="submit" :disabled="polling" x-text="polling ? 'Hämtar…' : 'Hämta mail → skapa ärenden'"></button>
-      </form>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open,escalated' and not suggest_filter else '' }}" href="/cases?status=open,escalated{{ q_mailbox }}{{ q_category }}">Kö</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'open' and not suggest_filter else '' }}" href="/cases?status=open{{ q_mailbox }}{{ q_category }}">Öppna</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'escalated' and not suggest_filter else '' }}" href="/cases?status=escalated{{ q_mailbox }}{{ q_category }}">Eskalerade</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if suggest_filter else '' }}" href="/cases?status=open,escalated{{ q_mailbox }}{{ q_category }}&suggest=1">Föreslå godkänn</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'replied' and not suggest_filter else '' }}" href="/cases?status=replied{{ q_mailbox }}{{ q_category }}">Besvarade</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'closed' and not suggest_filter else '' }}" href="/cases?status=closed{{ q_mailbox }}{{ q_category }}">Stängda</a>
-      <a class="az-btn-secondary {{ 'ring-1 ring-steel-500' if status_filter == 'all' and not suggest_filter else '' }}" href="/cases?status=all{{ q_mailbox }}{{ q_category }}">Alla</a>
-      <form method="get" action="/cases" class="flex items-end gap-2">
-        <input type="hidden" name="status" value="{{ status_filter }}" />
-        {% if category_filter %}<input type="hidden" name="category" value="{{ category_filter }}" />{% endif %}
-        {% if suggest_filter %}<input type="hidden" name="suggest" value="1" />{% endif %}
-        <div>
-          <label class="az-label" for="mailbox-quick">Mailbox</label>
-          <select class="az-select !max-w-[14rem]" id="mailbox-quick" name="mailbox" onchange="this.form.submit()">
-            <option value="">Alla</option>
-            {% for mb in mailboxes or [] %}
-            <option value="{{ mb.id }}" {% if mailbox_filter == mb.id %}selected{% endif %}>{{ mb.label or mb.id }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </form>
-    </div>
-  </section>
+  {% call ui.page_header("Ärenden", "Mail → ärende + svarsutkast. Kundmail skickas bara efter explicit godkännande.") %}
+    <form method="post" action="/cases/poll">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="q_status" value="{{ cur_status }}" />
+      {% if mailbox_filter %}<input type="hidden" name="q_mailbox" value="{{ mailbox_filter }}" />{% endif %}
+      {% if category_filter %}<input type="hidden" name="q_category" value="{{ category_filter }}" />{% endif %}
+      {% if suggest_filter %}<input type="hidden" name="q_suggest" value="1" />{% endif %}
+      <button class="az-btn-primary" type="submit" data-busy-label="Hämtar mail...">
+        {{ icon('refresh', 'sm') }}
+        <span>Hämta nya mail</span>
+      </button>
+    </form>
+  {% endcall %}
 
-  <section class="az-card">
-    <button type="button" class="flex w-full items-center justify-between text-left" @click="filterOpen = !filterOpen">
-      <h2 class="az-section-title !mb-0">Filter</h2>
-      <svg class="h-4 w-4 text-mist-400 transition duration-200" :class="filterOpen && 'rotate-180'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
-      </svg>
-    </button>
-    <form method="get" action="/cases" x-show="filterOpen" x-cloak class="mt-4 flex flex-wrap items-end gap-3">
+  <!-- Unified Queue Filter Bar -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center gap-2" role="navigation" aria-label="Statusfilter">
+      {% for st_val, st_lbl in [
+        ('open,escalated', 'Kö'),
+        ('open', 'Öppna'),
+        ('escalated', 'Eskalerade'),
+        ('replied', 'Besvarade'),
+        ('closed', 'Stängda'),
+        ('all', 'Alla'),
+      ] %}
+      <a
+        class="{{ 'az-btn-primary az-btn-sm' if (cur_status == st_val and not suggest_filter) else 'az-btn-secondary az-btn-sm' }}"
+        href="/cases?status={{ st_val }}{{ q_mailbox }}{{ q_category }}"
+      >{{ st_lbl }}</a>
+      {% endfor %}
+
+      <a
+        class="{{ 'az-btn-primary az-btn-sm' if suggest_filter else 'az-btn-secondary az-btn-sm' }}"
+        href="/cases?status=open,escalated{{ q_mailbox }}{{ q_category }}{% if not suggest_filter %}&amp;suggest=1{% endif %}"
+      >
+        {{ icon('star', 'xs') }}
+        <span>Föreslå godkänn</span>
+      </a>
+    </div>
+
+    <form method="get" action="/cases" class="grid gap-3 border-t border-ink-700/70 pt-3 sm:grid-cols-2 lg:grid-cols-5 lg:items-end">
+      <input type="hidden" name="status" value="{{ cur_status }}" />
       <div>
-        <label class="az-label" for="status">Status</label>
-        <select class="az-select !max-w-[12rem]" id="status" name="status">
-          <option value="open,escalated" {% if status_filter == 'open,escalated' %}selected{% endif %}>Kö (open+escalated)</option>
-          <option value="open" {% if status_filter == 'open' %}selected{% endif %}>open</option>
-          <option value="escalated" {% if status_filter == 'escalated' %}selected{% endif %}>escalated</option>
-          <option value="replied" {% if status_filter == 'replied' %}selected{% endif %}>replied</option>
-          <option value="closed" {% if status_filter == 'closed' %}selected{% endif %}>closed</option>
-          <option value="all" {% if status_filter == 'all' %}selected{% endif %}>all</option>
-        </select>
-      </div>
-      <div>
-        <label class="az-label" for="mailbox">Mailbox</label>
-        <select class="az-select !max-w-[14rem]" id="mailbox" name="mailbox">
-          <option value="">Alla</option>
+        <label class="az-label" for="mailbox-filter">Brevlåda</label>
+        <select class="az-select" id="mailbox-filter" name="mailbox" data-auto-submit="1">
+          <option value="">Alla brevlådor</option>
           {% for mb in mailboxes or [] %}
           <option value="{{ mb.id }}" {% if mailbox_filter == mb.id %}selected{% endif %}>{{ mb.label or mb.id }}</option>
           {% endfor %}
         </select>
       </div>
+
       <div>
-        <label class="az-label" for="category">Kategori</label>
-        <input class="az-input !max-w-[12rem]" id="category" name="category" value="{{ category_filter }}" placeholder="return" />
+        <label class="az-label" for="category-filter">Kategori</label>
+        <select class="az-select" id="category-filter" name="category" data-auto-submit="1">
+          <option value="">Alla kategorier</option>
+          {% for cat in categories or [] %}
+          <option value="{{ cat }}" {% if category_filter == cat %}selected{% endif %}>{{ cat }}</option>
+          {% endfor %}
+        </select>
       </div>
-      <div class="flex items-center gap-2 pb-2">
-        <input type="checkbox" id="suggest" name="suggest" value="1" class="rounded border-ink-600" {% if suggest_filter %}checked{% endif %} />
-        <label class="az-label !mb-0" for="suggest">Endast föreslå godkänn</label>
+
+      <label class="flex items-center gap-2.5 pb-2 text-sm text-mist-200 cursor-pointer">
+        <input
+          type="checkbox"
+          id="suggest"
+          name="suggest"
+          value="1"
+          class="az-checkbox"
+          data-auto-submit="1"
+          {% if suggest_filter %}checked{% endif %}
+        />
+        <span>Endast ★ Föreslå godkänn</span>
+      </label>
+
+      <div class="flex flex-wrap items-center gap-2 lg:col-span-2 lg:justify-end">
+        <button class="az-btn-secondary az-btn-sm" type="submit">
+          {{ icon('filter', 'xs') }}
+          <span>Filtrera</span>
+        </button>
+        {% if has_active_filter %}
+        <a class="az-btn-secondary az-btn-sm" href="/cases">Rensa filter</a>
+        {% endif %}
       </div>
-      <button class="az-btn-secondary" type="submit">Filtrera</button>
     </form>
   </section>
 
+  <!-- Queue List -->
   <section class="az-card">
-    <h2 class="az-section-title">Kö ({{ status_filter }}{% if suggest_filter %} · föreslå{% endif %})</h2>
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 id="cases-queue-heading" class="az-section-title mb-0">
+        Ärendekö ({{ cases | length }}{% if truncated %} av {{ total_matching }}{% endif %})
+      </h2>
+      {% if suggest_filter %}
+      {{ ui.status_badge('info', '★ Föreslå godkänn') }}
+      {% endif %}
+    </div>
+
+    {% if truncated %}
+    <div class="mb-4">
+      {{ ui.info_callout('warn', 'Kön är trunkerad', 'Visar ' ~ (cases | length) ~ ' av ' ~ total_matching ~ ' matchande ärenden (tak: ' ~ queue_limit ~ '). Filtrera på brevlåda eller kategori för att se fler.') }}
+    </div>
+    {% endif %}
+
     {% if cases %}
+    {% if allow_bulk %}
     <form method="post" action="/cases/bulk-close" id="bulkForm">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <input type="hidden" name="case_ids" id="bulkCaseIds" value="" />
-      <div class="flex items-center gap-3 mb-3" id="bulkBar" style="display:none">
-        <span class="az-muted" id="bulkCount">0 valda</span>
-        <button class="az-btn-secondary" type="submit" id="bulkSubmit">Stäng valda</button>
+      <input type="hidden" name="q_status" value="{{ cur_status }}" />
+      {% if mailbox_filter %}<input type="hidden" name="q_mailbox" value="{{ mailbox_filter }}" />{% endif %}
+      {% if category_filter %}<input type="hidden" name="q_category" value="{{ category_filter }}" />{% endif %}
+      {% if suggest_filter %}<input type="hidden" name="q_suggest" value="1" />{% endif %}
+
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ink-700/80 bg-ink-900/70 px-3 py-2">
+        <span class="text-xs text-mist-300">
+          Valda: <strong class="font-mono tabular-nums text-mist-100" data-bulk-count="cases">0</strong>
+        </span>
+        <button
+          class="az-btn-secondary az-btn-sm"
+          type="submit"
+          data-bulk-submit="cases"
+          data-confirm="Stäng markerade ärenden utan kundsvar? Om eskalerade ärenden är markerade stängs även de."
+          data-confirm-title="Stäng valda ärenden"
+          data-confirm-ok="Stäng utan svar"
+          data-confirm-danger="1"
+          data-busy-label="Stänger..."
+          disabled
+        >
+          Stäng valda
+        </button>
       </div>
-      <div class="overflow-x-auto">
+    {% endif %}
+
+      <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="cases-queue-heading">
         <table class="az-table">
           <thead>
             <tr>
-              <th class="w-8"><input type="checkbox" class="rounded border-ink-600" id="bulkSelectAll" onchange="document.querySelectorAll('.bulk-ck').forEach(cb => { cb.checked = this.checked; }); window.dispatchEvent(new Event('bulk-change'));" /></th>
-              <th>När</th><th>Ålder</th><th>Från</th><th>Ämne</th>
-              <th>Kategori</th><th>Prio</th><th>Status</th><th>Assignee</th><th></th>
+              {% if allow_bulk %}
+              <th scope="col" class="w-9">
+                <input
+                  type="checkbox"
+                  class="az-checkbox"
+                  id="bulkSelectAll"
+                  data-bulk-all="cases"
+                  aria-label="Välj alla ärenden"
+                />
+              </th>
+              {% endif %}
+              <th scope="col">Ämne</th>
+              <th scope="col" class="hidden md:table-cell">Från</th>
+              <th scope="col">Kategori</th>
+              <th scope="col">Status</th>
+              <th scope="col" class="hidden lg:table-cell">Ålder</th>
+              <th scope="col" class="hidden xl:table-cell">Tid</th>
+              <th scope="col" class="hidden xl:table-cell">Handläggare</th>
+              <th scope="col"><span class="sr-only">Åtgärd</span></th>
             </tr>
           </thead>
           <tbody>
             {% for c in cases %}
-            <tr class="transition hover:bg-ink-800/40 {% if c.suggest_approve %}bg-steel-900/25{% endif %}">
-              <td><input type="checkbox" class="rounded border-ink-600 bulk-ck" name="case_id_list" value="{{ c.id }}" onchange="window.dispatchEvent(new Event('bulk-change'));" /></td>
-              <td>{{ c.created_at[:19] }}</td>
-              <td class="az-muted">{{ case_age(c.created_at) }}</td>
-              <td>{{ c.from_addr }}</td>
+            <tr class="{% if c.suggest_approve %}bg-steel-900/25{% endif %}">
+              {% if allow_bulk %}
               <td>
-                {{ c.subject }}
-                {% if c.priority == 'high' %}<span class="az-badge bg-warn/15 text-warn ml-1">high</span>{% endif %}
-                {% if c.suggest_approve %}<span class="az-badge bg-steel-600/50 text-steel-100 ml-1" title="Låg-friktion godkänn — du bekräftar fortfarande">Föreslå godkänn</span>{% endif %}
-                {% if c.shadow_hint() %}<span class="az-badge bg-ink-700/50 text-mist-200 ml-1" title="FU9 skuggbeslut — inget mail skickat">{{ c.shadow_hint() }}</span>{% endif %}
+                <input
+                  type="checkbox"
+                  class="az-checkbox"
+                  name="case_id_list"
+                  value="{{ c.id }}"
+                  data-bulk-item="cases"
+                  aria-label="Välj ärende {{ c.subject }}"
+                />
               </td>
+              {% endif %}
+              <td class="min-w-[14rem]">
+                <a class="font-medium text-mist-100 hover:text-steel-200 hover:underline" href="/cases/{{ c.id }}?{{ detail_qs }}">
+                  {{ c.subject }}
+                </a>
+                <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                  {% if c.priority == 'high' %}
+                    {{ ui.status_badge('warn', 'Hög prio') }}
+                  {% endif %}
+                  {% if c.suggest_approve %}
+                    {{ ui.status_badge('info', '★ Föreslå godkänn', title='Låg friktion — du bekräftar fortfarande innan utskick') }}
+                  {% elif c.category in ['return', 'billing'] %}
+                    {{ ui.status_badge('warn', 'Path B2 (manuell)') }}
+                  {% endif %}
+                  {% if c.shadow_hint() %}
+                    {{ ui.status_badge('neutral', c.shadow_hint(), title='FU9 skuggbeslut — inget mail skickat') }}
+                  {% endif %}
+                </div>
+                <p class="mt-1 text-xs text-mist-400 md:hidden">
+                  {{ c.from_addr }} · <span class="font-mono tabular-nums">{{ case_age(c.created_at) }}</span>
+                </p>
+              </td>
+              <td class="hidden md:table-cell text-xs text-mist-300">{{ c.from_addr }}</td>
               <td><code class="az-code">{{ c.category }}</code></td>
               <td>
-                {% if c.suggest_approve and (c.priority or 'normal') == 'normal' %}
-                <span class="text-steel-300">föreslå</span>
+                {% if c.status == 'escalated' %}
+                  {{ ui.status_badge('warn', 'Eskalerad') }}
+                {% elif c.status == 'open' %}
+                  {{ ui.status_badge('info', 'Öppen') }}
+                {% elif c.status == 'replied' %}
+                  {{ ui.status_badge('ok', 'Besvarad') }}
+                {% elif c.status == 'closed' %}
+                  {{ ui.status_badge('neutral', 'Stängd') }}
+                {% elif c.status == 'sending' %}
+                  {{ ui.status_badge('warn', 'Skickar') }}
                 {% else %}
-                {{ c.priority or 'normal' }}
+                  {{ ui.status_badge('neutral', c.status) }}
                 {% endif %}
               </td>
-              <td>
-                {% if c.status == 'escalated' %}<span class="az-badge bg-warn/15 text-warn">escalated</span>
-                {% else %}{{ c.status }}{% endif %}
+              <td class="hidden lg:table-cell whitespace-nowrap font-mono text-xs tabular-nums text-mist-400">{{ case_age(c.created_at) }}</td>
+              <td class="hidden xl:table-cell whitespace-nowrap font-mono text-xs tabular-nums text-mist-400">{{ fmt_dt(c.created_at) }}</td>
+              <td class="hidden xl:table-cell text-xs text-mist-400">{{ c.assignee or '—' }}</td>
+              <td class="whitespace-nowrap text-right">
+                <a class="az-btn-secondary az-btn-sm" href="/cases/{{ c.id }}?{{ detail_qs }}">Öppna</a>
               </td>
-              <td class="az-muted">{{ c.assignee or '—' }}</td>
-              <td><a class="text-steel-400 hover:text-steel-300" href="/cases/{{ c.id }}?{{ detail_qs }}">Öppna</a></td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
+    {% if allow_bulk %}
     </form>
+    {% endif %}
     {% else %}
-    <div class="space-y-3">
-      <p class="az-muted">Inga i kön för detta filter.</p>
-      <div class="flex flex-wrap gap-2">
+    <div class="space-y-4">
+      {{ ui.empty_state('Inga ärenden i kön för detta filter', 'Hämta nya mail eller rensa filtren för att se andra ärenden.', icon_name='inbox') }}
+      <div class="flex flex-wrap justify-center gap-2">
         <form method="post" action="/cases/poll">
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-          <button class="az-btn-primary" type="submit">Hämta mail nu</button>
+          <input type="hidden" name="q_status" value="{{ cur_status }}" />
+          <button class="az-btn-primary az-btn-sm" type="submit" data-busy-label="Hämtar mail...">Hämta nya mail</button>
         </form>
-        <a class="az-btn-secondary" href="/onboarding">Kolla onboarding / mail</a>
+        {% if has_active_filter %}
+        <a class="az-btn-secondary az-btn-sm" href="/cases">Rensa filter</a>
+        {% endif %}
+        <a class="az-btn-secondary az-btn-sm" href="/onboarding">Kolla onboarding / mail</a>
       </div>
     </div>
     {% endif %}
   </section>
 </div>
-<script>
-  function syncBulk() {
-    var cks = document.querySelectorAll('.bulk-ck');
-    var checked = Array.from(cks).filter(function(cb) { return cb.checked; });
-    var ids = checked.map(function(cb) { return cb.value; });
-    document.getElementById('bulkCaseIds').value = ids.join(',');
-    document.getElementById('bulkCount').textContent = ids.length + ' valda';
-    document.getElementById('bulkBar').style.display = ids.length > 0 ? 'flex' : 'none';
-  }
-  document.getElementById('bulkSubmit').addEventListener('click', function(e) {
-    var n = document.querySelectorAll('.bulk-ck:checked').length;
-    if (n === 0 || !confirm('Stäng ' + n + ' ärenden?')) { e.preventDefault(); }
-  });
-  window.addEventListener('bulk-change', syncBulk);
-  document.addEventListener('DOMContentLoaded', syncBulk);
-</script>
 {% endblock %}

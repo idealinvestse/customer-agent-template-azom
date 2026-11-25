@@ -1,162 +1,425 @@
 {% extends "base.html" %}
-{% block title %}Ärende – Azom{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}{{ case.subject }} – Ärende – Azom{% endblock %}
 {% block page_subtitle %}Ärendedetalj{% endblock %}
 {% block content %}
 {% set q_status = queue_status or 'open,escalated' %}
 {% set q_mailbox = queue_mailbox or '' %}
 {% set q_category = queue_category or '' %}
 {% set q_suggest = queue_suggest %}
+{% set back_qs = 'status=' ~ q_status ~ (('&mailbox=' ~ url_quote(q_mailbox)) if q_mailbox else '') ~ (('&category=' ~ url_quote(q_category)) if q_category else '') ~ ('&suggest=1' if q_suggest else '') %}
+{% set confirm_text = 'Skicka nu?' if case.suggest_approve else 'Skicka svar till kunden nu?' %}
+
 <div class="space-y-5">
+  {{ ui.breadcrumb([{'label': 'Ärenden', 'href': '/cases?' ~ back_qs}, {'label': case.subject}]) }}
+
   {% if request.args.get('from') == 'messenger' %}
-  <div class="rounded border border-steel-600/50 bg-steel-900/40 px-4 py-3 text-sm text-mist-100">
-    Öppnad från Messenger — fortsätt här: redigera draft, orderpanel, godkänn &amp; nästa.
-  </div>
-  {% endif %}
-  <section class="az-card {% if case.suggest_approve %}ring-1 ring-steel-500/40{% endif %}">
-    <h2 class="az-page-title">{{ case.subject }}</h2>
-    <p class="az-muted mt-2">
-      Från: {{ case.from_addr }} · Mailbox: <code class="az-code">{{ case.mailbox_id }}</code> ·
-      Status: {{ case.status }} · Kategori: <code class="az-code">{{ case.category }}</code>
-      {% if case.suggest_approve %}
-      · <span class="rounded bg-steel-600/60 px-2 py-0.5 text-xs font-medium text-steel-100">Föreslå godkänn</span>
-      {% endif %}
-      {% if case.shadow_hint() %}
-      · <span class="az-badge bg-ink-700/50 text-mist-200" title="FU9 skuggbeslut — inget mail skickat">{{ case.shadow_hint() }}</span>
-      {% endif %}
-      {% if case.classify_confidence is not none %}
-      · Confidence: {{ '%.0f'|format((case.classify_confidence or 0) * 100) }}%
-      {% endif %}
-      · Prio: {{ case.priority or 'normal' }}
-      {% if case.category in ['return', 'billing'] and not case.suggest_approve %}
-      · <span class="rounded bg-amber-900/50 px-2 py-0.5 text-xs font-medium text-amber-100">Kräver manuell granskning — inte ★-godkänn</span>
-      {% endif %}
-      · Assignee: {{ case.assignee or '—' }}
-      {% if case.order_id %} · Order: <strong class="text-mist-100">{{ case.order_id }}</strong>{% endif %}
-      {% if case.escalation_id %}
-      · Eskalering:
-        {% if is_oscar %}
-        <a class="text-oscar-400 hover:underline" href="/oscar/escalations">{{ case.escalation_id }}</a>
-        {% else %}
-        <a class="text-steel-400 hover:underline" href="/data/escalations">{{ case.escalation_id }}</a>
-        {% endif %}
-      {% endif %}
-      · Ålder: {{ case_age(case.created_at) }}
-    </p>
-  </section>
-
-  {% if case.order_id %}
-  <section class="az-card border border-steel-700/40" data-order-panel>
-    <h2 class="az-section-title">Order {{ case.order_id }}</h2>
-    {% if order_panel and order_panel.ok %}
-    <dl class="mt-2 grid gap-2 text-sm sm:grid-cols-2">
-      <div><span class="az-muted">Status</span> <strong class="text-mist-100">{{ order_panel.status }}</strong></div>
-      <div><span class="az-muted">Total</span> <strong class="text-mist-100">{{ order_panel.total }} {{ order_panel.currency }}</strong></div>
-      {% if order_panel.date_created %}
-      <div><span class="az-muted">Skapad</span> <span class="text-mist-100">{{ order_panel.date_created }}</span></div>
-      {% endif %}
-      {% if order_panel.payment_method %}
-      <div><span class="az-muted">Betalning</span> <span class="text-mist-100">{{ order_panel.payment_method }}</span></div>
-      {% endif %}
-      {% if order_panel.shipping_method %}
-      <div><span class="az-muted">Frakt</span> <span class="text-mist-100">{{ order_panel.shipping_method }}</span></div>
-      {% endif %}
-      {% if order_panel.billing_place %}
-      <div><span class="az-muted">Ort</span> <span class="text-mist-100">{{ order_panel.billing_place }}</span></div>
-      {% endif %}
-      {% if order_panel.tracking %}
-      <div class="sm:col-span-2"><span class="az-muted">Tracking</span> <code class="az-code">{{ order_panel.tracking }}</code></div>
-      {% endif %}
-      {% if order_panel.customer_note %}
-      <div class="sm:col-span-2"><span class="az-muted">Kundnotering</span> <span class="text-mist-100">{{ order_panel.customer_note }}</span></div>
-      {% endif %}
-    </dl>
-    {% if order_panel.line_items %}
-    <ul class="az-muted mt-3 list-disc space-y-1 pl-5 text-sm">
-      {% for item in order_panel.line_items %}
-      <li>{{ item.quantity }}× {{ item.name }}</li>
-      {% endfor %}
-    </ul>
-    {% endif %}
-    {% elif order_panel %}
-    <p class="az-muted mt-2 text-sm">Kunde inte hämta order: {{ order_panel.error or 'okänt fel' }}</p>
-    {% else %}
-    <p class="az-muted mt-2 text-sm">Kunde inte hämta order.</p>
-    {% endif %}
-  </section>
+  {{ ui.info_callout('info', 'Öppnad från Messenger', 'Granska orderkontext, redigera utkast och godkänn & nästa härifrån.') }}
   {% endif %}
 
-  <section class="az-card">
-    <h2 class="az-section-title">Tråd</h2>
-    {% for m in messages %}
-    <div class="mb-3 rounded-lg border border-ink-700/60 bg-ink-950/60 p-4 last:mb-0">
-      <div class="az-muted">{{ m.direction }} · {{ m.created_at[:19] }} · {{ m.from_addr }}</div>
-      <pre class="mt-2 whitespace-pre-wrap font-sans text-sm text-mist-100">{{ m.body }}</pre>
+  <!-- Case header + metadata strip -->
+  <section class="az-card {% if case.suggest_approve %}border-steel-500/45{% endif %}">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="min-w-0 space-y-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <h1 class="az-page-title">{{ case.subject }}</h1>
+          {% if case.status == 'escalated' %}
+            {{ ui.status_badge('warn', 'Eskalerad', show_icon=True) }}
+          {% elif case.status == 'open' %}
+            {{ ui.status_badge('info', 'Öppen') }}
+          {% elif case.status == 'replied' %}
+            {{ ui.status_badge('ok', 'Besvarad', show_icon=True) }}
+          {% elif case.status == 'closed' %}
+            {{ ui.status_badge('neutral', 'Stängd') }}
+          {% elif case.status == 'sending' %}
+            {{ ui.status_badge('warn', 'Skickar') }}
+          {% else %}
+            {{ ui.status_badge('neutral', case.status) }}
+          {% endif %}
+          {% if case.suggest_approve %}
+            {{ ui.status_badge('info', '★ Föreslå godkänn', show_icon=True) }}
+          {% elif case.category in ['return', 'billing'] %}
+            {{ ui.status_badge('warn', 'Path B2 (manuell)') }}
+          {% endif %}
+          {% if case.shadow_hint() %}
+            {{ ui.status_badge('neutral', case.shadow_hint(), title='FU9 skuggbeslut — inget mail skickat') }}
+          {% endif %}
+        </div>
+
+        <dl class="flex flex-wrap gap-x-5 gap-y-1.5 text-xs text-mist-300">
+          <div><dt class="inline text-mist-400">Från:</dt> <dd class="inline font-medium text-mist-100">{{ case.from_addr }}</dd></div>
+          <div><dt class="inline text-mist-400">Brevlåda:</dt> <dd class="inline"><code class="az-code">{{ case.mailbox_id }}</code></dd></div>
+          <div><dt class="inline text-mist-400">Kategori:</dt> <dd class="inline"><code class="az-code">{{ case.category }}</code></dd></div>
+          {% if case_language or case_market or case_site %}
+          <div>
+            <dt class="inline text-mist-400">Kontext:</dt>
+            <dd class="inline font-mono">{{ case_site or '—' }}{% if case_market %} / {{ case_market }}{% endif %}{% if case_language %} ({{ case_language }}){% endif %}</dd>
+          </div>
+          {% endif %}
+          {% if case.classify_confidence is not none %}
+          <div>
+            <dt class="inline text-mist-400">Klassning:</dt>
+            <dd class="inline font-mono tabular-nums">{{ '%.0f'|format((case.classify_confidence or 0) * 100) }}%{% if classify_method %} · {{ classify_method }}{% endif %}</dd>
+          </div>
+          {% endif %}
+          <div><dt class="inline text-mist-400">Prio:</dt> <dd class="inline">{{ case.priority or 'normal' }}</dd></div>
+          <div><dt class="inline text-mist-400">Handläggare:</dt> <dd class="inline">{{ case.assignee or '—' }}</dd></div>
+          {% if case.order_id %}
+          <div><dt class="inline text-mist-400">Order:</dt> <dd class="inline font-mono tabular-nums font-semibold text-mist-100">{{ case.order_id }}</dd></div>
+          {% endif %}
+          {% if case.escalation_id %}
+          <div>
+            <dt class="inline text-mist-400">Eskalering:</dt>
+            <dd class="inline font-mono">
+              <a class="text-oscar-300 hover:underline" href="/data/escalations">{{ case.escalation_id }}</a>
+            </dd>
+          </div>
+          {% endif %}
+          <div><dt class="inline text-mist-400">Ålder:</dt> <dd class="inline font-mono tabular-nums">{{ case_age(case.created_at) }}</dd></div>
+          <div><dt class="inline text-mist-400">Skapad:</dt> <dd class="inline font-mono tabular-nums">{{ fmt_dt(case.created_at) }}</dd></div>
+        </dl>
+      </div>
+
+      <a class="az-btn-secondary az-btn-sm shrink-0" href="/cases?{{ back_qs }}">
+        {{ icon('arrow-left', 'xs') }}
+        <span>Tillbaka till kön</span>
+      </a>
     </div>
-    {% else %}
-    <p class="az-muted">Inga meddelanden.</p>
-    {% endfor %}
   </section>
 
-  {% if case.status in ('open', 'escalated') %}
-  <section class="az-card {% if case.suggest_approve %}border border-steel-500/50 bg-steel-950/30{% endif %}" x-data="{ submitting: false }">
-    <h2 class="az-section-title">
-      {% if case.suggest_approve %}Föreslaget svar — redo att godkänna{% else %}Föreslaget svar{% endif %}
-    </h2>
-    {% if case.suggest_approve %}
-    <p class="az-muted mb-3 text-sm">Klassningen ser rutinmässig ut. Du bekräftar fortfarande innan något skickas.</p>
-    {% endif %}
-    <form
-      method="post"
-      action="/cases/{{ case.id }}"
-      class="space-y-4"
-      @submit="
-        if ($event.submitter && ($event.submitter.value === 'reply' || $event.submitter.value === 'reply_next')) {
-          if (!confirm({% if case.suggest_approve %}'Skicka nu?'{% else %}'Skicka svar till kunden nu?'{% endif %})) {
-            $event.preventDefault();
-            submitting = false;
-            return;
-          }
-        }
-        submitting = true;
-      "
-    >
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <input type="hidden" name="q_status" value="{{ q_status }}" />
-      <input type="hidden" name="q_mailbox" value="{{ q_mailbox }}" />
-      <input type="hidden" name="q_category" value="{{ q_category }}" />
-      {% if q_suggest %}<input type="hidden" name="q_suggest" value="1" />{% endif %}
-      <textarea class="az-textarea" name="body" required data-approve-guard>{{ case.draft_reply or '' }}</textarea>
-      {% if case.draft_before_regen %}
-      <section class="mt-4">
-        <h3 class="az-muted text-sm">Utkast-diff efter regenerering</h3>
-        <div class="mt-2 grid gap-3 md:grid-cols-2">
+  <!-- 2-column desktop workspace -->
+  <div class="grid items-start gap-5 lg:grid-cols-12">
+    <!-- Left column: Order panel + Message thread -->
+    <div class="space-y-5 lg:col-span-7">
+      {% if case.order_id %}
+      <section class="az-card border-steel-700/50" data-order-panel>
+        <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 class="az-section-title mb-0">Order <span class="font-mono tabular-nums text-mist-200">{{ case.order_id }}</span></h2>
+          {% if order_panel and order_panel.ok %}
+            {{ ui.status_badge('info', order_panel.status) }}
+          {% endif %}
+        </div>
+
+        {% if order_panel and order_panel.ok %}
+        <dl class="grid gap-3 text-sm sm:grid-cols-2">
           <div>
-            <p class="text-xs az-muted mb-1">Föregående utkast</p>
-            <pre class="az-muted text-xs whitespace-pre-wrap">{{ case.draft_before_regen }}</pre>
+            <dt class="text-xs text-mist-400">Status</dt>
+            <dd class="mt-0.5 font-medium text-mist-100">{{ order_panel.status }}</dd>
           </div>
           <div>
-            <p class="text-xs az-muted mb-1">Nytt utkast</p>
-            <pre class="text-xs whitespace-pre-wrap">{{ case.draft_reply or '' }}</pre>
+            <dt class="text-xs text-mist-400">Summa</dt>
+            <dd class="mt-0.5 font-mono tabular-nums font-semibold text-mist-100">{{ order_panel.total }} {{ order_panel.currency }}</dd>
           </div>
+          {% if order_panel.date_created %}
+          <div>
+            <dt class="text-xs text-mist-400">Skapad</dt>
+            <dd class="mt-0.5 font-mono text-xs tabular-nums text-mist-200">{{ fmt_dt(order_panel.date_created) or order_panel.date_created }}</dd>
+          </div>
+          {% endif %}
+          {% if order_panel.payment_method %}
+          <div>
+            <dt class="text-xs text-mist-400">Betalning</dt>
+            <dd class="mt-0.5 text-mist-100">{{ order_panel.payment_method }}</dd>
+          </div>
+          {% endif %}
+          {% if order_panel.shipping_method %}
+          <div>
+            <dt class="text-xs text-mist-400">Frakt</dt>
+            <dd class="mt-0.5 text-mist-100">{{ order_panel.shipping_method }}</dd>
+          </div>
+          {% endif %}
+          {% if order_panel.billing_place %}
+          <div>
+            <dt class="text-xs text-mist-400">Ort</dt>
+            <dd class="mt-0.5 text-mist-100">{{ order_panel.billing_place }}</dd>
+          </div>
+          {% endif %}
+          {% if order_panel.tracking or order_panel.tracking_link %}
+          <div class="sm:col-span-2 flex flex-wrap items-center gap-2">
+            <span class="text-xs text-mist-400">Spårning:</span>
+            {% if order_panel.tracking %}<code class="az-code">{{ order_panel.tracking }}</code>{% endif %}
+            {% if order_panel.tracking_link %}
+            <a class="inline-flex items-center gap-1 text-xs font-medium text-steel-300 hover:text-steel-200 hover:underline" href="{{ order_panel.tracking_link }}" target="_blank" rel="noopener noreferrer">
+              <span>Spåra försändelse</span>
+              {{ icon('external-link', 'xs') }}
+            </a>
+            {% endif %}
+          </div>
+          {% endif %}
+          {% if order_panel.customer_note %}
+          <div class="sm:col-span-2">
+            <dt class="text-xs text-mist-400">Kundnotering</dt>
+            <dd class="mt-0.5 text-sm text-mist-200">{{ order_panel.customer_note }}</dd>
+          </div>
+          {% endif %}
+        </dl>
+
+        {% if order_panel.line_items %}
+        <div class="mt-4 border-t border-ink-700/70 pt-3">
+          <h3 class="az-section-heading mb-1.5">Orderrader</h3>
+          <ul class="list-disc space-y-1 pl-5 text-sm text-mist-200">
+            {% for item in order_panel.line_items %}
+            <li><span class="font-mono tabular-nums">{{ item.quantity }}×</span> {{ item.name }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+        {% elif order_panel %}
+          {{ ui.info_callout('warn', 'Orderinformation saknas', 'Kunde inte hämta order: ' ~ (order_panel.error or 'okänt fel')) }}
+        {% else %}
+          {{ ui.info_callout('warn', 'Orderinformation saknas', 'Kunde inte hämta order från WooCommerce.') }}
+        {% endif %}
+      </section>
+      {% endif %}
+
+      <section class="az-card">
+        <h2 class="az-section-title">Konversationstråd ({{ messages | length }})</h2>
+        {% if messages %}
+        <div class="space-y-3">
+          {% for m in messages %}
+          {% set is_inbound = (m.direction == 'inbound') %}
+          <article class="rounded-lg border p-4 {{ 'border-ink-700/80 border-l-2 border-l-steel-500/80 bg-ink-950/75' if is_inbound else 'border-ink-700/70 border-l-2 border-l-teal-500/80 bg-ink-900/70' }}">
+            <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div class="flex flex-wrap items-center gap-2">
+                {% if is_inbound %}
+                  {{ ui.status_badge('info', 'Kund') }}
+                {% else %}
+                  {{ ui.status_badge('ok', 'Azom') }}
+                {% endif %}
+                {% if m.from_addr %}
+                <span class="font-medium text-mist-200">{{ m.from_addr }}</span>
+                {% endif %}
+              </div>
+              <span class="font-mono tabular-nums text-mist-400">{{ fmt_dt(m.created_at) }}</span>
+            </div>
+            <pre class="mt-2.5 whitespace-pre-wrap font-sans text-sm leading-relaxed text-mist-100">{{ m.body }}</pre>
+          </article>
+          {% endfor %}
+        </div>
+        {% else %}
+        {{ ui.empty_state('Inga meddelanden i tråden', icon_name='message-square') }}
+        {% endif %}
+      </section>
+    </div>
+
+    <!-- Right column: Sticky HITL reply workbench -->
+    <div class="space-y-5 lg:col-span-5 lg:sticky lg:top-20">
+      {% if case.status in ('open', 'escalated') %}
+      <section class="az-card space-y-4 {% if case.suggest_approve %}border-steel-500/50 bg-steel-950/30{% endif %}">
+        <div class="space-y-1">
+          <h2 class="az-section-title mb-0">
+            {% if case.suggest_approve %}Föreslaget svar — redo att godkänna{% else %}Svarsarbetsyta (HITL){% endif %}
+          </h2>
+          {% if case.suggest_approve %}
+          <p class="text-xs text-steel-200">Klassningen ser rutinmässig ut. Mänsklig bekräftelse krävs fortfarande före utskick.</p>
+          {% elif case.category in ['return', 'billing'] %}
+          <p class="text-xs text-warn">Path B2 (retur/fakturering): granska utkastet manuellt innan godkännande.</p>
+          {% endif %}
+        </div>
+
+        {% if null_send_active %}
+        {{ ui.info_callout('warn', 'Null-send aktiv', 'Kundmail skickas inte i detta läge. Skicka loggar enbart skuggbeslut.') }}
+        {% endif %}
+
+        <form method="post" action="/cases/{{ case.id }}" class="space-y-4">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="q_status" value="{{ q_status }}" />
+          <input type="hidden" name="q_mailbox" value="{{ q_mailbox }}" />
+          <input type="hidden" name="q_category" value="{{ q_category }}" />
+          {% if q_suggest %}<input type="hidden" name="q_suggest" value="1" />{% endif %}
+
+          <div>
+            <div class="mb-1.5 flex items-center justify-between gap-2">
+              <label class="az-label mb-0" for="draft-body">Svarsutkast</label>
+              <span id="draft-char-count" class="font-mono text-xs tabular-nums text-mist-400"></span>
+            </div>
+            <textarea
+              class="az-textarea font-sans leading-relaxed"
+              id="draft-body"
+              name="body"
+              rows="10"
+              required
+              data-approve-guard="confirm('{{ confirm_text }}')"
+              data-approve-confirm="{{ confirm_text }}"
+              data-char-count="#draft-char-count"
+            >{{ case.draft_reply or '' }}</textarea>
+          </div>
+
+          {% if case.draft_before_regen %}
+          <details class="rounded-lg border border-ink-700/80 bg-ink-950/60 p-3" open>
+            <summary class="cursor-pointer text-xs font-semibold text-mist-200">Utkast-diff efter regenerering</summary>
+            <div class="mt-3 grid gap-3 sm:grid-cols-2">
+              <div class="rounded border border-ink-700/70 bg-ink-900/70 p-2.5">
+                <p class="mb-1 text-xs font-medium text-mist-400">Föregående utkast</p>
+                <pre class="whitespace-pre-wrap font-sans text-xs text-mist-300">{{ case.draft_before_regen }}</pre>
+              </div>
+              <div class="rounded border border-steel-600/40 bg-steel-950/40 p-2.5">
+                <p class="mb-1 text-xs font-medium text-steel-200">Nytt utkast</p>
+                <pre class="whitespace-pre-wrap font-sans text-xs text-mist-100">{{ case.draft_reply or '' }}</pre>
+              </div>
+            </div>
+          </details>
+          {% endif %}
+
+          <!-- Recipient & subject confirmation box -->
+          <div class="rounded-lg border border-ink-700/80 bg-ink-950/70 px-3 py-2 text-xs text-mist-300">
+            <div class="truncate"><span class="text-mist-400">Mottagare:</span> <strong class="text-mist-100">{{ case.from_addr }}</strong></div>
+            <div class="mt-0.5 truncate"><span class="text-mist-400">Ämne:</span> <span class="text-mist-200">Re: {{ case.subject }}</span></div>
+          </div>
+
+          <!-- Primary HITL Send Actions -->
+          <div class="flex flex-wrap gap-2">
+            <button
+              class="{{ 'az-btn-secondary' if null_send_active else 'az-btn-primary' }}"
+              type="submit"
+              name="action"
+              value="reply"
+              data-confirm="{{ confirm_text }}"
+              data-confirm-title="{{ 'Null-send aktiv' if null_send_active else 'Bekräfta utskick till kund' }}"
+              data-confirm-ok="{{ 'Simulera utskick' if null_send_active else 'Godkänn och skicka' }}"
+              data-busy-label="Skickar..."
+            >
+              {{ icon('send', 'xs') }}
+              <span>{% if null_send_active %}Godkänn och skicka (null-send){% else %}Godkänn och skicka{% endif %}</span>
+            </button>
+
+            <button
+              class="az-btn border border-teal-500/40 bg-teal-500/15 text-teal-400 hover:bg-teal-500/25 focus-visible:ring-teal-400/50"
+              type="submit"
+              name="action"
+              value="reply_next"
+              title="Skicka svar och öppna nästa ärende i kön"
+              data-confirm="{{ confirm_text }}"
+              data-confirm-title="{{ 'Null-send aktiv' if null_send_active else 'Godkänn, skicka &amp; nästa' }}"
+              data-confirm-ok="{{ 'Simulera &amp; nästa' if null_send_active else 'Skicka &amp; nästa' }}"
+              data-busy-label="Skickar..."
+            >
+              <span>Godkänn &amp; nästa</span>
+              {{ icon('arrow-right', 'xs') }}
+            </button>
+          </div>
+
+          <!-- Draft & Queue Secondary Actions -->
+          <div class="flex flex-wrap gap-2 border-t border-ink-700/70 pt-3">
+            <button
+              class="az-btn-secondary az-btn-sm"
+              type="submit"
+              name="action"
+              value="save_draft"
+              data-busy-label="Sparar..."
+            >Spara utkast</button>
+
+            <button
+              class="az-btn-secondary az-btn-sm"
+              type="submit"
+              name="action"
+              value="regenerate"
+              formnovalidate
+              data-confirm="Regenerera svarsutkast? Osparade ändringar i textrutan ersätts."
+              data-confirm-title="Regenerera utkast"
+              data-confirm-ok="Regenerera"
+              data-busy-label="Regenererar..."
+            >Regenerera utkast</button>
+
+            <button
+              class="az-btn-secondary az-btn-sm"
+              type="submit"
+              name="action"
+              value="next_only"
+              formnovalidate
+            >Nästa i kö</button>
+
+            <button
+              class="az-btn-secondary az-btn-sm"
+              type="submit"
+              name="action"
+              value="close"
+              formnovalidate
+              data-confirm="Stäng ärendet utan att skicka svar till kunden?"
+              data-confirm-title="Stäng utan svar"
+              data-confirm-ok="Stäng ärende"
+              data-confirm-danger="1"
+              data-busy-label="Stänger..."
+            >Stäng utan svar</button>
+
+            <button
+              class="az-btn-secondary az-btn-sm"
+              type="submit"
+              name="action"
+              value="close_next"
+              formnovalidate
+              data-confirm="Stäng ärendet utan svar och öppna nästa i kön?"
+              data-confirm-title="Stäng &amp; nästa"
+              data-confirm-ok="Stäng &amp; nästa"
+              data-confirm-danger="1"
+              data-busy-label="Stänger..."
+            >Stäng &amp; nästa</button>
+          </div>
+        </form>
+
+        <!-- Escalate to Oscar -->
+        <form method="post" action="/cases/{{ case.id }}" class="space-y-2 border-t border-ink-700/70 pt-3">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="q_status" value="{{ q_status }}" />
+          <input type="hidden" name="q_mailbox" value="{{ q_mailbox }}" />
+          <input type="hidden" name="q_category" value="{{ q_category }}" />
+          {% if q_suggest %}<input type="hidden" name="q_suggest" value="1" />{% endif %}
+          <label class="az-label text-xs" for="escalate-reason">Eskalera till Oscar</label>
+          <div class="flex flex-wrap gap-2">
+            <input
+              class="az-input flex-1 text-xs"
+              id="escalate-reason"
+              type="text"
+              name="reason"
+              maxlength="200"
+              placeholder="Orsak (valfritt, t.ex. juridik / reklamation)"
+            />
+            <button
+              class="az-btn-oscar az-btn-sm shrink-0"
+              type="submit"
+              name="action"
+              value="escalate"
+              data-confirm="Eskalera detta ärende till Oscar?"
+              data-confirm-title="Eskalera till Oscar"
+              data-confirm-ok="Eskalera"
+              data-busy-label="Eskalerar..."
+            >Eskalera till Oscar</button>
+          </div>
+        </form>
+      </section>
+
+      {% elif case.status == 'sending' %}
+      <section class="az-card space-y-4">
+        <h2 class="az-section-title mb-0">Utskick pågår</h2>
+        {{ ui.info_callout('info', 'Ärendet skickas', 'Väntar på bekräftelse från mailleverantören. Ladda om sidan om en stund.') }}
+        <a class="az-btn-secondary az-btn-sm" href="/cases?{{ back_qs }}">Tillbaka till kön</a>
+      </section>
+
+      {% else %}
+      <section class="az-card space-y-4">
+        <h2 class="az-section-title mb-0">Ärendet är {{ 'besvarat' if case.status == 'replied' else 'stängt' }}</h2>
+        <p class="az-muted text-xs">Detta ärende är avslutat. Du kan återöppna det om kunden har följt upp eller om utkastet behöver bearbetas igen.</p>
+        <div class="flex flex-wrap gap-2">
+          <form method="post" action="/cases/{{ case.id }}">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input type="hidden" name="q_status" value="{{ q_status }}" />
+            <input type="hidden" name="q_mailbox" value="{{ q_mailbox }}" />
+            <input type="hidden" name="q_category" value="{{ q_category }}" />
+            {% if q_suggest %}<input type="hidden" name="q_suggest" value="1" />{% endif %}
+            <button
+              class="az-btn-secondary az-btn-sm"
+              type="submit"
+              name="action"
+              value="reopen"
+              data-busy-label="Öppnar..."
+            >Öppna igen</button>
+          </form>
+          <a class="az-btn-secondary az-btn-sm" href="/cases?{{ back_qs }}">Tillbaka till kön</a>
         </div>
       </section>
       {% endif %}
-      <div class="flex flex-wrap gap-2">
-        <button class="az-btn-primary" type="submit" name="action" value="reply" :disabled="submitting">Godkänn och skicka</button>
-        <button class="az-btn-primary" type="submit" name="action" value="reply_next" :disabled="submitting" title="Skicka och öppna nästa i kön">Godkänn &amp; nästa</button>
-        <button class="az-btn-secondary" type="submit" name="action" value="save_draft" :disabled="submitting">Spara draft</button>
-        <button class="az-btn-secondary" type="submit" name="action" value="regenerate" formnovalidate :disabled="submitting">Regenerera utkast</button>
-        <button class="az-btn-secondary" type="submit" name="action" value="close" formnovalidate :disabled="submitting">Stäng utan svar</button>
-        <button class="az-btn-secondary" type="submit" name="action" value="close_next" formnovalidate :disabled="submitting">Stäng &amp; nästa</button>
-        <button class="az-btn-secondary" type="submit" name="action" value="next_only" formnovalidate :disabled="submitting">Nästa i kö</button>
-        <a class="az-btn-secondary" href="/cases?status={{ q_status }}{% if q_mailbox %}&amp;mailbox={{ q_mailbox }}{% endif %}{% if q_category %}&amp;category={{ q_category }}{% endif %}{% if q_suggest %}&amp;suggest=1{% endif %}">Tillbaka</a>
-      </div>
-    </form>
-  </section>
-  {% else %}
-  <section class="az-card">
-    <a class="az-btn-secondary" href="/cases">Tillbaka till kön</a>
-  </section>
-  {% endif %}
+    </div>
+  </div>
 </div>
 {% endblock %}

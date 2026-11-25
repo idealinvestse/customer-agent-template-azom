@@ -99,7 +99,7 @@ def test_windowed_read_reports_next_offset_without_a_1200_clip(tmp_path, monkeyp
     service = _service(tmp_path, monkeypatch)
     tools = _tools(service)
     path = _style(tmp_path, "mock-staging")
-    path.write_text("A" * 5000, encoding="utf-8")
+    path.write_text("A" * 10000, encoding="utf-8")
     full = _digest(path)
     first = tools.execute(
         "wp_read_theme_plugin_file",
@@ -108,7 +108,7 @@ def test_windowed_read_reports_next_offset_without_a_1200_clip(tmp_path, monkeyp
     )
     assert first.data["ok"] is True
     assert len(first.data["content"]) > 1200
-    assert len(first.data["content"].encode()) <= 4096
+    assert len(first.data["content"].encode()) <= 8192
     assert first.data["next_offset"] == len(first.data["content"].encode())
     assert first.data["sha256"] == full
     assert "var/www" not in json.dumps(first.data)
@@ -143,7 +143,7 @@ def test_windowed_read_keeps_a_split_utf8_character(tmp_path, monkeypatch):
     service = _service(tmp_path, monkeypatch)
     tools = _tools(service)
     path = _style(tmp_path, "mock-staging")
-    original = ("A" * 4095) + "ö" + ("B" * 20)
+    original = ("A" * 8191) + "ö" + ("B" * 20)
     path.write_text(original, encoding="utf-8")
     full = _digest(path)
     pages: list[str] = []
@@ -172,7 +172,7 @@ def test_windowed_read_keeps_a_split_utf8_character(tmp_path, monkeypatch):
     else:
         raise AssertionError("window did not reach the end of the file")
     assert "".join(pages) == original
-    assert pages[0] == "A" * 4095
+    assert pages[0] == "A" * 8191
     assert pages[1].startswith("ö")
 
 

@@ -790,3 +790,50 @@ def test_clarify_never_bypasses_hitl_or_rbac(env_setup, monkeypatch):
     assert executed == []
     assert r_op.actions is not None
     assert r_op.actions.rows[0][0].payload.startswith("proposal:yes:pr-")
+
+
+def test_clarification_preserves_inbound_screenshot_across_rounds(env_setup, monkeypatch, tmp_path):
+    assess = detect_change_ambiguity("ändra den inringade knappen", has_images=True)
+    assert assess.mentions_screenshot_or_annotation is True
+    assert assess.is_change_request is True
+    assert assess.is_ambiguous is True
+
+    img_path = tmp_path / "annotated.png"
+    img_path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        b"\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01\xf6\x178U"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    resolved_img = str(img_path.resolve())
+
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    captured_calls: list[list[dict[str, Any]]] = []
+
+    def fake_completion(messages, **kwargs):
+        captured_calls.append(list(messages))
+        if len(captured_calls) == 1:
+            return _sample_clarify_json(mode="options"), 0.0
+        return "Här är nästa steg för den inringade knappen.", 0.0
+
+    monkeypatch.setattr(chat_agent, "chat_completion", fake_completion)
+    monkeypatch.setattr(
+        chat_agent,
+        "_use_read_tool_loop",
+        lambda *args, **kwargs: False,
+    )
+
+    r1 = bot.handle(100, "Ändra den inringade knappen", image_paths=[str(img_path)])
+    assert r1.actions is not None
+    pick_cb = r1.actions.rows[0][0].payload
+    assert pick_cb and pick_cb.startswith("clarify:pick:cl-")
+    assert any(m.get("images") == [resolved_img] for m in captured_calls[0])
+
+    r2 = bot.handle_callback(100, pick_cb)
+    assert len(captured_calls) >= 2
+    assert any(m.get("images") == [resolved_img] for m in captured_calls[1])
+    assert "inringade" in r2.text.lower() or r2.actions is None
+

@@ -1,91 +1,178 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
 {% block title %}Filer – {{ site.display_name if site else 'Webbplats' }} – Azom{% endblock %}
 {% block page_subtitle %}WordPress-filer{% endblock %}
 {% block content %}
-<div class="space-y-5" data-live-calls="false" data-ssh="{{ 'true' if ssh else 'false' }}">
-  <section class="az-card">
-    {% if site %}
-    <p class="text-sm"><a class="text-steel-300" href="{{ url_for('wp_site_detail', site_id=site.id) }}">{{ site.display_name }}</a></p>
-    <h2 class="az-page-title mt-2">Tema- och pluginfiler</h2>
-    <p class="az-muted mt-2 text-sm">
-      Ingen shell. En befintlig fil inne i ett tema eller en plugin.
-      Produktion kräver Oscar. SSH används bara när AZOM_WP_FILES_SSH=1 och mock är av.
-      En skriven fil får en kopia bredvid med suffixet .azom-bak. Den kopian är inte off-site.
-    </p>
-    {% endif %}
-    {% if error %}
-    <p class="mt-3 text-warn">{{ error }}</p>
-    {% endif %}
-    {% if file_error %}
-    <p class="mt-3 text-warn">{{ file_error }}</p>
-    {% endif %}
-    {% if notice == 'proposed' %}
-    <p class="az-badge mt-3 bg-ink-700 text-mist-200" data-edit="proposed" data-tone="attention">Förslag {{ plan }}. Filen är inte skriven.</p>
-    {% elif notice == 'applied' %}
-    <p class="az-badge mt-3 bg-ink-700 text-mist-200" data-edit="applied" data-tone="attention">Filen är skriven. Kopian är inte off-site.</p>
-    {% endif %}
-  </section>
+<div class="space-y-6" data-live-calls="false" data-ssh="{{ 'true' if ssh else 'false' }}">
+  {% if site %}
+  {% set crumbs = [
+    {'label': 'Webbplatser', 'href': url_for('wp_sites')},
+    {'label': site.display_name, 'href': url_for('wp_site_detail', site_id=site.id)},
+    {'label': 'Filer', 'href': url_for('wp_files', site_id=site.id) if kind else none}
+  ] %}
+  {% if kind %}
+    {% set _ = crumbs.append({'label': 'Teman' if kind == 'theme' else 'Plugin', 'href': url_for('wp_files', site_id=site.id, kind=kind) if slug else none}) %}
+  {% endif %}
+  {% if slug %}
+    {% set _ = crumbs.append({'label': slug, 'href': url_for('wp_files', site_id=site.id, kind=kind, slug=slug) if relative_path else none}) %}
+  {% endif %}
+  {% if relative_path %}
+    {% set _ = crumbs.append({'label': relative_path}) %}
+  {% endif %}
+  {{ ui.breadcrumb(crumbs) }}
+  {% endif %}
+
+  {{ ui.page_header(
+    "Tema- och pluginfiler",
+    "Ingen shell. Endast en befintlig fil inne i ett tema eller en plugin. Produktion kräver Oscar. En skriven fil får en lokal kopia med suffixet .azom-bak (ej off-site).",
+    badge_text="Live SFTP (skrivskyddad)" if ssh else "Mock-träd",
+    badge_tone="info" if ssh else "warn"
+  ) }}
 
   {% if site %}
-  <section class="az-card">
-    <h2 class="az-section-title">Välj</h2>
-    <p class="mt-3 text-sm">
-      <a href="{{ url_for('wp_files', site_id=site.id, kind='theme') }}">Teman</a>
-      ·
-      <a href="{{ url_for('wp_files', site_id=site.id, kind='plugin') }}">Plugin</a>
-    </p>
-    {% if slugs %}
-    <ul class="mt-3 space-y-2 text-sm">
-      {% for name in slugs %}
-      <li><a href="{{ url_for('wp_files', site_id=site.id, kind=kind, slug=name) }}">{{ name }}</a></li>
-      {% endfor %}
-    </ul>
-    {% endif %}
-    {% if files %}
-    <ul class="mt-3 space-y-2 text-sm">
-      {% for name in files %}
-      <li><a href="{{ url_for('wp_files', site_id=site.id, kind=kind, slug=slug, path=name) }}">{{ name }}</a></li>
-      {% endfor %}
-    </ul>
-    {% endif %}
-  </section>
-
-  {% if relative_path %}
-  <section class="az-card">
-    <h2 class="az-section-title">{{ kind }} / {{ slug }} / {{ relative_path }}</h2>
-    {% if can_edit and content is not none %}
-    <form class="mt-3 space-y-3" method="post" action="{{ url_for('wp_file_propose', site_id=site.id) }}">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <input type="hidden" name="kind" value="{{ kind }}" />
-      <input type="hidden" name="slug" value="{{ slug }}" />
-      <input type="hidden" name="path" value="{{ relative_path }}" />
-      <label class="block text-sm">
-        Innehåll
-        <textarea class="mt-1 w-full" name="content" rows="16">{{ content }}</textarea>
-      </label>
-      <button class="az-btn-primary" type="submit" data-file-action="propose">Föreslå ändring</button>
-    </form>
-    {% if plan %}
-    <form class="mt-4 space-y-3" method="post" action="{{ url_for('wp_file_apply', site_id=site.id) }}">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <input type="hidden" name="kind" value="{{ kind }}" />
-      <input type="hidden" name="slug" value="{{ slug }}" />
-      <input type="hidden" name="path" value="{{ relative_path }}" />
-      <input type="hidden" name="plan_id" value="{{ plan }}" />
-      <label class="block text-sm">
-        Samma text som i förslaget
-        <textarea class="mt-1 w-full" name="content" rows="16">{{ content }}</textarea>
-      </label>
-      <button class="az-btn-primary" type="submit" data-file-action="apply">Skriv filen</button>
-    </form>
-    {% endif %}
-    {% elif content is not none %}
-    <pre class="mt-3 whitespace-pre-wrap text-sm">{{ content }}</pre>
-    {% else %}
-    <p class="az-muted mt-3 text-sm">Filen kan inte visas.</p>
-    {% endif %}
-  </section>
+  <nav aria-label="Webbplatsflikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_site_detail', site_id=site.id) }}">Översikt</a>
+    <a class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200" href="{{ url_for('wp_files', site_id=site.id) }}" aria-current="page">Tema- och pluginfiler</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_ssh', site_id=site.id) }}">SSH-inställningar</a>
+  </nav>
   {% endif %}
+
+  {% if error %}
+    {{ ui.flash_banner('error', error, dismissible=False) }}
+  {% endif %}
+  {% if file_error %}
+    {{ ui.flash_banner('error', file_error, dismissible=False) }}
+  {% endif %}
+
+  {% if notice == 'proposed' %}
+  <div>
+    <p class="az-badge bg-ink-700 text-mist-200" data-edit="proposed" data-tone="attention">Förslag {{ plan }}. Filen är inte skriven.</p>
+  </div>
+  {% elif notice == 'applied' %}
+  <div>
+    <p class="az-badge az-badge-ok" data-edit="applied" data-tone="ok">Filen är skriven. Kopian är inte off-site.</p>
+  </div>
+  {% endif %}
+
+  {% if site %}
+  <div class="grid gap-5 lg:grid-cols-[17rem_1fr]">
+    <!-- Sidebar / Tree navigator -->
+    <aside class="az-card space-y-4 self-start">
+      <h2 class="az-section-heading mb-0">Komponenter</h2>
+      <div class="flex flex-wrap gap-2">
+        <a class="az-btn-secondary az-btn-sm {{ 'ring-1 ring-steel-500/40 bg-ink-800 text-steel-200' if kind == 'theme' else '' }}" href="{{ url_for('wp_files', site_id=site.id, kind='theme') }}">Teman</a>
+        <a class="az-btn-secondary az-btn-sm {{ 'ring-1 ring-steel-500/40 bg-ink-800 text-steel-200' if kind == 'plugin' else '' }}" href="{{ url_for('wp_files', site_id=site.id, kind='plugin') }}">Plugin</a>
+      </div>
+
+      {% if kind and not slug %}
+        {% if slugs %}
+        <ul class="space-y-1 text-sm">
+          {% for name in slugs %}
+          <li>
+            <a class="block rounded-lg px-2.5 py-1.5 font-mono text-xs text-steel-300 hover:bg-ink-800 hover:text-mist-100 break-all" href="{{ url_for('wp_files', site_id=site.id, kind=kind, slug=name) }}">{{ name }}</a>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="az-muted text-xs">Inga {{ 'teman' if kind == 'theme' else 'plugins' }} hittades.</p>
+        {% endif %}
+      {% endif %}
+
+      {% if slug %}
+      <div class="border-t border-ink-700/80 pt-3 space-y-2">
+        <p class="text-xs text-mist-400">
+          Vald komponent: <a class="font-mono text-steel-300 hover:underline break-all" href="{{ url_for('wp_files', site_id=site.id, kind=kind, slug=slug) }}">{{ slug }}</a>
+        </p>
+        {% if files %}
+        <ul class="space-y-1 text-sm">
+          {% for name in files %}
+          <li>
+            <a class="block rounded-lg px-2.5 py-1.5 font-mono text-xs {{ 'bg-ink-800 text-steel-200' if name == relative_path else 'text-steel-300 hover:bg-ink-800 hover:text-mist-100' }} break-all" href="{{ url_for('wp_files', site_id=site.id, kind=kind, slug=slug, path=name) }}">{{ name }}</a>
+          </li>
+          {% endfor %}
+        </ul>
+        {% elif not relative_path %}
+        <p class="az-muted text-xs">Inga redigerbara filer hittades i {{ slug }}.</p>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {% if not kind %}
+      <p class="az-muted text-xs">Välj Teman eller Plugin ovan för att bläddra i filträdet.</p>
+      {% endif %}
+    </aside>
+
+    <!-- Main file editor / viewer -->
+    <section class="az-card space-y-4 min-w-0">
+      {% if relative_path %}
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="az-section-heading mb-0 font-mono break-all">{{ kind }} / {{ slug }} / {{ relative_path }}</h2>
+        {% if plan %}
+        <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_file_plan', site_id=site.id, plan_id=plan) }}">Granska plan {{ plan }}</a>
+        {% endif %}
+      </div>
+
+      {% if can_edit and content is not none %}
+      <form class="space-y-3" method="post" action="{{ url_for('wp_file_propose', site_id=site.id) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="kind" value="{{ kind }}" />
+        <input type="hidden" name="slug" value="{{ slug }}" />
+        <input type="hidden" name="path" value="{{ relative_path }}" />
+        <div>
+          <label class="az-label" for="wp-file-content">Filinnehåll</label>
+          <textarea
+            id="wp-file-content"
+            class="az-textarea font-mono text-xs leading-relaxed"
+            name="content"
+            rows="16"
+            spellcheck="false"
+          >{{ content }}</textarea>
+        </div>
+        <button class="az-btn-primary" type="submit" data-file-action="propose" data-busy-label="Föreslår...">Föreslå ändring</button>
+      </form>
+
+      {% if plan and notice != 'applied' %}
+      <div class="rounded-xl border border-oscar-600/35 bg-ink-950/70 p-4 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 class="text-sm font-semibold text-mist-100">Bekräfta och skriv filändring</h3>
+            <p class="az-muted text-xs">Plan <code class="az-code font-mono">{{ plan }}</code> binder exakt föreslaget innehåll med hash-kontroll.</p>
+          </div>
+          <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_file_plan', site_id=site.id, plan_id=plan) }}">Visa sparad diffplan →</a>
+        </div>
+        <form method="post" action="{{ url_for('wp_file_apply', site_id=site.id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="kind" value="{{ kind }}" />
+          <input type="hidden" name="slug" value="{{ slug }}" />
+          <input type="hidden" name="path" value="{{ relative_path }}" />
+          <input type="hidden" name="plan_id" value="{{ plan }}" />
+          <input type="hidden" name="content" value="{{ content }}" />
+          <button
+            class="az-btn-oscar"
+            type="submit"
+            data-file-action="apply"
+            data-confirm="Vill du skriva den föreslagna ändringen till {{ relative_path }}?"
+            data-confirm-title="Bekräfta filskrivning"
+            data-confirm-ok="Skriv filen"
+            data-busy-label="Skriver..."
+          >Skriv filen</button>
+        </form>
+      </div>
+      {% endif %}
+
+      {% elif content is not none %}
+        {{ ui.info_callout('info', 'Skrivskyddad förhandsvisning', 'Du kan läsa filinnehållet här, men saknar behörighet att föreslå eller skriva ändringar på den här miljön.') }}
+        <pre class="overflow-x-auto rounded-lg border border-ink-700 bg-ink-950 p-4 font-mono text-xs text-mist-100 whitespace-pre-wrap break-words">{{ content }}</pre>
+      {% else %}
+        <p class="az-muted">Filen kan inte visas.</p>
+      {% endif %}
+
+      {% else %}
+        {{ ui.empty_state("Välj en fil i trädet", "Bläddra i Teman eller Plugin till vänster för att öppna en befintlig fil.", icon_name="clipboard-list") }}
+      {% endif %}
+    </section>
+  </div>
   {% endif %}
 </div>
 {% endblock %}

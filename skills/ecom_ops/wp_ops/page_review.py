@@ -6,10 +6,13 @@ Permission checks stay here, not in the review skill.
 
 from __future__ import annotations
 
+import os
 import re
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ecom_ops.rbac import AccessDenied, Permission, resolve_actor
 from ecom_ops.wp_ops.file_changes import sensitive_relative
@@ -50,6 +53,7 @@ class ReviewContext:
     page: Any = None
     io_timeout: float | None = None
     target_page: str | None = None
+    data_dir: Path | None = None
 
 
 def _not_run(tool: str, site_id: str, reason: str, availability: str = "unavailable") -> dict[str, Any]:
@@ -191,6 +195,7 @@ def prepare_context(
         site_id=str(site_id or "").strip(),
         actor_name=actor,
         target_page=clean_target,
+        data_dir=Path(data_dir) if data_dir is not None else None,
     )
     try:
         person = resolve_actor(actor)
@@ -777,29 +782,162 @@ def step_sources(ctx: ReviewContext) -> dict[str, Any]:
     }
 
 
+def _preview_target_path(ctx: ReviewContext) -> str:
+    if not ctx.target_page or ctx.page is None:
+        return "/"
+    link = ""
+    raw = getattr(ctx.page, "raw", None)
+    if isinstance(raw, dict):
+        link = str(raw.get("link") or "")
+    if not link:
+        link = str(getattr(ctx.page, "link", "") or "")
+    if link:
+        parsed = urlparse(link)
+        if parsed.path and parsed.path.startswith("/"):
+            return parsed.path
+    if ctx.page_slug:
+        return f"/{ctx.page_slug}"
+    return "/"
+
+
 def step_preview(ctx: ReviewContext) -> dict[str, Any]:
-    """No browser is wired. This never invents a screenshot or fetches a URL."""
-    row = _not_run("wp_page_review_preview", ctx.site_id, "browser_not_run")
-    row["layer"] = "rendered_dom"
-    row["rendered_dom"] = {
-        "status": "not_run",
-        "availability": "unavailable",
-        "desktop_screenshot": None,
-        "mobile_screenshot": None,
-        "console_errors": None,
-        "network_errors": None,
-        "verification": "not_run",
-    }
-    row["findings"] = [
-        {
-            "layer": "rendered_dom",
-            "path": None,
-            "line": None,
-            "excerpt": None,
-            "dom": None,
-            "risk": "unknown",
-            "security": "not_observed",
+    """Run read-only live browser preview when enabled; otherwise report not_run."""
+    from ecom_ops.integrations.wp_live_preview import (
+        capture_preview,
+        fetch_live_html,
+        live_preview_enabled,
+        validate_preview_path,
+    )
+
+    if not live_preview_enabled() or not ctx.allowed or ctx.site is None:
+        row = _not_run("wp_page_review_preview", ctx.site_id, "browser_not_run")
+        row["layer"] = "rendered_dom"
+        row["rendered_dom"] = {
+            "status": "not_run",
+            "availability": "unavailable",
+            "desktop_screenshot": None,
+            "mobile_screenshot": None,
+            "console_errors": None,
+            "network_errors": None,
             "verification": "not_run",
         }
-    ]
-    return row
+        row["findings"] = [
+            {
+                "layer": "rendered_dom",
+                "path": None,
+                "line": None,
+                "excerpt": None,
+                "dom": None,
+                "risk": "unknown",
+                "security": "not_observed",
+                "verification": "not_run",
+            }
+        ]
+        return row
+
+    data_root = ctx.data_dir or Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    artifact_dir = data_root / "wp_workspaces" / ctx.site_id / f"pv-{secrets.token_hex(6)}" / "artifacts"
+    try:
+        preview_path = validate_preview_path(_preview_target_path(ctx))
+        fetched = fetch_live_html(ctx.site, preview_path)
+        rendered = capture_preview(
+            ctx.site,
+            path=preview_path,
+            artifact_dir=artifact_dir,
+            revisions=[("live", str(fetched.get("html") or ""))],
+            target_url=str(fetched.get("final_url") or "") or None,
+        )
+    except Exception as exc:
+        err = getattr(exc, "error_class", None) or type(exc).__name__ or "LivePreviewFailed"
+        row = _not_run("wp_page_review_preview", ctx.site_id, str(err)[:40])
+        row["layer"] = "rendered_dom"
+        row["rendered_dom"] = {
+            "status": "not_run",
+            "availability": "unavailable",
+            "desktop_screenshot": None,
+            "mobile_screenshot": None,
+            "console_errors": None,
+            "network_errors": None,
+            "verification": "not_run",
+        }
+        return row
+
+    live_revs = (rendered.get("revisions") or {}).get("live") or {}
+    vp_desktop = live_revs.get("desktop") or {}
+    vp_mobile = live_revs.get("mobile") or {}
+    desktop_shot = vp_desktop.get("screenshot_path")
+    mobile_shot = vp_mobile.get("screenshot_path")
+    console_errors: list[str] = []
+    network_errors: list[dict[str, Any]] = []
+    for vp in (vp_desktop, vp_mobile):
+        for err_msg in vp.get("console_errors") or []:
+            if err_msg not in console_errors:
+                console_errors.append(str(err_msg))
+        for net_err in vp.get("network_errors") or []:
+            if net_err not in network_errors:
+                network_errors.append(net_err)
+    console_errors = console_errors[:10]
+    network_errors = network_errors[:10]
+
+    findings: list[dict[str, Any]] = []
+    for err_msg in console_errors[:3]:
+        findings.append(
+            {
+                "layer": "rendered_dom",
+                "path": preview_path,
+                "line": None,
+                "excerpt": str(err_msg)[:120] if ctx.include_evidence else None,
+                "dom": "console_error",
+                "risk": "low",
+                "security": "untrusted_data",
+                "verification": "observed",
+            }
+        )
+    for net_err in network_errors[:3]:
+        findings.append(
+            {
+                "layer": "rendered_dom",
+                "path": preview_path,
+                "line": None,
+                "excerpt": str(net_err.get("url") or net_err.get("error_text") or "")[:120] if ctx.include_evidence else None,
+                "dom": f"network_{net_err.get('status') or 'error'}",
+                "risk": "low",
+                "security": "untrusted_data",
+                "verification": "observed",
+            }
+        )
+    if not findings:
+        findings.append(
+            {
+                "layer": "rendered_dom",
+                "path": preview_path,
+                "line": None,
+                "excerpt": None,
+                "dom": f"http_{vp_desktop.get('http_status') or 200}",
+                "risk": "low",
+                "security": "untrusted_data",
+                "verification": "observed",
+            }
+        )
+
+    return {
+        "tool": "wp_page_review_preview",
+        "site_id": ctx.site_id,
+        "status": "read",
+        "availability": "available",
+        "reason": "",
+        "executed": True,
+        "wrote": False,
+        "detail": f"live:{preview_path}",
+        "layer": "rendered_dom",
+        "rendered_dom": {
+            "status": "read",
+            "availability": "available",
+            "desktop_screenshot": desktop_shot,
+            "mobile_screenshot": mobile_shot,
+            "console_errors": console_errors,
+            "network_errors": network_errors,
+            "verification": "observed",
+        },
+        "findings": findings,
+    }

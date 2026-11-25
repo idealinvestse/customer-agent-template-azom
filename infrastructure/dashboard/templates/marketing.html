@@ -1,116 +1,272 @@
 {% extends "base.html" %}
-{% block title %}Marketing – Azom{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Marknadsföring – Azom Agent Dashboard{% endblock %}
 {% block page_subtitle %}Google Ads + GA4{% endblock %}
 {% block content %}
+{% set cur_days = days | default(7) %}
 <div class="space-y-5">
+  {% call ui.page_header("Marketing ledger", "WooCommerce är order-sanning. Ads ROAS och GA-intäkt är märkta rapporteringsvyer.") %}
+    <div class="flex items-center gap-1 rounded-lg border border-ink-700/80 bg-ink-900/70 p-1" role="navigation" aria-label="Tidsperiod">
+      {% for d in days_options | default([7, 14, 30]) %}
+      <a
+        href="/marketing?days={{ d }}"
+        class="rounded-md px-2.5 py-1 text-xs font-semibold tabular-nums transition {{ 'bg-steel-600 text-white' if cur_days == d else 'text-mist-300 hover:bg-ink-800 hover:text-mist-100' }}"
+      >{{ d }}d</a>
+      {% endfor %}
+    </div>
+  {% endcall %}
+
+  <!-- Status & Kill-switch strip -->
   <section class="az-card">
-    <h2 class="az-page-title">Marketing ledger</h2>
-    <p class="az-muted mt-2 text-sm">
-      Woo = order-sanning. Ads ROAS och GA-intäkt är märkta marketing-vyer.
-      Mutates kräver approve + kill-switch av — se
-      <code class="az-code">docs/MARKETING_GOOGLE.md</code>.
+    <h2 class="az-section-title">Driftläge &amp; säkerhetsspärrar</h2>
+    <div class="flex flex-wrap items-center gap-2">
+      {% if runtime and runtime.mock_mode %}
+        {{ ui.status_badge('warn', 'Mock-läge aktivt', show_icon=True) }}
+      {% else %}
+        {{ ui.status_badge('ok', 'Live läsläge', show_icon=True) }}
+      {% endif %}
+
+      {% if kill_switches and kill_switches.ads_mutate_allowed %}
+        {{ ui.status_badge('warn', 'Ads-mutationer: Tillåten', title=kill_switches.ads_mutate_reason) }}
+      {% else %}
+        {{ ui.status_badge('neutral', 'Ads-mutationer: Spärrade (läsläge)', title=kill_switches.ads_mutate_reason if kill_switches else '') }}
+      {% endif %}
+
+      {% if kill_switches and kill_switches.mp_allowed %}
+        {{ ui.status_badge('warn', 'Measurement Protocol: Tillåten', title=kill_switches.mp_reason) }}
+      {% else %}
+        {{ ui.status_badge('neutral', 'MP: Spärrad', title=kill_switches.mp_reason if kill_switches else '') }}
+      {% endif %}
+
+      {% if google_oauth_connected %}
+        {{ ui.status_badge('ok', 'Google OAuth: Ansluten', show_icon=True) }}
+      {% elif google_oauth_configured %}
+        {{ ui.status_badge('warn', 'Google OAuth: Konfigurerad (ej ansluten)') }}
+      {% else %}
+        {{ ui.status_badge('neutral', 'Google OAuth: Ej konfigurerad') }}
+      {% endif %}
+    </div>
+    <p class="az-muted mt-2 text-xs">
+      Ads/GA4 kör live läsningar när ansluten. Mutationer och Measurement Protocol styrs av <code class="az-code">docs/MARKETING_GOOGLE.md</code>.
     </p>
-    {% if error %}
-    <p class="mt-3 text-warn">{{ error }}</p>
-    {% endif %}
   </section>
+
+  {% if section_errors %}
+  {% call ui.info_callout('warn', 'Vissa marketing-sektioner gav fel') %}
+    <ul class="mt-1 list-disc space-y-0.5 pl-4 text-xs">
+      {% for sec, msg in section_errors.items() %}
+      <li><span class="font-mono">{{ sec }}</span>: {{ msg }}</li>
+      {% endfor %}
+    </ul>
+  {% endcall %}
+  {% elif error %}
+  {{ ui.info_callout('warn', 'Marketing-varning', error) }}
+  {% endif %}
 
   {% if digest %}
   <section class="az-card">
     <h2 class="az-section-title">Digest ({{ digest.days }}d)</h2>
-    <dl class="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+    <dl class="mt-2 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-5">
       <div>
-        <span class="az-muted">Ads kostnad</span>
-        <p class="text-lg text-mist-100">{{ digest.ads.cost }} {{ digest.currency }}</p>
+        <dt class="text-xs text-mist-400">Ads kostnad</dt>
+        <dd class="mt-1 font-mono text-lg font-semibold tabular-nums text-mist-100">{{ digest.ads.cost }} {{ digest.currency }}</dd>
       </div>
       <div>
-        <span class="az-muted">Ads ROAS (märkt)</span>
-        <p class="text-lg text-mist-100">{{ digest.ads.roas_ads_reported or '—' }}</p>
+        <dt class="text-xs text-mist-400">Ads ROAS (märkt)</dt>
+        <dd class="mt-1 font-mono text-lg font-semibold tabular-nums text-mist-100">
+          {% if digest.ads.roas_ads_reported is not none %}
+          {{ ('%.2f'|format(digest.ads.roas_ads_reported|float))|replace('.', ',') }}
+          {% else %}
+          —
+          {% endif %}
+        </dd>
       </div>
       <div>
-        <span class="az-muted">GA köp</span>
-        <p class="text-lg text-mist-100">{{ digest.ga4.ecommerce_purchases }}</p>
+        <dt class="text-xs text-mist-400">MER (GA / Ads)</dt>
+        <dd class="mt-1 font-mono text-lg font-semibold tabular-nums text-mist-100">
+          {% if mer is not none %}
+          {{ ('%.2f'|format(mer|float))|replace('.', ',') }}
+          {% else %}
+          —
+          {% endif %}
+        </dd>
       </div>
       <div>
-        <span class="az-muted">GA intäkt (märkt)</span>
-        <p class="text-lg text-mist-100">{{ digest.ga4.purchase_revenue }} {{ digest.currency }}</p>
+        <dt class="text-xs text-mist-400">GA köp</dt>
+        <dd class="mt-1 font-mono text-lg font-semibold tabular-nums text-mist-100">{{ digest.ga4.ecommerce_purchases }}</dd>
+      </div>
+      <div>
+        <dt class="text-xs text-mist-400">GA intäkt (märkt)</dt>
+        <dd class="mt-1 font-mono text-lg font-semibold tabular-nums text-mist-100">{{ digest.ga4.purchase_revenue }} {{ digest.currency }}</dd>
       </div>
     </dl>
   </section>
   {% endif %}
 
-  {% if health %}
-  <section class="az-card">
-    <h2 class="az-section-title">Hälsa</h2>
-    <ul class="mt-2 space-y-1 text-sm">
-      <li>Purchase key event: {{ health.labels.purchase_key_event }}</li>
-      <li>Ads↔GA länk: {{ health.labels.ads_linked }}</li>
-      <li>Funnel ok: {{ health.labels.funnel_ok }}</li>
+  <div class="grid gap-5 lg:grid-cols-2">
+    {% if health %}
+    <section class="az-card">
+      <h2 class="az-section-title">Spårningshälsa</h2>
+      <dl class="space-y-2.5 text-sm">
+        <div class="flex items-center justify-between gap-2">
+          <dt class="text-mist-300">Purchase key event</dt>
+          <dd>{{ ui.status_badge('ok' if health.labels.purchase_key_event else 'warn', fmt_sv_bool(health.labels.purchase_key_event)) }}</dd>
+        </div>
+        <div class="flex items-center justify-between gap-2">
+          <dt class="text-mist-300">Ads ↔ GA-länk</dt>
+          <dd>{{ ui.status_badge('ok' if health.labels.ads_linked else 'warn', fmt_sv_bool(health.labels.ads_linked)) }}</dd>
+        </div>
+        <div class="flex items-center justify-between gap-2">
+          <dt class="text-mist-300">Funnel ok</dt>
+          <dd>{{ ui.status_badge('ok' if health.labels.funnel_ok else 'warn', fmt_sv_bool(health.labels.funnel_ok)) }}</dd>
+        </div>
+      </dl>
       {% if health.ecommerce_events and health.ecommerce_events.missing_expected %}
-      <li class="text-warn">Saknade events: {{ health.ecommerce_events.missing_expected | join(', ') }}</li>
+      <div class="mt-3">
+        {{ ui.info_callout('warn', 'Saknade e-handelshändelser', health.ecommerce_events.missing_expected | join(', ')) }}
+      </div>
       {% endif %}
-    </ul>
-  </section>
-  {% endif %}
+    </section>
+    {% endif %}
 
-  {% if consistency %}
-  <section class="az-card">
-    <h2 class="az-section-title">Konsistens Woo ↔ GA ↔ Ads</h2>
-    <p class="az-muted text-sm mt-1">{{ consistency.truth_note }}</p>
-    <dl class="mt-3 grid gap-2 text-sm sm:grid-cols-3">
-      <div>Woo: <strong>{{ consistency.counts.woo_purchases }}</strong></div>
-      <div>GA: <strong>{{ consistency.counts.ga_ecommerce_purchases }}</strong></div>
-      <div>Ads: <strong>{{ consistency.counts.ads_conversions }}</strong></div>
-    </dl>
-    <p class="mt-2 text-sm">
-      Band: woo/ga={{ consistency.divergence.woo_vs_ga }} ·
-      woo/ads={{ consistency.divergence.woo_vs_ads }} ·
-      ga/ads={{ consistency.divergence.ga_vs_ads }}
-    </p>
-  </section>
-  {% endif %}
+    {% if consistency %}
+    <section class="az-card">
+      <h2 class="az-section-title">Konsistens Woo ↔ GA ↔ Ads</h2>
+      <p class="az-muted text-xs">{{ consistency.truth_note }}</p>
+      <dl class="mt-3 grid grid-cols-3 gap-3 text-sm">
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-xs text-mist-400">Woo (sanning)</dt>
+          <dd class="mt-1 font-mono text-lg font-semibold tabular-nums text-mist-100">{{ consistency.counts.woo_purchases }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-xs text-mist-400">GA4</dt>
+          <dd class="mt-1 font-mono text-lg font-semibold tabular-nums text-mist-100">{{ consistency.counts.ga_ecommerce_purchases }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-xs text-mist-400">Ads</dt>
+          <dd class="mt-1 font-mono text-lg font-semibold tabular-nums text-mist-100">{{ consistency.counts.ads_conversions }}</dd>
+        </div>
+      </dl>
+      <div class="mt-3 flex flex-wrap gap-2">
+        {% for band_lbl, band_val in [
+          ('Woo/GA', consistency.divergence.woo_vs_ga),
+          ('Woo/Ads', consistency.divergence.woo_vs_ads),
+          ('GA/Ads', consistency.divergence.ga_vs_ads),
+        ] %}
+          {% set bv = (band_val or '') | string | lower %}
+          {% if bv in ('ok', 'green', 'low', 'aligned') %}
+            {{ ui.status_badge('ok', band_lbl ~ ': ' ~ band_val) }}
+          {% elif bv in ('warn', 'yellow', 'medium', 'moderate') %}
+            {{ ui.status_badge('warn', band_lbl ~ ': ' ~ band_val) }}
+          {% elif bv in ('high', 'red', 'error', 'critical') %}
+            {{ ui.status_badge('error', band_lbl ~ ': ' ~ band_val) }}
+          {% else %}
+            {{ ui.status_badge('neutral', band_lbl ~ ': ' ~ band_val) }}
+          {% endif %}
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+  </div>
 
-  {% if suggests %}
-  <section class="az-card">
-    <h2 class="az-section-title">Öppna förslag ({{ suggests | length }})</h2>
-    <ul class="mt-2 space-y-3 text-sm">
+  <!-- Open Suggests (always includes Build button) -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h2 class="az-section-title mb-0">Öppna förslag ({{ suggests | length }})</h2>
+      <form method="post" action="/marketing/suggests/build">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Bygger förslag...">
+          {{ icon('refresh', 'xs') }}
+          <span>Bygg förslag</span>
+        </button>
+      </form>
+    </div>
+
+    {% if not can_mutate %}
+    {{ ui.info_callout('info', 'Rollbegränsning (viewer)', 'Jonatan kan bygga förslag, neka eller godkänna negativa sökord (MARKETING_SUGGEST). Övriga Ads-mutationer kräver Oscar (MARKETING_MUTATE) samt öppen kill-switch.') }}
+    {% endif %}
+
+    {% if suggests %}
+    <ul class="space-y-3 text-sm">
       {% for s in suggests %}
-      <li class="border-b border-ink-700/50 pb-2">
-        <strong class="text-mist-100">{{ s.title }}</strong>
-        <span class="az-muted"> · {{ s.kind }} · {{ s.reason }}</span>
-        <div class="mt-2 flex flex-wrap gap-2">
+      <li class="rounded-lg border border-ink-700/80 bg-ink-950/60 p-4 space-y-2.5">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <div class="flex flex-wrap items-center gap-2">
+              <strong class="text-mist-100">{{ s.title }}</strong>
+              {{ ui.status_badge('info', s.kind) }}
+            </div>
+            <p class="az-muted mt-1 text-xs">{{ s.reason }}</p>
+          </div>
+          <span class="font-mono text-xs text-mist-400">{{ s.id[:8] }}</span>
+        </div>
+
+        {% if s.evidence or s.payload %}
+        <details class="rounded border border-ink-700/60 bg-ink-900/60 p-2.5 text-xs">
+          <summary class="cursor-pointer font-medium text-steel-300">Visa evidens &amp; payload</summary>
+          <div class="mt-2 grid gap-3 md:grid-cols-2">
+            {% if s.evidence %}
+            <div>
+              <p class="mb-1 font-semibold text-mist-300">Evidens</p>
+              <pre class="overflow-x-auto whitespace-pre-wrap font-mono text-xs text-mist-300">{{ fmt_json(s.evidence) }}</pre>
+            </div>
+            {% endif %}
+            {% if s.payload %}
+            <div>
+              <p class="mb-1 font-semibold text-mist-300">Payload</p>
+              <pre class="overflow-x-auto whitespace-pre-wrap font-mono text-xs text-mist-300">{{ fmt_json(s.payload) }}</pre>
+            </div>
+            {% endif %}
+          </div>
+        </details>
+        {% endif %}
+
+        <div class="flex flex-wrap items-center gap-2 pt-1">
           <form method="post" action="/marketing/suggests/{{ s.id }}/deny">
             <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-            <button type="submit" class="az-btn-secondary text-xs">Neka</button>
+            <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Nekar...">Neka</button>
           </form>
-          {% if is_oscar or s.kind == 'negative' %}
+
+          {% if is_oscar or can_mutate or (can_suggest and s.kind == 'negative') %}
           <form method="post" action="/marketing/suggests/{{ s.id }}/approve">
             <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-            <button type="submit" class="az-btn-primary text-xs"
-              onclick="return confirm('Godkänn mutate? (kill-switch / mutate-flag måste tillåta)');">
-              Godkänn &amp; kör
-            </button>
+            <button
+              type="submit"
+              class="az-btn-primary az-btn-sm"
+              data-confirm="Godkänn och kör mutation för '{{ s.title }}'? Kill-switch och behörighet kontrolleras på servern."
+              data-confirm-title="Godkänn marketing-mutation"
+              data-confirm-ok="Godkänn &amp; kör"
+              data-confirm-danger="1"
+              data-busy-label="Kör..."
+            >Godkänn &amp; kör</button>
           </form>
+          {% else %}
+          <span class="text-xs text-mist-400">Kräver Oscar för att godkänna ({{ s.kind }})</span>
           {% endif %}
         </div>
       </li>
       {% endfor %}
     </ul>
+    {% else %}
+    {{ ui.empty_state('Inga öppna marketing-förslag', 'Klicka på "Bygg förslag" ovan för att analysera waste och pacing.', icon_name='trending-up') }}
+    {% endif %}
   </section>
-  {% else %}
-  <section class="az-card">
-    <p class="az-muted text-sm">Inga öppna marketing-förslag.</p>
-    <form method="post" action="/marketing/suggests/build" class="mt-3">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <button type="submit" class="az-btn-secondary text-sm">Bygg waste/pacing-förslag</button>
-    </form>
-  </section>
-  {% endif %}
 
   {% if is_oscar %}
-  <section class="az-card">
-    <h2 class="az-section-title">Oscar · OAuth</h2>
-    <a class="text-oscar-400 hover:underline text-sm" href="/oauth/google/start">Anslut Google marketing</a>
+  <section class="az-card-oscar flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <h2 class="az-section-title mb-1 text-oscar-400">Oscar · Google Marketing OAuth</h2>
+      <p class="az-muted text-xs">
+        Status:
+        {% if google_oauth_connected %}Ansluten (tokens lagrade)
+        {% elif google_oauth_configured %}Konfigurerad — ej ansluten ännu
+        {% else %}Ej konfigurerad i secrets.env{% endif %}
+      </p>
+    </div>
+    <a class="az-btn-oscar az-btn-sm" href="/oauth/google/start">
+      {{ 'Återanslut Google marketing' if google_oauth_connected else 'Anslut Google marketing' }}
+    </a>
   </section>
   {% endif %}
 </div>

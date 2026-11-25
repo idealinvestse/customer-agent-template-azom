@@ -11,7 +11,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ecom_ops.model_router import circuit_breaker
-from ecom_ops.model_router.base import ModelRequest, ModelResult, RouteCapabilities
+from ecom_ops.model_router.base import (
+    ModelRequest,
+    ModelResult,
+    RouteCapabilities,
+    request_has_images,
+)
 from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
@@ -269,6 +274,11 @@ class ModelRouter:
         route = self._route(route_id)
         if not route.is_configured():
             raise ModelConfigError(f"{route_id} is not configured")
+        if request_has_images(request.messages) and not self._route_capabilities(route).supports_vision:
+            raise ModelConfigError(
+                f"{route_id} does not support image inputs",
+                code="vision_unsupported",
+            )
         norm_rid = "openrouter" if route_id == "openrouter_api_key" else route_id
         model_name = request.model or self._default_model_for(route)
         auth_epoch = self._auth_epoch(norm_rid, route)
@@ -539,6 +549,7 @@ class ModelRouter:
             self._record_selected(tel, slot_req, result, selected_route=norm_rid)
             return result
 
+        needs_vision = request_has_images(request.messages)
         for idx, slot in enumerate(slots):
             if idx > 0 and (phase_deadline - time.monotonic()) < 5.0:
                 errors.append("phase_budget_exhausted")
@@ -550,6 +561,14 @@ class ModelRouter:
                 continue
             if not self._route_callable(route):
                 errors.append(f"{slot.route_id}: not_configured")
+                continue
+            if needs_vision and not self._route_capabilities(route).supports_vision:
+                if not allow_fallback:
+                    raise ModelConfigError(
+                        f"{slot.route_id} does not support image inputs",
+                        code="vision_unsupported",
+                    )
+                errors.append(f"{slot.route_id}: vision_unsupported")
                 continue
 
             slot_model = slot.model_id if slot.model_id != "inherit_env" else self._default_model_for(route)
@@ -620,6 +639,7 @@ class ModelRouter:
         primary_error_class = ""
         primary_error_code = ""
         attempts = 0
+        needs_vision = request_has_images(request.messages)
         for idx, route_id in enumerate(ordered):
             norm_rid = "openrouter" if route_id == "openrouter_api_key" else route_id
             try:
@@ -637,6 +657,9 @@ class ModelRouter:
                 continue
             if not self._route_callable(route):
                 errors.append(f"{route_id}: not_configured")
+                continue
+            if needs_vision and not self._route_capabilities(route).supports_vision:
+                errors.append(f"{route_id}: vision_unsupported")
                 continue
             if not primary_route:
                 primary_route = norm_rid

@@ -87,3 +87,6 @@ Desktop.ini
 .worktrees/
 docker-compose.override.yml
 docker-compose.*.local.yml
+
+# --- Dashboard frontend build ---
+infrastructure/dashboard/frontend/node_modules/

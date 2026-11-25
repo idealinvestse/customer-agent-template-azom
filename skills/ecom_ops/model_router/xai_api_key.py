@@ -11,7 +11,12 @@ from typing import Any
 
 import requests
 
-from ecom_ops.model_router.base import ModelRequest, ModelResult, RouteCapabilities
+from ecom_ops.model_router.base import (
+    ModelRequest,
+    ModelResult,
+    RouteCapabilities,
+    format_chat_completions_messages,
+)
 from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
@@ -68,6 +73,7 @@ class XaiApiKeyRoute:
         supports_reasoning_effort=False,
         supports_json_schema=True,
         supports_streaming=True,
+        supports_vision=True,
         cost_kind="estimated_external",
         subject_to_openrouter_cap=False,
     )
@@ -105,9 +111,16 @@ class XaiApiKeyRoute:
 
         model = request.model or self._model()
         streaming = request.on_text_delta is not None
+        try:
+            formatted_messages = format_chat_completions_messages(request.messages)
+        except ValueError as exc:
+            raise ModelConfigError(
+                "Invalid image attachment for xAI API",
+                code="invalid_image",
+            ) from exc
         payload: dict[str, Any] = {
             "model": model,
-            "messages": request.messages,
+            "messages": formatted_messages,
             "max_tokens": request.max_output_tokens,
             "temperature": request.temperature,
             "stream": streaming,

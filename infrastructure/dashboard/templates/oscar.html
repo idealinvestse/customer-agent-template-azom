@@ -1,93 +1,181 @@
 {% extends "base.html" %}
-{% block title %}Oscar – Azom{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Oscar · Modellrouter &amp; Profiler – Azom{% endblock %}
 {% block page_subtitle %}Oscar admin{% endblock %}
 {% block content %}
-<div class="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
-  <section class="az-card border-oscar-600/35">
-    <h2 class="az-section-title text-oscar-400/80">Öppna eskaleringar</h2>
-    <div class="az-stat">{{ open_count }}</div>
-    <p class="az-muted mt-1">Tickets som väntar på Oscar</p>
-    <p class="mt-4"><a class="az-btn-oscar" href="/oscar/escalations">Hantera →</a></p>
-  </section>
+<div class="space-y-6">
+  {% call ui.page_header(
+    "Oscar · Modellrouter & Profiler",
+    "Modellrouting, OAuth-sessioner, uppgiftsprofiler och administrativa verktyg.",
+    badge_text="Oscar admin",
+    badge_tone="oscar"
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/oscar/secrets">{{ icon('key', 'xs') }}<span>Secrets &amp; Probes</span></a>
+    <a class="az-btn-secondary az-btn-sm" href="/oscar/behavior">{{ icon('message-square', 'xs') }}<span>Beteende</span></a>
+    <a class="az-btn-secondary az-btn-sm" href="/oscar/telegram">{{ icon('send', 'xs') }}<span>Telegram</span></a>
+    <a class="az-btn-secondary az-btn-sm" href="/oscar/escalations">{{ icon('alert-triangle', 'xs') }}<span>Eskaleringar</span></a>
+  {% endcall %}
 
-  <section class="az-card border-oscar-600/35">
-    <h2 class="az-section-title text-oscar-400/80">Secrets</h2>
-    <p class="mt-1"><span class="az-present">{{ secrets_present }} present</span> · <span class="az-missing">{{ secrets_missing }} missing</span></p>
-    <p class="mt-4"><a class="az-btn-oscar" href="/oscar/secrets">Redigera secrets →</a></p>
-  </section>
-
-  <section class="az-card border-oscar-600/35">
-    <h2 class="az-section-title text-oscar-400/80">Runtime</h2>
-    <p>Mock: {% if settings.mock_mode %}<span class="az-badge bg-warn/15 text-warn">på</span>{% else %}<span class="az-present">live</span>{% endif %}</p>
-    <p class="az-muted mt-2">Mail: {{ settings.mail_provider }}</p>
-    <p class="mt-4"><a class="az-btn-secondary" href="/settings">Ändra i Inställningar</a></p>
-  </section>
-
-  <section class="az-card border-oscar-600/35">
-    <h2 class="az-section-title text-oscar-400/80">Gmail OAuth</h2>
-    <p>{% if gmail_connected %}<span class="az-present">connected</span>{% else %}<span class="az-missing">not connected</span>{% endif %}</p>
-    <p class="mt-4">
-      {% if gmail_connected %}
-      <a class="az-btn-secondary" href="/oauth/gmail/start">Förnya</a>
-      {% else %}
-      <a class="az-btn-secondary" href="/oauth/gmail/start">Anslut Gmail</a>
-      {% endif %}
-    </p>
-  </section>
-
-  <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
-    <h2 class="az-section-title text-oscar-400/80">Modellrouter</h2>
-    <p class="az-muted">Aktiv route: <strong>{{ model_preferred or "ingen" }}</strong>. Ordning: {{ model_order | join(', ') }}. Ordningen går inte att ändra här. Test kör en route utan fallback.</p>
-    {% if model_last_test %}
-    <p class="mt-2">
-      Senaste test:
-      {% if model_last_test.get("ok") %}
-      <span class="az-present">ok</span>
-      {% else %}
-      <span class="az-missing">misslyckades</span>
-      {% endif %}
-      {{ model_last_test.get("route_id", "") }}
-      {{ model_last_test.get("error_class", "") }}
-      {{ model_last_test.get("error_code", "") }}
-    </p>
-    <p class="az-muted">Ett misslyckat test är ett riktigt fel. OpenRouter körs inte som ersättning.</p>
+  {% set ns = namespace(configured_routes=0) %}
+  {% for rid in model_all_routes %}
+    {% if model_routes.get(rid, {}).get('configured') %}
+      {% set ns.configured_routes = ns.configured_routes + 1 %}
     {% endif %}
-    <div class="overflow-x-auto mt-3">
+  {% endfor %}
+
+  <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    {{ ui.kpi_card(
+      "LLM-budgettak",
+      fmt_usd(settings.openrouter_cap),
+      "Läge: " ~ ("Mock" if settings.mock_mode else "Live") ~ " · Mail: " ~ settings.mail_provider,
+      tone="warn" if settings.mock_mode else "ok",
+      href="/settings",
+      link_label="Inställningar",
+      icon_name="settings",
+      oscar=True
+    ) }}
+    {{ ui.kpi_card(
+      "Aktiva rutter",
+      ns.configured_routes ~ " / " ~ (model_all_routes | length),
+      "Föredragen: " ~ (model_preferred or "ingen"),
+      tone="info" if ns.configured_routes else "warn",
+      href="#routes-health",
+      link_label="Rutter & hälsa",
+      icon_name="cpu",
+      oscar=True
+    ) }}
+    {{ ui.kpi_card(
+      "Öppna breakers",
+      open_breakers_count | default(0),
+      "Rutt- och slot-skydd mot fel",
+      tone="warn" if open_breakers_count else "ok",
+      href="#routes-health",
+      link_label="Visa breakers",
+      icon_name="shield",
+      oscar=True
+    ) }}
+    {{ ui.kpi_card(
+      "Öppna eskaleringar",
+      open_count,
+      secrets_present ~ " secrets finns · " ~ secrets_missing ~ " saknas",
+      tone="warn" if open_count else "ok",
+      href="/oscar/escalations",
+      link_label="Hantera",
+      icon_name="alert-triangle",
+      oscar=True
+    ) }}
+  </div>
+
+  <!-- 1. Modellrouter: Rutter & Hälsa -->
+  <section id="routes-health" class="az-card-oscar space-y-4">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 class="font-display text-base font-semibold text-oscar-300">Modellrouter · Rutter &amp; Hälsa</h2>
+        <p class="az-muted mt-1">
+          Aktiv rutt: <code class="az-code font-mono">{{ model_preferred or "ingen" }}</code>.
+          Ordning: <span class="font-mono text-xs text-mist-200">{{ model_order | join(' → ') }}</span>.
+          Ordningen går inte att ändra här. Test kör exakt en rutt utan fallback.
+        </p>
+      </div>
+      {% if model_breaker or open_breakers_count %}
+      <form
+        method="post"
+        action="/oscar/models/breaker/reset"
+        data-confirm="Nollställa alla aktiva circuit breakers för rutter och slots?"
+        data-confirm-title="Nollställ circuit breaker"
+        data-confirm-ok="Nollställ"
+      >
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Nollställer...">Nollställ circuit breaker</button>
+      </form>
+      {% endif %}
+    </div>
+
+    {% if model_last_test %}
+    <div class="rounded-xl border border-ink-700/80 bg-ink-950/70 p-3.5 text-sm">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-medium text-mist-200">Senaste test:</span>
+        {% if model_last_test.get("ok") %}
+          {{ ui.status_badge('ok', 'ok') }}
+        {% else %}
+          {{ ui.status_badge('error', 'misslyckades') }}
+        {% endif %}
+        <code class="az-code font-mono">{{ model_last_test.get("route_id", "") }}</code>
+        {% if model_last_test.get("model") %}
+          <code class="az-code font-mono break-all">{{ model_last_test.get("model") }}</code>
+        {% endif %}
+        {% if model_last_test.get("provider") %}
+          <span class="az-badge az-badge-neutral">{{ model_last_test.get("provider") }}</span>
+        {% endif %}
+        {% if model_last_test.get("at_fmt") %}
+          <span class="text-xs text-mist-400 tabular-nums">{{ model_last_test.get("at_fmt") }}</span>
+        {% endif %}
+      </div>
+      {% if not model_last_test.get("ok") %}
+      <p class="mt-2 text-xs text-danger-text">
+        Felklass: {{ model_last_test.get("error_category_sv") or model_last_test.get("error_class") or "Okänt fel" }}
+        {% if model_last_test.get("error_code") %}· kod <code class="az-code font-mono">{{ model_last_test.get("error_code") }}</code>{% endif %}.
+        Ett misslyckat test är ett riktigt fel. OpenRouter körs inte som ersättning.
+      </p>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="routes-table-heading">
+      <h3 id="routes-table-heading" class="sr-only">Konfigurerade modellrutter</h3>
       <table class="az-table">
         <thead>
           <tr>
-            <th>Route</th>
-            <th>Modell</th>
-            <th>Konfigurerad</th>
-            <th>Ansluten</th>
-            <th>Breaker</th>
-            <th>Refresh</th>
-            <th>needs_reauth</th>
-            <th>Generation</th>
-            <th>Expires</th>
-            <th></th>
+            <th scope="col">Rutt</th>
+            <th scope="col">Modell</th>
+            <th scope="col">Konfigurerad</th>
+            <th scope="col">Ansluten</th>
+            <th scope="col">Breaker</th>
+            <th scope="col">Refresh</th>
+            <th scope="col">Omautentisering</th>
+            <th scope="col">Generation</th>
+            <th scope="col">Upphör</th>
+            <th scope="col">Åtgärd</th>
           </tr>
         </thead>
         <tbody>
           {% for route_id in model_all_routes %}
           {% set row = model_routes.get(route_id, {}) %}
           {% set br_key = 'route:' + ('openrouter' if route_id == 'openrouter_api_key' else route_id) %}
-          {% set br = model_breaker.get(br_key, {}) %}
+          {% set br = (model_route_breakers or {}).get(br_key) or model_breaker.get(br_key, {}) %}
           <tr>
-            <td>{{ route_id }}{% if route_id == model_preferred %} · aktiv{% endif %}{% if route_id not in model_order %} <span class="az-muted">(ej i ordning)</span>{% endif %}</td>
-            <td><code class="az-code">{{ row.get("model", "") }}</code></td>
-            <td>{% if row.get("configured") %}ja{% else %}nej{% endif %}</td>
-            <td>{% if row.get("connected") %}<span class="az-present">ja</span>{% else %}<span class="az-missing">nej</span>{% endif %}{% if route_id == 'chatgpt_oauth' %}<div class="az-muted text-xs">{% if row.get("plan_usage") %}Plananvändning: beviljad{% else %}Plananvändning: saknas{% endif %}</div>{% endif %}</td>
-            <td>{% if br and br.get("state", "closed") != "closed" %}<span class="az-missing">{{ br.get("state") }} ({{ br.get("remaining_s", 0) }}s)</span>{% else %}<span class="az-present">closed</span>{% endif %}</td>
-            <td>{{ row.get("refresh_owner", "") }}</td>
-            <td>{% if row.get("needs_reauth") %}<span class="az-missing">ja</span>{% else %}nej{% endif %}</td>
-            <td>{{ row.get("generation", "") }}</td>
-            <td>{{ row.get("expires_at_iso") or row.get("expires_at") or "" }}</td>
+            <td>
+              <code class="az-code font-mono">{{ route_id }}</code>
+              {% if route_id == model_preferred %}{{ ui.status_badge('oscar', 'aktiv', extra_class='ml-1') }}{% endif %}
+              {% if route_id not in model_order %}<span class="az-muted ml-1 text-xs">(ej i ordning)</span>{% endif %}
+            </td>
+            <td><code class="az-code font-mono break-all">{{ row.get("model") or "—" }}</code></td>
+            <td>{{ ui.status_badge('ok' if row.get("configured") else 'neutral', 'Ja' if row.get("configured") else 'Nej') }}</td>
+            <td>
+              {{ ui.status_badge('ok' if row.get("connected") else 'neutral', 'Ja' if row.get("connected") else 'Nej') }}
+              {% if route_id == 'chatgpt_oauth' %}
+              <div class="mt-1 text-xs text-mist-400">
+                {% if row.get("plan_usage") %}Plananvändning: beviljad{% else %}Plananvändning: saknas{% endif %}
+              </div>
+              {% endif %}
+            </td>
+            <td>
+              {% if br and br.get("state", "closed") != "closed" %}
+                {{ ui.status_badge('error', br.get("state") ~ ' (' ~ br.get("remaining_s", 0) ~ 's)') }}
+              {% else %}
+                {{ ui.status_badge('ok', 'closed') }}
+              {% endif %}
+            </td>
+            <td class="text-xs text-mist-300">{{ row.get("refresh_owner") or "—" }}</td>
+            <td>{{ ui.status_badge('warn', 'Ja') if row.get("needs_reauth") else "Nej" }}</td>
+            <td class="font-mono text-xs tabular-nums">{{ row.get("generation") if row.get("generation") is not none else "—" }}</td>
+            <td class="text-xs text-mist-300 tabular-nums">{{ row.get("expires_at_fmt") or row.get("expires_at_iso") or fmt_dt(row.get("expires_at")) or "—" }}</td>
             <td>
               <form method="post" action="/oscar/models/test" class="inline">
                 <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
                 <input type="hidden" name="route_id" value="{{ route_id }}" />
-                <button class="az-btn-secondary" type="submit">Testa modell</button>
+                <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Testar...">Testa modell</button>
               </form>
             </td>
           </tr>
@@ -95,184 +183,295 @@
         </tbody>
       </table>
     </div>
-    {% if model_breaker %}
-    <form method="post" action="/oscar/models/breaker/reset" class="mt-2">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <button class="az-btn-secondary" type="submit">Nollställ circuit breaker</button>
-    </form>
+
+    {% if model_slot_breakers %}
+    <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-400">Slot-breakers</h3>
+      <div class="flex flex-wrap gap-2">
+        {% for sb in model_slot_breakers %}
+        <div class="flex items-center gap-2 rounded-lg border border-ink-700 bg-ink-900 px-2.5 py-1.5 text-xs">
+          <code class="font-mono text-mist-200">{{ sb.route_id }}:{{ sb.model_id }}</code>
+          {% if sb.get("state", "closed") != "closed" %}
+            {{ ui.status_badge('error', sb.get("state") ~ ' (' ~ sb.get("remaining_s", 0) ~ 's)') }}
+          {% else %}
+            {{ ui.status_badge('ok', 'closed') }}
+          {% endif %}
+          <form method="post" action="/oscar/models/breaker/reset" class="inline">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input type="hidden" name="breaker_key" value="{{ sb.key }}" />
+            <button class="text-xs text-steel-300 hover:underline" type="submit">Nollställ</button>
+          </form>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
     {% endif %}
-    <form method="post" action="/oscar/models/settings" class="mt-4 space-y-4">
+  </section>
+
+  <!-- 2. OAuth & xAI Inloggning -->
+  <section id="xai-login" class="az-card-oscar space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="font-display text-base font-semibold text-oscar-300">OAuth &amp; xAI Inloggning</h2>
+      {% set chatgpt = model_routes.get("chatgpt_oauth", {}) %}
+      {% if chatgpt.get("configured") %}
+        {{ ui.status_badge('ok', 'ChatGPT ansluten') }}
+      {% else %}
+        {{ ui.status_badge('neutral', 'ChatGPT ej ansluten') }}
+      {% endif %}
+    </div>
+
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4 space-y-3">
+        <h3 class="text-sm font-semibold text-mist-100">ChatGPT OAuth (Azom-ägd refresh)</h3>
+        <dl class="grid grid-cols-2 gap-2 text-xs">
+          <div>
+            <dt class="text-mist-400">Host-id</dt>
+            <dd class="font-mono text-mist-100 break-all">{{ chatgpt.get("ext_agent_host_id") or "saknas" }}</dd>
+          </div>
+          <div>
+            <dt class="text-mist-400">Plananvändning</dt>
+            <dd class="text-mist-100">{{ "beviljad" if chatgpt.get("plan_usage") else "inte bekräftad" }}</dd>
+          </div>
+          <div>
+            <dt class="text-mist-400">ID-token signatur</dt>
+            <dd class="text-mist-300">inte verifierad</dd>
+          </div>
+          <div>
+            <dt class="text-mist-400">Gmail OAuth</dt>
+            <dd>{{ ui.status_badge('ok' if gmail_connected else 'neutral', 'Ansluten' if gmail_connected else 'Ej ansluten') }}</dd>
+          </div>
+        </dl>
+        <div class="flex flex-wrap gap-2 pt-1">
+          {% if chatgpt.get("configured") %}
+          <a class="az-btn-secondary az-btn-sm" href="/oauth/openai/start">Återanslut ChatGPT</a>
+          <form
+            method="post"
+            action="/oscar/models/chatgpt/disconnect"
+            data-confirm="Koppla från den aktiva ChatGPT OAuth-sessionen?"
+            data-confirm-title="Koppla från ChatGPT"
+            data-confirm-danger="1"
+          >
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <button class="az-btn-danger az-btn-sm" type="submit" data-busy-label="Kopplar från...">Koppla från ChatGPT</button>
+          </form>
+          {% else %}
+          <a class="az-btn-oscar az-btn-sm" href="/oauth/openai/start">Anslut ChatGPT</a>
+          {% endif %}
+          <a class="az-btn-secondary az-btn-sm" href="/oauth/gmail/start">{{ "Förnya Gmail" if gmail_connected else "Anslut Gmail" }}</a>
+        </div>
+        <details class="rounded-lg border border-ink-700/70 bg-ink-900/70 p-3">
+          <summary class="cursor-pointer text-xs font-medium text-mist-200">Slutför manuell callback (remote VPS / 127.0.0.1)</summary>
+          <p class="az-muted mt-2 text-xs">
+            Aktiv <code class="az-code font-mono">redirect_uri</code>:
+            <code class="az-code font-mono break-all">{{ chatgpt.get("redirect_uri", "") }}</code>.
+            Om OpenAI skickar tillbaka till <code class="az-code font-mono">127.0.0.1</code> när dashboarden körs på en fjärrserver, klistra in hela adressfälts-URL:en nedan inom 10 minuter.
+          </p>
+          <form method="post" action="/oauth/openai/complete-manual" class="mt-2.5 flex flex-wrap items-center gap-2">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input
+              class="az-input min-w-[14rem] flex-1 font-mono text-xs"
+              type="text"
+              name="callback_url"
+              aria-label="Manuell ChatGPT callback-URL"
+              placeholder="http://127.0.0.1:8080/oauth/openai/callback?code=...&state=..."
+              autocomplete="off"
+            />
+            <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Slutför...">Slutför ChatGPT-anslutning</button>
+          </form>
+        </details>
+      </div>
+
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4 space-y-3">
+        <h3 class="text-sm font-semibold text-mist-100">xAI Grok Build (Device Login)</h3>
+        <form method="post" action="/oscar/models/xai/login">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button class="az-btn-oscar az-btn-sm" type="submit" data-busy-label="Startar...">Logga in med xAI</button>
+        </form>
+        {% set xai = xai_login or {} %}
+        {% if xai.get("verification_uri") or xai.get("user_code") or xai.get("detail") or xai.get("status") not in [None, "", "idle"] %}
+        <div
+          id="xai-login-status"
+          class="rounded-lg border border-oscar-600/35 bg-ink-900/90 p-3 space-y-2 text-sm"
+          data-status="{{ xai.get('status', '') }}"
+          data-xai-poll-url="/oscar/models/xai/login/status"
+        >
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs font-medium text-mist-300">xAI-status:</span>
+            <span id="xai-login-state" class="az-badge az-badge-oscar font-mono">{{ xai.get("status", "") }}</span>
+          </div>
+          {% if xai.get("user_code") %}
+          <div class="flex flex-wrap items-center gap-2">
+            <strong id="xai-login-code" class="rounded-md border border-ink-600 bg-ink-950 px-3 py-1 font-mono text-lg tracking-widest text-mist-100">{{ xai.get("user_code", "") }}</strong>
+            <button type="button" class="az-btn-secondary az-btn-sm" data-copy-target="#xai-login-code">
+              {{ icon('copy', 'xs') }}
+              <span data-copy-label>Kopiera kod</span>
+            </button>
+          </div>
+          {% else %}
+          <strong id="xai-login-code" class="hidden"></strong>
+          {% endif %}
+          <div>
+            <a
+              id="xai-login-link"
+              class="az-btn-oscar az-btn-sm"
+              target="_blank"
+              rel="noopener noreferrer"
+              {% if xai.get("verification_uri") %}href="{{ xai.get('verification_uri') }}"{% else %}hidden{% endif %}
+            >
+              <span>Öppna inloggningen</span>
+              {{ icon('external-link', 'xs') }}
+            </a>
+          </div>
+          <p id="xai-login-detail" class="az-muted text-xs">
+            {%- if xai.get("status") == "finished" -%}Inloggningen är klar. Grok Build är aktiverat.
+            {%- elif xai.get("status") == "pending" -%}Väntar på godkännande i webbläsaren. {{ xai.get("detail", "") }}
+            {%- else -%}{{ xai.get("detail", "") }}{%- endif -%}
+          </p>
+        </div>
+        {% endif %}
+        <p class="text-xs text-mist-400">
+          xAI-knappen kör <code class="az-code font-mono">grok login --device-auth</code>. Grok Build sparar sessionen.
+          Azom läser inte <code class="az-code font-mono">auth.json</code> och lagrar ingen xAI-token.
+          API-nyckeln sätts under <a class="text-oscar-300 hover:underline" href="/oscar/secrets">Oscar secrets</a> och visas inte igen.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. Globala standardmodeller & Katalog -->
+  <section id="model-catalog" class="az-card-oscar space-y-5">
+    <div>
+      <h2 class="font-display text-base font-semibold text-oscar-300">Globala standardmodeller &amp; Katalog</h2>
+      <p class="az-muted mt-1">
+        Tomt modellfält lämnar befintligt värde oförändrat. OpenRouter utan eget modell-id använder
+        <code class="az-code font-mono">deepseek/deepseek-v4.1-flash-1017</code>.
+      </p>
+    </div>
+
+    <form method="post" action="/oscar/models/settings" class="space-y-4">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <div class="grid gap-4 sm:grid-cols-3">
         <div>
           <label class="az-label" for="OPENAI_MODEL">OPENAI_MODEL</label>
-          <input class="az-input !max-w-none" id="OPENAI_MODEL" name="OPENAI_MODEL" value="{{ model_routes.get('chatgpt_oauth', {}).get('model', '') }}" />
+          <input
+            class="az-input font-mono text-xs"
+            id="OPENAI_MODEL"
+            name="OPENAI_MODEL"
+            type="text"
+            maxlength="128"
+            spellcheck="false"
+            list="rec-chatgpt_oauth"
+            value="{{ model_routes.get('chatgpt_oauth', {}).get('model', '') }}"
+          />
         </div>
         <div>
           <label class="az-label" for="XAI_MODEL">XAI_MODEL</label>
-          <input class="az-input !max-w-none" id="XAI_MODEL" name="XAI_MODEL" value="{{ model_routes.get('xai_api_key', {}).get('model', '') }}" />
+          <input
+            class="az-input font-mono text-xs"
+            id="XAI_MODEL"
+            name="XAI_MODEL"
+            type="text"
+            maxlength="128"
+            spellcheck="false"
+            list="rec-xai_api_key"
+            value="{{ model_routes.get('xai_api_key', {}).get('model', '') }}"
+          />
         </div>
         <div>
           <label class="az-label" for="OPENROUTER_MODEL">OPENROUTER_MODEL</label>
-          <input class="az-input !max-w-none" id="OPENROUTER_MODEL" name="OPENROUTER_MODEL" value="{{ model_routes.get('openrouter', {}).get('model', '') }}" />
+          <input
+            class="az-input font-mono text-xs"
+            id="OPENROUTER_MODEL"
+            name="OPENROUTER_MODEL"
+            type="text"
+            maxlength="128"
+            spellcheck="false"
+            list="rec-openrouter"
+            value="{{ model_routes.get('openrouter', {}).get('model', '') }}"
+          />
         </div>
       </div>
-      <label class="flex cursor-pointer items-center gap-2.5 text-sm text-mist-200">
+
+      <label class="flex cursor-pointer items-center gap-2.5 text-sm text-mist-100" for="AZOM_XAI_GROK_BUILD">
         <input
-          class="h-4 w-4 rounded border-ink-600 bg-ink-950 text-steel-500"
+          id="AZOM_XAI_GROK_BUILD"
+          class="az-checkbox accent-oscar-500"
           type="checkbox"
           name="AZOM_XAI_GROK_BUILD"
           value="1"
           {% if model_routes.get('xai_grok_build', {}).get('configured') %}checked{% endif %}
         />
-        AZOM_XAI_GROK_BUILD — Grok Build äger sessionen. Azom läser inte auth.json.
+        <span><code class="az-code font-mono">AZOM_XAI_GROK_BUILD</code> — Grok Build äger sessionen. Azom läser inte <code class="az-code font-mono">auth.json</code>.</span>
       </label>
-      <button class="az-btn-oscar" type="submit">Spara modellval</button>
+
+      <button class="az-btn-oscar" type="submit" data-busy-label="Sparar...">Spara modellval</button>
     </form>
-    <form method="get" action="/oscar" class="mt-4 flex flex-wrap items-end gap-2">
-      <div>
-        <label class="az-label" for="model_q">Sök modell</label>
-        <input class="az-input" id="model_q" name="model_q" value="{{ model_query or '' }}" placeholder="deepseek flash" />
-      </div>
-      <div>
-        <label class="az-label" for="catalog">Katalog</label>
-        <select class="az-input" id="catalog" name="catalog">
-          <option value="openrouter" {% if model_catalog_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
-          <option value="openai" {% if model_catalog_provider == 'openai' %}selected{% endif %}>ChatGPT Plus (OAuth)</option>
-          <option value="xai" {% if model_catalog_provider == 'xai' %}selected{% endif %}>xAI</option>
-        </select>
-      </div>
-      <button class="az-btn-secondary" type="submit">Sök</button>
-    </form>
-    {% if model_catalog_error %}
-    <p class="az-missing mt-2">{{ model_catalog_error }}</p>
-    {% endif %}
-    {% if model_catalog %}
-    <ul class="mt-2 space-y-1">
-      {% for row in model_catalog %}
-      <li>
-        <button class="az-btn-secondary" type="button" data-model-id="{{ row.id }}" data-model-target="{{ 'OPENAI_MODEL' if model_catalog_provider == 'openai' else ('XAI_MODEL' if model_catalog_provider == 'xai' else 'OPENROUTER_MODEL') }}">{{ row.name }}</button>
-        <code class="az-code">{{ row.id }}</code>
-      </li>
-      {% endfor %}
-    </ul>
-    <script>
-      document.querySelectorAll("[data-model-id]").forEach(function (button) {
-        button.addEventListener("click", function () {
-          var field = document.getElementById(button.getAttribute("data-model-target"));
-          if (field) field.value = button.getAttribute("data-model-id");
-        });
-      });
-    </script>
-    {% endif %}
-    <p class="az-muted mt-2">OpenRouter utan eget modell-id använder deepseek/deepseek-v4.1-flash-1017. Ett klick fyller fältet. Spara modellval skriver valet.</p>
-    <div class="mt-4 flex flex-wrap gap-2">
-      <a class="az-btn-oscar" href="/oauth/openai/start">Anslut ChatGPT</a>
-      <a class="az-btn-secondary" href="/oauth/openai/start">Återanslut</a>
-      <form method="post" action="/oscar/models/chatgpt/disconnect">
-        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-        <button class="az-btn-secondary" type="submit">Koppla från ChatGPT</button>
+    <div class="border-t border-ink-700/80 pt-4 space-y-3">
+      <h3 class="text-sm font-semibold text-mist-100">Sök i modellkatalog</h3>
+      <form method="get" action="/oscar#model-catalog" class="flex flex-wrap items-end gap-3">
+        <div class="min-w-[14rem] flex-1">
+          <label class="az-label" for="model_q">Sök modell</label>
+          <input class="az-input" id="model_q" name="model_q" type="search" maxlength="80" value="{{ model_query or '' }}" placeholder="t.ex. deepseek flash" />
+        </div>
+        <div class="w-52">
+          <label class="az-label" for="catalog">Katalog</label>
+          <select class="az-select" id="catalog" name="catalog">
+            <option value="openrouter" {% if model_catalog_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
+            <option value="openai" {% if model_catalog_provider == 'openai' %}selected{% endif %}>ChatGPT Plus (OAuth)</option>
+            <option value="xai" {% if model_catalog_provider == 'xai' %}selected{% endif %}>xAI</option>
+          </select>
+        </div>
+        <button class="az-btn-secondary" type="submit">{{ icon('search', 'xs') }}<span>Sök</span></button>
       </form>
-      <form id="xai-login" method="post" action="/oscar/models/xai/login">
-        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-        <button class="az-btn-oscar" type="submit">Logga in med xAI</button>
-      </form>
+
+      {% if model_catalog_error %}
+        {{ ui.flash_banner('error', model_catalog_error, dismissible=False) }}
+      {% endif %}
+
+      {% if model_catalog %}
+      <ul class="space-y-1.5">
+        {% for row in model_catalog %}
+        <li class="flex flex-wrap items-center gap-2 rounded-lg border border-ink-700/70 bg-ink-950/60 px-3 py-2 text-sm">
+          <button
+            class="az-btn-secondary az-btn-sm"
+            type="button"
+            data-model-id="{{ row.id }}"
+            data-model-target="{{ 'OPENAI_MODEL' if model_catalog_provider == 'openai' else ('XAI_MODEL' if model_catalog_provider == 'xai' else 'OPENROUTER_MODEL') }}"
+          >{{ row.name }}</button>
+          <code class="az-code font-mono break-all">{{ row.id }}</code>
+          <span class="text-xs text-mist-400">Klicka för att fylla fältet ovan.</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% elif model_query and not model_catalog_error %}
+        <p class="az-muted">Inga modeller i {{ model_catalog_provider }} matchade <code class="az-code font-mono">{{ model_query }}</code>.</p>
+      {% endif %}
     </div>
-    <details class="mt-3 rounded border border-ink-700/60 bg-ink-950/40 p-3">
-      <summary class="cursor-pointer text-sm text-mist-200">Slutför manuell callback (remote VPS / 127.0.0.1)</summary>
-      <p class="az-muted mt-2 text-xs">Aktiv <code>redirect_uri</code>: <code class="az-code">{{ model_routes.get('chatgpt_oauth', {}).get('redirect_uri', '') }}</code>. Om OpenAI dirigerar till <code>127.0.0.1</code> i din webbläsare när dashboard körs på en fjärrserver, kopiera hela URL:en ur adressfältet och klistra in den nedan inom 10 minuter.</p>
-      <form method="post" action="/oauth/openai/complete-manual" class="mt-2 flex flex-wrap items-center gap-2">
-        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-        <input class="az-input flex-1" type="text" name="callback_url" placeholder="http://127.0.0.1:8080/oauth/openai/callback?code=...&state=..." autocomplete="off" />
-        <button class="az-btn-secondary" type="submit">Slutför ChatGPT-anslutning</button>
-      </form>
-    </details>
-    {% set xai = xai_login or {} %}
-    {% if xai.get("verification_uri") or xai.get("user_code") or xai.get("detail") or xai.get("status") not in [None, "", "idle"] %}
-    <p id="xai-login-status" class="mt-2" data-status="{{ xai.get('status', '') }}">
-      xAI: <span id="xai-login-state">{{ xai.get("status", "") }}</span>
-      <strong id="xai-login-code">{{ xai.get("user_code", "") }}</strong>
-      <a id="xai-login-link" class="text-oscar-400 hover:underline" {% if xai.get("verification_uri") %}href="{{ xai.get('verification_uri') }}"{% else %}hidden{% endif %}>Öppna inloggningen</a>
-      <span id="xai-login-detail" class="az-muted">{% if xai.get("status") == "finished" %}Inloggningen är klar. Grok Build är aktiverat.{% elif xai.get("status") == "pending" %}Väntar på godkännande i webbläsaren. {{ xai.get("detail", "") }}{% else %}{{ xai.get("detail", "") }}{% endif %}</span>
-    </p>
-    {% if xai.get("status") == "pending" %}
-    <script>
-      (function () {
-        var box = document.getElementById("xai-login-status");
-        if (!box || box.getAttribute("data-status") !== "pending") return;
-        var tries = 0;
-        function text(id, value) {
-          var node = document.getElementById(id);
-          if (node) node.textContent = value || "";
-        }
-        function allowUri(uri) {
-          return uri.indexOf("https://accounts.x.ai/") === 0 || uri.indexOf("https://auth.x.ai/") === 0;
-        }
-        function tick() {
-          tries += 1;
-          fetch("/oscar/models/xai/login/status", {
-            credentials: "same-origin",
-            headers: {Accept: "application/json"}
-          }).then(function (res) {
-            if (!res.ok) throw new Error("status");
-            return res.json();
-          }).then(function (body) {
-            var status = String(body.status || "");
-            box.setAttribute("data-status", status);
-            text("xai-login-state", status);
-            text("xai-login-code", body.user_code || "");
-            var link = document.getElementById("xai-login-link");
-            var uri = String(body.verification_uri || "");
-            if (link) {
-              if (allowUri(uri)) {
-                link.href = uri;
-                link.hidden = false;
-              } else {
-                link.hidden = true;
-                link.removeAttribute("href");
-              }
-            }
-            if (status === "finished") {
-              text("xai-login-detail", "Inloggningen är klar. Grok Build är aktiverat.");
-              return;
-            }
-            if (status === "failed") {
-              text("xai-login-detail", body.detail || "Inloggningen misslyckades.");
-              return;
-            }
-            text("xai-login-detail", "Väntar på godkännande i webbläsaren. " + (body.detail || ""));
-            if (tries < 150) window.setTimeout(tick, 2000);
-            else text("xai-login-detail", "Sidan slutade vänta. Ladda om för att se läget.");
-          }).catch(function () {
-            if (tries < 150) window.setTimeout(tick, 2000);
-          });
-        }
-        window.setTimeout(tick, 2000);
-      })();
-    </script>
-    {% endif %}
-    {% endif %}
-    {% set chatgpt = model_routes.get("chatgpt_oauth", {}) %}
-    <p class="az-muted mt-2">
-      ChatGPT-refresh ägs av Azom. Anslut öppnar OpenAI när inga SIWC-variabler är satta.
-      Host-id: {{ chatgpt.get("ext_agent_host_id") or "saknas" }}.
-      Plananvändning: {% if chatgpt.get("plan_usage") %}beviljad{% else %}inte bekräftad{% endif %}.
-      ID-token signatur: inte verifierad.
-      xAI-knappen kör grok login --device-auth. Grok Build sparar sessionen. Azom läser inte auth.json och lagrar ingen xAI-token.
-      API-nyckeln sätts under Oscar secrets och visas inte igen.
-    </p>
   </section>
 
-  <section id="model-profiles" class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <h2 class="az-section-title text-oscar-400/80">Modellprofiler &amp; Monterade modeller</h2>
-      <form method="post" action="/oscar/models/profiles/reset">
+  <!-- 4. Modellprofiler & Monterade modeller -->
+  <section id="model-profiles" class="az-card-oscar space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 class="font-display text-base font-semibold text-oscar-300">Modellprofiler &amp; Monterade modeller</h2>
+        <p class="az-muted mt-1">
+          Varje uppgiftstyp har egna instruktioner, gränser och monterade modeller (abonnemang först, OpenRouter kirurgiskt, xAI API som opt-in fallback). Slottest kör en exakt slot utan fallback.
+        </p>
+      </div>
+      <form
+        method="post"
+        action="/oscar/models/profiles/reset"
+        data-confirm="Återställa alla 7 modellprofiler till standard?"
+        data-confirm-title="Återställ alla profiler"
+        data-confirm-ok="Återställ alla"
+        data-confirm-danger="1"
+      >
         <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
         <input type="hidden" name="profile_id" value="all" />
-        <button class="az-btn-secondary" type="submit">Återställ alla profiler</button>
+        <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Återställer...">Återställ alla profiler</button>
       </form>
     </div>
-    <p class="az-muted mt-1">Varje uppgiftstyp har egna instruktioner, gränser och monterade modeller (abonnemang först, OpenRouter kirurgiskt, xAI API som opt-in fallback). Slottest kör en exakt slot utan fallback.</p>
+
     {% for rid, recs in (model_recommended or {}).items() %}
     <datalist id="rec-{{ rid }}">
       <option value="inherit_env">inherit_env (global env)</option>
@@ -281,132 +480,237 @@
       {% endfor %}
     </datalist>
     {% endfor %}
-    <div class="mt-4 space-y-4">
+
+    <div class="space-y-3">
       {% for pid, prof in (model_profiles or {}).items() %}
-      <div class="rounded-xl border border-ink-700/70 bg-ink-950/60 p-4">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <strong><code class="az-code">{{ pid }}</code></strong>
-            {% if prof.has_override %}<span class="az-badge bg-oscar-500/20 text-oscar-300 ml-2">anpassad</span>{% endif %}
-            <span class="az-muted ml-2">{{ prof.description }}</span>
+      <details
+        class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4"
+        {% if prof.has_override or (model_query and model_query|lower in pid|lower) %}open{% endif %}
+      >
+        <summary class="flex cursor-pointer flex-wrap items-center justify-between gap-2">
+          <div class="flex flex-wrap items-center gap-2 min-w-0">
+            <code class="az-code font-mono font-semibold">{{ pid }}</code>
+            {% if prof.has_override %}{{ ui.status_badge('oscar', 'anpassad') }}{% endif %}
+            <span class="text-sm text-mist-200">{{ prof.description }}</span>
           </div>
-          <div class="flex items-center gap-2">
-            <a class="az-btn-secondary" href="/oscar/behavior#prompt-{{ prof.prompt_ref }}">Prompt: {{ prof.prompt_ref }}</a>
-            <form method="post" action="/oscar/models/profiles/reset" class="inline">
+          <span class="text-xs text-mist-400 tabular-nums">
+            Prompt: <span class="font-mono text-mist-300">{{ prof.prompt_ref }}</span> · {{ prof.mounts | length }} slots
+          </span>
+        </summary>
+
+        <div class="mt-4 border-t border-ink-700/70 pt-4 space-y-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <a class="az-btn-secondary az-btn-sm" href="/oscar/behavior#prompt-{{ prof.prompt_ref }}">
+              {{ icon('message-square', 'xs') }}
+              <span>Prompt: {{ prof.prompt_ref }}</span>
+            </a>
+            <form
+              method="post"
+              action="/oscar/models/profiles/reset"
+              class="inline"
+              data-confirm="Återställa profilen {{ pid }} till standard?"
+              data-confirm-title="Återställ profil"
+            >
               <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
               <input type="hidden" name="profile_id" value="{{ pid }}" />
-              <button class="az-btn-secondary" type="submit">Återställ</button>
+              <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Återställer...">Återställ</button>
             </form>
           </div>
-        </div>
-        <form method="post" action="/oscar/models/profiles/save" class="mt-3 space-y-3">
-          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-          <input type="hidden" name="profile_id" value="{{ pid }}" />
-          <div class="grid gap-3 sm:grid-cols-6">
-            <div>
-              <label class="az-label">Prompt</label>
-              <select class="az-input !max-w-none" name="prompt_ref">
-                {% for pr in ['chat', 'classify', 'draft', 'product_desc', 'wp_coder'] %}
-                <option value="{{ pr }}" {% if prof.prompt_ref == pr %}selected{% endif %}>{{ pr }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div>
-              <label class="az-label">Max tokens</label>
-              <input class="az-input !max-w-none" type="number" name="max_output_tokens" value="{{ prof.generation.max_output_tokens }}" min="32" max="8192" />
-            </div>
-            <div>
-              <label class="az-label">Temp</label>
-              <input class="az-input !max-w-none" type="number" step="0.05" name="temperature" value="{{ prof.generation.temperature }}" min="0" max="1.5" />
-            </div>
-            <div>
-              <label class="az-label">Effort</label>
-              <select class="az-input !max-w-none" name="reasoning_effort">
-                {% for ef in ['', 'none', 'minimal', 'low', 'medium', 'high'] %}
-                <option value="{{ ef }}" {% if (prof.generation.reasoning_effort or '') == ef %}selected{% endif %}>{{ ef or 'auto' }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div>
-              <label class="az-label">Idle (s)</label>
-              <input class="az-input !max-w-none" type="number" name="idle_s" value="{{ prof.timeouts.idle_s }}" min="3" max="300" />
-            </div>
-            <div>
-              <label class="az-label">Hard (s)</label>
-              <input class="az-input !max-w-none" type="number" name="hard_s" value="{{ prof.timeouts.hard_s }}" min="5" max="600" />
-            </div>
-          </div>
-          <div class="overflow-x-auto">
-            <table class="az-table">
-              <thead><tr><th>Slot</th><th>Route</th><th>Modell-id</th><th>Aktiv</th></tr></thead>
-              <tbody>
-                {% for slot in prof.mounts %}
-                {% set sidx = loop.index0 %}
-                <tr>
-                  <td><input type="hidden" name="slot_id" value="{{ slot.slot_id }}" /><code class="az-code">{{ slot.slot_id }}</code></td>
-                  <td>
-                    <select class="az-input !max-w-none" name="route_id">
-                      {% for rid in model_all_routes %}
-                      <option value="{{ rid }}" {% if slot.route_id == rid %}selected{% endif %}>{{ rid }}</option>
-                      {% endfor %}
-                    </select>
-                  </td>
-                  <td><input class="az-input !max-w-none" name="model_id" value="{{ slot.model_id }}" list="rec-{{ slot.route_id }}" /></td>
-                  <td><input type="checkbox" name="enabled_{{ sidx }}" value="1" {% if slot.enabled %}checked{% endif %} /></td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          <button class="az-btn-oscar" type="submit">Spara profil</button>
-        </form>
-        <div class="mt-2 flex flex-wrap gap-2">
-          {% for slot in prof.mounts %}
-          <form method="post" action="/oscar/models/profiles/test" class="inline">
+
+          <form method="post" action="/oscar/models/profiles/save" class="space-y-4">
             <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
             <input type="hidden" name="profile_id" value="{{ pid }}" />
-            <input type="hidden" name="slot_id" value="{{ slot.slot_id }}" />
-            <button class="az-btn-secondary" type="submit">Testa {{ slot.slot_id }} (utan fallback)</button>
+            <div class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <div>
+                <label class="az-label" for="prof-{{ pid }}-prompt_ref">Prompt</label>
+                <select class="az-select" id="prof-{{ pid }}-prompt_ref" name="prompt_ref">
+                  {% for pr in ['chat', 'classify', 'draft', 'product_desc', 'wp_coder'] %}
+                  <option value="{{ pr }}" {% if prof.prompt_ref == pr %}selected{% endif %}>{{ pr }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label class="az-label" for="prof-{{ pid }}-max_output_tokens">Max tokens</label>
+                <input class="az-input tabular-nums" id="prof-{{ pid }}-max_output_tokens" type="number" step="1" name="max_output_tokens" value="{{ prof.generation.max_output_tokens }}" min="32" max="8192" required />
+              </div>
+              <div>
+                <label class="az-label" for="prof-{{ pid }}-temperature">Temperatur</label>
+                <input class="az-input tabular-nums" id="prof-{{ pid }}-temperature" type="number" step="0.01" name="temperature" value="{{ prof.generation.temperature }}" min="0" max="1.5" required />
+              </div>
+              <div>
+                <label class="az-label" for="prof-{{ pid }}-reasoning_effort">Reasoning</label>
+                <select class="az-select" id="prof-{{ pid }}-reasoning_effort" name="reasoning_effort">
+                  {% for ef in reasoning_effort_options or ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'] %}
+                  <option value="{{ ef }}" {% if (prof.generation.reasoning_effort or '') == ef %}selected{% endif %}>{{ ef or 'auto' }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label class="az-label" for="prof-{{ pid }}-idle_s">Idle (s)</label>
+                <input class="az-input tabular-nums" id="prof-{{ pid }}-idle_s" type="number" step="1" name="idle_s" value="{{ prof.timeouts.idle_s }}" min="3" max="300" required />
+              </div>
+              <div>
+                <label class="az-label" for="prof-{{ pid }}-hard_s">Hard (s)</label>
+                <input class="az-input tabular-nums" id="prof-{{ pid }}-hard_s" type="number" step="1" name="hard_s" value="{{ prof.timeouts.hard_s }}" min="5" max="600" required />
+              </div>
+            </div>
+
+            <div class="az-table-wrap" tabindex="0" role="region" aria-label="Monterade slots för {{ pid }}">
+              <table class="az-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Slot</th>
+                    <th scope="col">Rutt</th>
+                    <th scope="col">Modell-id</th>
+                    <th scope="col">Aktiv</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for slot in prof.mounts %}
+                  {% set sidx = loop.index0 %}
+                  <tr>
+                    <td>
+                      <input type="hidden" name="slot_id" value="{{ slot.slot_id }}" />
+                      <code class="az-code font-mono">{{ slot.slot_id }}</code>
+                    </td>
+                    <td>
+                      <select
+                        class="az-select font-mono text-xs"
+                        name="route_id"
+                        data-route-select
+                        data-model-target="#prof-{{ pid }}-slot-{{ sidx }}-model"
+                        aria-label="Rutt för {{ pid }} {{ slot.slot_id }}"
+                      >
+                        {% for rid in model_all_routes %}
+                        <option value="{{ rid }}" {% if slot.route_id == rid %}selected{% endif %}>{{ rid }}</option>
+                        {% endfor %}
+                      </select>
+                    </td>
+                    <td>
+                      <input
+                        id="prof-{{ pid }}-slot-{{ sidx }}-model"
+                        class="az-input min-w-[14rem] font-mono text-xs"
+                        type="text"
+                        maxlength="120"
+                        spellcheck="false"
+                        placeholder="inherit_env"
+                        name="model_id"
+                        value="{{ slot.model_id }}"
+                        list="rec-{{ slot.route_id }}"
+                        aria-label="Modell-id för {{ pid }} {{ slot.slot_id }}"
+                      />
+                    </td>
+                    <td class="pt-3">
+                      <input
+                        class="az-checkbox accent-oscar-500"
+                        type="checkbox"
+                        name="enabled_{{ sidx }}"
+                        value="1"
+                        aria-label="Aktiv för {{ pid }} {{ slot.slot_id }}"
+                        {% if slot.enabled %}checked{% endif %}
+                      />
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+
+            <button class="az-btn-oscar az-btn-sm" type="submit" data-busy-label="Sparar...">Spara profil</button>
           </form>
-          {% endfor %}
+
+          <div class="flex flex-wrap gap-2 pt-1">
+            {% for slot in prof.mounts %}
+            <form method="post" action="/oscar/models/profiles/test" class="inline">
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+              <input type="hidden" name="profile_id" value="{{ pid }}" />
+              <input type="hidden" name="slot_id" value="{{ slot.slot_id }}" />
+              <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Testar...">Testa {{ slot.slot_id }} (utan fallback)</button>
+            </form>
+            {% endfor %}
+          </div>
         </div>
-      </div>
+      </details>
       {% endfor %}
     </div>
   </section>
 
-  <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
-    <h2 class="az-section-title text-oscar-400/80">Snabblänkar</h2>
-    <div class="flex flex-wrap gap-2">
-      <a class="az-btn-secondary" href="/oscar/behavior">Beteende</a>
-      <a class="az-btn-secondary" href="/oscar/telegram">Telegram</a>
-      <a class="az-btn-secondary" href="/data/audit">Historik</a>
-      <a class="az-btn-secondary" href="/settings">Inställningar</a>
-      <a class="az-btn-secondary" href="/data/telemetry">Telemetry</a>
-      <a class="az-btn-secondary" href="/data/escalations">Eskaleringar</a>
-      <a class="az-btn-secondary" href="/interact">Interagera</a>
-      <a class="az-btn-secondary" href="/onboarding">Onboarding</a>
+  <!-- 5. Senaste öppna eskaleringar -->
+  <section class="az-card-oscar space-y-3">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="font-display text-base font-semibold text-oscar-300">Senaste eskaleringar</h2>
+      <div class="flex items-center gap-2">
+        {% if open_count > 8 %}
+        <a class="text-xs font-medium text-oscar-300 hover:underline" href="/oscar/escalations">+{{ open_count - 8 }} fler — visa alla →</a>
+        {% elif open_count %}
+        <a class="text-xs font-medium text-oscar-300 hover:underline" href="/oscar/escalations">Hantera alla →</a>
+        {% endif %}
+      </div>
     </div>
-  </section>
-
-  {% if open_escalation_tickets %}
-  <section class="az-card border-oscar-600/35 sm:col-span-2 xl:col-span-4">
-    <h2 class="az-section-title text-oscar-400/80">Senaste öppna tickets</h2>
-    <div class="overflow-x-auto">
+    {% if open_escalation_tickets %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Senaste öppna eskaleringar">
       <table class="az-table">
-        <thead><tr><th>When</th><th>Severity</th><th>Summary</th></tr></thead>
+        <thead>
+          <tr>
+            <th scope="col">Tid</th>
+            <th scope="col">Allvarlighetsgrad</th>
+            <th scope="col">Sammanfattning</th>
+          </tr>
+        </thead>
         <tbody>
           {% for e in open_escalation_tickets[:8] %}
           <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
-            <td>{{ e.get('severity', '') }}</td>
+            <td class="text-xs text-mist-300 tabular-nums whitespace-nowrap">{{ fmt_dt(e.get('created_at')) or e.get('created_at', '')[:19] }}</td>
+            <td>{{ ui.status_badge('error' if e.get('severity') in ['critical', 'high'] else 'warn', e.get('severity', 'open')) }}</td>
             <td>{{ e.get('summary', '') }}</td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+    {% else %}
+      {{ ui.empty_state("Inga öppna eskaleringar", "Alla eskaleringar till Oscar är hanterade.", icon_name="check-circle") }}
+    {% endif %}
   </section>
-  {% endif %}
+
+  <!-- 6. Farozon · GDPR -->
+  <section id="gdpr-zone" class="az-card border-danger/35 space-y-4">
+    <div>
+      <h2 class="font-display text-base font-semibold text-danger-text">Farozon · GDPR-export &amp; radering</h2>
+      <p class="az-muted mt-1">
+        Exporterar eller raderar ärenden i <code class="az-code font-mono">cases.db</code> för en specifik kundadress. Båda åtgärderna loggas i granskningsloggen och returnerar JSON-resultat.
+      </p>
+    </div>
+
+    <div class="grid gap-4 lg:grid-cols-2">
+      <form method="get" action="/oscar/gdpr/export" target="_blank" class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4 space-y-3">
+        <h3 class="text-sm font-semibold text-mist-100">Exportera kunddata (JSON)</h3>
+        <div>
+          <label class="az-label" for="gdpr-export-email">Kundens e-postadress</label>
+          <input id="gdpr-export-email" class="az-input" type="email" name="email" required placeholder="kund@example.com" />
+        </div>
+        <button class="az-btn-secondary az-btn-sm" type="submit">Exportera JSON</button>
+      </form>
+
+      <form
+        method="post"
+        action="/oscar/gdpr/delete"
+        target="_blank"
+        class="rounded-xl border border-danger/35 bg-danger/5 p-4 space-y-3"
+        data-confirm="Vill du permanent radera alla kundärenden för den här e-postadressen? Åtgärden kan inte ångras."
+        data-confirm-title="Bekräfta GDPR-radering"
+        data-confirm-ok="Radera permanent"
+        data-confirm-danger="1"
+      >
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <h3 class="text-sm font-semibold text-danger-text">Radera kunddata permanent</h3>
+        <div>
+          <label class="az-label" for="gdpr-delete-email">Bekräfta kundens e-postadress</label>
+          <input id="gdpr-delete-email" class="az-input" type="email" name="email" required placeholder="kund@example.com" />
+        </div>
+        <button class="az-btn-danger az-btn-sm" type="submit">{{ icon('trash', 'xs') }}<span>Radera kundärenden</span></button>
+      </form>
+    </div>
+  </section>
 </div>
 {% endblock %}

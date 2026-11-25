@@ -654,3 +654,63 @@ def test_review_modules_do_not_import_a_process_runner():
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "import subprocess" not in source
         assert "import docker" not in source
+
+
+def test_resolve_site_id_from_text_matches_id_or_host_and_ignores_unknown():
+    from ecom_ops.wp_ops.registry import resolve_site_id_from_text
+
+    assert resolve_site_id_from_text("Granska startsidans källkod på mock-staging", path=REGISTRY) == "mock-staging"
+    assert resolve_site_id_from_text("Kolla https://mock-shop.example.test/index.php", path=REGISTRY) == "mock-shop"
+    assert resolve_site_id_from_text("Kolla https://evil.example/wp-admin", path=REGISTRY) == ""
+    assert resolve_site_id_from_text("Jämför mock-shop och mock-staging", path=REGISTRY) == ""
+    assert resolve_site_id_from_text("", path=REGISTRY) == ""
+
+
+def test_page_review_job_auto_resolves_explicit_site_id(monkeypatch):
+    from ecom_ops.bot.handlers import BotHandler
+    from ecom_ops.bot.page_review_job import run_page_review_job
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    called: list[str] = []
+
+    class Store:
+        def __init__(self) -> None:
+            self.data = {"5": {"session": {"last_market": "no"}, "messages": []}}
+
+        def get(self, chat_id):
+            return self.data.get(str(chat_id))
+
+        def set(self, chat_id, state) -> None:
+            self.data[str(chat_id)] = state
+
+    class Handler:
+        channel = "telegram"
+
+        def __init__(self) -> None:
+            self.store = Store()
+
+        _merge_state = BotHandler._merge_state
+        _update_session_atomic = BotHandler._update_session_atomic
+
+        def _peer_allowed(self, _chat_id: str) -> bool:
+            return True
+
+        def _resolve_actor(self, _chat_id: str) -> str:
+            return "oscar"
+
+    def fake_loop(**kwargs):
+        called.append(str(kwargs.get("site_id") or ""))
+        return type("Outcome", (), {"text": "Auto OK"})()
+
+    monkeypatch.setattr("ecom_ops.bot.page_review_job.run_bounded_page_review_loop", fake_loop)
+    handler = Handler()
+    reply = run_page_review_job(
+        handler,
+        {"chat_id": "5", "payload": {"text": "Granska startsidans källkod på mock-staging"}},
+        progress=lambda _msg: None,
+    )
+    assert reply.text == "Auto OK"
+    assert called == ["mock-staging"]
+    ctx = handler.store.get("5")["session"]["wp_ops_context"]
+    assert ctx["site_id"] == "mock-staging"
+    assert ctx["actor_id"] == "oscar"

@@ -13,7 +13,12 @@ from typing import Any
 
 import requests
 
-from ecom_ops.model_router.base import ModelRequest, ModelResult, RouteCapabilities
+from ecom_ops.model_router.base import (
+    ModelRequest,
+    ModelResult,
+    RouteCapabilities,
+    format_chat_completions_messages,
+)
 from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
@@ -105,6 +110,7 @@ class OpenRouterRoute:
         supports_reasoning_effort=True,
         supports_json_schema=True,
         supports_streaming=True,
+        supports_vision=True,
         cost_kind="estimated",
         subject_to_openrouter_cap=True,
     )
@@ -147,9 +153,16 @@ class OpenRouterRoute:
             raise ModelConfigError("OpenRouter budget cap reached", code="budget_exhausted")
 
         model = request.model or self._model()
+        try:
+            formatted_messages = format_chat_completions_messages(request.messages)
+        except ValueError as exc:
+            raise ModelConfigError(
+                "Invalid image attachment for OpenRouter",
+                code="invalid_image",
+            ) from exc
         payload: dict[str, Any] = {
             "model": model,
-            "messages": request.messages,
+            "messages": formatted_messages,
             "max_tokens": request.max_output_tokens,
             "temperature": request.temperature,
         }

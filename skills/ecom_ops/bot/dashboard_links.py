@@ -54,6 +54,54 @@ def review_plan_url(site_id: str, plan_id: str) -> str | None:
     return dashboard_url(f"/wp/{site}/reviews/{plan}")
 
 
+def sandbox_preview_url(site_id: str, plan_id: str) -> str | None:
+    """Build an authenticated interactive sandbox preview URL.
+
+    Allows ``https://`` for any host, or ``http://`` strictly for loopback
+    (``127.0.0.1`` / ``localhost``). Rejects non-loopback HTTP, userinfo,
+    query strings, and fragments.
+    """
+    site = str(site_id or "")
+    plan = str(plan_id or "")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", site):
+        return None
+    if not re.fullmatch(r"wr-[a-f0-9]{12}", plan):
+        return None
+
+    preview_path = f"/wp/{site}/reviews/{plan}/preview"
+    raw_preview = (os.environ.get("AZOM_SANDBOX_PREVIEW_BASE_URL") or "").strip().rstrip("/")
+    raw_public = (os.environ.get("AZOM_DASHBOARD_PUBLIC_URL") or "").strip().rstrip("/")
+    configured = raw_preview or raw_public
+    if configured:
+        try:
+            parsed = urlsplit(configured)
+            _ = parsed.port
+        except ValueError:
+            return None
+        host = (parsed.hostname or "").lower()
+        if (
+            not host
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        if parsed.scheme == "https":
+            return f"{configured}{preview_path}"
+        if parsed.scheme == "http" and host in {"127.0.0.1", "localhost"}:
+            return f"{configured}{preview_path}"
+        return None
+
+    dash_host = (os.environ.get("DASHBOARD_HOST") or "").strip().lower()
+    dash_port = (os.environ.get("DASHBOARD_PORT") or "").strip()
+    if dash_host in {"127.0.0.1", "localhost"} and dash_port.isdigit():
+        port_num = int(dash_port)
+        if 1 <= port_num <= 65535:
+            return f"http://{dash_host}:{port_num}{preview_path}"
+    return None
+
+
 def case_detail_url(case_id: str, *, from_messenger: bool = True) -> str | None:
     cid = str(case_id or "").strip()
     if not cid:

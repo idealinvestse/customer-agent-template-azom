@@ -1,119 +1,301 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
 {% block title %}Granskning – Azom{% endblock %}
 {% block page_subtitle %}Granskning{% endblock %}
 {% block content %}
-<div class="space-y-5" data-live-calls="false" data-executed="{{ 'true' if executed else 'false' }}" data-bytes-copied="false" data-restore="{{ restore }}" data-error="{{ error_class or '' }}" data-label="{{ label }}" data-status="{{ plan.status if plan else '' }}">
-  <section class="az-card">
-    <h2 class="az-page-title">Granskning av arbetsyta</h2>
-    <p class="az-muted mt-2 text-sm">
-      Länken kräver inloggning. Den är inte en behörighet.
-      Datat i en förhandsvisning är syntetiskt och är inte live-sajten.
-      Produktion skriver inte förrän backup och återställning är verifierade.
-    </p>
-    {% if error_class %}
-    <p class="mt-3 text-warn" data-review-error="{{ error_class }}">{{ error_class }}. Ingen produktionsfil ändrades.</p>
-    {% endif %}
+<div
+  class="space-y-6"
+  data-live-calls="false"
+  data-executed="{{ 'true' if executed else 'false' }}"
+  data-bytes-copied="false"
+  data-restore="{{ restore }}"
+  data-error="{{ error_class or '' }}"
+  data-label="{{ label }}"
+  data-status="{{ plan.status if plan else '' }}"
+>
+  {% if plan %}
+  {{ ui.breadcrumb([
+    {'label': 'Webbplatser', 'href': url_for('wp_sites')},
+    {'label': plan.site_id, 'href': url_for('wp_site_detail', site_id=plan.site_id)},
+    {'label': 'Granskning ' ~ plan.plan_id}
+  ]) }}
+  {% endif %}
+
+  {% call ui.page_header(
+    "Granskning av arbetsyta",
+    "Länken kräver inloggning och ger inte i sig behörighet. Datat i en förhandsvisning är syntetiskt och är inte live-sajten. Produktion skriver inte förrän backup och återställning är verifierade.",
+    badge_text=plan.status if plan else none,
+    badge_tone='info'
+  ) %}
     {% if plan %}
-    <dl class="mt-4 space-y-1 text-sm">
-      <div>Plan {{ plan.plan_id }}</div>
-      <div>Sajt {{ plan.site_id }} · {{ plan.environment }}</div>
-      <div>{{ plan.kind }} / {{ plan.slug }}</div>
-      <div>Risk {{ plan.risk }} · status {{ plan.status }}</div>
-      <div>Relation {{ plan.theme_relationship }}</div>
-      <div>Bas {{ plan.base_sha256 }}</div>
-      <div>Arbete {{ plan.work_sha256 }}</div>
-      <div data-check-published="{{ 'true' if plan.check_run and plan.check_run.published else 'false' }}" data-rendered-preview="{{ 'true' if has_rendered_preview else 'false' }}">
-        Körning {{ plan.check_run.run_id if plan.check_run else '' }}
-        · profil {{ plan.check_run.profile if plan.check_run else 'saknas' }}
-        · revision {{ plan.check_generation if plan.check_generation is defined else 0 }}
+    {% if has_interactive_preview %}
+    <a
+      class="az-btn-primary az-btn-sm"
+      href="{{ url_for('wp_review_preview', site_id=plan.site_id, plan_id=plan.plan_id) }}"
+      target="_blank"
+      rel="noopener noreferrer"
+      data-interactive-preview-link="true"
+    >{{ icon('external-link', 'xs') }}<span>Öppna interaktiv sandbox-förhandsvisning</span></a>
+    {% endif %}
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_site_detail', site_id=plan.site_id) }}">{{ icon('arrow-left', 'xs') }}<span>Tillbaka till sajt</span></a>
+    {% endif %}
+  {% endcall %}
+
+  {% if review_feedback and review_feedback.message %}
+    {{ ui.flash_banner('ok' if review_feedback.ok else 'error', review_feedback.message, dismissible=False) }}
+  {% endif %}
+
+  {% if error_class %}
+    <div class="az-callout az-callout-warn" role="alert" data-review-error="{{ error_class }}">
+      <span class="mt-0.5 shrink-0">{{ icon('alert-triangle', 'sm') }}</span>
+      <div class="min-w-0">
+        <strong>{{ error_class }}</strong>{% if not review_feedback or review_feedback.production_untouched %}. Ingen produktionsfil ändrades.{% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if plan %}
+  <!-- Status header card -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center gap-2">
+      {{ ui.status_badge('info', 'Status: ' ~ (plan.status or '—')) }}
+      {{ ui.status_badge('ok' if plan.check_run and plan.check_run.published else 'neutral', 'Publicerade kontroller: ' ~ ('Ja' if plan.check_run and plan.check_run.published else 'Nej')) }}
+      {{ ui.status_badge('warn', 'Läge: ' ~ (label or 'mock')) }}
+      {{ ui.status_badge('neutral', 'Giltig till: ' ~ (expires_at_fmt or fmt_dt(plan.expires_at) or '—')) }}
+      {{ ui.status_badge('warn', 'Restore: Ej i MVP') }}
+    </div>
+
+    <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Plan-ID</dt>
+        <dd class="mt-1 font-mono text-xs text-mist-100 break-all">{{ plan.plan_id }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Sajt &amp; Komponent</dt>
+        <dd class="mt-1 font-mono text-xs text-mist-100 break-words">{{ plan.site_id }} ({{ plan.environment }}) · {{ plan.kind }} / {{ plan.slug }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Risk &amp; Relation</dt>
+        <dd class="mt-1 text-xs text-mist-200">Risk: {{ plan.risk }} · {{ plan.theme_relationship }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 sm:col-span-2 lg:col-span-1">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Körning</dt>
+        <dd
+          class="mt-1 text-xs text-mist-200 tabular-nums"
+          data-check-published="{{ 'true' if plan.check_run and plan.check_run.published else 'false' }}"
+          data-rendered-preview="{{ 'true' if has_rendered_preview else 'false' }}"
+        >
+          <span class="font-mono">{{ (plan.check_run.get('run_id') if plan.check_run is mapping else plan.check_run.run_id) if plan.check_run and ((plan.check_run.get('run_id') if plan.check_run is mapping else plan.check_run.run_id)) else '—' }}</span>
+          · profil {{ (plan.check_run.get('profile') if plan.check_run is mapping else plan.check_run.profile) if plan.check_run and ((plan.check_run.get('profile') if plan.check_run is mapping else plan.check_run.profile)) else 'saknas' }}
+          · revision {{ plan.check_generation if plan.check_generation is defined else 0 }}
+        </dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Bas SHA-256</dt>
+        <dd class="mt-1 font-mono text-xs text-mist-300 break-all">{{ plan.base_sha256 }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Arbete SHA-256</dt>
+        <dd class="mt-1 font-mono text-xs text-mist-300 break-all">{{ plan.work_sha256 }}</dd>
       </div>
     </dl>
-    {% if has_rendered_preview %}
-    <p class="az-muted mt-3 text-sm">Inloggad granskning. Isolerad lokal sandlåderendering.</p>
-    {% else %}
-    <p class="az-muted mt-3 text-sm">Inloggad granskning. Ingen renderad förhandsvisning.</p>
+
+    {% if sandbox %}
+    <div class="rounded-xl border border-ink-700/70 bg-ink-950/50 px-3.5 py-2.5 text-xs text-mist-300">
+      Sandlåda: <span class="font-mono text-mist-200">{{ sandbox.get('state', '—') }}</span>
+      {% if sandbox.get('engine') %} · motor <span class="font-mono">{{ sandbox.get('engine') }}</span>{% endif %}
+      {% if sandbox.get('network') %} · nätverk <span class="font-mono">{{ sandbox.get('network') }}</span>{% endif %}
+    </div>
     {% endif %}
+
+    {% if has_rendered_preview %}
+    <p class="az-muted text-sm">Inloggad granskning. Isolerad lokal sandlåderendering.</p>
+    {% else %}
+    <p class="az-muted text-sm">Inloggad granskning. Ingen renderad förhandsvisning.</p>
+    {% endif %}
+
     {% if plan.checks %}
-    <ul class="mt-3 text-sm">
-      {% for row in plan.checks %}
-      <li>{{ row.job }}: {{ row.status }}{% if row.policy %} · {{ row.policy }}{% endif %}{% if row.evidence_class %} · {{ row.evidence_class }}{% endif %}</li>
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Kontrollresultat">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Jobb</th>
+            <th scope="col">Status</th>
+            <th scope="col">Policy</th>
+            <th scope="col">Evidens / Sammanfattning</th>
+            {% if can_review or can_drill %}
+            <th scope="col">Fynd</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in plan.checks %}
+          <tr>
+            <td><code class="az-code font-mono">{{ row.job }}</code></td>
+            <td>{{ ui.status_badge(row.status, row.status) }}</td>
+            <td class="text-xs text-mist-300">{{ row.policy or '—' }}</td>
+            <td class="text-xs text-mist-200">
+              {% if row.evidence_class %}<span class="font-mono text-mist-400">{{ row.evidence_class }}</span>{% endif %}
+              {% if (can_review or can_drill) and (row.summary or row.reason) %}
+                <span class="ml-1">{{ row.summary or row.reason }}</span>
+              {% endif %}
+            </td>
+            {% if can_review or can_drill %}
+            <td>
+              {% if row.findings or row.exit_code is defined %}
+              <details>
+                <summary class="cursor-pointer text-xs text-steel-300 hover:underline">Visa fynd</summary>
+                <div class="mt-1.5 space-y-1 font-mono text-xs text-mist-300">
+                  {% if row.exit_code is defined %}<div>exit_code: {{ row.exit_code }}</div>{% endif %}
+                  {% if row.findings %}
+                  <pre class="max-w-md overflow-x-auto rounded border border-ink-700 bg-ink-950 p-2 whitespace-pre-wrap">{{ fmt_json(row.findings) or row.findings }}</pre>
+                  {% endif %}
+                </div>
+              </details>
+              {% else %}
+              <span class="az-muted">—</span>
+              {% endif %}
+            </td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Inga kontroller har körts för denna arbetsyta ännu.</p>
+    {% endif %}
+  </section>
+
+  {% if can_review %}
+  <section class="az-card space-y-3">
+    <h2 class="font-display text-base font-semibold text-mist-100">Diff</h2>
+    {% if diff %}
+    <pre class="overflow-x-auto rounded-lg border border-ink-700 bg-ink-950 p-4 font-mono text-xs text-mist-100 whitespace-pre-wrap">{{ diff }}</pre>
+    {% else %}
+    <p class="az-muted">Ingen diff finns för den här planen.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <!-- Synpunkter (visas när can_review eller kommentarer finns) -->
+  {% if can_review or comments %}
+  <section class="az-card space-y-4">
+    <h2 class="font-display text-base font-semibold text-mist-100">Synpunkter ({{ (comments or []) | length }})</h2>
+    {% if comments %}
+    <ul class="space-y-2">
+      {% for c in comments %}
+      <li class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 text-sm">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-mist-400">
+          <span class="font-semibold text-mist-200">{{ c.author or '—' }}</span>
+          <span class="tabular-nums">{{ fmt_dt(c.created_at) or c.created_at or '' }}</span>
+        </div>
+        <p class="mt-1.5 text-mist-100 whitespace-pre-wrap">{{ c.text }}</p>
+      </li>
       {% endfor %}
     </ul>
-    {% endif %}
-    {% endif %}
-  </section>
-  {% if can_review %}
-  <section class="az-card">
-    <h2 class="az-section-title">Diff</h2>
-    {% if diff %}
-    <pre class="mt-3 whitespace-pre-wrap text-sm">{{ diff }}</pre>
     {% else %}
-    <p class="az-muted mt-3 text-sm">Ingen diff finns för den här planen.</p>
+    <p class="az-muted">Inga synpunkter sparade ännu.</p>
+    {% endif %}
+
+    {% if can_review %}
+    <form class="border-t border-ink-700/80 pt-4 space-y-3" method="post" action="{{ url_for('wp_review_comment', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div>
+        <label class="az-label" for="review-comment">Ny synpunkt</label>
+        <textarea
+          id="review-comment"
+          class="az-textarea"
+          name="text"
+          rows="3"
+          maxlength="500"
+          required
+          data-char-count="#review-comment-count"
+          placeholder="Skriv en granskningssynpunkt..."
+        ></textarea>
+        <div class="mt-1 flex justify-end text-xs text-mist-400">
+          <span id="review-comment-count" class="font-mono tabular-nums">0 / 500</span>
+        </div>
+      </div>
+      <button class="az-btn-primary az-btn-sm" type="submit" data-busy-label="Sparar...">Spara synpunkt</button>
+    </form>
     {% endif %}
   </section>
-  {% if plan %}
-  <section class="az-card">
-    <h2 class="az-section-title">Synpunkt</h2>
-    <form class="mt-3" method="post" action="{{ url_for('wp_review_comment', site_id=plan.site_id, plan_id=plan.plan_id) }}">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <textarea name="text" maxlength="500"></textarea>
-      <button class="az-btn-primary" type="submit">Spara synpunkt</button>
-    </form>
-  </section>
-  <section class="az-card">
-    <h2 class="az-section-title">Staging, mock</h2>
-    <form class="mt-3" method="post" action="{{ url_for('wp_review_staging', site_id=plan.site_id, plan_id=plan.plan_id) }}">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
-      <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
-      <button class="az-btn-primary" type="submit" data-review-action="staging">Godkänn lokal staging</button>
-    </form>
-  </section>
-  <section class="az-card">
-    <h2 class="az-section-title">Produktion</h2>
-    <form class="mt-3" method="post" action="{{ url_for('wp_review_production', site_id=plan.site_id, plan_id=plan.plan_id) }}">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
-      <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
-      <button class="az-btn-primary" type="submit" data-review-action="production">Begär produktion</button>
-    </form>
-  </section>
-  <section class="az-card">
-    <h2 class="az-section-title">Tid</h2>
-    <form class="mt-3" method="post" action="{{ url_for('wp_review_extend', site_id=plan.site_id, plan_id=plan.plan_id) }}">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <button class="az-btn-primary" type="submit" data-review-action="extend">Förläng tolv timmar</button>
-    </form>
-  </section>
-  <section class="az-card">
-    <h2 class="az-section-title">Kontroller</h2>
-    <p class="az-muted mt-2 text-sm">Körningen bokför serverns katalog. Ett saknat verktyg blir inte godkänt.</p>
-    <form class="mt-3" method="post" action="{{ url_for('wp_review_checks', site_id=plan.site_id, plan_id=plan.plan_id) }}">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <button class="az-btn-primary" type="submit" data-review-action="checks">Kör kontroller</button>
-    </form>
-  </section>
-  <section class="az-card">
-    <h2 class="az-section-title">Förhandsvisning</h2>
-    <form class="mt-3" method="post" action="{{ url_for('wp_review_preview', site_id=plan.site_id, plan_id=plan.plan_id) }}">
-      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
-      <button class="az-btn-primary" type="submit" data-review-action="preview">Bokför förhandsvisning</button>
-    </form>
-  </section>
-  {% if screenshots %}
-  <section class="az-card">
-    <h2 class="az-section-title">Syntetiska skärmdumpar (sandlåda)</h2>
-    <p class="az-muted mt-2 text-sm">Isolerad lokal loopback-rendering, inte live-sajten.</p>
-    <div class="mt-3 grid gap-4 md:grid-cols-2">
+  {% endif %}
+
+  <!-- Åtgärdspanel: Kontroller & Förhandsvisning (can_drill) + Godkännande (can_review) -->
+  {% if can_drill or can_review %}
+  <div class="grid gap-5 md:grid-cols-2">
+    {% if can_drill %}
+    <section class="az-card space-y-4">
+      <h2 class="font-display text-base font-semibold text-mist-100">Kontroller &amp; Förhandsvisning</h2>
+      <div class="space-y-3 border-b border-ink-700/80 pb-4">
+        <p class="az-muted text-xs">Körningen bokför serverns katalog. Ett saknat verktyg blir inte godkänt.</p>
+        <form method="post" action="{{ url_for('wp_review_checks', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button class="az-btn-primary az-btn-sm" type="submit" data-review-action="checks" data-busy-label="Kör kontroller...">Kör kontroller</button>
+        </form>
+      </div>
+      <div class="space-y-3">
+        <p class="az-muted text-xs">Skapar en isolerad lokal sandlådeförhandsvisning om alla nödvändiga kontroller har passerat.</p>
+        <form method="post" action="{{ url_for('wp_review_preview', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button class="az-btn-secondary az-btn-sm" type="submit" data-review-action="preview" data-busy-label="Förbereder...">Bokför förhandsvisning</button>
+        </form>
+      </div>
+    </section>
+    {% endif %}
+
+    {% if can_review %}
+    <section class="az-card-oscar space-y-4">
+      <h2 class="font-display text-base font-semibold text-oscar-300">Granskningsbeslut &amp; Tid (Oscar)</h2>
+      <div class="flex flex-wrap gap-2">
+        <form method="post" action="{{ url_for('wp_review_staging', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
+          <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
+          <button class="az-btn-oscar az-btn-sm" type="submit" data-review-action="staging" data-busy-label="Godkänner...">Godkänn lokal staging</button>
+        </form>
+
+        <form method="post" action="{{ url_for('wp_review_extend', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button class="az-btn-secondary az-btn-sm" type="submit" data-review-action="extend" data-busy-label="Förlänger...">Förläng tolv timmar</button>
+        </form>
+      </div>
+
+      <div class="border-t border-ink-700/80 pt-3 space-y-2">
+        <p class="az-muted text-xs">Produktion är spärrad tills verifierad backup och återställning finns (<code class="az-code font-mono">RestoreNotInMvp</code>).</p>
+        <form method="post" action="{{ url_for('wp_review_production', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
+          <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
+          <button class="az-btn-secondary az-btn-sm border-warn/40 text-warn hover:bg-warn/10" type="submit" data-review-action="production" data-busy-label="Kontrollerar...">Begär produktion</button>
+        </form>
+      </div>
+    </section>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if has_rendered_preview and screenshots %}
+  <section class="az-card space-y-3">
+    <h2 class="font-display text-base font-semibold text-mist-100">Syntetiska skärmdumpar (sandlåda)</h2>
+    <p class="az-muted text-sm">Isolerad lokal loopback-rendering, inte live-sajten.</p>
+    <div class="grid gap-4 md:grid-cols-2">
       {% for name in screenshots %}
-      <figure>
-        <figcaption class="az-muted mb-1 text-xs">{{ name }}</figcaption>
-        <img src="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=name) }}" alt="{{ name }}" />
+      <figure class="space-y-1.5">
+        <figcaption class="font-mono text-xs text-mist-400">{{ name }}</figcaption>
+        <img
+          class="w-full rounded-lg border border-ink-700 bg-ink-950"
+          loading="lazy"
+          src="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=name) }}"
+          alt="{{ name }}"
+        />
       </figure>
       {% endfor %}
     </div>
   </section>
-  {% endif %}
   {% endif %}
   {% endif %}
 </div>

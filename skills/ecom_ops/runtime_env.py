@@ -30,6 +30,7 @@ PROTECTED_OVERLAY_KEYS = frozenset(
         "AZOM_WP_FILES_SSH",
         "AZOM_WP_SANDBOX",
         "AZOM_WP_RUNTIME_DIR",
+        "AZOM_WP_LIVE_PREVIEW",
         "AZOM_SSH_READ_ENABLED",
     }
 )

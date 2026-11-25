@@ -565,3 +565,84 @@ def test_cli_backup_and_drill_keep_restore_unknown(tmp_path, monkeypatch, capsys
     with pytest.raises(SystemExit) as exc:
         main(["wp", "restore"])
     assert exc.value.code == 2
+
+
+def test_review_notice_deduplicates_plan_and_prefers_known_risk():
+    from ecom_ops.wp_ops.agent_tools import _review_notice
+
+    results = [
+        {"plan_id": "wr-123456789abc", "site_id": "azom-no", "review_path": "/wp/azom-no/reviews/wr-123456789abc", "risk": "low"},
+        {"plan_id": "wr-123456789abc", "site_id": "azom-no", "review_path": "/wp/azom-no/reviews/wr-123456789abc", "risk": "okänd"},
+        {"plan_id": "wr-123456789abc", "site_id": "azom-no", "review_path": "/wp/azom-no/reviews/wr-123456789abc"},
+    ]
+    out = _review_notice(results)
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert len(lines) == 1
+    assert "wr-123456789abc" in lines[0]
+    assert "risk low" in lines[0]
+
+    upgraded = _review_notice([
+        {"plan_id": "wr-123456789abc", "site_id": "azom-no", "review_path": "/wp/azom-no/reviews/wr-123456789abc"},
+        {"plan_id": "wr-123456789abc", "site_id": "azom-no", "review_path": "/wp/azom-no/reviews/wr-123456789abc", "risk": "high"},
+    ])
+    assert upgraded.count("wr-123456789abc") == 2  # id + url on 1 line
+    assert "risk high" in upgraded
+
+
+def test_file_tool_loop_allows_wp_list_sites_first(monkeypatch, tmp_path):
+    from ecom_ops.wp_ops.agent_tools import WpAgentTools, run_bounded_file_tool_loop
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+
+    responses = iter([
+        ('<tool_call>{"name":"wp_list_workspaces","arguments":{"site_id":"mock-staging"}}</tool_call>', 0.0),
+        ("Klart, 0 öppna arbetsytor.", 0.0),
+    ])
+    res = run_bounded_file_tool_loop(
+        '<tool_call>{"name":"wp_list_sites","arguments":{}}</tool_call>',
+        [{"role": "user", "content": "Kolla sajter och arbetsytor"}],
+        complete=lambda _msgs: next(responses),
+        actor="oscar",
+        channel="telegram",
+        conversation_id="telegram:1",
+        tools=WpAgentTools(),
+        allow_wp_first=True,
+    )
+    assert res.handled is True
+    assert res.calls == 2
+    assert "Filverktyget behöver ett nytt meddelande" not in res.content
+    assert "Klart" in res.content
+
+
+def test_run_sandbox_catalog_passes_synthetic_parent_for_sftp_child(monkeypatch, tmp_path):
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    plans = ReviewPlans(data_dir=tmp_path, registry_path=ROOT / "config" / "wp_sites.mock.yaml")
+    root = tmp_path / "wp_workspaces" / "mock-staging" / "wr-abcdef012345"
+    (root / "base").mkdir(parents=True)
+    (root / "work").mkdir(parents=True)
+    (root / "base" / "style.css").write_text("/*\nTemplate: parent-slug\n*/\n", encoding="utf-8")
+    (root / "work" / "style.css").write_text("/*\nTemplate: parent-slug\n*/\n", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    def fake_render(**kwargs):
+        captured.update(kwargs)
+        return {"checks": [{"job": "browser_smoke", "status": "passed"}]}
+
+    monkeypatch.setattr("ecom_ops.integrations.wp_browser_smoke.run_vertical_theme_render", fake_render)
+    checks = plans._run_sandbox_catalog(
+        {"site_id": "mock-staging", "plan_id": "wr-abcdef012345", "slug": "parent-slug-child", "theme_relationship": "child"},
+        root,
+        "theme",
+        [("style.css", "body{}")],
+        "low",
+        root / "artifacts",
+    )
+    assert checks[0]["status"] == "passed"
+    assert captured["parent_theme_slug"] == "parent-slug"
+    assert "parent_theme_dir" not in captured

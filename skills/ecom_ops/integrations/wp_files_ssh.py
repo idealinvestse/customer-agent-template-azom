@@ -7,6 +7,7 @@ authentication, refuses symlinks, and permits only bounded file reads.
 
 from __future__ import annotations
 
+import errno
 import os
 import posixpath
 import re
@@ -53,6 +54,12 @@ def host_allowed(host: str) -> bool:
     if not text or text.endswith(".example.test"):
         return False
     return _HOST.fullmatch(text) is not None
+
+
+def _is_missing_error(exc: BaseException) -> bool:
+    if isinstance(exc, FileNotFoundError):
+        return True
+    return getattr(exc, "errno", None) == errno.ENOENT
 
 
 class SshFileTransport:
@@ -130,11 +137,15 @@ class SshFileTransport:
                 except (AttributeError, NotImplementedError):
                     entries = None
                 except (OSError, EOFError, TimeoutError, paramiko.SSHException) as exc:
+                    if _is_missing_error(exc):
+                        raise TransportError("FileMissing") from exc
                     raise TransportError("SshFailed") from exc
             if entries is None:
                 try:
                     raw_names = list(sftp.listdir(path))
                 except (OSError, EOFError, TimeoutError, paramiko.SSHException) as exc:
+                    if _is_missing_error(exc):
+                        raise TransportError("FileMissing") from exc
                     raise TransportError("SshFailed") from exc
                 entries = [type("_Entry", (), {"filename": str(n), "st_mode": None})() for n in raw_names]
             if len(entries) > _MAX_DIRECTORY_ENTRIES:
@@ -191,6 +202,8 @@ class SshFileTransport:
                 finally:
                     remote.close()
             except (OSError, EOFError, TimeoutError, paramiko.SSHException) as exc:
+                if _is_missing_error(exc):
+                    raise TransportError("FileMissing") from exc
                 raise TransportError("SshFailed") from exc
             if len(data) > _MAX_BYTES:
                 raise TransportError("FileTooLarge")
@@ -337,6 +350,8 @@ class SshFileTransport:
             try:
                 attrs = sftp.lstat(current)
             except (OSError, EOFError, TimeoutError, paramiko.SSHException) as exc:
+                if _is_missing_error(exc):
+                    raise TransportError("FileMissing") from exc
                 raise TransportError("SshFailed") from exc
             mode = getattr(attrs, "st_mode", None)
             if mode is None or stat.S_ISLNK(mode):

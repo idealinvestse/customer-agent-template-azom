@@ -926,8 +926,11 @@ class LocalWordPressSandbox:
             _copy_component_tree(self.theme_dir, themes_dir / self.theme_slug)
         else:
             _write_minimal_synthetic_theme(themes_dir / self.theme_slug)
-        if self.parent_theme_slug and self.parent_theme_dir:
-            _copy_component_tree(self.parent_theme_dir, themes_dir / self.parent_theme_slug)
+        if self.parent_theme_slug:
+            if self.parent_theme_dir:
+                _copy_component_tree(self.parent_theme_dir, themes_dir / self.parent_theme_slug)
+            else:
+                _write_minimal_synthetic_theme(themes_dir / self.parent_theme_slug)
 
         active_plugins: list[str] = []
         if self.plugin_slug and self.plugin_dir:

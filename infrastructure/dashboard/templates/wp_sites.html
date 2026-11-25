@@ -1,60 +1,77 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
 {% block title %}Webbplatser – Azom{% endblock %}
 {% block page_subtitle %}WordPress-drift{% endblock %}
 {% block content %}
-<div class="space-y-5" data-live-calls="false">
-  <section class="az-card">
-    <h2 class="az-page-title">Webbplatser</h2>
-    <p class="az-muted mt-2 text-sm">
-      Lägesbild för registrerade WordPress-sajter. Okänd och fel är inte gröna.
-      Det här är inte managed hosting. En verifierad mock-backup är inte grön och inte off-site.
-      Checksumma, uppdatering och produktionsåterställning ingår inte.
-    </p>
-    {% if error %}
-    <p class="mt-3 text-warn">{{ error }}</p>
-    {% endif %}
-  </section>
+<div class="space-y-6" data-live-calls="false">
+  {{ ui.page_header(
+    "Webbplatser",
+    "Lägesbild för registrerade WordPress-sajter. Okänd och fel är inte gröna. Det här är inte managed hosting: en verifierad mock-backup är inte off-site, och checksumma, uppdatering samt produktionsåterställning ingår inte.",
+    badge_text="Mock / Ej live",
+    badge_tone="warn"
+  ) }}
 
-  <section class="az-card overflow-x-auto">
+  {% if error %}
+    {{ ui.flash_banner('error', error, dismissible=False) }}
+  {% endif %}
+
+  <section class="az-card space-y-4">
+    <h2 class="font-display text-base font-semibold text-mist-100">Registrerade webbplatser</h2>
     {% if sites %}
-    <table class="w-full text-left text-sm">
-      <thead class="text-mist-400">
-        <tr>
-          <th class="py-2 pr-3">Sajt</th>
-          <th class="py-2 pr-3">Miljö</th>
-          <th class="py-2 pr-3">Senaste kontroll</th>
-          <th class="py-2 pr-3">Versioner</th>
-          <th class="py-2 pr-3">Uppdateringar</th>
-          <th class="py-2 pr-3">Backup</th>
-          <th class="py-2 pr-3">Incidenter</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for site in sites %}
-        <tr class="border-t border-ink-700/80" data-site="{{ site.id }}" data-healthy="{{ 'true' if site.healthy else 'false' }}">
-          <td class="py-2 pr-3">
-            <a class="text-steel-300" href="{{ url_for('wp_site_detail', site_id=site.id) }}">{{ site.display_name }}</a>
-          </td>
-          <td class="py-2 pr-3">{{ site.environment }}</td>
-          <td class="py-2 pr-3">{{ site.last_check or 'ingen' }}</td>
-          <td class="py-2 pr-3">WP {{ site.wordpress_version or 'okänd' }} · PHP {{ site.php_version or 'okänd' }}</td>
-          <td class="py-2 pr-3">okänd</td>
-          <td class="py-2 pr-3">
-            {% if site.backup.result == 'verified' %}
-            <span class="az-badge bg-ink-700 text-mist-200" data-tone="attention" data-backup="verified">verifierad, inte off-site</span>
-            {% elif site.backup.tone == 'ok' %}
-            <span class="az-badge bg-ok/15 text-ok" data-tone="ok">ok</span>
-            {% else %}
-            <span class="az-badge bg-ink-700 text-mist-200" data-tone="attention" data-backup="{{ site.backup.result }}">{{ 'fel' if site.backup.result == 'fail' else 'okänd' }}</span>
-            {% endif %}
-          </td>
-          <td class="py-2 pr-3">{{ site.open_incidents }}{% if site.down %} · nere{% endif %}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="WordPress-webbplatser">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Sajt</th>
+            <th scope="col">Miljö</th>
+            <th scope="col">Senaste kontroll</th>
+            <th scope="col">Versioner</th>
+            <th scope="col">Uppdateringar</th>
+            <th scope="col">Backup</th>
+            <th scope="col">Incidenter</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for site in sites %}
+          <tr data-site="{{ site.id }}" data-healthy="{{ 'true' if site.healthy else 'false' }}">
+            <td>
+              <a class="font-medium text-steel-300 hover:text-steel-200 hover:underline" href="{{ url_for('wp_site_detail', site_id=site.id) }}">{{ site.display_name }}</a>
+              <div class="font-mono text-xs text-mist-400">{{ site.id }}</div>
+            </td>
+            <td>
+              {{ ui.status_badge('warn' if site.environment == 'production' else 'info', site.environment) }}
+            </td>
+            <td class="text-xs text-mist-300 tabular-nums">{{ fmt_dt(site.last_check) or site.last_check or 'ingen' }}</td>
+            <td class="font-mono text-xs text-mist-200">WP {{ site.wordpress_version or 'okänd' }} · PHP {{ site.php_version or 'okänd' }}</td>
+            <td>{{ ui.status_badge('neutral', 'okänd') }}</td>
+            <td>
+              {% if site.backup.result == 'verified' %}
+              <span class="az-badge az-badge-warn" data-tone="attention" data-backup="verified">verifierad, inte off-site</span>
+              {% elif site.backup.tone == 'ok' %}
+              <span class="az-badge az-badge-ok" data-tone="ok">ok</span>
+              {% elif site.backup.result == 'fail' %}
+              <span class="az-badge az-badge-danger" data-tone="attention" data-backup="fail">fel</span>
+              {% else %}
+              <span class="az-badge az-badge-neutral" data-tone="attention" data-backup="{{ site.backup.result }}">okänd</span>
+              {% endif %}
+            </td>
+            <td class="tabular-nums">
+              {% if site.open_incidents %}
+                {{ ui.status_badge('error', site.open_incidents ~ (' · nere' if site.down else ' öppna')) }}
+              {% elif site.down %}
+                {{ ui.status_badge('error', '0 · nere') }}
+              {% else %}
+                <span class="text-mist-300">0</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
     {% else %}
-    <p class="az-muted text-sm">Inga registrerade webbplatser.</p>
+      {{ ui.empty_state("Inga registrerade webbplatser", "Lägg till webbplatser i config/wp_sites.yaml för att övervaka dem här.", icon_name="globe") }}
     {% endif %}
   </section>
 </div>

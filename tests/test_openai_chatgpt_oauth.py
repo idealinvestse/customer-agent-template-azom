@@ -941,7 +941,7 @@ def test_live_models_payload_and_bytes_sse_stream_without_content_type(monkeypat
 
         def iter_lines(self, decode_unicode=True):
             del decode_unicode
-            yield b"event: response.output_text.delta"
+            yield b'event: response.output_text.delta'
             yield b'data: {"type":"response.output_text.delta","delta":"PONG"}'
             yield b""
             yield b'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}'

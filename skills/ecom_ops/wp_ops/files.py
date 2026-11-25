@@ -92,6 +92,8 @@ def transport_message(error_class: str) -> str:
         return "The remote directory exceeds the safe listing limit."
     if error_class == "FileTooLarge":
         return "The remote file exceeds the safe read limit."
+    if error_class == "FileMissing":
+        return "The requested file was not found."
     return "File transport failed."
 
 

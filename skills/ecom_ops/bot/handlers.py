@@ -6,6 +6,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
 from ecom_ops.bot.actors import (
@@ -90,6 +91,7 @@ from ecom_ops.bot.telegram_oauth import (
     match_natural_oauth_intent,
 )
 from ecom_ops.escalation import EscalationService, default_escalation
+from ecom_ops.model_router.base import MAX_MULTIMODAL_IMAGE_BYTES, detect_image_format
 from ecom_ops.rbac import Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import validate_order_id
 from ecom_ops.wp_ops.agent_tools import WpAgentTools, context_for_storage, context_matches
@@ -160,6 +162,49 @@ def _is_unrelated_lookup(text: str) -> bool:
             re.I,
         )
     )
+
+
+_PHOTO_WAIT_REPLY = (
+    "Bild mottagen! Skriv vad du vill ändra på det som är inringat så fixar jag det i sandlådan."
+)
+_MAX_TURN_IMAGES = 4
+
+
+def _normalize_inbound_image_paths(
+    paths: Iterable[Any] | None,
+    *,
+    limit: int = _MAX_TURN_IMAGES,
+) -> list[str]:
+    """Keep unique, existing, non-symlink PNG/JPEG/WEBP files within size limit."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in paths or ():
+        if not isinstance(item, (str, Path)):
+            continue
+        raw = str(item).strip()
+        if not raw or "\x00" in raw:
+            continue
+        path = Path(raw)
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            size = path.stat().st_size
+            if size <= 0 or size > MAX_MULTIMODAL_IMAGE_BYTES:
+                continue
+            head = path.read_bytes()[:16]
+        except OSError:
+            continue
+        if detect_image_format(head) is None:
+            continue
+        resolved = str(path.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(resolved)
+    if len(out) > limit:
+        out = out[-limit:]
+    return out
+
 
 _PENDING_PROGRESS_LABELS: dict[str, tuple[str, str, str]] = {
     "order_status": ("Orderstatus", "Uppdaterar orderstatus i Woo", "Orderstatus uppdaterad"),
@@ -688,6 +733,7 @@ class BotHandler:
         on_phase_change: Callable[[dict[str, Any]], None] | None = None,
         on_checkpoint: Callable[[], list[str]] | None = None,
         task_id: str | None = None,
+        image_paths: list[str] | tuple[str, ...] | None = None,
     ) -> BotReply:
         if not self._peer_allowed(chat_id):
             return self._deny_allowlist()
@@ -696,7 +742,20 @@ class BotHandler:
         except (TelegramActorDenied, ChannelActorDenied):
             return self._deny_actor()
         self._clear_mismatched_wp_context(chat_id, actor)
+        incoming_images = _normalize_inbound_image_paths(image_paths)
         raw = (text or "").strip()
+        if incoming_images and not raw:
+            prev = self.store.get(chat_id) or {}
+            prev_session = dict(prev.get("session") or {})
+            existing_pending = _normalize_inbound_image_paths(
+                prev_session.get("pending_image_paths")
+            )
+            combined = _normalize_inbound_image_paths([*existing_pending, *incoming_images])
+            self._update_session_atomic(
+                chat_id,
+                session_updates={"pending_image_paths": combined},
+            )
+            return BotReply(text=_PHOTO_WAIT_REPLY)
         if not raw:
             return BotReply(text="Skriv /help eller /commands — eller bara fråga.")
 
@@ -729,8 +788,28 @@ class BotHandler:
                 )
             return as_reply(oc)
 
-        # Continue multi-turn flows (confirm writes, escalate, order id prompt)
+        # Attach any pending screenshot(s) from the prior photo-only message and clear once consumed.
         state = self.store.get(chat_id)
+        session_dict = dict((state or {}).get("session") or {})
+        had_pending_images = bool(session_dict.get("pending_image_paths"))
+        pending_images = _normalize_inbound_image_paths(
+            session_dict.get("pending_image_paths")
+        )
+        effective_images = _normalize_inbound_image_paths(
+            [*pending_images, *incoming_images]
+        )
+        if had_pending_images:
+            self._update_session_atomic(
+                chat_id,
+                pop_session_keys=("pending_image_paths",),
+            )
+            if isinstance(state, dict) and isinstance(state.get("session"), dict):
+                state = dict(state)
+                cleaned_session = dict(state["session"])
+                cleaned_session.pop("pending_image_paths", None)
+                state["session"] = cleaned_session
+
+        # Continue multi-turn flows (confirm writes, escalate, order id prompt)
         if state and state.get("flow"):
             return as_reply(
                 self._continue_flow(
@@ -744,6 +823,7 @@ class BotHandler:
                     on_phase_change=on_phase_change,
                     on_checkpoint=on_checkpoint,
                     task_id=task_id,
+                    image_paths=effective_images or None,
                 )
             )
 
@@ -754,7 +834,7 @@ class BotHandler:
 
         # Ultra-short order shortcut
         fast = ORDER_FAST_RE.match(raw)
-        if fast:
+        if fast and not effective_images:
             oid = fast.group(1)
             self._touch_session_order(chat_id, oid)
             return BotReply(
@@ -776,6 +856,7 @@ class BotHandler:
             on_phase_change=on_phase_change,
             on_checkpoint=on_checkpoint,
             task_id=task_id,
+            image_paths=effective_images or None,
         )
 
     def handle_callback(
@@ -823,6 +904,7 @@ class BotHandler:
                 )
             prior_picks = list(payload.get("picks") or [])
             picks = [*prior_picks, opt.to_dict()]
+            stored_images = _normalize_inbound_image_paths(payload.get("image_paths"))
             original_request = str(
                 payload.get("original_request") or proposal.original_request or ""
             )
@@ -837,6 +919,7 @@ class BotHandler:
                 round_num=next_round,
                 confirmed=confirmed,
                 picked_option_id=opt.id,
+                image_paths=stored_images or None,
                 on_progress=on_progress,
                 on_text_delta=on_text_delta,
                 on_text_reset=on_text_reset,
@@ -857,6 +940,7 @@ class BotHandler:
             payload = dict(prop.get("payload") or {})
             proposal = ClarificationProposal.from_dict(payload.get("proposal"))
             picks = list(payload.get("picks") or [])
+            stored_images = _normalize_inbound_image_paths(payload.get("image_paths"))
             original_request = str(
                 payload.get("original_request")
                 or (proposal.original_request if proposal else "")
@@ -876,6 +960,7 @@ class BotHandler:
                 picks=picks,
                 round_num=round_num + 1,
                 confirmed=True,
+                image_paths=stored_images or None,
                 on_progress=on_progress,
                 on_text_delta=on_text_delta,
                 on_text_reset=on_text_reset,
@@ -901,20 +986,24 @@ class BotHandler:
                 or ""
             )
             picks = list(payload.get("picks") or [])
+            stored_images = _normalize_inbound_image_paths(payload.get("image_paths"))
             round_num = int(
                 payload.get("round") or proposal_dict.get("round_num") or 1
             )
+            other_slots: dict[str, Any] = {
+                "clarify_id": cid,
+                "proposal": proposal_dict,
+                "original_request": original_request,
+                "picks": picks,
+                "round": round_num,
+            }
+            if stored_images:
+                other_slots["image_paths"] = stored_images
             self._set_clarify_flow(
                 chat_id,
                 flow="change_clarify",
                 step="await_other_text",
-                slots={
-                    "clarify_id": cid,
-                    "proposal": proposal_dict,
-                    "original_request": original_request,
-                    "picks": picks,
-                    "round": round_num,
-                },
+                slots=other_slots,
             )
             return BotReply(
                 text=(
@@ -1238,6 +1327,7 @@ class BotHandler:
         on_phase_change: Callable[[dict[str, Any]], None] | None = None,
         on_checkpoint: Callable[[], list[str]] | None = None,
         task_id: str | None = None,
+        image_paths: list[str] | tuple[str, ...] | None = None,
     ) -> str | BotReply:
         flow = state.get("flow")
         step = state.get("step")
@@ -1253,6 +1343,9 @@ class BotHandler:
                 or ""
             )
             prior_picks = list(slots.get("picks") or [])
+            stored_images = _normalize_inbound_image_paths(
+                [*(slots.get("image_paths") or ()), *(image_paths or ())]
+            )
             try:
                 round_num = max(
                     1,
@@ -1286,6 +1379,7 @@ class BotHandler:
                             round_num=next_round,
                             confirmed=next_round > MAX_CLARIFY_ROUNDS,
                             picked_option_id=opt.id,
+                            image_paths=stored_images or None,
                             on_progress=on_progress,
                             on_text_delta=on_text_delta,
                             on_text_reset=on_text_reset,
@@ -1327,6 +1421,7 @@ class BotHandler:
                         on_phase_change=on_phase_change,
                         on_checkpoint=on_checkpoint,
                         task_id=task_id,
+                        image_paths=image_paths,
                     )
                 if answer in _CLARIFY_CONFIRM_WORDS and len(answer) <= 8:
                     actions = (
@@ -1349,6 +1444,7 @@ class BotHandler:
                     round_num=round_num + 1,
                     confirmed=round_num >= MAX_CLARIFY_ROUNDS,
                     extra_note=text,
+                    image_paths=stored_images or None,
                     on_progress=on_progress,
                     on_text_delta=on_text_delta,
                     on_text_reset=on_text_reset,
@@ -1375,6 +1471,7 @@ class BotHandler:
                         picks=prior_picks,
                         round_num=round_num + 1,
                         confirmed=True,
+                        image_paths=stored_images or None,
                         on_progress=on_progress,
                         on_text_delta=on_text_delta,
                         on_text_reset=on_text_reset,
@@ -1406,6 +1503,7 @@ class BotHandler:
                         on_phase_change=on_phase_change,
                         on_checkpoint=on_checkpoint,
                         task_id=task_id,
+                        image_paths=image_paths,
                     )
                 if clarify_id:
                     self._consume_clarification(chat_id, clarify_id)
@@ -1418,6 +1516,7 @@ class BotHandler:
                     round_num=round_num + 1,
                     confirmed=round_num >= MAX_CLARIFY_ROUNDS,
                     extra_note=text,
+                    image_paths=stored_images or None,
                     on_progress=on_progress,
                     on_text_delta=on_text_delta,
                     on_text_reset=on_text_reset,
@@ -1437,6 +1536,7 @@ class BotHandler:
                     round_num=round_num + 1,
                     confirmed=round_num >= MAX_CLARIFY_ROUNDS,
                     extra_note=text,
+                    image_paths=stored_images or None,
                     on_progress=on_progress,
                     on_text_delta=on_text_delta,
                     on_text_reset=on_text_reset,
@@ -1489,6 +1589,7 @@ class BotHandler:
                     on_phase_change=on_phase_change,
                     on_checkpoint=on_checkpoint,
                     task_id=task_id,
+                    image_paths=image_paths,
                 )
             if self.proposal_store is not None and proposal_id:
                 return bot_reply(
@@ -1533,6 +1634,7 @@ class BotHandler:
                     on_phase_change=on_phase_change,
                     on_checkpoint=on_checkpoint,
                     task_id=task_id,
+                    image_paths=image_paths,
                 )
             if self.proposal_store is not None and proposal_id:
                 return bot_reply(
@@ -1560,6 +1662,7 @@ class BotHandler:
             on_phase_change=on_phase_change,
             on_checkpoint=on_checkpoint,
             task_id=task_id,
+            image_paths=image_paths,
         )
 
     def _start_escalate_confirm(
@@ -2168,11 +2271,13 @@ class BotHandler:
         round_num: int = 1,
         task_id: str | None = None,
         attachments: tuple[str, ...] = (),
+        image_paths: list[str] | tuple[str, ...] | None = None,
     ) -> BotReply:
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
         orig = (original_request or proposal.original_request or "").strip()
         prior_picks = list(picks or [])
+        clean_images = _normalize_inbound_image_paths(image_paths)
         try:
             rnum = max(1, int(round_num or proposal.round_num or 1))
         except (TypeError, ValueError):
@@ -2185,6 +2290,8 @@ class BotHandler:
             "picks": prior_picks,
             "round": rnum,
         }
+        if clean_images:
+            payload_data["image_paths"] = clean_images
         domain = self._session_market(chat_id)
         wp_ctx = session.get("wp_ops_context")
         site_id = (
@@ -2216,13 +2323,15 @@ class BotHandler:
             if (proposal.mode == "confirm" or not proposal.options)
             else "await_choice"
         )
-        slots = {
+        slots: dict[str, Any] = {
             "clarify_id": cid,
             "proposal": proposal.to_dict(),
             "original_request": orig,
             "picks": prior_picks,
             "round": rnum,
         }
+        if clean_images:
+            slots["image_paths"] = clean_images
         self._set_clarify_flow(
             chat_id,
             flow="change_clarify",
@@ -2248,6 +2357,7 @@ class BotHandler:
         confirmed: bool,
         extra_note: str = "",
         picked_option_id: str = "",
+        image_paths: list[str] | tuple[str, ...] | None = None,
         on_progress: ProgressCallback | None = None,
         on_text_delta: Callable[[str], None] | None = None,
         on_text_reset: Callable[[], None] | None = None,
@@ -2277,6 +2387,7 @@ class BotHandler:
             clarification_context=clarify_ctx,
             original_request=original_request,
             prior_picks=picks,
+            image_paths=image_paths,
         )
         if reply.actions is None and reply.text in {FALLBACK_NO_KEY, FALLBACK_BUDGET}:
             read_prompt = _OFFLINE_READ_OPTION_PROMPTS.get(picked_option_id)
@@ -2296,6 +2407,7 @@ class BotHandler:
                     clarification_context=clarify_ctx,
                     original_request=original_request,
                     prior_picks=picks,
+                    image_paths=image_paths,
                 )
             if not confirmed and round_num <= MAX_CLARIFY_ROUNDS and picks:
                 picked = picks[-1]
@@ -2321,6 +2433,7 @@ class BotHandler:
                     picks=picks,
                     round_num=round_num,
                     task_id=task_id,
+                    image_paths=image_paths,
                 )
             return BotReply(
                 text=(
@@ -2349,6 +2462,7 @@ class BotHandler:
         clarification_context: str = "",
         original_request: str | None = None,
         prior_picks: list[dict[str, Any]] | None = None,
+        image_paths: list[str] | tuple[str, ...] | None = None,
     ) -> BotReply:
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
@@ -2357,6 +2471,9 @@ class BotHandler:
         wp_context = session.get("wp_ops_context")
         pop_session_keys: list[str] = []
         session_updates: dict[str, Any] = {}
+        if "pending_image_paths" in session:
+            session.pop("pending_image_paths", None)
+            pop_session_keys.append("pending_image_paths")
         if wp_context is not None and not context_matches(
             wp_context, actor=actor, channel=self.channel, conversation_id=conversation_id
         ):
@@ -2394,6 +2511,8 @@ class BotHandler:
             chat_kwargs["clarification_round"] = clarification_round
         if _accepts_kwarg(run_chat, "clarification_context"):
             chat_kwargs["clarification_context"] = clarification_context
+        if image_paths and _accepts_kwarg(run_chat, "image_paths"):
+            chat_kwargs["image_paths"] = list(image_paths)
         result = run_chat(message, **chat_kwargs)
 
         review_plan_id = getattr(result, "review_stage_plan_id", None)
@@ -2531,6 +2650,7 @@ class BotHandler:
                 round_num=clarification_round,
                 task_id=task_id,
                 attachments=safe_attachments,
+                image_paths=image_paths,
             )
 
         if result.soft_escalate_nudge and SOFT_ESCALATE_NUDGE not in text:

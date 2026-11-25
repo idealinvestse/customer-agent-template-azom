@@ -112,7 +112,7 @@ _NON_EDITABLE = _TERMINAL | frozenset(
 )
 _STAGE_OK = frozenset({"tests_passed", "review_requested", "approved_for_staging"})
 _UNREACHABLE = frozenset({"approved_for_production", "deployed", "verified"})
-_ARTIFACT_PNG = re.compile(r"^(?:base|work)-(?:desktop|mobile)\.png$")
+_ARTIFACT_PNG = re.compile(r"^(?:base|work|live|preview|change|focus)-(?:desktop|mobile)\.png$")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
@@ -481,6 +481,7 @@ class ReviewPlans:
             except UnicodeDecodeError:
                 return _fail("NotText", "Filen är inte giltig UTF-8-text.")
             try:
+                write_tree(root / "origin", [(relative, text.encode("utf-8"))])
                 meta = create_work_file(root, relative, text)
             except ReviewError as exc:
                 return _fail(exc.error_class, exc.error_class)
@@ -1049,16 +1050,336 @@ class ReviewPlans:
                 outcome=row.get("status"),
                 run_id=run_id,
             )
-        screenshots = _list_artifact_pngs(artifact_dir)
+        browser_row = next((r for r in results if isinstance(r, dict) and r.get("job") == "browser_smoke"), None)
+        rep_sandbox = (
+            isinstance(browser_row, dict)
+            and browser_row.get("status") in {"passed", "failed"}
+            and browser_row.get("reason") != "sandbox_not_representative"
+        )
+        sandbox_shots = (
+            [n for n in _list_artifact_pngs(artifact_dir) if n.startswith(("base-", "work-"))]
+            if rep_sandbox
+            else []
+        )
+        preview_data: dict[str, Any] | None = None
+        preview_error: str | None = None
+        if kind == "theme":
+            from ecom_ops.integrations.wp_live_preview import live_preview_enabled
+
+            if live_preview_enabled():
+                try:
+                    pv = self.live_preview(site_id, plan_id, actor=actor, path="/")
+                    if pv.ok:
+                        preview_data = dict(pv.data or {})
+                    else:
+                        preview_error = str((pv.data or {}).get("error_class") or "LivePreviewFailed")
+                except ReviewError as exc:
+                    preview_error = exc.error_class
+                except Exception:
+                    preview_error = "LivePreviewFailed"
+
+        screenshots: list[str] = []
+        if preview_data:
+            for name in preview_data.get("screenshots") or []:
+                if isinstance(name, str) and name not in screenshots:
+                    screenshots.append(name)
+        for name in sandbox_shots:
+            if name not in screenshots:
+                screenshots.append(name)
+        screenshots = screenshots[:4]
+        out_extra: dict[str, Any] = {
+            "plan_id": plan_id,
+            "site_id": site_id,
+            "status": status,
+            "checks": stamped,
+            "check_run": snapshot,
+            "screenshots": screenshots,
+            "screenshot_paths": [str(artifact_dir / name) for name in screenshots],
+            "sandbox_representative": rep_sandbox,
+        }
+        if preview_data is not None:
+            out_extra["preview"] = preview_data
+            out_extra["preview_status"] = "ok"
+            if not rep_sandbox:
+                out_extra["preview_note"] = (
+                    "Live-overlay-förhandsvisning lyckades med riktiga skärmdumpar från livesajten "
+                    "(lokal PHP-sandlåda är inte representativ för temat)."
+                )
+            else:
+                out_extra["preview_note"] = "Live-overlay-förhandsvisning lyckades."
+        elif preview_error is not None:
+            out_extra["preview_error"] = preview_error
+            out_extra["preview_status"] = "failed"
+            out_extra["preview_note"] = f"Live-overlay-förhandsvisning misslyckades ({preview_error})."
+        else:
+            out_extra["preview_status"] = "skipped"
+            out_extra["preview_note"] = ""
+        msg = (
+            "Kontrollerna är bokförda. Live-overlay-förhandsvisning skapades med riktiga skärmdumpar "
+            "från livesajten (lokal PHP-sandlåda är inte representativ för temat)."
+            if preview_data is not None and not rep_sandbox
+            else "Kontrollerna är bokförda."
+        )
+        return _ok(msg, **out_extra)
+
+    def live_preview(
+        self,
+        site_id: str,
+        plan_id: str,
+        *,
+        actor: str,
+        path: str = "/",
+        focus_section: str | None = None,
+        focus_selector: str | None = None,
+        focus_text: str | None = None,
+        full_page: bool = False,
+    ) -> WpOpsResult:
+        """Render a read-only live HTML overlay preview for a workspace without writing prod."""
+        denied = self._need(actor, Permission.WP_OPS_OPERATE, action="wp_review_live_preview")
+        if denied is not None:
+            return denied
+        from ecom_ops.bot.dashboard_links import sandbox_preview_url
+        from ecom_ops.integrations.wp_live_preview import (
+            build_interactive_sandbox_html,
+            capture_preview,
+            fetch_live_html,
+            live_preview_enabled,
+            validate_focus_options,
+            validate_preview_path,
+        )
+        from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
+        from ecom_ops.wp_ops.preview_overlay import apply_overlay
+
+        if not live_preview_enabled():
+            return _fail("LivePreviewDisabled", "Live-förhandsvisning är inte aktiverad.")
+        plan = self._row(site_id, plan_id)
+        if plan is None:
+            return _fail("UnknownPlan", "Okänd plan.")
+        blocked = self._fresh(plan)
+        if blocked is not None:
+            return blocked
+        site, missing = self._site(site_id)
+        if missing is not None or site is None:
+            return missing if missing is not None else _fail("UnknownSite", "Okänd webbplats.")
+        try:
+            root = workspace_root(self.data_dir, site_id, plan_id)
+            work_dir = root / "work"
+            product_edits = _load_product_edits(work_dir)
+            effective_path = path
+            if (
+                (effective_path is None or str(effective_path).strip() in {"", "/"})
+                and product_edits
+                and isinstance(product_edits.get("product_path"), str)
+                and str(product_edits.get("product_path")).strip()
+            ):
+                effective_path = str(product_edits["product_path"]).strip()
+            clean_path = validate_preview_path(effective_path)
+            clean_section, clean_selector, clean_text, clean_full_page = validate_focus_options(
+                focus_section=focus_section,
+                focus_selector=focus_selector,
+                focus_text=focus_text,
+                full_page=full_page,
+            )
+            fetched = fetch_live_html(site, clean_path)
+        except ReviewError as exc:
+            return _fail(exc.error_class, exc.error_class)
+
+        base_dir = root / "base"
+        origin_dir = root / "origin"
+        parent_slug: str | None = None
+        parent_checked = False
+        transport: Any = None
+        changes: list[tuple[str, str, str]] = []
+        for rel, after_bytes in iter_files(work_dir):
+            base_file = base_dir / rel
+            origin_file = origin_dir / rel
+            if base_file.is_file() and not base_file.is_symlink():
+                before_bytes = base_file.read_bytes()
+            elif origin_file.is_file() and not origin_file.is_symlink():
+                before_bytes = origin_file.read_bytes()
+            elif plan.get("kind") == "theme" and site.files_root:
+                if not parent_checked:
+                    parent_checked = True
+                    parent_slug = _resolve_parent_theme(root, str(plan.get("slug") or ""), None)
+                    if parent_slug:
+                        transport = self._transport(site)
+                if not parent_slug or transport is None:
+                    continue
+                try:
+                    abs_path = resolve_file(site.files_root, "theme", parent_slug, rel)
+                    raw_parent = transport.read_bytes(abs_path)
+                except (PathRejected, TransportError, OSError):
+                    continue
+                if len(raw_parent) > 65536 or b"\x00" in raw_parent:
+                    continue
+                before_bytes = raw_parent
+            else:
+                continue
+            if before_bytes == after_bytes:
+                continue
+            changes.append(
+                (
+                    rel,
+                    before_bytes.decode("utf-8", errors="replace"),
+                    after_bytes.decode("utf-8", errors="replace"),
+                )
+            )
+
+        child_css: str | None = None
+        css_work = work_dir / "style.css"
+        css_base = base_dir / "style.css"
+        if css_work.is_file() and not css_work.is_symlink():
+            css_text = css_work.read_text(encoding="utf-8", errors="replace")
+            base_css_text = (
+                css_base.read_text(encoding="utf-8", errors="replace")
+                if css_base.is_file() and not css_base.is_symlink()
+                else ""
+            )
+            if plan.get("theme_relationship") in {"no_child", "child"} and (
+                css_text != base_css_text or len(base_css_text) < 200
+            ):
+                child_css = css_text
+
+        try:
+            overlay = apply_overlay(
+                str(fetched.get("html") or ""),
+                changes,
+                child_css=child_css,
+                product_edits=product_edits,
+            )
+        except ValueError:
+            return _fail("HtmlTooLarge", "Sidan överskrider storleksgränsen.")
+
+        artifact_dir = root / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        for stale in list(artifact_dir.iterdir()):
+            if stale.name.startswith(("live-", "preview-", "change-", "focus-")) and stale.suffix.lower() == ".png":
+                try:
+                    if stale.is_file() or stale.is_symlink():
+                        stale.unlink()
+                except OSError:
+                    pass
+
+        try:
+            rendered = capture_preview(
+                site,
+                path=clean_path,
+                artifact_dir=artifact_dir,
+                revisions=[
+                    ("live", str(fetched.get("html") or "")),
+                    ("preview", overlay.html),
+                ],
+                highlight_token=overlay.highlight_token,
+                focus_section=clean_section,
+                focus_selector=clean_selector,
+                focus_text=clean_text,
+                full_page=clean_full_page,
+                target_url=str(fetched.get("final_url") or "") or None,
+            )
+        except ReviewError as exc:
+            return _fail(exc.error_class, exc.error_class)
+
+        preferred_order = (
+            "change-desktop.png",
+            "change-mobile.png",
+            "focus-desktop.png",
+            "focus-mobile.png",
+            "live-desktop.png",
+            "preview-desktop.png",
+            "live-mobile.png",
+            "preview-mobile.png",
+        )
+        available = set(_list_artifact_pngs(artifact_dir))
+        ordered_shots = [name for name in preferred_order if name in available]
+        counts = {
+            kind_name: sum(1 for h in overlay.hunks if h.kind == kind_name)
+            for kind_name in ("applied", "unmatched", "php_skipped", "insert_unanchored")
+        }
+        secrets_list: list[str] = []
+        try:
+            bound_cred = bind_credential(site)
+            if bound_cred.present and bound_cred.value:
+                secrets_list.append(bound_cred.value)
+        except Exception:
+            pass
+
+        interactive_html = build_interactive_sandbox_html(
+            overlay.html,
+            site_canonical_url=str(site.canonical_url or ""),
+            site_id=site_id,
+            plan_id=plan_id,
+            path=clean_path,
+            highlight_token=overlay.highlight_token,
+            focus_text=clean_text,
+        )
+        if secrets_list:
+            scrubbed_html = scrub_secrets(interactive_html, secrets_list)
+            if isinstance(scrubbed_html, str):
+                interactive_html = scrubbed_html
+        preview_html_path = artifact_dir / "preview.html"
+        if preview_html_path.is_symlink():
+            preview_html_path.unlink()
+        preview_html_path.write_text(interactive_html, encoding="utf-8")
+
+        preview_route_path = f"/wp/{site_id}/reviews/{plan_id}/preview"
+        preview_public_url = sandbox_preview_url(site_id, plan_id)
+
+        hunk_excerpts = [
+            scrub_secrets(
+                {
+                    "path": h.path,
+                    "kind": h.kind,
+                    "old_excerpt": h.old_excerpt[:160],
+                    "new_excerpt": h.new_excerpt[:160],
+                },
+                secrets_list,
+            )
+            for h in overlay.hunks[:5]
+        ]
+        safe_token = scrub_secrets(overlay.highlight_token, secrets_list)
+        safe_blocked = scrub_secrets(rendered.get("blocked_counts") or {}, secrets_list)
+        safe_focus_target = scrub_secrets(rendered.get("focus_target"), secrets_list)
+        focus_matched = bool(rendered.get("focus_matched"))
+        self._audit(
+            actor,
+            plan,
+            "wp_review_live_preview",
+            True,
+            live_calls=True,
+            writes=False,
+            path=clean_path,
+            applied=counts["applied"],
+            unmatched=counts["unmatched"],
+            php_skipped=counts["php_skipped"],
+            css_bytes=overlay.injected_css_bytes,
+            screenshots=len(ordered_shots),
+            focus_matched=focus_matched,
+            full_page=clean_full_page,
+            preview_html_ready=True,
+        )
         return _ok(
-            "Kontrollerna är bokförda.",
+            "Live-förhandsvisning skapad.",
             plan_id=plan_id,
             site_id=site_id,
-            status=status,
-            checks=stamped,
-            check_run=snapshot,
-            screenshots=screenshots,
-            screenshot_paths=[str(artifact_dir / name) for name in screenshots],
+            path=clean_path,
+            preview_path=preview_route_path,
+            preview_url=preview_public_url,
+            preview_html_ready=True,
+            screenshots=ordered_shots,
+            screenshot_paths=[str(artifact_dir / name) for name in ordered_shots],
+            focus_matched=focus_matched,
+            focus_target=safe_focus_target,
+            full_page=clean_full_page,
+            overlay={
+                "counts": counts,
+                "injected_css_bytes": overlay.injected_css_bytes,
+                "highlight_token": safe_token,
+                "hunks": hunk_excerpts,
+            },
+            blocked_counts=safe_blocked,
+            preview_kind="live_overlay",
+            live_calls=True,
+            note="Förhandsvisning = live-HTML från azom.no (GET, utan cookies) + statiska mallfragment/CSS från arbetsytan. PHP-logik körs inte.",
         )
 
     def _run_sandbox_catalog(
@@ -1085,6 +1406,7 @@ class ReviewPlans:
                 if plan.get("theme_relationship") == "child" or (root / "base" / "style.css").is_file():
                     resolved_parent = _resolve_parent_theme(root, slug, None)
                     if resolved_parent:
+                        parent_theme_slug = resolved_parent
                         transport = self._transport(site)
                         if isinstance(transport, LocalTree):
                             themes_dir = (transport.local_root / "wp-content" / "themes").resolve()
@@ -1094,7 +1416,6 @@ class ReviewPlans:
                                 and not candidate.is_symlink()
                                 and candidate.is_dir()
                             ):
-                                parent_theme_slug = resolved_parent
                                 parent_theme_dir = candidate
                 kwargs: dict[str, Any] = {
                     "site": site,
@@ -1106,9 +1427,10 @@ class ReviewPlans:
                     "artifact_dir": artifact_dir,
                     "risk": risk,
                 }
-                if parent_theme_slug is not None and parent_theme_dir is not None:
+                if parent_theme_slug is not None:
                     kwargs["parent_theme_slug"] = parent_theme_slug
-                    kwargs["parent_theme_dir"] = parent_theme_dir
+                    if parent_theme_dir is not None:
+                        kwargs["parent_theme_dir"] = parent_theme_dir
                 outcome = run_vertical_theme_render(**kwargs)
                 return list(outcome["checks"])
             if kind == "plugin":
@@ -1169,6 +1491,39 @@ class ReviewPlans:
         except ReviewError:
             return []
         return _list_artifact_pngs(artifact_dir)
+
+    def preview_html_file(
+        self, site_id: str, plan_id: str, *, actor: str
+    ) -> tuple[Path | None, WpOpsResult | None]:
+        """Resolve ``artifacts/preview.html`` safely for ``WP_OPS_READ`` actors."""
+        denied = self._need(actor, Permission.WP_OPS_READ, action="wp_review_preview_html")
+        if denied is not None:
+            return None, denied
+        if not PLAN_ID.fullmatch(str(plan_id or "")):
+            return None, _fail("UnknownPlan", "Okänd plan.")
+        plan = self._row(site_id, plan_id)
+        if plan is None:
+            return None, _fail("UnknownPlan", "Okänd plan.")
+        self._expire_if_due(plan)
+        plan = self._row(site_id, plan_id)
+        if plan is None:
+            return None, _fail("UnknownPlan", "Okänd plan.")
+        if plan.get("status") == "expired":
+            return None, _fail("Expired", "Planen har gått ut.", plan_id=plan_id, site_id=site_id)
+        candidate = _safe_preview_html_path(self.data_dir, site_id, plan_id)
+        if candidate is None:
+            return None, _fail("PreviewNotFound", "Ingen sandbox-förhandsvisning har skapats ännu.")
+        return candidate, None
+
+    def has_preview_html(self, site_id: str, plan_id: str, *, actor: str) -> bool:
+        """Check whether ``artifacts/preview.html`` exists for this plan without writing audit logs."""
+        if not self._holds(actor, Permission.WP_OPS_READ):
+            return False
+        if not PLAN_ID.fullmatch(str(plan_id or "")):
+            return False
+        if self._row(site_id, plan_id) is None:
+            return False
+        return _safe_preview_html_path(self.data_dir, site_id, plan_id) is not None
 
     def show(self, site_id: str, plan_id: str, *, actor: str, include_diff: bool = False) -> WpOpsResult:
         denied = self._need(actor, Permission.WP_OPS_READ, action="wp_review_show")
@@ -1853,6 +2208,53 @@ class ReviewPlans:
             success=success,
             details=safe,
         )
+
+
+def _load_product_edits(work_dir: Path) -> dict[str, Any] | None:
+    """Safely read ``work/product_edits.json`` if present (refusing symlinks and oversized files)."""
+    raw_file = work_dir / "product_edits.json"
+    if raw_file.is_symlink() or not raw_file.is_file():
+        return None
+    try:
+        resolved_dir = work_dir.resolve()
+        resolved_file = raw_file.resolve()
+        if resolved_file.parent != resolved_dir or resolved_file.is_symlink():
+            return None
+        raw = resolved_file.read_bytes()
+        if len(raw) > 65536 or b"\x00" in raw:
+            return None
+        parsed = json.loads(raw.decode("utf-8"))
+        return parsed if isinstance(parsed, dict) else None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def _safe_preview_html_path(data_dir: Path, site_id: str, plan_id: str) -> Path | None:
+    """Resolve ``artifacts/preview.html`` strictly inside the plan workspace (refusing symlinks)."""
+    try:
+        root = workspace_root(data_dir, site_id, plan_id)
+    except ReviewError:
+        return None
+    if root.is_symlink() or not root.is_dir():
+        return None
+    raw_art = root / "artifacts"
+    if raw_art.is_symlink() or not raw_art.is_dir():
+        return None
+    art_dir = raw_art.resolve()
+    if art_dir.parent != root.resolve():
+        return None
+    raw_file = art_dir / "preview.html"
+    if raw_file.is_symlink():
+        return None
+    candidate = raw_file.resolve()
+    if candidate.parent != art_dir or candidate.is_symlink() or not candidate.is_file():
+        return None
+    try:
+        if candidate.stat().st_size > 5 * 1024 * 1024:
+            return None
+    except OSError:
+        return None
+    return candidate
 
 
 def _list_artifact_pngs(artifact_dir: Path) -> list[str]:

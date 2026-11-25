@@ -27,7 +27,12 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 import requests
 
 from ecom_ops.model_router import circuit_breaker
-from ecom_ops.model_router.base import ModelRequest, ModelResult, RouteCapabilities
+from ecom_ops.model_router.base import (
+    ModelRequest,
+    ModelResult,
+    RouteCapabilities,
+    encode_image_data_url,
+)
 from ecom_ops.model_router.base import emit_phase as _emit_phase
 from ecom_ops.model_router.errors import (
     ModelAuthError,
@@ -197,6 +202,51 @@ def _prefer_output_text(delta_text: str, done_text: str, completed_text: str) ->
     return delta
 
 
+def _responses_message_content(msg: dict[str, Any]) -> str | list[dict[str, Any]]:
+    """Build plain-string or OpenAI Responses multimodal content list for one message."""
+    content = msg.get("content")
+    raw_images = msg.get("images")
+    image_list = (
+        [str(p).strip() for p in raw_images if isinstance(p, (str, Path)) and str(p).strip()]
+        if isinstance(raw_images, (list, tuple))
+        else []
+    )
+    if not image_list and not isinstance(content, list):
+        return str(content or "")
+
+    parts: list[dict[str, Any]] = []
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "")
+            if ptype in {"text", "input_text"}:
+                parts.append({"type": "input_text", "text": str(part.get("text") or "")})
+            elif ptype == "input_image" and part.get("image_url"):
+                parts.append({"type": "input_image", "image_url": str(part["image_url"])})
+            elif ptype == "image_url":
+                img = part.get("image_url")
+                if isinstance(img, dict) and img.get("url"):
+                    parts.append({"type": "input_image", "image_url": str(img["url"])})
+                elif isinstance(img, str) and img:
+                    parts.append({"type": "input_image", "image_url": img})
+    else:
+        text_val = str(content or "")
+        if text_val or not image_list:
+            parts.append({"type": "input_text", "text": text_val})
+
+    for img_path in image_list:
+        try:
+            data_url = encode_image_data_url(img_path)
+        except ValueError as exc:
+            raise ModelConfigError(
+                "Invalid image attachment for Responses API",
+                code="invalid_image",
+            ) from exc
+        parts.append({"type": "input_image", "image_url": data_url})
+    return parts
+
+
 def build_responses_payload(request: ModelRequest, model: str) -> dict[str, Any]:
     """Responses API body. No temperature and no max_tokens.
 
@@ -217,20 +267,20 @@ def build_responses_payload(request: ModelRequest, model: str) -> dict[str, Any]
         idx += 1
 
     developer_prefix: list[str] = []
-    conversation: list[dict[str, str]] = []
+    conversation: list[dict[str, Any]] = []
     for msg in request.messages[idx:]:
         role = msg.get("role") or "user"
         content = msg.get("content") or ""
-        if role == "developer" and not conversation:
+        if role == "developer" and not conversation and not msg.get("images") and not isinstance(content, list):
             if content:
                 developer_prefix.append(str(content))
             continue
         if role == "system":
-            conversation.append({"role": "developer", "content": str(content)})
+            conversation.append({"role": "developer", "content": _responses_message_content(msg)})
         else:
-            conversation.append({"role": str(role), "content": str(content)})
+            conversation.append({"role": str(role), "content": _responses_message_content(msg)})
 
-    input_items: list[dict[str, str]] = []
+    input_items: list[dict[str, Any]] = []
     if developer_prefix:
         input_items.append({"role": "developer", "content": "\n\n".join(developer_prefix)})
     input_items.extend(conversation)
@@ -346,6 +396,7 @@ class OpenAIChatGPTOAuthRoute:
         supports_reasoning_effort=True,
         supports_json_schema=True,
         supports_streaming=True,
+        supports_vision=True,
         cost_kind="subscription",
         subject_to_openrouter_cap=False,
     )
@@ -838,8 +889,8 @@ class OpenAIChatGPTOAuthRoute:
             raise ModelUnavailableError("ChatGPT models response was not JSON") from exc
         finally:
             response.close()
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, list) and isinstance(payload, dict):
+        data = payload.get("data")
+        if not isinstance(data, list):
             data = payload.get("models")
         if not isinstance(data, list):
             return []

@@ -1,69 +1,120 @@
 {% extends "base.html" %}
-{% block title %}Telemetry – Azom{% endblock %}
-{% block page_subtitle %}Telemetry{% endblock %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Telemetri – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Telemetri{% endblock %}
 {% block content %}
+{% set has_filter = action_filter or route_filter or errors_only %}
 <div class="space-y-5">
-  <div>
-    <h2 class="az-page-title">Telemetry</h2>
-    <p class="az-muted mt-1">Senaste händelser, route och kostnad. Prompttext lagras inte.</p>
+  {{ ui.page_header("Telemetri", "Senaste LLM- och agenthändelser, modellrutt och kostnad. Prompttext lagras inte.") }}
+
+  <!-- Summary KPI Strip -->
+  <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    {{ ui.kpi_card('Visade rader', (rows | length) ~ (' / ' ~ row_cap if capped else ''), 'Max ' ~ row_cap ~ ' senaste loggrade händelser' if capped else 'Alla matchande rader visas', icon_name='activity') }}
+    {{ ui.kpi_card('Fel i urval', error_count | default(0), 'Rader med felklass eller error-händelse', tone='error' if (error_count | default(0)) > 0 else 'ok', icon_name='alert-circle') }}
+    {{ ui.kpi_card('Total kostnad', fmt_usd(total_cost_usd | default(0)), 'Summerat för visade rader', icon_name='trending-up') }}
+    {{ ui.kpi_card('Totala tokens', total_tokens | default(0), 'Prompt + completion tokens', icon_name='cpu') }}
   </div>
 
+  {% if capped %}
+  {{ ui.info_callout('info', 'Radtak aktivt (' ~ row_cap ~ ' rader)', 'Tabellen läser de senaste ' ~ row_cap ~ ' raderna från telemetry.jsonl. Filtrera på händelse eller rutt vid behov.') }}
+  {% endif %}
+
+  <!-- Filter Bar -->
   <section class="az-card">
-    <form method="get" action="/data/telemetry" class="grid gap-4 sm:grid-cols-4">
+    <form method="get" action="/data/telemetry" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
       <div>
-        <label class="az-label" for="action">Action</label>
-        <input class="az-input !max-w-none" id="action" name="action" value="{{ action_filter }}" />
+        <label class="az-label" for="action">Händelse (action)</label>
+        <input
+          class="az-input font-mono"
+          id="action"
+          type="text"
+          name="action"
+          maxlength="80"
+          value="{{ action_filter }}"
+          placeholder="t.ex. case_reply"
+        />
       </div>
       <div>
-        <label class="az-label" for="route">Route</label>
-        <input class="az-input !max-w-none" id="route" name="route" value="{{ route_filter }}" />
+        <label class="az-label" for="route">Modellrutt (route)</label>
+        <input
+          class="az-input font-mono"
+          id="route"
+          type="text"
+          name="route"
+          maxlength="80"
+          value="{{ route_filter }}"
+          placeholder="t.ex. rutt-id"
+        />
       </div>
-      <label class="flex items-end gap-2 pb-2 text-sm text-mist-200">
-        <input type="checkbox" name="errors" value="1" {% if errors_only %}checked{% endif %} />
-        Bara fel
+      <label class="flex items-center gap-2.5 pb-2 text-sm text-mist-200 cursor-pointer">
+        <input class="az-checkbox" type="checkbox" id="errors" name="errors" value="1" {% if errors_only %}checked{% endif %} />
+        <span>Bara fel</span>
       </label>
-      <div class="flex items-end">
-        <button class="az-btn-primary" type="submit">Filtrera</button>
+      <div class="flex flex-wrap items-center gap-2 lg:justify-end">
+        <button class="az-btn-primary az-btn-sm" type="submit">
+          {{ icon('filter', 'xs') }}
+          <span>Filtrera</span>
+        </button>
+        {% if has_filter %}
+        <a class="az-btn-secondary az-btn-sm" href="/data/telemetry">Rensa filter</a>
+        {% endif %}
       </div>
     </form>
   </section>
 
+  <!-- Telemetry Table -->
   <section class="az-card">
-    <h2 class="az-section-title">Rader ({{ rows | length }})</h2>
+    <h2 id="telemetry-table-heading" class="az-section-title">
+      Rader ({{ rows | length }}{% if capped %} / max {{ row_cap }}{% endif %})
+    </h2>
     {% if rows %}
-    <div class="overflow-x-auto">
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="telemetry-table-heading">
       <table class="az-table">
         <thead>
           <tr>
-            <th>When</th>
-            <th>Action</th>
-            <th>Route</th>
-            <th>Modell</th>
-            <th>Tokens</th>
-            <th>Cost</th>
-            <th>Fel</th>
-            <th>Detalj</th>
+            <th scope="col">Tid</th>
+            <th scope="col">Händelse</th>
+            <th scope="col">Rutt</th>
+            <th scope="col">Modell</th>
+            <th scope="col">Tokens</th>
+            <th scope="col">Kostnad</th>
+            <th scope="col">Fel</th>
+            <th scope="col">Detaljer</th>
           </tr>
         </thead>
         <tbody>
           {% for e in rows %}
+          {% set meta_json = fmt_json(e.get('safe_meta')) %}
           <tr>
-            <td>{{ e.get('created_at', '')[:19] }}</td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums text-mist-300">{{ fmt_dt(e.get('created_at')) }}</td>
             <td><code class="az-code">{{ e.get('action', '') }}</code></td>
-            <td>{{ e.get('route_id', '') }}</td>
-            <td>{{ e.get('model', '') }}</td>
-            <td>
+            <td class="font-mono text-xs text-mist-200">{{ e.get('route_id', '') or '—' }}</td>
+            <td class="font-mono text-xs text-mist-200">{{ e.get('model', '') or '—' }}</td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums text-mist-300">
               {% if e.get('prompt_tokens') is not none or e.get('completion_tokens') is not none %}
-              {{ e.get('prompt_tokens', '') }}/{{ e.get('completion_tokens', '') }}
+              {{ e.get('prompt_tokens', 0) }}/{{ e.get('completion_tokens', 0) }}
+              {% else %}
+              —
               {% endif %}
             </td>
-            <td>{{ e.get('cost_usd', '') }}</td>
-            <td>{{ e.get('error_class', '') }}</td>
+            <td class="whitespace-nowrap font-mono text-xs tabular-nums">{{ fmt_usd(e.get('cost_usd')) }}</td>
             <td>
+              {% if e.get('error_class') %}
+              {{ ui.status_badge('error', e.get('error_class')) }}
+              {% else %}
+              <span class="text-mist-500">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if meta_json %}
               <details>
-                <summary class="cursor-pointer text-steel-300">meta</summary>
-                <pre class="mt-2 max-w-md whitespace-pre-wrap text-xs text-mist-400">{{ e.get('safe_meta', {}) }}</pre>
+                <summary class="cursor-pointer text-xs font-medium text-steel-300 hover:underline">Metadata</summary>
+                <pre class="mt-2 max-w-md overflow-x-auto whitespace-pre-wrap rounded border border-ink-700/70 bg-ink-950/70 p-2 font-mono text-xs text-mist-300">{{ meta_json }}</pre>
               </details>
+              {% else %}
+              <span class="text-mist-500">—</span>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}
@@ -71,7 +122,7 @@
       </table>
     </div>
     {% else %}
-    <p class="az-muted">Ingen data.</p>
+    {{ ui.empty_state('Inga telemetrihändelser matchar filtret' if has_filter else 'Ingen telemetri loggad ännu', 'Prova att rensa filtret eller invänta nästa händelse.', action_label='Rensa filter' if has_filter else None, action_href='/data/telemetry' if has_filter else None, icon_name='activity') }}
     {% endif %}
   </section>
 </div>
