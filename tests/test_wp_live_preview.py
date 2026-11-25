@@ -505,6 +505,7 @@ def test_preview_page_argument_normalization_and_schema_hints(monkeypatch, tmp_p
         "full_page",
         "path",
         "plan_id",
+        "reuse_live_baseline",
         "site_id",
     ]
 

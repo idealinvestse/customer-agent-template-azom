@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import json
 import os
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -388,3 +391,226 @@ def test_dashboard_ssh_settings_hide_the_key_and_block_viewers(tmp_path, monkeyp
     if runtime.is_file():
         assert "AZOM_WP_FILES_SSH" not in runtime.read_text(encoding="utf-8")
         assert marker not in runtime.read_text(encoding="utf-8")
+
+
+def _make_png(width: int = 4, height: int = 4) -> bytes:
+    raw = b"".join(b"\x00" + b"\x22\x88\x44" * width for _ in range(height))
+
+    def _chunk(tag: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(raw))
+        + _chunk(b"IEND", b"")
+    )
+
+
+def _setup_dashboard_env(tmp_path: Path, monkeypatch) -> object:
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.setenv("WP_SECRET_MOCK_SHOP", SECRET)
+    monkeypatch.setenv("WP_SECRET_MOCK_STAGING", "mock-staging-app-password-bbb")
+    for name in (
+        "DASHBOARD_PASSWORD",
+        "DASHBOARD_PASSWORD_HASH",
+        "DASHBOARD_OSCAR_PASSWORD",
+        "DASHBOARD_OSCAR_PASSWORD_HASH",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    from ecom_ops.rbac import clear_rbac_cache
+
+    clear_rbac_cache()
+    app = _load_app()
+    app.config["TESTING"] = True
+    return app.test_client()
+
+
+def test_wp_review_live_overlay_gallery_renders_without_browser_smoke(tmp_path, monkeypatch):
+    from ecom_ops.wp_ops.review_plan import ReviewPlans, VerifiedTheme
+    from ecom_ops.wp_ops.review_workspace import workspace_root
+
+    client = _setup_dashboard_env(tmp_path, monkeypatch)
+    plans = ReviewPlans(data_dir=tmp_path)
+    opened = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        summary="Kompakt köpknapp med tydlig ikonmarginal på produktsidan.",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    assert opened.ok
+    plan_id = opened.data["plan_id"]
+    adir = workspace_root(tmp_path, "mock-staging", plan_id) / "artifacts"
+    adir.mkdir(parents=True, exist_ok=True)
+    png = _make_png()
+    for name in (
+        "focus-desktop.png",
+        "focus-mobile.png",
+        "live-desktop.png",
+        "preview-desktop.png",
+        "live-mobile.png",
+        "preview-mobile.png",
+    ):
+        (adir / name).write_bytes(png)
+    (adir / "preview.json").write_text(
+        json.dumps(
+            {
+                "preview_kind": "live_overlay",
+                "path": "/produkt/azom-dnx-8/",
+                "focus_target": "selector:form.w-commerce-commerceaddtocartform",
+                "focus_matched": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (adir / "preview.html").write_text("<!doctype html><html><body>Sandbox</body></html>", encoding="utf-8")
+
+    oscar = _auth(client, "oscar")
+    resp = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=oscar)
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+
+    # Live-overlay gallery renders even when browser_smoke has not passed
+    assert 'data-rendered-preview="true"' in body
+    assert 'data-live-overlay-preview="true"' in body
+    assert 'data-sandbox-smoke="false"' in body
+    assert "Ingen renderad förhandsvisning." not in body
+    assert "Syntetiska skärmdumpar" not in body
+    assert 'data-live-overlay-gallery="true"' in body
+    assert "Live vs. Förhandsvisning" in body
+    assert "Fokus på ändringen" in body
+    assert "Live (före)" in body
+    assert "Förhandsvisning (efter)" in body
+    assert "/produkt/azom-dnx-8/" in body
+    assert "selector:form.w-commerce-commerceaddtocartform" in body
+    for name in (
+        "focus-desktop.png",
+        "focus-mobile.png",
+        "live-desktop.png",
+        "preview-desktop.png",
+        "live-mobile.png",
+        "preview-mobile.png",
+    ):
+        assert f"/wp/mock-staging/reviews/{plan_id}/artifact/{name}" in body
+    assert f"/wp/mock-staging/reviews/{plan_id}/preview" in body
+    assert "Kompakt köpknapp med tydlig ikonmarginal på produktsidan." in body
+
+    # Viewer does not see code summary or admin-only artifact images
+    jonatan = _auth(client, "jonatan")
+    viewer_resp = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=jonatan)
+    assert viewer_resp.status_code == 200
+    viewer_body = viewer_resp.get_data(as_text=True)
+    assert "Kompakt köpknapp med tydlig ikonmarginal" not in viewer_body
+    assert 'data-live-overlay-gallery="true"' not in viewer_body
+
+
+def test_wp_review_variant_switcher_forked_from_superseded_and_site_list(tmp_path, monkeypatch):
+    from ecom_ops.wp_ops.review_plan import ReviewPlans, VerifiedTheme
+    from ecom_ops.wp_ops.review_workspace import workspace_root
+
+    client = _setup_dashboard_env(tmp_path, monkeypatch)
+    plans = ReviewPlans(data_dir=tmp_path)
+    p1 = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        summary="Förslag 1: kompakt grön knapp",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    p2 = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        summary="Förslag 2: grön konturknapp",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    p3 = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        summary="Äldre fristående plan",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    assert p1.ok and p2.ok and p3.ok
+    pid1, pid2, pid3 = p1.data["plan_id"], p2.data["plan_id"], p3.data["plan_id"]
+
+    # Stamp iterative metadata directly in wp_review_plans.json (works with both old & new schema)
+    store_path = tmp_path / "wp_review_plans.json"
+    stored = json.loads(store_path.read_text(encoding="utf-8"))
+    for row in stored["plans"]:
+        if row["plan_id"] == pid1:
+            row["variant_group"] = "btn-3379"
+            row["superseded_by"] = pid2
+        elif row["plan_id"] == pid2:
+            row["variant_group"] = "btn-3379"
+            row["forked_from"] = pid1
+            row["superseded_by"] = ""
+        elif row["plan_id"] == pid3:
+            row.pop("variant_group", None)
+            row.pop("forked_from", None)
+            row["superseded_by"] = ""
+    store_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    # Add interactive preview HTML to pid2 only
+    adir2 = workspace_root(tmp_path, "mock-staging", pid2) / "artifacts"
+    adir2.mkdir(parents=True, exist_ok=True)
+    (adir2 / "preview.html").write_text("<!doctype html><html><body>V2</body></html>", encoding="utf-8")
+
+    oscar = _auth(client, "oscar")
+
+    # pid1 shows superseded banner pointing to pid2 + variant switcher for btn-3379
+    r1 = client.get(f"/wp/mock-staging/reviews/{pid1}", headers=oscar)
+    assert r1.status_code == 200
+    h1 = r1.get_data(as_text=True)
+    assert f'data-superseded-by="{pid2}"' in h1
+    assert f'href="/wp/mock-staging/reviews/{pid2}"' in h1
+    assert 'data-variant-switcher="true"' in h1
+    assert 'data-variant-group="btn-3379"' in h1
+    assert f'data-variant-plan-id="{pid1}"' in h1
+    assert f'data-variant-plan-id="{pid2}"' in h1
+
+    # pid2 shows forked_from link to pid1 + variant switcher (no superseded banner)
+    r2 = client.get(f"/wp/mock-staging/reviews/{pid2}", headers=oscar)
+    assert r2.status_code == 200
+    h2 = r2.get_data(as_text=True)
+    assert f'data-forked-from="{pid1}"' in h2
+    assert 'data-superseded-by=' not in h2
+    assert 'data-variant-switcher="true"' in h2
+
+    # pid3 (no variant_group / forked_from) renders cleanly without variant switcher
+    r3 = client.get(f"/wp/mock-staging/reviews/{pid3}", headers=oscar)
+    assert r3.status_code == 200
+    h3 = r3.get_data(as_text=True)
+    assert 'data-variant-switcher="true"' not in h3
+    assert 'data-forked-from=' not in h3
+
+    # wp_site.html lists recent wr-* workspaces with links, badges, and summary
+    site_resp = client.get("/wp/mock-staging", headers=oscar)
+    assert site_resp.status_code == 200
+    site_html = site_resp.get_data(as_text=True)
+    assert 'data-wp-reviews-section="true"' in site_html
+    assert "Granskningar / Sandlådor" in site_html
+    for pid in (pid1, pid2, pid3):
+        assert f'data-review-row="{pid}"' in site_html
+        assert f'/wp/mock-staging/reviews/{pid}' in site_html
+    assert "Förslag 1: kompakt grön knapp" in site_html
+    assert "btn-3379" in site_html
+    assert "ersatt" in site_html
+    assert f"/wp/mock-staging/reviews/{pid2}/preview" in site_html
+    assert f"/wp/mock-staging/reviews/{pid1}/preview" not in site_html
+
+    # Viewer sees workspace list on wp_site.html but without admin summaries
+    jonatan = _auth(client, "jonatan")
+    j_site = client.get("/wp/mock-staging", headers=jonatan)
+    assert j_site.status_code == 200
+    j_html = j_site.get_data(as_text=True)
+    assert 'data-wp-reviews-section="true"' in j_html
+    assert f'data-review-row="{pid2}"' in j_html
+    assert "Förslag 1: kompakt grön knapp" not in j_html

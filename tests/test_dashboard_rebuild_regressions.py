@@ -641,3 +641,69 @@ def test_wp_review_operator_and_site_orders_mutated_and_css_classes(rebuild_env,
         == 403
     )
     assert mod.app is client.application
+
+
+def test_wp_review_live_overlay_and_site_workspaces_csp_clean(rebuild_env):
+    import struct
+    import zlib
+
+    from ecom_ops.wp_ops.review_plan import ReviewPlans, VerifiedTheme
+    from ecom_ops.wp_ops.review_workspace import workspace_root
+
+    data_dir = rebuild_env["data_dir"]
+    client = rebuild_env["client"]
+    oscar_hdrs = _auth_with_csrf(client, "oscar")
+
+    plans = ReviewPlans(data_dir=data_dir)
+    p1 = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        summary="Variant A",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    p2 = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        summary="Variant B",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    assert p1.ok and p2.ok
+    pid1, pid2 = p1.data["plan_id"], p2.data["plan_id"]
+
+    store_path = data_dir / "wp_review_plans.json"
+    stored = json.loads(store_path.read_text(encoding="utf-8"))
+    for row in stored["plans"]:
+        if row["plan_id"] == pid1:
+            row["variant_group"] = "cta-group"
+            row["superseded_by"] = pid2
+        elif row["plan_id"] == pid2:
+            row["variant_group"] = "cta-group"
+            row["forked_from"] = pid1
+            row["superseded_by"] = ""
+    store_path.write_text(json.dumps(stored), encoding="utf-8")
+
+    # Write minimal valid PNG + preview.html for pid1
+    raw = b"\x00" + b"\x11\x22\x33"
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+
+    def _chunk(tag: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+
+    png = b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b"")
+    adir = workspace_root(data_dir, "mock-staging", pid1) / "artifacts"
+    adir.mkdir(parents=True, exist_ok=True)
+    (adir / "focus-desktop.png").write_bytes(png)
+    (adir / "live-desktop.png").write_bytes(png)
+    (adir / "preview-desktop.png").write_bytes(png)
+    (adir / "preview.html").write_text("<!doctype html><html><body>ok</body></html>", encoding="utf-8")
+
+    for url in ("/wp/mock-staging", f"/wp/mock-staging/reviews/{pid1}", f"/wp/mock-staging/reviews/{pid2}"):
+        resp = client.get(url, headers=oscar_hdrs)
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        audit = _HtmlSecurityAudit()
+        audit.feed(html)
+        assert not audit.bad_scripts, f"{url} had inline scripts: {audit.bad_scripts}"
+        assert not audit.inline_events, f"{url} had inline on* handlers: {audit.inline_events}"

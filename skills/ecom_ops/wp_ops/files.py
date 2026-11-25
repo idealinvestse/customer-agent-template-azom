@@ -193,6 +193,20 @@ class LocalTree:
             raise TransportError("FileMissing")
         return path.read_bytes()
 
+    def read_css_search_bytes(self, absolute_file: str, *, max_bytes: int = 512 * 1024) -> bytes:
+        """Read-only bounded read for larger parent ``.css`` files during selector search."""
+        path = self._local_checked(absolute_file)
+        if path.suffix.lower() != ".css":
+            raise PathRejected("extension")
+        if not path.is_file():
+            raise TransportError("FileMissing")
+        data = path.read_bytes()
+        if len(data) > max_bytes:
+            raise TransportError("FileTooLarge")
+        if b"\x00" in data:
+            raise TransportError("NotText")
+        return data
+
     def create_bytes(self, rel_path: str, data: bytes, *, overwrite: bool = False) -> dict[str, Any]:
         """Create a file inside ``local_root`` with parent dirs, refusing symlinks and overwrites by default."""
         if not isinstance(data, (bytes, bytearray)):

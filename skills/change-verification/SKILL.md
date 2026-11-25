@@ -12,7 +12,7 @@ version: "3.0.0"
 
 **Purpose:** Ensure AzomOps double-checks ambiguous change requests, visual/annotated screenshot descriptions, and multi-path edits with focused counter-questions and recommended choices before opening workspaces, proposing patches, or mutating store data.  
 **Audience:** Coding agents, prompt maintainers, and the OpenClaw chat agent (`Messenger` and `Telegram`).  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `docs/CURRENT_STATE.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `docs/CURRENT_STATE.md`.
 
 ## When clarification triggers
 
@@ -31,6 +31,8 @@ Do **not** ask a clarifying counter-question when:
 - The message is a slash command (`/...`), short greeting/acknowledgement (`hej`, `tack`, `ok`), or hits an explicit `site_content` refusal (such as installing/deleting plugins, switching themes, or deleting/creating posts).
 - The request is already explicit and unambiguous (for example `"sätt order 1001 till completed"`, `"ändra produkt 501 pris till 999"`, `"ändra sidan 2 titel till Kontakt"`, `"ändra sajttitel till Butiken"`).
 - The user has already confirmed the clarification scope (`clarification_confirmed=True`).
+- An active `wr-*` workspace/preview already anchors the target (`has_active_wp_review=True`) and the follow-up message requests a clear adjustment or visual bug-fix on that proposal (for example `"gör knappen större"`, `"byt till mörkblå"`, or `"fixa ikonöverlappet"`). Continue directly via `skills/wordpress-ui-iteration/SKILL.md` unless the follow-up switches to a new ambiguous target or contradicts itself.
+- An annotated screenshot together with the user's message already uniquely identifies both the target element and the requested change.
 
 ## `<clarify>{...}</clarify>` contract
 
@@ -77,6 +79,7 @@ When clarifying, emit a single `<clarify>{...}</clarify>` JSON block. The runtim
   - Cancel: `"✖️ Avbryt"` (`clarify:cancel:{cid}`).
 - **Round cap:** At most **3** clarification rounds (`MAX_CLARIFY_ROUNDS = 3`) per request. Each proposal uses single-use atomic consumption.
 - **Messenger 3-button cap:** Messenger prioritizes `clarify:go:` and `clarify:pick:` ahead of `clarify:other:` and `clarify:cancel:`, and users can always reply with option numbers (`1`–`4`) or free text.
+- **Preserve target anchors:** When `<clarify>` is emitted for a WordPress/UI change, preserve any known `site_id`, `plan_id` (`wr-*`), `path`, and `focus_selector` inside `target_summary` and `action_hint` so subsequent turns retain context.
 
 ## Hard boundaries
 

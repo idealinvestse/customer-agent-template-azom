@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Guide surgical edits and multi-file theme refactors using the registered WordPress file/workspace toolchain without touching parent themes, WooCommerce core, or production directly.  
 **Audience:** Coding agents and the OpenClaw chat agent operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
 ## File-loop caps and safety boundaries
 
@@ -30,19 +30,21 @@ version: "3.0.0"
 1. **Overview and guidance first:**
    - Call `wp_playbook` when you want structured guidance on a topic (`child_theme_edit`, `theme_json_design`, `template_hierarchy_debug`, `woo_template_overrides`, `bulk_refactor`, `static_and_sandbox_qa`, `staging_and_hitl`).
    - Call `wp_list_components(kind="theme")` and `wp_theme_overview` to verify the active stylesheet, parent theme, `theme_kind` (`block` or `classic`), and `woocommerce/` overrides.
-2. **Resolve template hierarchy and symbols before editing:**
+2. **Resolve template hierarchy, rendered DOM/CSS, and symbols before editing:**
    - Run `wp_template_hierarchy` and `wp_page_review(target_page=..., list_templates=True)` before guessing which PHP template or `templates/*.html` file renders a page.
+   - For public UI/CSS edits, ground selectors and computed styles first with `wp_inspect_element` (`outer_html`, `computed_styles`, `pseudo_before`/`pseudo_after`, `matched_rules`, `health_checks`) and `wp_fetch_page_html(selector=..., include_styles=...)` (public pages only; never pass `/wp/.../preview` dashboard URLs to `wp_fetch_page_html`). See `skills/wordpress-ui-iteration/SKILL.md`.
    - Run `wp_code_index` to map hooks (`add_action`, `add_filter`, `template_include`), enqueued assets, and template callbacks, and `wp_search_component` (literal or regex, optionally scoped to `plan_id`) plus `wp_read_theme_plugin_file` (Oscar-only) to inspect exact lines.
-3. **Open an isolated `wr-*` workspace:**
-   - Use `wp_open_review_workspace(kind="theme", ...)` to create an isolated `wr-...` workspace under `AZOM_DATA_DIR/wp_workspaces/`. This never writes the site.
+3. **Open or continue/fork an isolated `wr-*` workspace:**
+   - Use `wp_open_review_workspace(kind="theme", ..., base_plan_id=..., variant_group=...)` to open an isolated `wr-...` workspace under `AZOM_DATA_DIR/wp_workspaces/`, or `wp_workspace_fork` to branch on top of an existing `wr-*` plan without discarding prior edits. Use a shared `variant_group` when creating 2–3 comparable proposals so they do not supersede each other. This never writes the site.
    - Copy parent theme files cleanly into the child workspace with `wp_workspace_copy_from_parent`, or scaffold a baseline child structure with `wp_workspace_scaffold(template="child_theme_basics")`.
-4. **Apply surgical or overarching edits:**
-   - **Surgical edits:** `wp_workspace_patch_file`, `wp_workspace_create_file`, or atomic multi-file `wp_workspace_apply_changes`.
+4. **Apply surgical, product-sandbox, or overarching edits:**
+   - **Surgical & product copy edits:** `wp_workspace_patch_file`, `wp_workspace_create_file`, `wp_workspace_product_edit` (`product_edits.json`), or atomic multi-file `wp_workspace_apply_changes`.
    - **`theme.json` v2/v3 design edits:** Use `wp_workspace_theme_json` (`set` / `remove` with exact JSON pointers) instead of fragile regex or raw string replacement.
    - **WooCommerce overrides:** Run `wc_template_overrides_audit` first to detect `@version` drift and existing overrides, then pull clean templates via `wp_workspace_copy_woo_template`. Exercise extra caution on cart, checkout, and email templates (high-risk paths escalate to Oscar and block staging).
    - **Overarching refactors:** Run `wp_workspace_bulk_replace` with `dry_run=True` first to verify matches, then apply with `dry_run=False` (or `wp_workspace_apply_changes`) and inspect `wp_workspace_diff` + `wp_workspace_status`.
-5. **Run static QA and sandbox checks before staging:**
+5. **Run static QA, live-overlay visual verification, and sandbox checks before staging:**
    - Run `wp_workspace_static_checks` (fast security, PHP syntax, Woo static, and JSON lint) after edits.
+   - For UI changes, run `wp_preview_page(plan_id=..., path=..., focus_selector=..., focus_text=..., reuse_live_baseline=True)` and verify `visual_health` warnings (desktop + mobile) before presenting the preview (`apply_overlay()` injects `style.css` + static HTML fragments while PHP logic hunks stay `php_skipped`).
    - Run `wp_workspace_run_checks` (server check catalog, sandbox/smoke when `AZOM_WP_SANDBOX=1`, plus `page_review` evidence when applicable). Never report `unavailable`, `not_run`, or `simulated` checks as passed.
 6. **Staging and HITL gates (`fe-*` vs `wr-*`):**
    - **Single-file `fe-*` flow:** `wp_propose_file_diff` / `wp_propose_new_file` stages only via the explicit server button `wpfile:stage:fe-...`.

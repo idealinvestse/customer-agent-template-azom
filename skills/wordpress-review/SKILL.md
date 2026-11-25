@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Tell an agent how to review the homepage source without treating a page lookup, a file, and the rendered page as the same evidence.  
 **Audience:** Coding agents running a homepage source review.  
-**Read this first:** `skills/ecom-ops/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `skills/wordpress-plugin-dev/SKILL.md`, then `ecom_ops.wp_ops.review_knowledge`.
+**Read this first:** `skills/ecom-ops/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `skills/wordpress-plugin-dev/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, then `ecom_ops.wp_ops.review_knowledge`.
 
 ## Task
 
@@ -48,8 +48,8 @@ This skill is review guidance. It grants no site permission and does not change 
 ## Isolated `wr-*` workspaces and file-loop caps
 
 - **File/workspace turn caps:** When moving from read-only homepage review (4 calls / 45s) into component inspection or isolated `wr-*` workspace engineering, the file loop is capped at **16** tool calls, **10** file reads, **5** searches, and **60s** (`60` seconds) per turn.
-- **Discovery and playbook tools:** Use `wp_playbook`, `wp_list_components`, `wp_theme_overview`, `wp_plugin_overview`, `wp_template_hierarchy`, `wp_code_index`, and `wc_template_overrides_audit` (plus optional `wp_component_intel` only when `AZOM_WPORG_INTEL=1`) to inspect hierarchy, hooks, and `@version` override drift before editing.
-- **Multi-file `wr-*` workspace tools:** `wp_open_review_workspace` opens an isolated `wr-...` workspace. Edits use `wp_workspace_patch_file`, `wp_workspace_create_file`, `wp_workspace_apply_changes`, `wp_workspace_bulk_replace` (`dry_run=True` first), `wp_workspace_theme_json`, `wp_workspace_copy_from_parent`, `wp_workspace_copy_woo_template`, `wp_workspace_scaffold`, `wp_workspace_diff`, `wp_workspace_status`, `wp_workspace_static_checks` (fast security/syntax/JSON lint), and `wp_workspace_run_checks`.
+- **Discovery and playbook tools:** Use `wp_playbook`, `wp_list_components`, `wp_theme_overview`, `wp_plugin_overview`, `wp_template_hierarchy`, `wp_code_index`, `wp_fetch_page_html`, `wp_inspect_element`, and `wc_template_overrides_audit` (plus optional `wp_component_intel` only when `AZOM_WPORG_INTEL=1`) to inspect hierarchy, rendered DOM/computed styles on public pages, hooks, and `@version` override drift before editing.
+- **Multi-file `wr-*` workspace tools:** `wp_open_review_workspace` (with optional `base_plan_id` and `variant_group`) opens an isolated `wr-...` workspace, and `wp_workspace_fork` branches an existing `wr-*` without clobbering sibling variants. Edits use `wp_workspace_patch_file`, `wp_workspace_create_file`, `wp_workspace_apply_changes`, `wp_workspace_bulk_replace` (`dry_run=True` first), `wp_workspace_theme_json`, `wp_workspace_copy_from_parent`, `wp_workspace_copy_woo_template`, `wp_workspace_scaffold`, `wp_workspace_product_edit`, `wp_workspace_diff`, `wp_workspace_status`, `wp_workspace_static_checks` (fast security/syntax/JSON lint), `wp_preview_page` (read-only live overlay with `visual_health` checks), and `wp_workspace_run_checks`. See `skills/wordpress-ui-iteration/SKILL.md` for iterative UI/CSS workflows.
 - **Staging buttons:** Single-file `fe-*` plans use `wpfile:stage:fe-...`, whereas multi-file `wr-*` workspaces require `wp_workspace_static_checks` + `wp_workspace_run_checks` and stage only via the explicit server button `wpreview:stage:wr-...`. Free-text approval never writes, and production deploy remains closed/Oscar-escalated.
 
 ## Three layers

@@ -37,7 +37,9 @@ from ecom_ops.bot.chat_agent import (
     ChatResult,
     _accepts_kwarg,
     _inspect_tool_outcome,
+    _merge_active_wp_review,
     _provenance,
+    _valid_active_wp_review,
     run_chat,
     tool_lookup_order,
     wants_escalate,
@@ -1281,6 +1283,19 @@ class BotHandler:
                 updates["wp_review_hashes"] = kept
             else:
                 pop_keys.append("wp_review_hashes")
+        active_review = session.get("active_wp_review")
+        if (
+            active_review is not None
+            and _valid_active_wp_review(
+                active_review,
+                actor=actor,
+                channel=self.channel,
+                conversation_id=f"{self.channel}:{chat_id}",
+            )
+            is None
+        ):
+            session.pop("active_wp_review", None)
+            pop_keys.append("active_wp_review")
         if not updates and not pop_keys:
             return
         self._update_session_atomic(
@@ -2372,6 +2387,19 @@ class BotHandler:
             extra_note=extra_note,
             confirmed=confirmed,
         )
+        pick_labels = [
+            str(p.get("label") or p.get("id") or "").strip()
+            for p in picks
+            if isinstance(p, dict) and str(p.get("label") or p.get("id") or "").strip()
+        ]
+        if extra_note.strip():
+            history_label = f"[Förtydligande: {extra_note.strip()[:120]}]"
+        elif pick_labels:
+            history_label = f"[Valt förtydligande: {' / '.join(pick_labels[-2:])[:140]}]"
+        elif confirmed:
+            history_label = "[Bekräftat förtydligande]"
+        else:
+            history_label = ""
         reply = self._run_llm_chat(
             chat_id,
             message,
@@ -2385,6 +2413,7 @@ class BotHandler:
             clarification_confirmed=confirmed,
             clarification_round=round_num,
             clarification_context=clarify_ctx,
+            clarification_history_label=history_label,
             original_request=original_request,
             prior_picks=picks,
             image_paths=image_paths,
@@ -2460,6 +2489,7 @@ class BotHandler:
         clarification_confirmed: bool = False,
         clarification_round: int = 1,
         clarification_context: str = "",
+        clarification_history_label: str = "",
         original_request: str | None = None,
         prior_picks: list[dict[str, Any]] | None = None,
         image_paths: list[str] | tuple[str, ...] | None = None,
@@ -2479,6 +2509,19 @@ class BotHandler:
         ):
             session.pop("wp_ops_context", None)
             pop_session_keys.append("wp_ops_context")
+        prior_active_review = session.get("active_wp_review")
+        if (
+            prior_active_review is not None
+            and _valid_active_wp_review(
+                prior_active_review,
+                actor=actor,
+                channel=self.channel,
+                conversation_id=conversation_id,
+            )
+            is None
+        ):
+            session.pop("active_wp_review", None)
+            pop_session_keys.append("active_wp_review")
         kept_hashes, hashes_changed = _prune_review_hashes(session, actor=actor)
         if hashes_changed:
             if kept_hashes:
@@ -2511,6 +2554,10 @@ class BotHandler:
             chat_kwargs["clarification_round"] = clarification_round
         if _accepts_kwarg(run_chat, "clarification_context"):
             chat_kwargs["clarification_context"] = clarification_context
+        if clarification_history_label and _accepts_kwarg(
+            run_chat, "clarification_history_label"
+        ):
+            chat_kwargs["clarification_history_label"] = clarification_history_label
         if image_paths and _accepts_kwarg(run_chat, "image_paths"):
             chat_kwargs["image_paths"] = list(image_paths)
         result = run_chat(message, **chat_kwargs)
@@ -2551,11 +2598,49 @@ class BotHandler:
             session_updates["wp_ops_context"] = result.wp_ops_context
             if "wp_ops_context" in pop_session_keys:
                 pop_session_keys.remove("wp_ops_context")
+        merged_active_review = getattr(result, "active_wp_review", None)
+        if review_plan_id and isinstance(review_plan_row, dict):
+            merged_active_review = _merge_active_wp_review(
+                merged_active_review,
+                actor=actor,
+                channel=self.channel,
+                conversation_id=conversation_id,
+                site_id=str(review_plan_row.get("site_id") or "") or None,
+                meta={
+                    "site_id": review_plan_row.get("site_id"),
+                    "latest_plan_id": review_plan_id,
+                    "variant_group": review_plan_row.get("variant_group"),
+                    "theme_slug": review_plan_row.get("slug"),
+                    "changed_files": review_plan_row.get("changed_files"),
+                    "preview_images": getattr(result, "attachments", ()) or (),
+                },
+                review_plan_id=review_plan_id,
+                inbound_images=image_paths or (),
+                preview_attachments=getattr(result, "attachments", ()) or (),
+            )
+        if merged_active_review is not None:
+            session_updates["active_wp_review"] = merged_active_review
+            if "active_wp_review" in pop_session_keys:
+                pop_session_keys.remove("active_wp_review")
         session.update(session_updates)
 
         if hasattr(self.store, "append_turn_atomic"):
-            if len(result.messages) >= len(history):
+            result_new_messages = list(getattr(result, "new_messages", ()) or ())
+            if result_new_messages:
+                delta_messages = result_new_messages
+            elif len(result.messages) > len(history):
                 delta_messages = list(result.messages[len(history) :])
+            elif result.messages == history:
+                delta_messages = []
+            elif history and result.messages:
+                delta_messages = []
+                for shift in range(1, len(history) + 1):
+                    prefix_len = len(history) - shift
+                    if history[shift:] == result.messages[:prefix_len]:
+                        delta_messages = list(result.messages[prefix_len:])
+                        break
+                if not delta_messages:
+                    delta_messages = list(result.messages[-2:])
             else:
                 delta_messages = list(result.messages)
             self.store.append_turn_atomic(
@@ -2689,10 +2774,28 @@ class BotHandler:
                     )
                 prev = self.store.get(chat_id) or {}
                 session = dict(prev.get("session") or {})
+                pop_keys = ["active_wp_review"] if "active_wp_review" in session else []
+                updates: dict[str, Any] = {}
                 if _drop_review_hash(session, plan_id):
-                    self._persist_review_hashes(chat_id, session)
+                    remaining = session.get("wp_review_hashes")
+                    if isinstance(remaining, dict) and remaining:
+                        updates["wp_review_hashes"] = dict(remaining)
+                    else:
+                        pop_keys.append("wp_review_hashes")
+                if updates or pop_keys:
+                    self._update_session_atomic(
+                        chat_id,
+                        session_updates=updates or None,
+                        pop_session_keys=pop_keys,
+                    )
                 return BotReply(
                     text=f"Avbrutet ({plan_id}). Ingen ändring skrevs till staging eller produktion."
+                )
+            prev = self.store.get(chat_id) or {}
+            if isinstance(prev.get("session"), dict) and "active_wp_review" in prev["session"]:
+                self._update_session_atomic(
+                    chat_id,
+                    pop_session_keys=("active_wp_review",),
                 )
             return BotReply(
                 text="Avbrutet. Ingen ändring skrevs till staging eller produktion."
@@ -2798,8 +2901,20 @@ class BotHandler:
                     legacy_text="Staging-granskningsplan: klar.",
                 ),
             )
+            pop_keys = ["active_wp_review"] if "active_wp_review" in session else []
+            updates: dict[str, Any] = {}
             if _drop_review_hash(session, plan_id):
-                self._persist_review_hashes(chat_id, session)
+                remaining = session.get("wp_review_hashes")
+                if isinstance(remaining, dict) and remaining:
+                    updates["wp_review_hashes"] = dict(remaining)
+                else:
+                    pop_keys.append("wp_review_hashes")
+            if updates or pop_keys:
+                self._update_session_atomic(
+                    chat_id,
+                    session_updates=updates or None,
+                    pop_session_keys=pop_keys,
+                )
             lines = [
                 f"Ändringarna för {plan_id} är skrivna i staging ({site_id}, mock). Produktionen är oförändrad."
             ]
@@ -2994,7 +3109,7 @@ class BotHandler:
         if action == "clear" and len(parts) == 1:
             self._update_session_atomic(
                 chat_id,
-                pop_session_keys=("wp_ops_context", "wp_review_hashes"),
+                pop_session_keys=("wp_ops_context", "wp_review_hashes", "active_wp_review"),
             )
             return BotReply(text="WordPress-sajtkontexten är rensad.")
         if action == "help" and len(parts) == 1:

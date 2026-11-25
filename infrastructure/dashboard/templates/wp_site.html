@@ -107,6 +107,86 @@
     </section>
   </div>
 
+  <!-- Granskningar / Sandlådor -->
+  <section class="az-card space-y-3" data-wp-reviews-section="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="font-display text-base font-semibold text-mist-100">Granskningar / Sandlådor</h2>
+        <p class="az-muted mt-0.5 text-xs">Senaste isolerade arbetsytorna (<code class="az-code font-mono">wr-*</code>) för den här webbplatsen.</p>
+      </div>
+      {% if review_plans %}
+      <span class="text-xs text-mist-400 tabular-nums">{{ review_plans | length }} arbetsytor</span>
+      {% endif %}
+    </div>
+    {% if review_plans %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Granskningar och sandlådor">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Plan-ID</th>
+            <th scope="col">Sammanfattning &amp; Komponent</th>
+            <th scope="col">Status &amp; Risk</th>
+            <th scope="col">Skapad</th>
+            <th scope="col">Länkar</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in review_plans %}
+          <tr data-review-row="{{ item.plan_id }}">
+            <td class="whitespace-nowrap">
+              <a
+                class="font-mono text-xs text-steel-300 hover:underline"
+                href="{{ url_for('wp_review', site_id=site.id, plan_id=item.plan_id) }}"
+              >{{ item.plan_id }}</a>
+            </td>
+            <td class="text-xs text-mist-200 max-w-md">
+              {% if item.summary %}
+              <div class="font-medium text-mist-100">{{ item.summary }}</div>
+              {% endif %}
+              <div class="font-mono text-mist-400">{{ item.kind }} / {{ item.slug }}</div>
+              {% if item.forked_from %}
+              <div class="text-mist-400 mt-0.5">Fork från <code class="font-mono">{{ item.forked_from }}</code></div>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap">
+              <div class="flex flex-wrap items-center gap-1.5">
+                {{ ui.status_badge('info', item.status or '—') }}
+                {{ ui.status_badge('warn' if item.risk == 'high' else 'neutral', 'risk: ' ~ (item.risk or 'low')) }}
+                {% if item.variant_group %}
+                {{ ui.status_badge('info', item.variant_group) }}
+                {% endif %}
+                {% if item.superseded_by %}
+                {{ ui.status_badge('warn', 'ersatt') }}
+                {% endif %}
+              </div>
+            </td>
+            <td class="text-xs text-mist-400 whitespace-nowrap tabular-nums">{{ item.created_at_fmt or item.created_at or '—' }}</td>
+            <td class="whitespace-nowrap">
+              <div class="flex flex-wrap items-center gap-2">
+                <a
+                  class="az-btn-secondary az-btn-sm"
+                  href="{{ url_for('wp_review', site_id=site.id, plan_id=item.plan_id) }}"
+                >Granska</a>
+                {% if item.has_interactive_preview %}
+                <a
+                  class="az-btn-primary az-btn-sm"
+                  href="{{ url_for('wp_review_preview', site_id=site.id, plan_id=item.plan_id) }}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{{ icon('external-link', 'xs') }}<span>Förhandsvisa</span></a>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted">Inga granskningsytor skapade för den här webbplatsen ännu.</p>
+    {% endif %}
+  </section>
+
   <!-- Mock-backuper & Staging-drill -->
   <section class="az-card space-y-4">
     <div>

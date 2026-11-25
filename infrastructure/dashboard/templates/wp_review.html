@@ -56,6 +56,50 @@
   {% endif %}
 
   {% if plan %}
+  {% if superseded_by %}
+    <div class="az-callout az-callout-warn" role="status" data-superseded-by="{{ superseded_by }}">
+      <span class="mt-0.5 shrink-0">{{ icon('alert-triangle', 'sm') }}</span>
+      <div class="flex flex-wrap items-center justify-between gap-3 min-w-0 flex-1">
+        <div class="min-w-0">
+          <strong>Ersatt granskningsplan:</strong> Den här arbetsytan har ersatts av
+          <code class="az-code font-mono">{{ superseded_by }}</code>.
+        </div>
+        <a
+          class="az-btn-secondary az-btn-sm shrink-0"
+          href="{{ url_for('wp_review', site_id=plan.site_id, plan_id=superseded_by) }}"
+        >Öppna nyare plan ({{ superseded_by }})</a>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if sibling_variants %}
+  <section class="az-card space-y-3" data-variant-switcher="true" data-variant-group="{{ variant_group }}">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="font-display text-sm font-semibold text-mist-100">Varianter i samma grupp</h2>
+        <span class="az-badge az-badge-info font-mono">{{ variant_group }}</span>
+      </div>
+      <span class="text-xs text-mist-400">{{ sibling_variants | length }} förslag</span>
+    </div>
+    <nav aria-label="Variantväljare" class="flex flex-wrap gap-2">
+      {% for variant in sibling_variants %}
+      <a
+        href="{{ url_for('wp_review', site_id=plan.site_id, plan_id=variant.plan_id) }}"
+        class="az-btn-secondary az-btn-sm {% if variant.is_current %}bg-ink-800 ring-1 ring-steel-500/50 text-steel-200{% endif %}"
+        {% if variant.is_current %}aria-current="page"{% endif %}
+        data-variant-plan-id="{{ variant.plan_id }}"
+      >
+        <span class="font-semibold">Förslag {{ variant.index }}</span>
+        <code class="font-mono text-xs text-mist-300">{{ variant.plan_id }}</code>
+        {% if variant.superseded_by %}
+        <span class="az-badge az-badge-warn">ersatt</span>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </nav>
+  </section>
+  {% endif %}
+
   <!-- Status header card -->
   <section class="az-card space-y-4">
     <div class="flex flex-wrap items-center gap-2">
@@ -64,7 +108,17 @@
       {{ ui.status_badge('warn', 'Läge: ' ~ (label or 'mock')) }}
       {{ ui.status_badge('neutral', 'Giltig till: ' ~ (expires_at_fmt or fmt_dt(plan.expires_at) or '—')) }}
       {{ ui.status_badge('warn', 'Restore: Ej i MVP') }}
+      {% if variant_group %}
+      {{ ui.status_badge('info', 'Variantgrupp: ' ~ variant_group) }}
+      {% endif %}
     </div>
+
+    {% if can_review and plan.get('summary') %}
+    <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 px-3.5 py-2.5 text-sm text-mist-100" data-plan-summary="true">
+      <span class="text-xs font-semibold uppercase tracking-wider text-mist-400 block mb-1">Sammanfattning</span>
+      <p class="whitespace-pre-wrap">{{ plan.get('summary') }}</p>
+    </div>
+    {% endif %}
 
     <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
       <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
@@ -79,12 +133,25 @@
         <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Risk &amp; Relation</dt>
         <dd class="mt-1 text-xs text-mist-200">Risk: {{ plan.risk }} · {{ plan.theme_relationship }}</dd>
       </div>
+      {% if forked_from %}
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3" data-forked-from="{{ forked_from }}">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Baserad på (fork)</dt>
+        <dd class="mt-1 text-xs text-mist-200">
+          <a
+            class="font-mono text-steel-300 hover:underline"
+            href="{{ url_for('wp_review', site_id=plan.site_id, plan_id=forked_from) }}"
+          >{{ forked_from }}</a>
+        </dd>
+      </div>
+      {% endif %}
       <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 sm:col-span-2 lg:col-span-1">
         <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Körning</dt>
         <dd
           class="mt-1 text-xs text-mist-200 tabular-nums"
           data-check-published="{{ 'true' if plan.check_run and plan.check_run.published else 'false' }}"
           data-rendered-preview="{{ 'true' if has_rendered_preview else 'false' }}"
+          data-live-overlay-preview="{{ 'true' if has_live_overlay_preview else 'false' }}"
+          data-sandbox-smoke="{{ 'true' if has_sandbox_smoke else 'false' }}"
         >
           <span class="font-mono">{{ (plan.check_run.get('run_id') if plan.check_run is mapping else plan.check_run.run_id) if plan.check_run and ((plan.check_run.get('run_id') if plan.check_run is mapping else plan.check_run.run_id)) else '—' }}</span>
           · profil {{ (plan.check_run.get('profile') if plan.check_run is mapping else plan.check_run.profile) if plan.check_run and ((plan.check_run.get('profile') if plan.check_run is mapping else plan.check_run.profile)) else 'saknas' }}
@@ -109,7 +176,11 @@
     </div>
     {% endif %}
 
-    {% if has_rendered_preview %}
+    {% if has_live_overlay_preview and has_sandbox_smoke %}
+    <p class="az-muted text-sm">Inloggad granskning. Live-overlay-förhandsvisning och isolerad lokal sandlåderendering tillgängliga.</p>
+    {% elif has_live_overlay_preview %}
+    <p class="az-muted text-sm">Inloggad granskning. Live-overlay-förhandsvisning från skrivskyddad publik live-GET (inga ändringar på live).</p>
+    {% elif has_sandbox_smoke %}
     <p class="az-muted text-sm">Inloggad granskning. Isolerad lokal sandlåderendering.</p>
     {% else %}
     <p class="az-muted text-sm">Inloggad granskning. Ingen renderad förhandsvisning.</p>
@@ -278,12 +349,127 @@
   </div>
   {% endif %}
 
-  {% if has_rendered_preview and screenshots %}
-  <section class="az-card space-y-3">
+  {% if has_live_overlay_preview and live_overlay_screenshots %}
+  <section class="az-card space-y-5" data-live-overlay-gallery="true">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="space-y-1">
+        <h2 class="font-display text-base font-semibold text-mist-100">Live vs. Förhandsvisning</h2>
+        <p class="az-muted text-sm">
+          Skrivskyddad live-overlay med arbetsytans CSS och malländringar. Livesajten är oförändrad.
+          {% if preview_meta and preview_meta.get('path') %}
+          · Sida: <code class="az-code font-mono">{{ preview_meta.get('path') }}</code>
+          {% endif %}
+          {% if preview_meta and preview_meta.get('focus_target') %}
+          · Fokus: <code class="az-code font-mono">{{ preview_meta.get('focus_target') }}</code>
+          {% endif %}
+        </p>
+      </div>
+      {% if has_interactive_preview %}
+      <a
+        class="az-btn-primary az-btn-sm shrink-0"
+        href="{{ url_for('wp_review_preview', site_id=plan.site_id, plan_id=plan.plan_id) }}"
+        target="_blank"
+        rel="noopener noreferrer"
+        data-gallery-preview-link="true"
+      >{{ icon('external-link', 'xs') }}<span>Öppna interaktiv förhandsvisning</span></a>
+      {% endif %}
+    </div>
+
+    {% if live_overlay_comparison.focus %}
+    <div class="space-y-2.5" data-preview-group="focus">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Fokus på ändringen</h3>
+      <div class="grid gap-4 md:grid-cols-2">
+        {% for shot in live_overlay_comparison.focus %}
+        <figure class="space-y-1.5 rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+          <figcaption class="flex items-center justify-between gap-2 text-xs">
+            <span class="font-semibold text-mist-200">{{ shot.label }}</span>
+            <code class="font-mono text-mist-400">{{ shot.name }}</code>
+          </figcaption>
+          <a
+            href="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=shot.name) }}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="block"
+          >
+            <img
+              class="w-full rounded-lg border border-ink-700 bg-ink-950"
+              loading="lazy"
+              src="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=shot.name) }}"
+              alt="{{ shot.label }} ({{ shot.name }})"
+            />
+          </a>
+        </figure>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if live_overlay_comparison.desktop %}
+    <div class="space-y-2.5" data-preview-group="desktop">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Desktop (1280×800)</h3>
+      <div class="grid gap-4 md:grid-cols-2">
+        {% for shot in live_overlay_comparison.desktop %}
+        <figure class="space-y-1.5 rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+          <figcaption class="flex items-center justify-between gap-2 text-xs">
+            <span class="font-semibold {% if shot.role == 'preview' %}text-steel-300{% else %}text-mist-200{% endif %}">{{ shot.label }}</span>
+            <code class="font-mono text-mist-400">{{ shot.name }}</code>
+          </figcaption>
+          <a
+            href="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=shot.name) }}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="block"
+          >
+            <img
+              class="w-full rounded-lg border border-ink-700 bg-ink-950"
+              loading="lazy"
+              src="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=shot.name) }}"
+              alt="{{ shot.label }} ({{ shot.name }})"
+            />
+          </a>
+        </figure>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if live_overlay_comparison.mobile %}
+    <div class="space-y-2.5" data-preview-group="mobile">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Mobil (390×844)</h3>
+      <div class="grid gap-4 md:grid-cols-2">
+        {% for shot in live_overlay_comparison.mobile %}
+        <figure class="space-y-1.5 rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+          <figcaption class="flex items-center justify-between gap-2 text-xs">
+            <span class="font-semibold {% if shot.role == 'preview' %}text-steel-300{% else %}text-mist-200{% endif %}">{{ shot.label }}</span>
+            <code class="font-mono text-mist-400">{{ shot.name }}</code>
+          </figcaption>
+          <a
+            href="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=shot.name) }}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="block"
+          >
+            <img
+              class="w-full rounded-lg border border-ink-700 bg-ink-950"
+              loading="lazy"
+              src="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=shot.name) }}"
+              alt="{{ shot.label }} ({{ shot.name }})"
+            />
+          </a>
+        </figure>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if has_sandbox_smoke and sandbox_screenshots %}
+  <section class="az-card space-y-3" data-sandbox-smoke-gallery="true">
     <h2 class="font-display text-base font-semibold text-mist-100">Syntetiska skärmdumpar (sandlåda)</h2>
     <p class="az-muted text-sm">Isolerad lokal loopback-rendering, inte live-sajten.</p>
     <div class="grid gap-4 md:grid-cols-2">
-      {% for name in screenshots %}
+      {% for name in sandbox_screenshots %}
       <figure class="space-y-1.5">
         <figcaption class="font-mono text-xs text-mist-400">{{ name }}</figcaption>
         <img

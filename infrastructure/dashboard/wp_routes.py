@@ -6,6 +6,7 @@ Opening a site does not read those files.
 
 from __future__ import annotations
 
+import json
 import re
 from urllib.parse import urlencode
 
@@ -47,6 +48,7 @@ def register_wp_routes(app: Flask) -> None:
             return Response("Okänd webbplats", 404)
         data = result.data or {}
         site = data.get("site")
+        review_plans = _site_review_plans(site_id, actor=g.actor["name"], admin=_file_admin()) if site else []
         return render_template(
             "wp_site.html",
             **_dashboard_context(
@@ -56,6 +58,7 @@ def register_wp_routes(app: Flask) -> None:
                 backups=data.get("backups") or [],
                 drills=data.get("drills") or [],
                 staging_targets=data.get("staging_targets") or [],
+                review_plans=review_plans,
                 can_run=_can_run(site),
                 can_drill=_can_drill(),
                 error=None if result.ok else result.message,
@@ -557,6 +560,155 @@ def _review_http(result: object):
     return None
 
 
+def _safe_review_id(value: object) -> str:
+    text = str(value or "").strip()
+    return text if _REVIEW_ID.fullmatch(text) else ""
+
+
+def _safe_variant_group(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > 80:
+        return ""
+    return re.sub(r"[\r\n\t]+", " ", text)
+
+
+def _load_raw_plan_extras(ops: object, site_id: str) -> dict[str, dict[str, str]]:
+    """Read optional iterative-workspace metadata from wp_review_plans.json safely."""
+    path = getattr(ops, "path", None)
+    if path is None or not hasattr(path, "is_file") or not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {}
+    plans = raw.get("plans") if isinstance(raw, dict) else None
+    if not isinstance(plans, list):
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for row in plans:
+        if not isinstance(row, dict):
+            continue
+        if row.get("site_id") != site_id:
+            continue
+        pid = _safe_review_id(row.get("plan_id"))
+        if not pid:
+            continue
+        out[pid] = {
+            "summary": str(row.get("summary") or "")[:200],
+            "forked_from": _safe_review_id(row.get("forked_from")),
+            "variant_group": _safe_variant_group(row.get("variant_group")),
+            "preview_path": str(row.get("preview_path") or "")[:200],
+            "focus_selector": str(row.get("focus_selector") or "")[:120],
+        }
+    return out
+
+
+def _read_preview_meta(ops: object, site_id: str, plan_id: str) -> dict[str, object]:
+    """Read bounded non-secret live-overlay metadata from artifacts/preview.json."""
+    from ecom_ops.wp_ops.review_workspace import ReviewError, workspace_root
+
+    data_dir = getattr(ops, "data_dir", None)
+    if data_dir is None:
+        return {}
+    try:
+        root = workspace_root(data_dir, site_id, plan_id)
+    except ReviewError:
+        return {}
+    art_dir = (root / "artifacts").resolve()
+    raw_file = art_dir / "preview.json"
+    if raw_file.is_symlink() or not raw_file.is_file():
+        return {}
+    candidate = raw_file.resolve()
+    if candidate.parent != art_dir or candidate.is_symlink():
+        return {}
+    try:
+        if candidate.stat().st_size > 512 * 1024:
+            return {}
+        parsed = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        "preview_kind": str(parsed.get("preview_kind") or "")[:40],
+        "path": _scrub_posted(site_id, str(parsed.get("path") or ""))[:200],
+        "focus_target": _scrub_posted(site_id, str(parsed.get("focus_target") or ""))[:160],
+        "focus_matched": parsed.get("focus_matched") is True,
+    }
+
+
+def _build_live_overlay_comparison(live_overlay_shots: list[str]) -> dict[str, list[dict[str, str]]]:
+    """Group live-overlay screenshots into Fokus, Desktop (Live vs Preview), and Mobil pairs."""
+    present = set(live_overlay_shots)
+    focus_items: list[dict[str, str]] = []
+    for name, label in (
+        ("change-desktop.png", "Dator — markerad ändring"),
+        ("focus-desktop.png", "Dator — fokus på ändringen"),
+        ("change-mobile.png", "Mobil — markerad ändring"),
+        ("focus-mobile.png", "Mobil — fokus på ändringen"),
+    ):
+        if name in present:
+            focus_items.append({"name": name, "label": label, "role": "focus"})
+
+    desktop_items: list[dict[str, str]] = []
+    if "live-desktop.png" in present:
+        desktop_items.append({"name": "live-desktop.png", "label": "Live (före)", "role": "live"})
+    if "preview-desktop.png" in present:
+        desktop_items.append({"name": "preview-desktop.png", "label": "Förhandsvisning (efter)", "role": "preview"})
+
+    mobile_items: list[dict[str, str]] = []
+    if "live-mobile.png" in present:
+        mobile_items.append({"name": "live-mobile.png", "label": "Live (före)", "role": "live"})
+    if "preview-mobile.png" in present:
+        mobile_items.append({"name": "preview-mobile.png", "label": "Förhandsvisning (efter)", "role": "preview"})
+
+    return {
+        "focus": focus_items,
+        "desktop": desktop_items,
+        "mobile": mobile_items,
+    }
+
+
+def _site_review_plans(site_id: str, *, actor: str, admin: bool, limit: int = 20) -> list[dict[str, object]]:
+    """Return recent wr-* review plans for a site, safe for both viewers and admins."""
+    if not _can_read_wp():
+        return []
+    ops = _review_ops()
+    listed = ops.list_site(site_id, actor=actor)
+    if not listed.ok:
+        return []
+    raw_plans = (listed.data or {}).get("plans") or []
+    extras = _load_raw_plan_extras(ops, site_id)
+    rows: list[dict[str, object]] = []
+    for item in raw_plans:
+        if not isinstance(item, dict):
+            continue
+        pid = _safe_review_id(item.get("plan_id"))
+        if not pid:
+            continue
+        ex = extras.get(pid, {})
+        summary = str(item.get("summary") or ex.get("summary") or "") if admin else ""
+        rows.append(
+            {
+                "plan_id": pid,
+                "site_id": str(item.get("site_id") or site_id),
+                "kind": str(item.get("kind") or ""),
+                "slug": str(item.get("slug") or ""),
+                "status": str(item.get("status") or ""),
+                "risk": str(item.get("risk") or "low"),
+                "created_at": str(item.get("created_at") or ""),
+                "created_at_fmt": _fmt_dt(item.get("created_at")),
+                "superseded_by": _safe_review_id(item.get("superseded_by")),
+                "forked_from": _safe_review_id(item.get("forked_from") or ex.get("forked_from")),
+                "variant_group": _safe_variant_group(item.get("variant_group") or ex.get("variant_group")),
+                "summary": summary,
+                "has_interactive_preview": ops.has_preview_html(site_id, pid, actor=actor),
+            }
+        )
+    rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    return rows[:limit]
+
+
 def _render_review(
     site_id: str,
     plan_id: str,
@@ -570,15 +722,46 @@ def _render_review(
         return Response("Okänd plan", 404)
     admin = _file_admin()
     drill = _can_drill()
-    shown = _review_ops().show(site_id, plan_id, actor=g.actor["name"], include_diff=admin)
+    ops = _review_ops()
+    shown = ops.show(site_id, plan_id, actor=g.actor["name"], include_diff=admin)
     blocked = _review_http(shown)
     if blocked is not None:
         return blocked
     payload = shown.data or {}
     plan = dict(payload.get("plan") or {})
+    extras_map = _load_raw_plan_extras(ops, site_id)
+    plan_extra = extras_map.get(plan_id, {})
+    if admin and not plan.get("summary") and plan_extra.get("summary"):
+        plan["summary"] = plan_extra["summary"]
+    superseded_by = _safe_review_id(plan.get("superseded_by"))
+    forked_from = _safe_review_id(plan.get("forked_from") or plan_extra.get("forked_from"))
+    variant_group = _safe_variant_group(plan.get("variant_group") or plan_extra.get("variant_group"))
+    plan["superseded_by"] = superseded_by
+    plan["forked_from"] = forked_from
+    plan["variant_group"] = variant_group
+
+    sibling_variants: list[dict[str, object]] = []
+    if variant_group:
+        all_site_plans = _site_review_plans(site_id, actor=g.actor["name"], admin=admin, limit=100)
+        matching = [row for row in all_site_plans if row.get("variant_group") == variant_group]
+        matching.sort(key=lambda r: str(r.get("created_at") or ""))
+        if len(matching) > 1:
+            for idx, row in enumerate(matching, start=1):
+                sibling_variants.append(
+                    {
+                        **row,
+                        "index": idx,
+                        "is_current": row.get("plan_id") == plan_id,
+                    }
+                )
+
     diff = str(payload.get("diff") or "") if admin else ""
-    screenshots = _review_ops().list_artifacts(site_id, plan_id, actor=g.actor["name"]) if admin else []
-    has_interactive_preview = _review_ops().has_preview_html(site_id, plan_id, actor=g.actor["name"])
+    screenshots = ops.list_artifacts(site_id, plan_id, actor=g.actor["name"]) if admin else []
+    sandbox_screenshots = [name for name in screenshots if name.startswith(("base-", "work-"))]
+    live_overlay_screenshots = [
+        name for name in screenshots if name.startswith(("live-", "preview-", "change-", "focus-"))
+    ]
+    has_interactive_preview = ops.has_preview_html(site_id, plan_id, actor=g.actor["name"])
     browser_passed = any(
         isinstance(row, dict)
         and row.get("job") == "browser_smoke"
@@ -586,6 +769,15 @@ def _render_review(
         and row.get("executed") is True
         for row in (plan.get("checks") or [])
     )
+    has_sandbox_smoke = bool(sandbox_screenshots and browser_passed)
+    has_live_overlay_preview = bool(live_overlay_screenshots)
+    has_rendered_preview = has_sandbox_smoke or has_live_overlay_preview
+    preview_meta = (
+        _read_preview_meta(ops, site_id, plan_id)
+        if admin and (has_live_overlay_preview or has_interactive_preview)
+        else {}
+    )
+    live_overlay_comparison = _build_live_overlay_comparison(live_overlay_screenshots)
     outcome = result or {}
     effective_err = error_class or str(outcome.get("error_class") or "")
     review_feedback = None
@@ -611,9 +803,19 @@ def _render_review(
             sandbox=dict(plan.get("sandbox") or {}),
             expires_at_fmt=_fmt_dt(plan.get("expires_at")),
             review_feedback=review_feedback,
-            screenshots=screenshots,
-            has_rendered_preview=bool(screenshots and browser_passed),
+            screenshots=sandbox_screenshots,
+            sandbox_screenshots=sandbox_screenshots,
+            live_overlay_screenshots=live_overlay_screenshots,
+            live_overlay_comparison=live_overlay_comparison,
+            preview_meta=preview_meta,
+            has_sandbox_smoke=has_sandbox_smoke,
+            has_live_overlay_preview=has_live_overlay_preview,
+            has_rendered_preview=has_rendered_preview,
             has_interactive_preview=has_interactive_preview,
+            superseded_by=superseded_by,
+            forked_from=forked_from,
+            variant_group=variant_group,
+            sibling_variants=sibling_variants,
             error_class=effective_err,
             executed=outcome.get("executed") is True,
             bytes_copied=False,

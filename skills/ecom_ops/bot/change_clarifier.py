@@ -72,10 +72,16 @@ CLARIFY_PROTOCOL_GUIDE = (
     "Regler: mode='options' kräver 2–4 alternativ (högst 1 recommended=true); "
     "mode='confirm' används med 0–4 alternativ för slutlig bekräftelse. "
     f"Högst {MAX_CLARIFY_ROUNDS} rundor. "
-    "Hoppa över <clarify> vid rena läsfrågor, hälsningar, slash-kommandon eller "
+    "Hoppa över <clarify> vid rena läsfrågor, hälsningar, slash-kommandon, "
     "tydliga skrivningar (t.ex. 'sätt order 1001 till completed', "
     "'ändra produkt 501 pris till 999', 'ändra sidan 2 titel till Kontakt', "
-    "'ändra sajttitel till Butiken', 'aktivera plugin akismet'). "
+    "'ändra sajttitel till Butiken', 'aktivera plugin akismet') samt "
+    "förankrade uppföljningsjusteringar eller buggfixar på ett aktivt wr-*-förslag "
+    "(t.ex. 'gör knappen större', 'byt till mörkblå', 'ta bort ramen', "
+    "'kundvagnsikonen är intryckt — fixa det'). "
+    "När <clarify> skickas för en WP-/visuell ändring, behåll alltid kända "
+    "site_id, plan_id, path och focus_selector i target_summary och action_hint "
+    "så att nästa runda aldrig tappar kontext. "
     "Förtydligande utför aldrig skrivningar och ersätter aldrig bekräftelseknappar "
     "(proposal:yes / wpfile:stage / wpreview:stage) eller RBAC."
 )
@@ -472,12 +478,48 @@ _VAGUE_WORDS_RE = re.compile(
 _VISUAL_DESIGN_RE = re.compile(
     r"\b(?:"
     r"layout(?:en)?|design(?:en)?|utseende(?:t)?|visuell(?:t|a)?|"
-    r"f[äa]rg(?:en|er)?|knapp(?:en|ar)?|meny(?:n)?|navigering(?:en)?|navbar|"
+    r"f[äa]rg(?:en|er|erna)?|r[öo]d(?:a|t)?|bl[åa](?:tt)?|m[öo]rkbl[åa](?:tt)?|ljusbl[åa](?:tt)?|"
+    r"gr[öo]n(?:a|t)?|svart(?:a)?|vit(?:a|t)?|gr[åa](?:tt)?|gul(?:a|t)?|orange|lila|rosa|"
+    r"knapp(?:en|ar|arna)?|k[öo]pknapp(?:en|ar|arna)?|meny(?:n)?|navigering(?:en)?|navbar|"
     r"header(?:n)?|footer(?:n)?|hero(?:n)?|banner(?:n)?|sektion(?:en)?|"
-    r"kolumn(?:er)?|marginal(?:er)?|padding|margin|typsnitt|font(?:en)?|"
-    r"rubrikstorlek|logga(?:n)?|logo(?:n)?|ikon(?:er)?|"
+    r"kolumn(?:er)?|marginal(?:en|er|erna)?|padding|margin|ram(?:en|ar|arna)?|kant(?:en|er)?|"
+    r"hover|rundad(?:e)?|h[öo]rn(?:en)?|skugga(?:n)?|bredd(?:en)?|h[öo]jd(?:en)?|avst[åa]nd(?:et)?|"
+    r"kompakt|typsnitt|font(?:en)?|rubrikstorlek|logga(?:n)?|logo(?:n)?|"
+    r"ikon(?:en|er|erna)?|kundvagnsikon(?:en)?|[öo]verlapp\w*|intryckt|"
+    r"f[öo]rslag(?:et|en)?|sandl[åa]da(?:n)?|sandbox|f[öo]rhandsvisning(?:en)?|"
     r"mobilvy(?:n)?|desktop(?:vy)?|responsiv(?:t|a)?|sidebar|widget|kort(?:en)?|rutn[äa]t|grid|"
     r"centrera|styla|designa|f[öo]rstora|f[öo]rminska|flytta|d[öo]lj"
+    r")\b",
+    re.I,
+)
+
+_VISUAL_DEFECT_FOLLOWUP_RE = re.compile(
+    r"\b(?:"
+    r"[öo]verlapp\w*|intryckt|krockar|snett|trasig(?:t|a)?|"
+    r"f[öo]r\s+(?:stor|stort|liten|litet|bred|smal|tr[åa]ng|t[äa]t)"
+    r")\b",
+    re.I,
+)
+
+_SWITCH_TARGET_RE = re.compile(
+    r"\b(?:"
+    r"n[åa]got\s+annat|annan\s+(?:sida|produkt|order)|annat\s+inl[äa]gg|"
+    r"helt\s+nytt|nytt\s+[äa]rende"
+    r")\b",
+    re.I,
+)
+
+_ANCHORED_UI_CUE_RE = re.compile(
+    r"\b(?:"
+    r"knapp(?:en|ar|arna)?|k[öo]pknapp(?:en|ar|arna)?|ikon(?:en|er|erna)?|kundvagnsikon(?:en)?|"
+    r"ram(?:en|ar|arna)?|marginal(?:en|er|erna)?|padding|margin|hover|"
+    r"f[äa]rg(?:en|er|erna)?|r[öo]d(?:a|t)?|bl[åa](?:tt)?|m[öo]rkbl[åa](?:tt)?|ljusbl[åa](?:tt)?|"
+    r"gr[öo]n(?:a|t)?|svart(?:a)?|vit(?:a|t)?|gr[åa](?:tt)?|"
+    r"typsnitt|font(?:en)?|rubrik(?:en)?|text(?:en)?|storlek(?:en)?|st[öo]rre|mindre|"
+    r"rundad(?:e)?|h[öo]rn(?:en)?|bredd(?:en)?|h[öo]jd(?:en)?|kompakt|"
+    r"layout(?:en)?|design(?:en)?|css|style\.css|"
+    r"f[öo]rslag(?:et|en)?|f[öo]rhandsvisning(?:en)?|sandl[åa]da(?:n)?|sandbox|"
+    r"[öo]verlapp\w*|intryckt|wr-[a-f0-9]{4,12}"
     r")\b",
     re.I,
 )
@@ -579,6 +621,7 @@ def detect_change_ambiguity(
     has_wp_site_context: bool = False,
     clarification_confirmed: bool = False,
     has_images: bool = False,
+    has_active_wp_review: bool = False,
 ) -> ChangeAssessment:
     """Assess whether ``text`` is an ambiguous change request needing clarification."""
     del has_tool_results, has_wp_site_context  # accepted for caller contract parity
@@ -595,13 +638,29 @@ def detect_change_ambiguity(
         return ChangeAssessment(False, False, "general_change", (), mentions_screenshot)
 
     has_change_verb = bool(_EXPLICIT_CHANGE_VERB_RE.search(raw))
-    has_soft_intent = bool(_SOFT_CHANGE_INTENT_RE.search(raw))
+    has_soft_intent = bool(_SOFT_CHANGE_INTENT_RE.search(raw)) or (
+        has_active_wp_review and bool(_VISUAL_DEFECT_FOLLOWUP_RE.search(raw))
+    )
     if _READ_ONLY_QUERY_RE.search(raw) and not has_change_verb and not has_soft_intent:
         return ChangeAssessment(False, False, "general_change", (), mentions_screenshot)
     if not has_change_verb and not has_soft_intent:
         return ChangeAssessment(False, False, "general_change", (), mentions_screenshot)
 
     category = _classify_category(raw, mentions_screenshot=mentions_screenshot)
+    if (
+        has_active_wp_review
+        and category in {"wp_visual", "wp_code", "general_change"}
+        and not _SWITCH_TARGET_RE.search(raw)
+        and bool(_ANCHORED_UI_CUE_RE.search(raw))
+    ):
+        return ChangeAssessment(
+            is_change_request=True,
+            is_ambiguous=False,
+            category=category,
+            reasons=(),
+            mentions_screenshot_or_annotation=mentions_screenshot,
+        )
+
     reasons: list[str] = []
 
     has_file_path = bool(_EXPLICIT_FILE_PATH_RE.search(raw))
@@ -678,11 +737,12 @@ def build_clarification_prompt_hint(
             "Användaren hänvisar till en bild/skärmdump eller inringning som du inte kan se "
             "direkt i textchatten. Bekräfta vad du tror avses och erbjud 2–4 konkreta tolkningar/spår."
         )
-    if has_wp_site_context or site_id:
+    if has_wp_site_context or site_id or assessment.category in {"wp_visual", "wp_code"}:
         site_note = f" (aktiv sajt: {site_id})" if site_id else ""
         lines.append(
             f"WP-kontext finns{site_note}: du får göra läsningar vid behov, men fråga med "
-            "<clarify>{...}</clarify> innan du öppnar arbetsyta eller föreslår ändringar."
+            "<clarify>{...}</clarify> innan du öppnar arbetsyta eller föreslår ändringar. "
+            "Behåll kända site_id, plan_id, path och focus_selector i target_summary och action_hint."
         )
     if round_num >= MAX_CLARIFY_ROUNDS:
         lines.append(

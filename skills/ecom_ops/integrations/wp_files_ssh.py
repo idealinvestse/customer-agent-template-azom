@@ -209,6 +209,48 @@ class SshFileTransport:
                 raise TransportError("FileTooLarge")
             return data
 
+    def read_css_search_bytes(self, absolute_file: str, *, max_bytes: int = 512 * 1024) -> bytes:
+        """Read-only bounded SFTP read for larger parent ``.css`` files during selector search."""
+        cap = min(max(int(max_bytes), _MAX_BYTES), 512 * 1024)
+        path = self._safe_path(absolute_file, listing=False)
+        if Path(path).suffix.lower() != ".css":
+            raise PathRejected("extension")
+        with self._active_session() as sftp:
+            attrs = self._check_remote_path(sftp, path, directory=False)
+            size = getattr(attrs, "st_size", None)
+            if size is None or size > cap:
+                raise TransportError("FileTooLarge")
+            try:
+                remote = sftp.open(path, "rb")
+                remote.settimeout(_CHANNEL_TIMEOUT)
+                try:
+                    opened = remote.stat()
+                    opened_mode = getattr(opened, "st_mode", None)
+                    if opened_mode is None or not stat.S_ISREG(opened_mode):
+                        raise PathRejected("remote file type")
+                    if getattr(opened, "st_size", cap + 1) > cap:
+                        raise TransportError("FileTooLarge")
+                    current = sftp.lstat(path)
+                    current_mode = getattr(current, "st_mode", None)
+                    if current_mode is None or stat.S_ISLNK(current_mode):
+                        raise PathRejected("remote symlink")
+                    opened_ino = getattr(opened, "st_ino", None)
+                    current_ino = getattr(current, "st_ino", None)
+                    if opened_ino and current_ino and opened_ino != current_ino:
+                        raise PathRejected("remote file changed")
+                    data = remote.read(cap + 1)
+                finally:
+                    remote.close()
+            except (OSError, EOFError, TimeoutError, paramiko.SSHException) as exc:
+                if _is_missing_error(exc):
+                    raise TransportError("FileMissing") from exc
+                raise TransportError("SshFailed") from exc
+            if len(data) > cap:
+                raise TransportError("FileTooLarge")
+            if b"\x00" in data:
+                raise TransportError("NotText")
+            return data
+
     def write_bytes(self, absolute_file: str, data: bytes) -> None:
         del absolute_file, data
         raise TransportError("SshWriteDisabled")

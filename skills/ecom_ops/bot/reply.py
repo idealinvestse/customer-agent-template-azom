@@ -15,7 +15,7 @@ _WORKSPACE_PNG = re.compile(r"^(?:base|work|live|preview|change|focus)-(?:deskto
 _CLARIFY_ID_RE = re.compile(r"^cl-[0-9a-f]{12}$")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
-_MAX_ATTACHMENTS = 4
+_MAX_ATTACHMENTS = 6
 
 
 @dataclass

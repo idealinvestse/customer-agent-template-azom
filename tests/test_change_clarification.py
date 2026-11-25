@@ -837,3 +837,367 @@ def test_clarification_preserves_inbound_screenshot_across_rounds(env_setup, mon
     assert any(m.get("images") == [resolved_img] for m in captured_calls[1])
     assert "inringade" in r2.text.lower() or r2.actions is None
 
+
+def _make_tiny_png(path) -> str:
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        b"\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01\xf6\x178U"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    return str(path.resolve())
+
+
+def test_history_append_turn_atomic_past_40_messages_limit(env_setup, monkeypatch):
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    initial_messages = [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"old-turn-{i}",
+        }
+        for i in range(40)
+    ]
+    cstore.set(
+        100,
+        {
+            "flow": None,
+            "step": None,
+            "slots": {},
+            "session": {},
+            "messages": initial_messages,
+            "tool_digest": "",
+        },
+    )
+
+    monkeypatch.setattr(chat_agent, "_use_read_tool_loop", lambda *a, **k: False)
+    monkeypatch.setattr(
+        chat_agent,
+        "chat_completion",
+        lambda messages, **kwargs: ("Här är svaret efter tur 20.", 0.0),
+    )
+
+    reply = bot.handle(100, "ny fråga efter 40 meddelanden")
+    assert "tur 20" in reply.text
+    after = cstore.get(100)["messages"]
+    assert len(after) == 40
+    assert after[-2] == {"role": "user", "content": "ny fråga efter 40 meddelanden"}
+    assert after[-1] == {"role": "assistant", "content": "Här är svaret efter tur 20."}
+    assert after[0]["content"] == "old-turn-2"
+
+
+def test_clarify_pick_stores_concise_history_label(env_setup, monkeypatch):
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    calls: list[int] = []
+
+    def fake_completion(messages, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return _sample_clarify_json(mode="options"), 0.0
+        return "Klart med produktsidans knapp.", 0.0
+
+    monkeypatch.setattr(chat_agent, "chat_completion", fake_completion)
+    monkeypatch.setattr(chat_agent, "_use_read_tool_loop", lambda *a, **k: False)
+
+    r1 = bot.handle(100, "Ändra knappen där")
+    pick_cb = r1.actions.rows[0][0].payload
+    r2 = bot.handle_callback(100, pick_cb)
+    assert "Klart" in r2.text
+
+    msgs = cstore.get(100)["messages"]
+    assert any(
+        m.get("role") == "user"
+        and m.get("content", "").startswith("[Valt förtydligande:")
+        for m in msgs
+    )
+    assert not any("[Förtydligat underlag" in str(m.get("content") or "") for m in msgs)
+
+
+def test_active_wp_review_persistence_followup_images_and_clearing(
+    env_setup, monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+    inbound_png = _make_tiny_png(tmp_path / "inbound_annotated.png")
+    focus_png = _make_tiny_png(tmp_path / "focus-desktop.png")
+    live_png = _make_tiny_png(tmp_path / "live-desktop.png")
+    preview_png = _make_tiny_png(tmp_path / "preview-desktop.png")
+
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    recorded_calls: list[dict[str, Any]] = []
+    loop_calls: list[dict[str, Any]] = []
+
+    def fake_completion(messages, **kwargs):
+        recorded_calls.append(
+            {
+                "messages": list(messages),
+                "profile_id": kwargs.get("profile_id"),
+                "max_tokens": kwargs.get("max_tokens"),
+            }
+        )
+        return '<tool_call>{"name": "wp_preview_page", "arguments": {"site_id": "mock-shop", "path": "/product/test/"}}</tool_call>', 0.0
+
+    def fake_file_loop(content, messages, **kwargs):
+        loop_calls.append(dict(kwargs))
+        plan_id = "wr-abc123456789" if len(loop_calls) == 1 else "wr-def678901234"
+        return SimpleNamespace(
+            handled=True,
+            content=f"Uppdaterade knappen i {plan_id}.",
+            attachments=(live_png, preview_png, focus_png),
+            stage_plan_id=None,
+            review_stage_plan_id=plan_id,
+            site_id="mock-shop",
+            operation_ids=("op-1",),
+            followup_cost_usd=0.0,
+            model_error=False,
+            calls=1,
+            tool_seconds=0.1,
+            active_review_meta={
+                "site_id": "mock-shop",
+                "plan_ids": [plan_id],
+                "latest_plan_id": plan_id,
+                "variant_group": "vg-btn",
+                "product_id": "321",
+                "preview_path": "/product/test/",
+                "focus_selector": ".single_add_to_cart_button",
+                "theme_slug": "azom-theme",
+                "changed_files": ["style.css"],
+                "preview_images": [live_png, preview_png, focus_png],
+            },
+        )
+
+    monkeypatch.setattr(chat_agent, "chat_completion", fake_completion)
+    monkeypatch.setattr(chat_agent, "run_bounded_file_tool_loop", fake_file_loop)
+    monkeypatch.setattr(
+        chat_agent,
+        "_run_fast_read_loop",
+        lambda *a, **k: pytest.fail("fast read loop must not run on anchored WP UI follow-up"),
+    )
+    monkeypatch.setattr(
+        ReviewPlans,
+        "get",
+        lambda self, plan_id, site_id=None: {
+            "plan_id": plan_id,
+            "site_id": "mock-shop",
+            "slug": "azom-theme",
+            "variant_group": "vg-btn",
+            "changed_files": ["style.css"],
+            "base_sha256": "a" * 64,
+            "work_sha256": "b" * 64,
+        },
+    )
+
+    r1 = bot.handle(
+        100,
+        "Byt till grön CTA på /product/test/ på mock-shop.example.test som inringat i bilden",
+        image_paths=[inbound_png],
+    )
+    assert "wr-abc123456789" in r1.text
+    session1 = cstore.get(100)["session"]
+    review1 = session1["active_wp_review"]
+    assert review1["site_id"] == "mock-shop"
+    assert review1["latest_plan_id"] == "wr-abc123456789"
+    assert review1["preview_path"] == "/product/test/"
+    assert review1["focus_selector"] == ".single_add_to_cart_button"
+
+    # Follow-up bug report without re-sending image: must NOT trigger <clarify> and must inject active WP review + up to 2 images.
+    assess = detect_change_ambiguity(
+        "gör knappen större men ikonen flyttades till ny rad",
+        has_wp_site_context=True,
+        has_active_wp_review=True,
+    )
+    assert assess.is_ambiguous is False
+
+    r2 = bot.handle(100, "gör knappen större men ikonen flyttades till ny rad")
+    assert "wr-def678901234" in r2.text
+    assert r2.actions is not None and any(
+        "wpreview:stage:wr-def678901234" in btn.payload
+        for row in r2.actions.rows
+        for btn in row
+    )
+    assert loop_calls[-1].get("allow_wp_first") is True
+
+    second_msgs = recorded_calls[-1]["messages"]
+    tool_sys = "\n".join(
+        str(m.get("content") or "") for m in second_msgs if m.get("role") == "system"
+    )
+    assert "Active WP review" in tool_sys
+    assert "latest_plan_id=wr-abc123456789" in tool_sys
+    assert "preview_path=/product/test/" in tool_sys
+
+    attached = second_msgs[-1].get("images") or []
+    assert len(attached) == 2
+    assert focus_png in attached
+    assert inbound_png in attached
+    assert all(
+        str(tmp_path) not in str(m.get("content") or "")
+        for m in cstore.get(100)["messages"]
+    )
+
+    # Clear via wpreview:no:
+    r_no = bot.handle_callback(100, "wpreview:no:wr-def678901234")
+    assert "Avbrutet" in r_no.text
+    assert "active_wp_review" not in (cstore.get(100)["session"] or {})
+
+    # Re-persist then clear via wpreview:stage: success
+    cstore.append_turn_atomic(100, session_updates={"active_wp_review": review1})
+    monkeypatch.setattr(
+        ReviewPlans,
+        "workspace_status",
+        lambda self, site_id, plan_id, actor=None: SimpleNamespace(
+            ok=True, data={"changed_files": ["style.css"]}
+        ),
+    )
+    monkeypatch.setattr(
+        ReviewPlans,
+        "approve_staging",
+        lambda self, site_id, plan_id, actor=None, base_sha256="", work_sha256="": SimpleNamespace(
+            ok=True, data={"executed": True}, message=""
+        ),
+    )
+    r_stage = bot.handle_callback(100, "wpreview:stage:wr-def678901234")
+    assert "skrivna i staging" in r_stage.text
+    assert "active_wp_review" not in (cstore.get(100)["session"] or {})
+
+    # Re-persist then clear via /new
+    cstore.append_turn_atomic(100, session_updates={"active_wp_review": review1})
+    bot.handle(100, "/new")
+    assert "active_wp_review" not in ((cstore.get(100) or {}).get("session") or {})
+
+
+def test_explicit_site_hint_injected_on_domain_mention(env_setup, monkeypatch):
+    seen_messages: list[dict[str, Any]] = []
+    seen_profiles: list[str | None] = []
+
+    def fake_completion(messages, **kwargs):
+        seen_messages.extend(messages)
+        seen_profiles.append(kwargs.get("profile_id"))
+        return "Kollar mock-shop.", 0.0
+
+    monkeypatch.setattr(chat_agent, "chat_completion", fake_completion)
+    monkeypatch.setattr(
+        chat_agent,
+        "_run_fast_read_loop",
+        lambda *a, **k: pytest.fail("read loop should stay off for explicit WP domain change"),
+    )
+
+    res = run_chat(
+        "ändra css för knapp på mock-shop.example.test",
+        actor="oscar",
+        clarification_confirmed=True,
+    )
+    assert "mock-shop" in res.text
+    assert seen_profiles[0] == "wp_tool_router"
+    sys_text = "\n".join(
+        str(m.get("content") or "") for m in seen_messages if m.get("role") == "system"
+    )
+    assert "Site context hint:" in sys_text
+    assert "site_id=mock-shop" in sys_text
+
+
+def test_wpreview_approval_snapshot_ignores_volatile_session_keys(env_setup, monkeypatch):
+    from types import SimpleNamespace
+
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    cstore.append_turn_atomic(
+        100,
+        session_updates={
+            "wp_ops_context": {"actor_id": "oscar", "channel": "telegram", "conversation_id": "telegram:100", "site_id": "azom.se"},
+            "wp_review_hashes": {"wr-112233445566": {"actor": "oscar", "site_id": "azom.se", "base_sha256": "a" * 64, "work_sha256": "b" * 64}},
+            "last_order_id": "1001",
+            "active_wp_review": {"site_id": "azom.se", "latest_plan_id": "wr-112233445566"},
+        },
+    )
+    snap_before = TelegramJobStore.approval_snapshot(cstore.get(100))
+
+    # Volatile keys change before deferred callback runs
+    cstore.append_turn_atomic(
+        100,
+        session_updates={
+            "last_order_id": "1009",
+            "active_wp_review": {"site_id": "azom.se", "latest_plan_id": "wr-998877665544"},
+            "pending_image_paths": ["/tmp/x.png"],
+        },
+    )
+    snap_after = TelegramJobStore.approval_snapshot(cstore.get(100))
+    assert snap_before == snap_after
+
+    payload = {
+        "type": "callback",
+        "chat_id": "100",
+        "data": "wpreview:stage:wr-112233445566",
+        "approval_snapshot_required": True,
+        "approval_snapshot": snap_before,
+    }
+    job = {"chat_id": "100", "payload": payload}
+    assert bot_main._preflight_action_job(bot, job) is None
+
+    # Mutating wp_review_hashes MUST still invalidate the approval snapshot!
+    cstore.append_turn_atomic(
+        100,
+        session_updates={
+            "wp_review_hashes": {"wr-112233445566": {"actor": "oscar", "site_id": "azom.se", "base_sha256": "c" * 64, "work_sha256": "d" * 64}},
+        },
+    )
+    assert TelegramJobStore.approval_snapshot(cstore.get(100)) != snap_before
+    err_msg = bot_main._preflight_action_job(bot, job)
+    assert err_msg is not None
+    assert "inaktuell" in err_msg.lower() or "bekräftelse" in err_msg.lower()
+
+    # Re-enqueue with current snapshot succeeds when staged
+    monkeypatch.setattr(
+        ReviewPlans,
+        "get",
+        lambda self, plan_id, site_id=None: {
+            "plan_id": plan_id,
+            "site_id": "azom.se",
+            "base_sha256": "c" * 64,
+            "work_sha256": "d" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        ReviewPlans,
+        "workspace_status",
+        lambda self, site_id, plan_id, actor=None: SimpleNamespace(ok=True, data={"changed_files": []}),
+    )
+    monkeypatch.setattr(
+        ReviewPlans,
+        "approve_staging",
+        lambda self, site_id, plan_id, actor=None, base_sha256="", work_sha256="": SimpleNamespace(ok=True, data={"executed": True}, message=""),
+    )
+    fresh_snap = TelegramJobStore.approval_snapshot(cstore.get(100))
+    assert (
+        bot_main._preflight_action_job(
+            bot,
+            {
+                "chat_id": "100",
+                "payload": {
+                    "type": "callback",
+                    "chat_id": "100",
+                    "data": "wpreview:stage:wr-112233445566",
+                    "approval_snapshot_required": True,
+                    "approval_snapshot": fresh_snap,
+                },
+            },
+        )
+        is None
+    )
+    res = bot.handle_callback(100, "wpreview:stage:wr-112233445566")
+    assert "skrivna i staging" in res.text
+
+

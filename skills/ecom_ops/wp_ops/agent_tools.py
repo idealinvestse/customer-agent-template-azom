@@ -178,11 +178,17 @@ _INTEL_SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
 _FILE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,219}$")
 _FILE_PLAN = re.compile(r"^fe-[a-f0-9]{12}$")
 _REVIEW_PLAN = re.compile(r"^wr-[a-f0-9]{12}$")
+_VARIANT_GROUP = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
+_DASHBOARD_REVIEW_PATH_RE = re.compile(
+    r"^(?:https?://(?:127\.0\.0\.1|localhost)(?::\d+)?)?/?wp/([a-z][a-z0-9-]{0,62})/reviews/(wr-[a-f0-9]{12})(?:/preview)?/?$",
+    re.I,
+)
 _FILE_SHA = re.compile(r"^[a-f0-9]{64}$")
 WP_TOOL_NAMES = frozenset(WP_TOOL_SCHEMAS)
 EXTRA_FILE_TOOLS = frozenset(
     {
         "wp_list_workspaces",
+        "wp_workspace_fork",
         "wp_workspace_list_files",
         "wp_workspace_read_file",
         "wp_workspace_diff",
@@ -198,6 +204,7 @@ EXTRA_FILE_TOOLS = frozenset(
         "wp_component_intel",
         "wp_playbook",
         "wp_fetch_page_html",
+        "wp_inspect_element",
         "wp_preview_page",
         "wp_list_products",
         "wp_get_product",
@@ -217,6 +224,7 @@ _FE_PLAN_TOOLS = frozenset(
 )
 _WORKSPACE_TOOLS = frozenset(
     {
+        "wp_workspace_fork",
         "wp_workspace_list_files",
         "wp_workspace_read_file",
         "wp_workspace_diff",
@@ -279,7 +287,7 @@ FILE_LOOP_MAX_TOTAL_BYTES = 49_152
 _FILE_READ_DEFAULT = 8192
 _FILE_READ_MAX = 12288
 _RECOVERY_ERROR_CLASSES = frozenset(
-    {"SiteRequired", "InvalidToolArguments", "InvalidSearch", "FileMissing"}
+    {"SiteRequired", "InvalidToolArguments", "InvalidSearch", "FileMissing", "InvalidPreviewPath"}
 )
 _PREVIEW_FOCUS_SECTIONS = ("top", "header", "hero", "main", "footer", "bottom")
 _PREVIEW_FOCUS_SELECTOR_RE = re.compile(
@@ -477,8 +485,21 @@ FILE_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "kind": {"type": "string"},
             "slug": {"type": "string"},
             "summary": {"type": "string"},
+            "variant_group": {"type": "string"},
+            "base_plan_id": {"type": "string"},
         },
         "required": ["kind"],
+        "additionalProperties": False,
+    },
+    "wp_workspace_fork": {
+        "type": "object",
+        "properties": {
+            "site_id": {"type": "string"},
+            "plan_id": {"type": "string"},
+            "summary": {"type": "string"},
+            "variant_group": {"type": "string"},
+        },
+        "required": ["plan_id"],
         "additionalProperties": False,
     },
     "wp_list_workspaces": {
@@ -736,6 +757,19 @@ FILE_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "properties": {
             "site_id": {"type": "string"},
             "path": {"type": "string"},
+            "selector": {"type": "string"},
+            "include_styles": {"type": "boolean"},
+        },
+        "additionalProperties": False,
+    },
+    "wp_inspect_element": {
+        "type": "object",
+        "properties": {
+            "site_id": {"type": "string"},
+            "path": {"type": "string"},
+            "selector": {"type": "string"},
+            "text": {"type": "string"},
+            "plan_id": {"type": "string"},
         },
         "additionalProperties": False,
     },
@@ -752,6 +786,7 @@ FILE_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "focus_selector": {"type": "string"},
             "focus_text": {"type": "string"},
             "full_page": {"type": "boolean"},
+            "reuse_live_baseline": {"type": "boolean"},
         },
         "additionalProperties": False,
     },
@@ -853,14 +888,13 @@ WP_TOOL_GUIDE = (
     "kandidatordning för mallar + befintliga kandidater\n"
     "- wc_template_overrides_audit(site_id?, theme_slug?) — granskar @version-drift i woocommerce/-overrides\n"
     "- wp_component_intel(kind: theme|plugin, slug, installed_version?) — strikt mock/env-styrd WP.org-metadata\n"
-    "- wp_fetch_page_html(site_id?, path?) — hämtar renderad live-HTML (skrivskyddad GET)\n"
+    "- wp_fetch_page_html(site_id?, path?, selector?, include_styles?: bool) — live-HTML (GET; aldrig lokal /wp/.../preview-sökväg)\n"
+    "- wp_inspect_element(site_id?, path?, selector?, text?, plan_id?: wr-*) — DOM, computed_styles, matched_rules & health_checks (ikonkrock, trasiga bilder, overflow) på live eller sandlåda\n"
     "- wp_list_products(site_id?, search?, limit?) / wp_get_product(site_id?, product_id?, slug?, path?) — skrivskyddad produktläsning (REST/HTML)\n"
     "- wp_preview_page(site_id?, path?, plan_id?: wr-*, focus_section?: top|header|hero|main|footer|bottom, "
-    "focus_selector?, focus_text?, full_page?: bool) — live-skärmdump eller sandbox-overlay (returnerar PNG + klickbar preview_url). "
-    "Använd focus_section/focus_text/focus_selector för exakt område och inkludera alltid returnerad preview_url i svaret.\n"
-    "'HTML/källkod' → wp_fetch_page_html. 'Print/skärmdump' → wp_preview_page. "
-    "Produktflöde: wp_list_products/wp_get_product → wp_open_review_workspace → wp_workspace_product_edit (produktfält/copy) "
-    "eller wp_workspace_copy_from_parent/wp_workspace_copy_woo_template + wp_workspace_patch_file (mall/CSS) → wp_preview_page(plan_id, path, focus_text=...).\n"
+    "focus_selector?, focus_text?, full_page?: bool, reuse_live_baseline?: bool) — PNG + visual_health + klickbar preview_url (inkludera alltid preview_url i svaret).\n"
+    "'HTML' → wp_fetch_page_html. 'CSS/stil/ikonkrock' → wp_inspect_element. 'Skärmdump' → wp_preview_page. "
+    "Flöde: wp_inspect_element → wp_open_review_workspace(variant_group?) / wp_workspace_fork → patch/product_edit → wp_preview_page.\n"
     "3. Kodindex & sökning:\n"
     "- wp_list_component_tree(site_id?, kind, slug, path?)\n"
     "- wp_search_component(site_id?, query, kind?, slug?, path?, plan_id?: wr-*, mode?: literal|regex, "
@@ -869,7 +903,8 @@ WP_TOOL_GUIDE = (
     "- wp_code_index(site_id?, kind?, slug?, path?, plan_id?: wr-*, query?, symbols?) — Oscar-only\n"
     "- wp_read_theme_plugin_file(site_id?, kind, slug, path, offset?, limit?: <=12288, start_line?, end_line?) — Oscar-only\n"
     "4. Isolerad arbetsyta (wr-[a-f0-9]{12}):\n"
-    "- wp_open_review_workspace(site_id?, kind: theme|plugin, slug?, summary?) — isolerad wr-*-kopia; föräldratema/woo/tredjepart vägras\n"
+    "- wp_open_review_workspace(site_id?, kind: theme|plugin, slug?, summary?, variant_group?, base_plan_id?) — wr-*-kopia; dela variant_group vid flera parallella förslag\n"
+    "- wp_workspace_fork(site_id?, plan_id, summary?, variant_group?) — klonar work/ från ett wr-* till ett nytt wr-*\n"
     "- wp_list_workspaces(site_id?) / wp_workspace_status(site_id?, plan_id) / wp_workspace_list_files(site_id?, plan_id, path?)\n"
     "- wp_workspace_read_file(site_id?, plan_id, path, start_line?, end_line?) / wp_workspace_diff(site_id?, plan_id, path?) — Oscar-only\n"
     "- wp_workspace_patch_file(site_id?, plan_id, path, old_text, new_text, base_sha256?) / wp_workspace_create_file(site_id?, plan_id, path, content)\n"
@@ -928,6 +963,7 @@ class ToolLoopResult:
     review_stage_plan_id: str | None = None
     model_error_class: str | None = None
     model_error_code: str | None = None
+    active_review_meta: dict[str, Any] | None = None
 
 
 class WpAgentTools:
@@ -1286,6 +1322,8 @@ class WpAgentTools:
             return self._template_hierarchy(site_id, arguments, actor=actor)
         if name == "wp_fetch_page_html":
             return self._fetch_page_html(site_id, arguments, actor=actor)
+        if name == "wp_inspect_element":
+            return self._inspect_element(site_id, arguments, actor=actor)
         if name == "wp_preview_page":
             return self._preview_page(site_id, arguments, actor=actor)
         if name == "wp_list_products":
@@ -1507,6 +1545,8 @@ class WpAgentTools:
         actor: str,
     ) -> ToolOutput:
         ops = self._review_plans()
+        if name == "wp_workspace_fork":
+            return self._workspace_fork(site_id, plan_id, arguments, actor=actor, ops=ops)
         if name == "wp_workspace_status":
             return self._file_result(ops.workspace_status(site_id, plan_id, actor=actor), site_id)
         if name == "wp_workspace_list_files":
@@ -2591,10 +2631,93 @@ class WpAgentTools:
             return None, ToolOutput(_error("SiteUnavailable"), site_id)
         return site_obj, None
 
+    @staticmethod
+    def _extract_html_by_selector(raw_html: str, selector: str) -> tuple[str, int]:
+        """Extract bounded outer HTML for elements matching a simple CSS selector (tag/#id/.class/[attr])."""
+        sel = str(selector or "").strip()
+        if not sel:
+            return "", 0
+        # Use the last compound selector segment for resilient element matching
+        parts = [p for p in re.split(r"\s*>\s*|\s+", sel) if p]
+        target = parts[-1] if parts else sel
+        tag_m = re.match(r"^([A-Za-z][A-Za-z0-9-]*)", target)
+        want_tag = tag_m.group(1).lower() if tag_m else None
+        want_ids = [m.group(1).lower() for m in re.finditer(r"#([A-Za-z0-9_-]+)", target)]
+        want_classes = [m.group(1).lower() for m in re.finditer(r"\.([A-Za-z0-9_-]+)", target)]
+        want_attrs: list[tuple[str, str | None]] = []
+        for am in re.finditer(r"""\[([A-Za-z0-9_-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\]]+)))?\]""", target):
+            aval = am.group(2) if am.group(2) is not None else (am.group(3) if am.group(3) is not None else am.group(4))
+            want_attrs.append((am.group(1).lower(), aval.strip() if isinstance(aval, str) else None))
+        if not want_tag and not want_ids and not want_classes and not want_attrs:
+            return "", 0
+
+        void_tags = frozenset({"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"})
+        open_re = re.compile(r"<([A-Za-z][A-Za-z0-9-]*)\b([^>]*)>", re.S)
+        attr_re = re.compile(r"""([A-Za-z0-9_:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?""")
+
+        snippets: list[str] = []
+        match_count = 0
+        pos = 0
+        while pos < len(raw_html) and len(snippets) < 3:
+            m = open_re.search(raw_html, pos)
+            if m is None:
+                break
+            pos = m.end()
+            tname = m.group(1).lower()
+            if want_tag and tname != want_tag:
+                continue
+            attrs_str = m.group(2) or ""
+            attr_map: dict[str, str] = {}
+            for am in attr_re.finditer(attrs_str):
+                val = am.group(2) if am.group(2) is not None else (am.group(3) if am.group(3) is not None else (am.group(4) or ""))
+                attr_map[am.group(1).lower()] = val
+            if want_ids and attr_map.get("id", "").strip().lower() not in want_ids:
+                continue
+            if want_classes:
+                cls_tokens = {c.strip().lower() for c in attr_map.get("class", "").split() if c.strip()}
+                if not all(wc in cls_tokens for wc in want_classes):
+                    continue
+            attr_ok = True
+            for ak, av in want_attrs:
+                if ak not in attr_map:
+                    attr_ok = False
+                    break
+                if av is not None and attr_map[ak] != av:
+                    attr_ok = False
+                    break
+            if not attr_ok:
+                continue
+            match_count += 1
+            if tname in void_tags or attrs_str.rstrip().endswith("/"):
+                snippets.append(m.group(0))
+                continue
+            step_re = re.compile(rf"</?{re.escape(tname)}\b[^>]*>", re.I)
+            depth = 1
+            scan = m.end()
+            end_idx = m.end()
+            while True:
+                nxt = step_re.search(raw_html, scan)
+                if nxt is None:
+                    end_idx = min(len(raw_html), m.start() + 3000)
+                    break
+                tok = nxt.group(0)
+                if tok.startswith("</"):
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = nxt.end()
+                        break
+                elif not tok.rstrip().endswith("/>"):
+                    depth += 1
+                scan = nxt.end()
+            snippets.append(raw_html[m.start():end_idx])
+            pos = max(pos, end_idx)
+        return "\n\n".join(snippets), match_count
+
     def _fetch_page_html(self, site_id: str, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
         from ecom_ops.integrations.wp_live_preview import (
             fetch_live_html,
             live_preview_enabled,
+            validate_focus_options,
             validate_preview_path,
         )
         from ecom_ops.wp_ops.review_workspace import ReviewError
@@ -2608,8 +2731,34 @@ class WpAgentTools:
         raw_path = arguments.get("path", "/")
         if raw_path is not None and not isinstance(raw_path, str):
             return ToolOutput(_error("InvalidToolArguments"), site_id)
+        raw_selector = arguments.get("selector")
+        if raw_selector is not None and not isinstance(raw_selector, str):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        include_styles = arguments.get("include_styles", False)
+        if type(include_styles) is not bool:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+
+        raw_path_str = str(raw_path or "/").strip()
+        dash_match = _DASHBOARD_REVIEW_PATH_RE.fullmatch(raw_path_str)
+        if dash_match is not None or raw_path_str.lower().startswith(("http://127.0.0.1", "http://localhost")):
+            matched_pid = dash_match.group(2) if dash_match is not None else ""
+            err = _error("InvalidPreviewPath")
+            err["recovery_tool"] = "wp_inspect_element"
+            err["hint"] = (
+                "wp_fetch_page_html hämtar bara publika sidor från livesajten (t.ex. '/produkt/...'), "
+                "inte lokala dashboard-länkar (/wp/.../reviews/wr-.../preview). "
+                + (
+                    f"Använd wp_inspect_element(site_id='{site_id}', plan_id='{matched_pid}', selector=...) "
+                    f"för att inspektera renderad HTML/CSS i sandlådan eller wp_workspace_read_file(plan_id='{matched_pid}', path='style.css')."
+                    if matched_pid
+                    else f"Använd wp_inspect_element(site_id='{site_id}', plan_id='wr-...', selector=...) för att inspektera sandlådeförhandsvisningen."
+                )
+            )
+            return ToolOutput(err, site_id)
+
         try:
             clean_path = validate_preview_path(raw_path)
+            _sec, clean_selector, _txt, _full = validate_focus_options(focus_selector=raw_selector)
             fetched = fetch_live_html(site_obj, clean_path)
         except ReviewError as exc:
             return ToolOutput(_error(exc.error_class), site_id)
@@ -2694,37 +2843,182 @@ class WpAgentTools:
         except Exception:
             pass
 
-        collapsed = re.sub(r"(?is)<script\b[^>]*>.*?</script>", "<script>…</script>", raw_html)
-        collapsed = re.sub(r"(?is)<style\b[^>]*>.*?</style>", "<style>…</style>", collapsed)
-        excerpt, excerpt_clipped = self._scrub_keep_newlines(site_obj, collapsed, max_bytes=9000)
+        selector_matched = False
+        selector_matches = 0
+        extracted_styles = ""
+        if include_styles:
+            style_blocks = re.findall(r"(?is)<style\b[^>]*>.*?</style>", raw_html)
+            if style_blocks:
+                extracted_styles, _ = self._scrub_keep_newlines(
+                    site_obj, "\n".join(style_blocks), max_bytes=4096
+                )
+        if clean_selector:
+            extracted, selector_matches = self._extract_html_by_selector(raw_html, clean_selector)
+            if extracted:
+                selector_matched = True
+                source_for_excerpt = re.sub(r"(?is)<script\b[^>]*>.*?</script>", "<script>…</script>", extracted)
+            else:
+                source_for_excerpt = re.sub(r"(?is)<script\b[^>]*>.*?</script>", "<script>…</script>", raw_html)
+                if not include_styles:
+                    source_for_excerpt = re.sub(r"(?is)<style\b[^>]*>.*?</style>", "<style>…</style>", source_for_excerpt)
+        else:
+            source_for_excerpt = re.sub(r"(?is)<script\b[^>]*>.*?</script>", "<script>…</script>", raw_html)
+            if not include_styles:
+                source_for_excerpt = re.sub(r"(?is)<style\b[^>]*>.*?</style>", "<style>…</style>", source_for_excerpt)
+        excerpt, excerpt_clipped = self._scrub_keep_newlines(site_obj, source_for_excerpt, max_bytes=9000)
 
-        return ToolOutput(
-            {
-                "ok": True,
-                "status": "read",
-                "site_id": site_id,
-                "path": clean_path,
-                "final_url": str(fetched.get("final_url") or ""),
-                "http_status": int(fetched.get("status") or 200),
-                "bytes": int(fetched.get("bytes") or len(raw_html.encode("utf-8"))),
-                "title": self._scrub_bounded(site_obj, "".join(parser.title_parts), max_len=200),
-                "lang": self._scrub_bounded(site_obj, parser.lang, max_len=24),
-                "meta_description": self._scrub_bounded(site_obj, parser.meta_desc, max_len=300),
-                "canonical": self._scrub_bounded(site_obj, parser.canonical, max_len=240),
-                "h1": [self._scrub_bounded(site_obj, h, max_len=160) for h in parser.h1_list],
-                "counts": {
-                    "links": parser.links,
-                    "images": parser.images,
-                    "images_missing_alt": parser.images_missing_alt,
-                    "scripts": parser.scripts,
-                },
-                "external_hosts": parser.external_hosts[:10],
-                "html_excerpt": excerpt,
-                "truncated": excerpt_clipped,
-                "live_calls": True,
+        payload: dict[str, Any] = {
+            "ok": True,
+            "status": "read",
+            "site_id": site_id,
+            "path": clean_path,
+            "final_url": str(fetched.get("final_url") or ""),
+            "http_status": int(fetched.get("status") or 200),
+            "bytes": int(fetched.get("bytes") or len(raw_html.encode("utf-8"))),
+            "title": self._scrub_bounded(site_obj, "".join(parser.title_parts), max_len=200),
+            "lang": self._scrub_bounded(site_obj, parser.lang, max_len=24),
+            "meta_description": self._scrub_bounded(site_obj, parser.meta_desc, max_len=300),
+            "canonical": self._scrub_bounded(site_obj, parser.canonical, max_len=240),
+            "h1": [self._scrub_bounded(site_obj, h, max_len=160) for h in parser.h1_list],
+            "counts": {
+                "links": parser.links,
+                "images": parser.images,
+                "images_missing_alt": parser.images_missing_alt,
+                "scripts": parser.scripts,
             },
-            site_id=site_id,
+            "external_hosts": parser.external_hosts[:10],
+            "html_excerpt": excerpt,
+            "truncated": excerpt_clipped,
+            "live_calls": True,
+        }
+        if clean_selector:
+            payload["selector"] = clean_selector
+            payload["selector_matched"] = selector_matched
+            payload["selector_matches"] = selector_matches
+        if include_styles:
+            payload["include_styles"] = True
+            payload["styles"] = extracted_styles
+        return ToolOutput(payload, site_id=site_id)
+
+    def _inspect_element(self, site_id: str, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
+        from ecom_ops.integrations.wp_live_preview import (
+            inspect_element,
+            live_preview_enabled,
+            validate_focus_options,
+            validate_preview_path,
         )
+        from ecom_ops.wp_ops.review_workspace import ReviewError
+
+        site_obj, denied_out = self._site_for_preview(site_id, actor)
+        if denied_out is not None:
+            return denied_out
+        assert site_obj is not None
+        if not live_preview_enabled():
+            return ToolOutput(_error("LivePreviewDisabled"), site_id)
+
+        raw_path = arguments.get("path")
+        raw_selector = arguments.get("selector")
+        raw_text = arguments.get("text")
+        plan_id = arguments.get("plan_id")
+        if raw_path is not None and not isinstance(raw_path, str):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        if raw_selector is not None and not isinstance(raw_selector, str):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        if raw_text is not None and not isinstance(raw_text, str):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+
+        # Auto-heal if model mistakenly puts a dashboard preview path into `path`
+        if isinstance(raw_path, str) and raw_path.strip():
+            dm = _DASHBOARD_REVIEW_PATH_RE.fullmatch(raw_path.strip())
+            if dm is not None:
+                if plan_id is None:
+                    plan_id = dm.group(2)
+                raw_path = None
+
+        try:
+            _sec, clean_selector, clean_text, _full = validate_focus_options(
+                focus_selector=raw_selector,
+                focus_text=raw_text,
+            )
+        except ReviewError as exc:
+            return ToolOutput(_error(exc.error_class), site_id)
+
+        html_override: str | None = None
+        target_url: str | None = None
+        effective_path = str(raw_path or "/").strip() or "/"
+        overlay_meta: dict[str, Any] | None = None
+
+        if isinstance(plan_id, str) and plan_id:
+            ops = self._review_plans()
+            built, err = ops.build_overlay_html(
+                site_id,
+                plan_id,
+                actor=actor,
+                path=raw_path if (isinstance(raw_path, str) and raw_path.strip()) else "/",
+                use_cache=True,
+            )
+            if err is not None or built is None:
+                return self._file_result(err, site_id) if err is not None else ToolOutput(_error("LiveFetchFailed"), site_id)
+            effective_path = str(built["clean_path"])
+            html_override = str(built["overlay"].html)
+            target_url = str((built.get("fetched") or {}).get("final_url") or "") or None
+            plan_row = built.get("plan") if isinstance(built.get("plan"), dict) else {}
+            if not clean_selector and not clean_text:
+                stored_sel = str(plan_row.get("focus_selector") or "").strip()
+                if stored_sel:
+                    clean_selector = stored_sel
+            overlay_meta = {
+                "injected_css_bytes": built["overlay"].injected_css_bytes,
+                "hunks": len(built["overlay"].hunks),
+            }
+        else:
+            try:
+                effective_path = validate_preview_path(effective_path)
+            except ReviewError as exc:
+                return ToolOutput(_error(exc.error_class), site_id)
+
+        if not clean_selector and not clean_text:
+            err = _error("InvalidToolArguments")
+            err["hint"] = "Ange minst en av selector (CSS-selektor, t.ex. '.single_add_to_cart_button') eller text (synlig knapptext) för wp_inspect_element."
+            return ToolOutput(err, site_id)
+
+        try:
+            inspected = inspect_element(
+                site_obj,
+                path=effective_path,
+                html_override=html_override,
+                selector=clean_selector,
+                text=clean_text,
+                target_url=target_url,
+            )
+        except ReviewError as exc:
+            return ToolOutput(_error(exc.error_class), site_id)
+
+        from ecom_ops.wp_ops.file_changes import _scrub_search_text
+
+        def _scrub_nested(value: Any) -> Any:
+            if isinstance(value, str):
+                return _scrub_search_text(value)
+            if isinstance(value, dict):
+                return {k: _scrub_nested(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_scrub_nested(item) for item in value]
+            return value
+
+        safe_inspected = _scrub_nested(inspected) if isinstance(inspected, dict) else {}
+        payload: dict[str, Any] = {
+            "ok": True,
+            "status": "inspected" if safe_inspected.get("found") else "not_found",
+            "site_id": site_id,
+            "plan_id": plan_id,
+            "source_scope": "workspace_overlay" if plan_id else "live",
+            "path": effective_path,
+            **safe_inspected,
+            "live_calls": True,
+        }
+        if overlay_meta is not None:
+            payload["overlay"] = overlay_meta
+        return ToolOutput(payload, site_id=site_id)
 
     @staticmethod
     def _validate_focus_fallback(
@@ -2852,6 +3146,7 @@ class WpAgentTools:
         raw_selector = arguments.get("focus_selector")
         raw_text = arguments.get("focus_text")
         raw_full = arguments.get("full_page", False)
+        raw_reuse = arguments.get("reuse_live_baseline", True)
         if raw_section is not None and not isinstance(raw_section, str):
             return ToolOutput(_error("InvalidToolArguments"), site_id)
         if raw_selector is not None and not isinstance(raw_selector, str):
@@ -2859,6 +3154,8 @@ class WpAgentTools:
         if raw_text is not None and not isinstance(raw_text, str):
             return ToolOutput(_error("InvalidToolArguments"), site_id)
         if type(raw_full) is not bool:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        if type(raw_reuse) is not bool:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
         validator = getattr(wp_live_preview_mod, "validate_focus_options", None)
         try:
@@ -2889,17 +3186,24 @@ class WpAgentTools:
 
         plan_id = arguments.get("plan_id")
         if plan_id is not None:
+            ops = self._review_plans()
             if not path_provided:
                 inferred_path = self._workspace_product_path(site_id, str(plan_id))
+                if not inferred_path:
+                    plan_row = ops.get(str(plan_id), site_id=site_id)
+                    if isinstance(plan_row, dict) and isinstance(plan_row.get("preview_path"), str):
+                        stored_p = plan_row["preview_path"].strip()
+                        if stored_p and stored_p != "/":
+                            inferred_path = stored_p
                 if inferred_path:
                     clean_path = inferred_path
-            ops = self._review_plans()
+            live_kwargs = {**focus_kwargs, "reuse_live_baseline": raw_reuse}
             res = ops.live_preview(
                 site_id,
                 str(plan_id),
                 actor=actor,
                 path=clean_path,
-                **self._supported_kwargs(ops.live_preview, focus_kwargs),
+                **self._supported_kwargs(ops.live_preview, live_kwargs),
             )
             if not res.ok:
                 return self._file_result(res, site_id)
@@ -2922,6 +3226,7 @@ class WpAgentTools:
                 "site_id": site_id,
                 "path": effective_path,
                 "preview_kind": pdata.get("preview_kind") or "live_overlay",
+                "reused_live_baseline": bool(pdata.get("reused_live_baseline")),
                 "screenshots": list(pdata.get("screenshots") or []),
                 "attachments_count": len(validated_paths),
                 "focus_section": focus_section,
@@ -2930,6 +3235,7 @@ class WpAgentTools:
                 "full_page": full_page,
                 "focus_matched": bool(pdata.get("focus_matched")),
                 "focus_target": pdata.get("focus_target"),
+                "visual_health": pdata.get("visual_health"),
                 "overlay": pdata.get("overlay") or {},
                 "blocked_counts": pdata.get("blocked_counts") or {},
                 "preview_path": preview_path_val,
@@ -4441,6 +4747,41 @@ class WpAgentTools:
             site_id=site_id,
         )
 
+    def _workspace_fork(
+        self,
+        site_id: str,
+        plan_id: str,
+        arguments: dict[str, Any],
+        *,
+        actor: str,
+        ops: Any,
+    ) -> ToolOutput:
+        summary = arguments.get("summary", "")
+        variant_group = arguments.get("variant_group", "")
+        if not isinstance(summary, str) or len(summary) > 200:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        if not isinstance(variant_group, str):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        clean_vg = variant_group.strip().lower()
+        if clean_vg and _VARIANT_GROUP.fullmatch(clean_vg) is None:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        forked = ops.fork(
+            site_id,
+            plan_id,
+            actor=actor,
+            summary=summary,
+            variant_group=clean_vg,
+        )
+        data = dict(forked.data or {})
+        data["executed"] = False
+        data["live_calls"] = False
+        data["ok"] = forked.ok
+        if forked.ok:
+            new_pid = data.get("plan_id")
+            if isinstance(new_pid, str) and _REVIEW_PLAN.fullmatch(new_pid):
+                data["workspace_files"] = self._workspace_file_list(site_id, new_pid)
+        return self._file_result(WpOpsResult(forked.ok, forked.message, data), site_id)
+
     def _open_review(
         self,
         arguments: dict[str, Any],
@@ -4452,14 +4793,33 @@ class WpAgentTools:
         kind = arguments.get("kind")
         slug = arguments.get("slug", "")
         summary = arguments.get("summary", "")
+        variant_group = arguments.get("variant_group", "")
+        base_plan_id = arguments.get("base_plan_id", "")
         if not isinstance(site_id, str) or not _SITE_ID.fullmatch(site_id):
             return self._site_required_error(actor)
         if kind not in {"theme", "plugin"} or not isinstance(slug, str) or not isinstance(summary, str):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        if not isinstance(variant_group, str) or not isinstance(base_plan_id, str):
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        clean_vg = variant_group.strip().lower()
+        clean_base = base_plan_id.strip().strip("`")
+        if clean_vg and _VARIANT_GROUP.fullmatch(clean_vg) is None:
+            return ToolOutput(_error("InvalidToolArguments"), site_id)
+        if clean_base and _REVIEW_PLAN.fullmatch(clean_base) is None:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
         if slug and _SLUG.fullmatch(slug) is None:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
         if len(summary) > 200:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
+        ops = self._review_plans()
+        if clean_base:
+            return self._workspace_fork(
+                site_id,
+                clean_base,
+                {"summary": summary, "variant_group": clean_vg},
+                actor=actor,
+                ops=ops,
+            )
         verified_theme = self._verified_theme_pair(site_id, actor, slug) if kind == "theme" else None
         plugin_target = slug
         if kind == "plugin" and not plugin_target:
@@ -4472,7 +4832,6 @@ class WpAgentTools:
             if kind == "plugin" and plugin_target
             else None
         )
-        ops = self._review_plans()
         opened = ops.open(
             site_id,
             str(kind),
@@ -4481,6 +4840,7 @@ class WpAgentTools:
             summary=summary,
             verified_theme=verified_theme,
             verified_plugin=verified_plugin,
+            variant_group=clean_vg,
         )
         data = dict(opened.data or {})
         data["executed"] = False
@@ -5042,6 +5402,7 @@ _WP_TOOL_LABELS: dict[str, str] = {
     "wp_verify_change": "Verifiera filändring",
     "wp_rollback_file": "Återställ fil (spärrad)",
     "wp_open_review_workspace": "Öppna granskningsyta",
+    "wp_workspace_fork": "Klona/förgrena granskningsyta",
     "wp_list_workspaces": "Lista arbetsytor",
     "wp_workspace_list_files": "Lista filer i arbetsyta",
     "wp_workspace_read_file": "Läs fil i arbetsyta",
@@ -5063,6 +5424,7 @@ _WP_TOOL_LABELS: dict[str, str] = {
     "wp_component_intel": "Hämta komponentmetadata",
     "wp_playbook": "Hämta åtgärdsguide",
     "wp_fetch_page_html": "Hämta renderad HTML",
+    "wp_inspect_element": "Inspektera element & CSS",
     "wp_preview_page": "Skärmdump/förhandsvisning",
     "wp_list_products": "Lista produkter",
     "wp_get_product": "Hämta produktdetaljer",
@@ -5081,7 +5443,7 @@ def _safe_tool_detail(
     if isinstance(raw_site, str) and _SITE_ID.fullmatch(raw_site):
         parts.append(raw_site)
     if name in ALL_FILE_TOOLS or name in WP_TOOL_NAMES:
-        raw_plan = arguments.get("plan_id")
+        raw_plan = arguments.get("plan_id") or arguments.get("source_plan_id") or arguments.get("base_plan_id")
         if isinstance(raw_plan, str) and (
             _REVIEW_PLAN.fullmatch(raw_plan) or _FILE_PLAN.fullmatch(raw_plan)
         ):
@@ -5211,6 +5573,9 @@ def _safe_tool_outcome(
     if name == "wp_open_review_workspace":
         pid = _short(data.get("plan_id"), 32)
         return f"granskningsyta {pid}" if pid else "granskningsyta öppnad"
+    if name == "wp_workspace_fork":
+        pid = _short(data.get("plan_id"), 32)
+        return f"granskningsyta {pid} klonad" if pid else "granskningsyta klonad"
     if name == "wp_list_workspaces":
         workspaces = data.get("workspaces")
         if isinstance(workspaces, list):
@@ -5276,6 +5641,14 @@ def _safe_tool_outcome(
     if name == "wp_fetch_page_html":
         size = data.get("bytes")
         return f"HTML hämtad ({size} B)" if isinstance(size, int) else "HTML hämtad"
+    if name == "wp_inspect_element":
+        vps = data.get("viewports")
+        if isinstance(vps, dict):
+            desktop = vps.get("desktop") if isinstance(vps.get("desktop"), dict) else {}
+            if desktop.get("found") is True:
+                return "element & CSS inspekterat"
+            return "element saknades på sidan"
+        return "element inspekterat"
     if name == "wp_preview_page":
         shots = data.get("screenshots")
         n = len(shots) if isinstance(shots, list) else 0
@@ -5669,7 +6042,7 @@ def _review_notice(results: list[dict[str, Any]]) -> str:
             risk = result.get("risk") if isinstance(result.get("risk"), str) else "okänd"
             key = (site, plan_id)
             existing = entries.get(key)
-            if existing is None or (existing == "okänd" and risk != "okänd"):
+            if existing is None or risk != "okänd":
                 entries[key] = risk
         if isinstance(plan_id, str) and _REVIEW_PLAN.fullmatch(plan_id):
             pv_url = result.get("preview_url") if isinstance(result.get("preview_url"), str) and result.get("preview_url") else None
@@ -5748,6 +6121,11 @@ def _stage_plan_id(data: dict[str, Any]) -> str | None:
 _DEEP_PHASE_TOOLS = frozenset(
     {
         "wp_open_review_workspace",
+        "wp_workspace_fork",
+        "wp_inspect_element",
+        "wp_list_workspaces",
+        "wp_workspace_read_file",
+        "wp_workspace_diff",
         "wp_workspace_patch_file",
         "wp_workspace_create_file",
         "wp_workspace_product_edit",
@@ -5764,6 +6142,43 @@ _DEEP_PHASE_TOOLS = frozenset(
         "wp_apply_staging",
     }
 )
+
+
+_MAX_MULTI_VARIANT_ATTACHMENTS = 6
+_PRIMARY_SHOT_ORDER = (
+    "focus-desktop.png",
+    "change-desktop.png",
+    "preview-desktop.png",
+    "work-desktop.png",
+)
+
+
+def _primary_attachment(paths: list[str]) -> str | None:
+    if not paths:
+        return None
+    for preferred in _PRIMARY_SHOT_ORDER:
+        for item in paths:
+            if item.replace("\\", "/").endswith(f"/{preferred}") or item == preferred:
+                return item
+    return paths[0]
+
+
+def _read_cache_key(
+    site_id: str | None, arguments: dict[str, Any]
+) -> tuple[str | int | None, ...] | None:
+    parts = (
+        site_id,
+        arguments.get("kind"),
+        arguments.get("slug"),
+        arguments.get("path"),
+        arguments.get("offset"),
+        arguments.get("limit"),
+        arguments.get("start_line"),
+        arguments.get("end_line"),
+    )
+    if all(part is None or isinstance(part, (str, int)) and not isinstance(part, bool) for part in parts):
+        return parts
+    return None
 
 
 def _compact_older_file_messages(messages: list[dict[str, str]]) -> None:
@@ -5829,8 +6244,153 @@ def run_bounded_file_tool_loop(
     preview_ran = False
     preview_bonus_used = False
     attachments: list[str] = []
+    plan_attachments: dict[str, list[str]] = {}
+    other_attachments: list[str] = []
+    read_cache: dict[tuple[str | int | None, ...], ToolOutput] = {}
+    meta_plan_ids: list[str] = []
+    meta_latest_plan_id: str | None = None
+    meta_variant_group: str | None = None
+    meta_product_id: int | None = None
+    meta_preview_path: str | None = None
+    meta_focus_selector: str | None = None
+    meta_theme_slug: str | None = None
+    meta_changed_files: list[str] = []
     steer_count = 0
     in_deep_phase = False
+
+    def _rebuild_attachments(latest_tool: str, latest_paths: tuple[str, ...]) -> None:
+        nonlocal attachments
+        if len(plan_attachments) > 1:
+            merged: list[str] = []
+            for shots in plan_attachments.values():
+                primary = _primary_attachment(shots)
+                if primary and primary not in merged and len(merged) < _MAX_MULTI_VARIANT_ATTACHMENTS:
+                    merged.append(primary)
+            for shots in reversed(list(plan_attachments.values())):
+                for item in shots:
+                    if len(merged) >= _MAX_MULTI_VARIANT_ATTACHMENTS:
+                        break
+                    if item not in merged:
+                        merged.append(item)
+            for item in other_attachments:
+                if len(merged) >= _MAX_MULTI_VARIANT_ATTACHMENTS:
+                    break
+                if item not in merged:
+                    merged.append(item)
+            attachments = merged[:_MAX_MULTI_VARIANT_ATTACHMENTS]
+            return
+        if latest_tool == "wp_preview_page":
+            attachments = (
+                list(latest_paths) + [p for p in attachments if p not in latest_paths]
+            )[:4]
+            return
+        for item in latest_paths:
+            if len(attachments) >= 4:
+                break
+            if item not in attachments:
+                attachments.append(item)
+
+    def _record_attachments(
+        tool_name: str, args: dict[str, Any], data: dict[str, Any], new_paths: tuple[str, ...]
+    ) -> None:
+        if not new_paths:
+            return
+        raw_plan = data.get("plan_id") or args.get("plan_id")
+        if isinstance(raw_plan, str) and _REVIEW_PLAN.fullmatch(raw_plan):
+            if tool_name == "wp_preview_page" or raw_plan not in plan_attachments:
+                plan_attachments[raw_plan] = list(new_paths)
+            else:
+                merged_plan = list(plan_attachments[raw_plan])
+                for item in new_paths:
+                    if item not in merged_plan:
+                        merged_plan.append(item)
+                plan_attachments[raw_plan] = merged_plan
+        else:
+            for item in new_paths:
+                if item not in other_attachments:
+                    other_attachments.append(item)
+        _rebuild_attachments(tool_name, new_paths)
+
+    def _record_review_meta(tool_name: str, args: dict[str, Any], data: dict[str, Any]) -> None:
+        nonlocal meta_latest_plan_id, meta_variant_group, meta_product_id
+        nonlocal meta_preview_path, meta_focus_selector, meta_theme_slug
+        if data.get("ok") is not True:
+            return
+        raw_pid = data.get("plan_id")
+        if not (isinstance(raw_pid, str) and _REVIEW_PLAN.fullmatch(raw_pid)):
+            arg_pid = args.get("plan_id")
+            if isinstance(arg_pid, str) and _REVIEW_PLAN.fullmatch(arg_pid):
+                raw_pid = arg_pid
+            else:
+                raw_pid = None
+        if raw_pid:
+            if raw_pid not in meta_plan_ids:
+                meta_plan_ids.append(raw_pid)
+            meta_latest_plan_id = raw_pid
+        raw_vg = data.get("variant_group") or args.get("variant_group")
+        if isinstance(raw_vg, str) and _VARIANT_GROUP.fullmatch(raw_vg.strip()):
+            meta_variant_group = raw_vg.strip()
+        raw_prod = data.get("product_id") or args.get("product_id")
+        if raw_prod is None and isinstance(data.get("product"), dict):
+            raw_prod = data["product"].get("id")
+        if type(raw_prod) is int and raw_prod > 0:
+            meta_product_id = raw_prod
+        elif isinstance(raw_prod, str) and _PRODUCT_ID_RE.fullmatch(raw_prod.strip()):
+            meta_product_id = int(raw_prod.strip())
+        candidate_path = None
+        if tool_name in {"wp_preview_page", "wp_inspect_element", "wp_fetch_page_html"}:
+            candidate_path = data.get("path")
+        if not candidate_path:
+            candidate_path = data.get("preview_path") or args.get("product_path")
+        if (
+            isinstance(candidate_path, str)
+            and candidate_path.startswith("/")
+            and not candidate_path.startswith("/wp/")
+            and len(candidate_path) <= 240
+        ):
+            meta_preview_path = candidate_path
+        raw_focus = data.get("focus_selector") or args.get("focus_selector")
+        if not raw_focus and tool_name == "wp_inspect_element":
+            raw_focus = args.get("selector")
+        if isinstance(raw_focus, str) and raw_focus.strip() and len(raw_focus.strip()) <= 200:
+            meta_focus_selector = raw_focus.strip()
+        comp_kind = data.get("component_kind") or args.get("kind")
+        if comp_kind == "theme" or tool_name == "wp_theme_overview":
+            raw_slug = (
+                data.get("component_slug")
+                or data.get("active_theme")
+                or data.get("slug")
+                or args.get("slug")
+                or args.get("theme_slug")
+            )
+            if isinstance(raw_slug, str) and _INTEL_SLUG.fullmatch(raw_slug):
+                meta_theme_slug = raw_slug
+        raw_changed = data.get("changed_files")
+        if isinstance(raw_changed, list):
+            for entry in raw_changed:
+                rel = entry.get("path") if isinstance(entry, dict) else entry
+                if isinstance(rel, str) and rel and rel not in meta_changed_files:
+                    meta_changed_files.append(rel)
+        elif tool_name in _WORKSPACE_MUTATING_TOOLS:
+            mut_file = data.get("path") or args.get("path")
+            if isinstance(mut_file, str) and mut_file and mut_file not in meta_changed_files:
+                meta_changed_files.append(mut_file)
+
+    def _build_active_review_meta() -> dict[str, Any] | None:
+        if not meta_plan_ids:
+            return None
+        return {
+            "site_id": site_id if isinstance(site_id, str) else None,
+            "plan_ids": list(meta_plan_ids[-10:]),
+            "latest_plan_id": meta_latest_plan_id or meta_plan_ids[-1],
+            "variant_group": meta_variant_group,
+            "product_id": meta_product_id,
+            "preview_path": meta_preview_path,
+            "focus_selector": meta_focus_selector,
+            "theme_slug": meta_theme_slug,
+            "changed_files": list(meta_changed_files[-20:]),
+            "preview_images": list(attachments),
+        }
 
     def _completer(last_tool_name: str = "", *, is_final: bool = False) -> Callable[[list[dict[str, str]]], tuple[str, float]]:
         nonlocal in_deep_phase
@@ -5924,10 +6484,9 @@ def run_bounded_file_tool_loop(
         if pv_ok:
             preview_ran = True
         results.append(pv_out.data)
+        _record_review_meta("wp_preview_page", pv_args, pv_out.data)
         if pv_out.attachments:
-            attachments = (
-                list(pv_out.attachments) + [p for p in attachments if p not in pv_out.attachments]
-            )[:4]
+            _record_attachments("wp_preview_page", pv_args, pv_out.data, pv_out.attachments)
         pv_encoded = json.dumps(pv_out.data, ensure_ascii=False, separators=(",", ":"))
         if len(pv_encoded.encode("utf-8")) <= FILE_LOOP_MAX_RESULT_BYTES:
             messages.append(
@@ -6020,6 +6579,7 @@ def run_bounded_file_tool_loop(
                 review_stage_plan_id=review_stage_plan_id,
                 model_error_class=type(exc).__name__,
                 model_error_code=str(getattr(exc, "code", "") or "") or None,
+                active_review_meta=_build_active_review_meta(),
             )
         summary_text = _format_file_results_sv(results, reason) if "<tool_call>" in (final or "").lower() else final
         return ToolLoopResult(
@@ -6035,6 +6595,7 @@ def run_bounded_file_tool_loop(
             stage_plan_id,
             attachments=tuple(attachments),
             review_stage_plan_id=review_stage_plan_id,
+            active_review_meta=_build_active_review_meta(),
         )
 
     while "<tool_call>" in next_content.lower():
@@ -6075,6 +6636,7 @@ def run_bounded_file_tool_loop(
                         review_stage_plan_id=review_stage_plan_id,
                         model_error_class=type(exc).__name__,
                         model_error_code=str(getattr(exc, "code", "") or "") or None,
+                        active_review_meta=_build_active_review_meta(),
                     )
                 continue
         parsed = _parse_tool_call(next_content)
@@ -6092,6 +6654,7 @@ def run_bounded_file_tool_loop(
                 stage_plan_id,
                 attachments=tuple(attachments),
                 review_stage_plan_id=review_stage_plan_id,
+                active_review_meta=_build_active_review_meta(),
             )
         name, arguments = parsed
         if name not in ALL_FILE_TOOLS and name not in WP_TOOL_NAMES:
@@ -6108,6 +6671,7 @@ def run_bounded_file_tool_loop(
                 stage_plan_id,
                 attachments=tuple(attachments),
                 review_stage_plan_id=review_stage_plan_id,
+                active_review_meta=_build_active_review_meta(),
             )
         using_preview_bonus = False
         if calls >= FILE_LOOP_MAX_CALLS:
@@ -6177,17 +6741,31 @@ def run_bounded_file_tool_loop(
             actor_ok = True
         if actor_ok:
             started = time.monotonic()
-            try:
-                output = loop_tools.execute(
-                    name,
+            cache_key = (
+                _read_cache_key(
+                    arguments.get("site_id") if isinstance(arguments.get("site_id"), str) else safe_site,
                     arguments,
-                    actor=actor,
-                    sticky_site_id=safe_site,
-                    channel=channel,
-                    conversation_id=conversation_id,
                 )
-            except Exception:
-                output = ToolOutput(_error("ToolFailed"))
+                if name == "wp_read_theme_plugin_file"
+                else None
+            )
+            cached_output = read_cache.get(cache_key) if cache_key is not None else None
+            if cached_output is not None:
+                output = cached_output
+            else:
+                try:
+                    output = loop_tools.execute(
+                        name,
+                        arguments,
+                        actor=actor,
+                        sticky_site_id=safe_site,
+                        channel=channel,
+                        conversation_id=conversation_id,
+                    )
+                except Exception:
+                    output = ToolOutput(_error("ToolFailed"))
+                if cache_key is not None and output.data.get("ok") is True:
+                    read_cache[cache_key] = output
             elapsed = time.monotonic() - started
             tool_seconds += elapsed
             raw_ok = output.data.get("ok") is True
@@ -6235,16 +6813,8 @@ def run_bounded_file_tool_loop(
         if output.operation_ids:
             operation_ids = list(output.operation_ids[:20])
         if output.attachments:
-            if name == "wp_preview_page":
-                attachments = (
-                    list(output.attachments) + [p for p in attachments if p not in output.attachments]
-                )[:4]
-            else:
-                for path in output.attachments:
-                    if len(attachments) >= 4:
-                        break
-                    if path not in attachments:
-                        attachments.append(path)
+            _record_attachments(name, arguments, output.data, output.attachments)
+        _record_review_meta(name, arguments, output.data)
         ok = output.data.get("ok") is True
         err_cls = None if ok else (_error_class(output.data.get("error_class")) or "ToolFailed")
         if ok and name in _WORKSPACE_MUTATING_TOOLS and name != "wp_workspace_copy_from_parent":
@@ -6340,6 +6910,7 @@ def run_bounded_file_tool_loop(
                 review_stage_plan_id=review_stage_plan_id,
                 model_error_class=type(exc).__name__,
                 model_error_code=str(getattr(exc, "code", "") or "") or None,
+                active_review_meta=_build_active_review_meta(),
             )
     return ToolLoopResult(
         True,
@@ -6354,6 +6925,7 @@ def run_bounded_file_tool_loop(
         stage_plan_id,
         attachments=tuple(attachments),
         review_stage_plan_id=review_stage_plan_id,
+        active_review_meta=_build_active_review_meta(),
     )
 
 

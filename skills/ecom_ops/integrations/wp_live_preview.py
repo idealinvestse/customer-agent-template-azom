@@ -17,6 +17,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -369,12 +370,25 @@ class _AllowlistedSiteRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+_LIVE_HTML_CACHE_TTL_S = 300.0
+_LIVE_HTML_CACHE_MAX = 8
+_LIVE_HTML_CACHE_LOCK = threading.Lock()
+_LIVE_HTML_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+
+
+def clear_live_html_cache() -> None:
+    """Clear the bounded in-process live HTML fetch cache."""
+    with _LIVE_HTML_CACHE_LOCK:
+        _LIVE_HTML_CACHE.clear()
+
+
 def fetch_live_html(
     site: Site,
     path: str = "/",
     *,
     timeout: float = 15.0,
     max_bytes: int = _MAX_HTML_BYTES,
+    use_cache: bool = False,
 ) -> dict[str, Any]:
     """Fetch public live HTML via HTTPS GET with no cookies and no site credentials."""
     clean_path = validate_preview_path(path)
@@ -382,6 +396,14 @@ def fetch_live_html(
     ok_url, site_host, _err = _safe_https_parsed(parsed_base)
     if not ok_url or not _host_resolves_public(site_host):
         raise ReviewError("LiveFetchFailed")
+
+    cache_key = (f"{site.id}:{site_host}", clean_path)
+    now_mono = time.monotonic()
+    if use_cache:
+        with _LIVE_HTML_CACHE_LOCK:
+            cached = _LIVE_HTML_CACHE.get(cache_key)
+            if cached is not None and (now_mono - cached[0]) <= _LIVE_HTML_CACHE_TTL_S:
+                return dict(cached[1])
 
     target_url = urllib.parse.urlunsplit(("https", parsed_base.netloc, clean_path, "", ""))
     allowed_hosts = _allowed_site_hosts(site_host)
@@ -414,12 +436,19 @@ def fetch_live_html(
     if len(raw) > max_bytes:
         raise ReviewError("HtmlTooLarge")
     html = raw.decode("utf-8", errors="replace")
-    return {
+    result = {
         "status": status,
         "final_url": final_url,
         "html": html,
         "bytes": len(raw),
     }
+    if use_cache:
+        with _LIVE_HTML_CACHE_LOCK:
+            if len(_LIVE_HTML_CACHE) >= _LIVE_HTML_CACHE_MAX and cache_key not in _LIVE_HTML_CACHE:
+                oldest_key = min(_LIVE_HTML_CACHE.items(), key=lambda item: item[1][0])[0]
+                _LIVE_HTML_CACHE.pop(oldest_key, None)
+            _LIVE_HTML_CACHE[cache_key] = (time.monotonic(), dict(result))
+    return result
 
 
 def _compute_focus_clip(
@@ -776,6 +805,222 @@ def _dom_probe_script() -> str:
     )
 
 
+def _inspect_element_script(
+    *,
+    selector: str | None = None,
+    text: str | None = None,
+    include_matched_rules: bool = True,
+) -> str:
+    sel_js = json.dumps(selector or "")
+    text_js = json.dumps(text or "")
+    rules_flag = "true" if include_matched_rules else "false"
+    return (
+        "(() => {"
+        f"  const rawSelector = {sel_js};"
+        f"  const rawText = {text_js};"
+        f"  const wantRules = {rules_flag};"
+        "  if (!document.body) return JSON.stringify({found: false, warnings: ['document.body missing']});"
+        "  const norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase();"
+        "  const isVisible = (el) => {"
+        "    if (!el || el.nodeType !== 1) return false;"
+        "    const cs = window.getComputedStyle(el);"
+        "    if (cs.display === 'none' || cs.visibility === 'hidden') return false;"
+        "    const r = el.getBoundingClientRect();"
+        "    return (r.width > 0 || r.height > 0);"
+        "  };"
+        "  let el = null;"
+        "  let matchedBy = '';"
+        "  if (rawSelector) {"
+        "    try {"
+        "      const list = Array.from(document.querySelectorAll(rawSelector));"
+        "      el = list.find(isVisible) || list[0] || null;"
+        "      if (el) matchedBy = 'selector:' + rawSelector;"
+        "    } catch (e) { el = null; }"
+        "  }"
+        "  if (!el && rawText) {"
+        "    const needle = norm(rawText);"
+        "    const candidates = Array.from(document.body.querySelectorAll("
+        "      'button, a, form, input, label, h1, h2, h3, p, span, div, section, footer, header'"
+        "    ));"
+        "    let best = null, bestLen = Infinity;"
+        "    for (const c of candidates) {"
+        "      if (!isVisible(c)) continue;"
+        "      const t = norm(c.innerText || c.textContent || c.getAttribute('value'));"
+        "      if (t && t.includes(needle) && t.length < bestLen) { best = c; bestLen = t.length; }"
+        "    }"
+        "    if (best) { el = best; matchedBy = 'text:' + rawText; }"
+        "  }"
+        "  if (!el) {"
+        "    return JSON.stringify({found: false, matched_by: null, health_checks: {}, warnings: []});"
+        "  }"
+        "  const pickStyles = (node) => {"
+        "    const cs = window.getComputedStyle(node);"
+        "    return {"
+        "      display: cs.display, position: cs.position,"
+        "      flexDirection: cs.flexDirection, flexWrap: cs.flexWrap,"
+        "      alignItems: cs.alignItems, justifyContent: cs.justifyContent, gap: cs.gap,"
+        "      width: cs.width, maxWidth: cs.maxWidth, minHeight: cs.minHeight, height: cs.height,"
+        "      padding: cs.padding, paddingLeft: cs.paddingLeft, paddingRight: cs.paddingRight,"
+        "      margin: cs.margin,"
+        "      backgroundColor: cs.backgroundColor, backgroundImage: cs.backgroundImage,"
+        "      backgroundPosition: cs.backgroundPosition, backgroundSize: cs.backgroundSize,"
+        "      backgroundRepeat: cs.backgroundRepeat,"
+        "      color: cs.color, fontSize: cs.fontSize, fontWeight: cs.fontWeight,"
+        "      lineHeight: cs.lineHeight, letterSpacing: cs.letterSpacing, textAlign: cs.textAlign,"
+        "      border: cs.border, borderRadius: cs.borderRadius,"
+        "      boxSizing: cs.boxSizing, overflow: cs.overflow, overflowX: cs.overflowX, opacity: cs.opacity"
+        "    };"
+        "  };"
+        "  const pickPseudo = (node, pseudo) => {"
+        "    try {"
+        "      const ps = window.getComputedStyle(node, pseudo);"
+        "      const content = ps.content;"
+        "      const bgImg = ps.backgroundImage;"
+        "      if ((!content || content === 'none' || content === 'normal') && (!bgImg || bgImg === 'none')) return null;"
+        "      return {"
+        "        content, display: ps.display, position: ps.position,"
+        "        width: ps.width, height: ps.height,"
+        "        backgroundImage: bgImg, backgroundPosition: ps.backgroundPosition,"
+        "        margin: ps.margin, padding: ps.padding"
+        "      };"
+        "    } catch (e) { return null; }"
+        "  };"
+        "  const rect = el.getBoundingClientRect();"
+        "  const bbox = {"
+        "    x: Math.round(rect.x * 10) / 10,"
+        "    y: Math.round(rect.y * 10) / 10,"
+        "    width: Math.round(rect.width * 10) / 10,"
+        "    height: Math.round(rect.height * 10) / 10"
+        "  };"
+        "  const styles = pickStyles(el);"
+        "  const childNodes = Array.from(el.querySelectorAll('button, a, input, label, img, .single_add_to_cart_button, .trustbadge')).slice(0, 10);"
+        "  const children = childNodes.map((c) => {"
+        "    const cr = c.getBoundingClientRect();"
+        "    const ccs = window.getComputedStyle(c);"
+        "    return {"
+        "      tag: c.tagName.toLowerCase(),"
+        "      classes: typeof c.className === 'string' ? c.className.trim().slice(0, 160) : '',"
+        "      text: String(c.innerText || c.textContent || c.getAttribute('value') || '').replace(/\\s+/g, ' ').trim().slice(0, 80),"
+        "      bounding_box: {x: Math.round(cr.x * 10) / 10, y: Math.round(cr.y * 10) / 10, width: Math.round(cr.width * 10) / 10, height: Math.round(cr.height * 10) / 10},"
+        "      computed_styles: {"
+        "        display: ccs.display, width: ccs.width, height: ccs.height,"
+        "        padding: ccs.padding, paddingLeft: ccs.paddingLeft, paddingRight: ccs.paddingRight,"
+        "        backgroundColor: ccs.backgroundColor, backgroundImage: ccs.backgroundImage,"
+        "        backgroundPosition: ccs.backgroundPosition, backgroundSize: ccs.backgroundSize,"
+        "        textAlign: ccs.textAlign, color: ccs.color, flexBasis: ccs.flexBasis"
+        "      }"
+        "    };"
+        "  });"
+        "  const warnings = [];"
+        "  const bgOverlapTargets = [];"
+        "  const checkBgOverlap = (node) => {"
+        "    if (!isVisible(node)) return;"
+        "    const ncs = window.getComputedStyle(node);"
+        "    const bg = ncs.backgroundImage || '';"
+        "    if (!bg || bg === 'none' || !/url\\(/i.test(bg)) return;"
+        "    const txt = String(node.innerText || node.textContent || node.getAttribute('value') || '').trim();"
+        "    if (!txt) return;"
+        "    const nr = node.getBoundingClientRect();"
+        "    const padL = parseFloat(ncs.paddingLeft) || 0;"
+        "    const bgPos = String(ncs.backgroundPosition || '').trim();"
+        "    const firstPos = bgPos.split(/\\s+/)[0] || '';"
+        "    const isPct = firstPos.endsWith('%');"
+        "    const pctVal = isPct ? parseFloat(firstPos) : NaN;"
+        "    const pxVal = firstPos.endsWith('px') ? parseFloat(firstPos) : NaN;"
+        "    let risky = false;"
+        "    if (isPct && !Number.isNaN(pctVal) && pctVal >= 1 && pctVal <= 48 && nr.width > 0 && nr.width < 340) risky = true;"
+        "    if (isPct && !Number.isNaN(pctVal) && pctVal >= 15 && pctVal <= 85 && padL < 36) risky = true;"
+        "    if (!Number.isNaN(pxVal) && pxVal >= 0 && pxVal <= 40 && padL < pxVal + 24) risky = true;"
+        "    if (padL < 30 && nr.width < 360) risky = true;"
+        "    if (risky) {"
+        "      const cls = typeof node.className === 'string' ? node.className.trim().slice(0, 80) : '';"
+        "      bgOverlapTargets.push({tag: node.tagName.toLowerCase(), classes: cls, width: Math.round(nr.width), paddingLeft: Math.round(padL), backgroundPosition: bgPos});"
+        "      warnings.push('background_icon_overlap_risk: ' + node.tagName.toLowerCase() + ' har background-image (' + bgPos + ') med padding-left ' + Math.round(padL) + 'px och bredd ' + Math.round(nr.width) + 'px — ikonen riskerar att krocka med texten.');"
+        "    }"
+        "  };"
+        "  checkBgOverlap(el);"
+        "  for (const btn of el.querySelectorAll('button, a, input[type=\"submit\"]')) checkBgOverlap(btn);"
+        "  const brokenImgs = [];"
+        "  for (const img of el.querySelectorAll('img')) {"
+        "    if (img.complete && img.naturalWidth === 0) {"
+        "      brokenImgs.push(String(img.getAttribute('src') || '').slice(0, 140));"
+        "    }"
+        "  }"
+        "  if (brokenImgs.length > 0) {"
+        "    warnings.push('broken_images: ' + brokenImgs.length + ' trasiga bilder (naturalWidth=0) i målcontainern (t.ex. ' + brokenImgs[0] + ').');"
+        "  }"
+        "  const vw = window.innerWidth || 1280;"
+        "  const horizOverflow = (el.scrollWidth > el.clientWidth + 2) || (rect.right > vw + 2) || (document.documentElement.scrollWidth > vw + 2);"
+        "  if (horizOverflow) {"
+        "    warnings.push('horizontal_overflow: elementet eller sidan överskrider viewportbredden (' + vw + 'px).');"
+        "  }"
+        "  const smallTaps = [];"
+        "  const tapCandidates = [el, ...Array.from(el.querySelectorAll('button, a, input[type=\"submit\"], input[type=\"number\"]'))];"
+        "  for (const tc of tapCandidates) {"
+        "    if (!isVisible(tc)) continue;"
+        "    if (!['BUTTON', 'A', 'INPUT'].includes(tc.tagName)) continue;"
+        "    const tr = tc.getBoundingClientRect();"
+        "    if (tr.height > 0 && tr.height < 42) {"
+        "      smallTaps.push({tag: tc.tagName.toLowerCase(), width: Math.round(tr.width), height: Math.round(tr.height)});"
+        "    }"
+        "  }"
+        "  if (smallTaps.length > 0) {"
+        "    warnings.push('small_tap_target: klickbart element under 42px höjd (' + smallTaps[0].tag + ' ' + smallTaps[0].height + 'px).');"
+        "  }"
+        "  const matchedRules = [];"
+        "  if (wantRules) {"
+        "    const checkNodes = [el, ...Array.from(el.querySelectorAll('button, .single_add_to_cart_button, input[name=\"quantity\"]')).slice(0, 4)];"
+        "    for (const sheet of Array.from(document.styleSheets || [])) {"
+        "      let rules = null;"
+        "      try { rules = sheet.cssRules; } catch (e) { rules = null; }"
+        "      if (!rules) continue;"
+        "      const href = String(sheet.href || (sheet.ownerNode && sheet.ownerNode.getAttribute && (sheet.ownerNode.getAttribute('data-azom-preview') || sheet.ownerNode.getAttribute('id'))) || 'inline').slice(0, 140);"
+        "      for (const rule of Array.from(rules)) {"
+        "        if (matchedRules.length >= 20) break;"
+        "        if (!rule || !rule.selectorText) continue;"
+        "        let hit = false;"
+        "        for (const cn of checkNodes) {"
+        "          try { if (cn.matches(rule.selectorText)) { hit = true; break; } } catch (e) {}"
+        "        }"
+        "        if (hit) {"
+        "          matchedRules.push({selector: String(rule.selectorText).slice(0, 140), css_text: String(rule.cssText || '').slice(0, 320), source: href});"
+        "        }"
+        "      }"
+        "      if (matchedRules.length >= 20) break;"
+        "    }"
+        "  }"
+        "  let safeOuter = String(el.outerHTML || '');"
+        "  safeOuter = safeOuter.replace(/<script\\b[^>]*>[\\s\\S]*?<\\/script>/gi, '');"
+        "  if (safeOuter.length > 3000) safeOuter = safeOuter.slice(0, 3000) + '…';"
+        "  return JSON.stringify({"
+        "    found: true,"
+        "    matched_by: matchedBy,"
+        "    tag: el.tagName.toLowerCase(),"
+        "    id: String(el.id || '').slice(0, 80),"
+        "    classes: typeof el.className === 'string' ? el.className.trim().slice(0, 200) : '',"
+        "    outer_html: safeOuter,"
+        "    text_content: String(el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 240),"
+        "    bounding_box: bbox,"
+        "    computed_styles: styles,"
+        "    pseudo_before: pickPseudo(el, '::before'),"
+        "    pseudo_after: pickPseudo(el, '::after'),"
+        "    children,"
+        "    matched_rules: matchedRules,"
+        "    health_checks: {"
+        "      background_icon_overlap_risk: bgOverlapTargets.length > 0,"
+        "      background_icon_overlap_targets: bgOverlapTargets.slice(0, 4),"
+        "      broken_images: brokenImgs.slice(0, 8),"
+        "      broken_images_count: brokenImgs.length,"
+        "      horizontal_overflow: horizOverflow,"
+        "      small_tap_target: smallTaps.length > 0,"
+        "      small_tap_targets: smallTaps.slice(0, 4)"
+        "    },"
+        "    warnings: warnings.slice(0, 8)"
+        "  });"
+        "})()"
+    )
+
+
 def _finalize_summary(site: Site, summary: dict[str, Any], artifact_dir: Path) -> dict[str, Any]:
     try:
         secret = bind_credential(site).value
@@ -834,6 +1079,7 @@ def build_interactive_sandbox_html(
     path: str,
     highlight_token: str | None = None,
     focus_text: str | None = None,
+    focus_selector: str | None = None,
 ) -> str:
     """Build a standalone, read-only interactive sandbox HTML page for browser review."""
     html = _strip_sandbox_trackers(str(overlay_html or ""))
@@ -909,11 +1155,13 @@ def build_interactive_sandbox_html(
 
     hi_js = _safe_js_json(highlight_token or "")
     focus_js = _safe_js_json(focus_text or "")
+    sel_js = _safe_js_json(focus_selector or "")
     guard_script = (
         '<script data-azom-sandbox="guard">\n'
         "(function(){\n"
         f"  var highlightToken = {hi_js};\n"
         f"  var focusText = {focus_js};\n"
+        f"  var focusSelector = {sel_js};\n"
         "  var BLOCKED_MSG = 'Blockerad i sandbox-läget — inga ändringar skickas till live';\n"
         "  var BLOCKED_PATHS = ['wp-admin','wp-login','admin-ajax','wc-ajax','/wp-json','rest_route',"
         "'xmlrpc','wp-cron','add-to-cart','/cart','/checkout','/my-account','/handlekurv','/kasse','/min-konto'];\n"
@@ -1035,13 +1283,23 @@ def build_interactive_sandbox_html(
         "      }\n"
         "    }\n"
         "  }\n"
+        "  function findBySelector(sel){\n"
+        "    if(!sel || !document.body) return null;\n"
+        "    try {\n"
+        "      var list = document.querySelectorAll(sel);\n"
+        "      for(var i=0;i<list.length;i++){ if(isVisible(list[i])) return list[i]; }\n"
+        "      return list.length ? list[0] : null;\n"
+        "    } catch(e){ return null; }\n"
+        "  }\n"
         "  var targetEl = null;\n"
         "  function applyHighlight(){\n"
-        "    targetEl = (highlightToken && findByText(highlightToken)) || (focusText && findByText(focusText)) || null;\n"
+        "    targetEl = (highlightToken && findByText(highlightToken)) || (focusSelector && findBySelector(focusSelector)) || (focusText && findByText(focusText)) || null;\n"
         "    if(targetEl){\n"
         "      targetEl.style.setProperty('outline', '3px solid #22c55e', 'important');\n"
         "      targetEl.style.setProperty('outline-offset', '4px', 'important');\n"
-        "      targetEl.style.setProperty('background-color', 'rgba(34, 197, 94, 0.16)', 'important');\n"
+        "      if(!(focusSelector && !highlightToken)){\n"
+        "        targetEl.style.setProperty('background-color', 'rgba(34, 197, 94, 0.16)', 'important');\n"
+        "      }\n"
         "      targetEl.style.setProperty('box-shadow', '0 0 0 6px rgba(34, 197, 94, 0.22)', 'important');\n"
         "      targetEl.style.setProperty('border-radius', '4px', 'important');\n"
         "    }\n"
@@ -1101,6 +1359,7 @@ def capture_preview(
     browser_binary: str | None = None,
     timeout_s: float = 45.0,
     target_url: str | None = None,
+    preview_kind_override: str | None = None,
 ) -> dict[str, Any]:
     """Render live / overlay HTML revisions in headless Chrome with read-only Fetch interception."""
     clean_path = validate_preview_path(path)
@@ -1174,6 +1433,7 @@ def capture_preview(
     screenshots: list[str] = []
     any_focus_matched = False
     matched_focus_target: str | None = None
+    visual_health: dict[str, Any] = {}
 
     try:
         proc = subprocess.Popen(
@@ -1425,6 +1685,31 @@ def capture_preview(
                                 (artifact_dir / focus_shot_name).write_bytes(crop_bytes)
                                 screenshots.append(focus_shot_name)
 
+                if label == "preview" and (clean_selector or clean_text or highlight_token):
+                    try:
+                        vh_res = cdp.call(
+                            "Runtime.evaluate",
+                            {
+                                "expression": _inspect_element_script(
+                                    selector=clean_selector,
+                                    text=clean_text or highlight_token,
+                                    include_matched_rules=False,
+                                ),
+                                "returnByValue": True,
+                            },
+                        )
+                        raw_vh = (vh_res.get("result") or {}).get("value") or "{}"
+                        parsed_vh = json.loads(raw_vh) if isinstance(raw_vh, str) else {}
+                        if isinstance(parsed_vh, dict) and parsed_vh.get("found") is True:
+                            visual_health[vp_name] = {
+                                "matched_by": parsed_vh.get("matched_by"),
+                                "bounding_box": parsed_vh.get("bounding_box"),
+                                "health_checks": parsed_vh.get("health_checks") or {},
+                                "warnings": list(parsed_vh.get("warnings") or [])[:8],
+                            }
+                    except Exception:
+                        pass
+
                 console_errors: list[str] = []
                 network_errors: list[dict[str, Any]] = []
                 doc_status: int | None = None
@@ -1505,8 +1790,28 @@ def capture_preview(
         shutil.rmtree(user_data_dir, ignore_errors=True)
 
     ordered_screenshots = _order_screenshots(screenshots)
+    agg_warnings: list[str] = []
+    for vp_name in ("desktop", "mobile"):
+        vp_vh = visual_health.get(vp_name)
+        if isinstance(vp_vh, dict):
+            for warn in vp_vh.get("warnings") or []:
+                label_warn = f"[{vp_name}] {warn}"
+                if label_warn not in agg_warnings and len(agg_warnings) < 10:
+                    agg_warnings.append(label_warn)
+    visual_health_summary: dict[str, Any] | None = None
+    if visual_health:
+        visual_health_summary = {
+            **visual_health,
+            "warnings": agg_warnings,
+            "ok": len(agg_warnings) == 0,
+        }
+    resolved_kind = (
+        preview_kind_override
+        if preview_kind_override in {"live_overlay", "live_read_only"}
+        else ("live_overlay" if len(clean_revisions) > 1 else "live_read_only")
+    )
     summary = {
-        "preview_kind": "live_overlay" if len(clean_revisions) > 1 else "live_read_only",
+        "preview_kind": resolved_kind,
         "site_id": site.id,
         "target_url": resolved_target,
         "path": clean_path,
@@ -1522,5 +1827,230 @@ def capture_preview(
         "focus_target": matched_focus_target,
         "revisions": revisions_meta,
         "screenshots": ordered_screenshots,
+        "visual_health": visual_health_summary,
     }
     return _finalize_summary(site, summary, artifact_dir)
+
+
+def inspect_element(
+    site: Site,
+    *,
+    path: str = "/",
+    html_override: str | None = None,
+    selector: str | None = None,
+    text: str | None = None,
+    browser_binary: str | None = None,
+    timeout_s: float = 30.0,
+    target_url: str | None = None,
+) -> dict[str, Any]:
+    """Inspect rendered DOM, computed styles, matched CSS rules, and layout health via read-only CDP."""
+    clean_path = validate_preview_path(path)
+    _sec, clean_selector, clean_text, _full = validate_focus_options(
+        focus_selector=selector,
+        focus_text=text,
+    )
+    if not clean_selector and not clean_text:
+        raise ReviewError("InvalidFocusTarget")
+
+    parsed_base = urllib.parse.urlparse(str(site.canonical_url or ""))
+    ok_base, site_host, _berr = _safe_https_parsed(parsed_base)
+    if not ok_base:
+        raise ReviewError("LiveFetchFailed")
+
+    if html_override is None:
+        fetched = fetch_live_html(site, clean_path, use_cache=True)
+        html_body = str(fetched.get("html") or "")
+        resolved_target = str(fetched.get("final_url") or "") or urllib.parse.urlunsplit(
+            ("https", parsed_base.netloc, clean_path, "", "")
+        )
+    else:
+        html_body = str(html_override or "")
+        resolved_target = target_url or urllib.parse.urlunsplit(("https", parsed_base.netloc, clean_path, "", ""))
+
+    target_parsed = urllib.parse.urlparse(resolved_target)
+    ok_target, target_host, _terr = _safe_https_parsed(target_parsed)
+    if not ok_target or target_host not in _allowed_site_hosts(site_host) or _blocked_site_path_reason(target_parsed):
+        raise ReviewError("PreviewPathRefused")
+
+    binary = browser_binary or find_browser_binary()
+    if not binary:
+        raise ReviewError("BrowserUnavailable")
+
+    cdp_port = _pick_loopback_port()
+    env = build_php_child_env()
+    user_data_dir = Path(tempfile.mkdtemp(prefix="azom-wp-inspect-"))
+    command = [
+        binary,
+        "--headless=new",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--no-pings",
+        "--disable-domain-reliability",
+        "--disable-client-side-phishing-detection",
+        "--disable-features=Translate,OptimizationHints,MediaRouter,AutofillServerCommunication",
+        "--metrics-recording-only",
+        "--mute-audio",
+        "--remote-debugging-address=127.0.0.1",
+        f"--remote-debugging-port={cdp_port}",
+        f"--user-data-dir={user_data_dir}",
+        "about:blank",
+    ]
+
+    proc: subprocess.Popen[bytes] | None = None
+    cdp: _LoopbackCdpClient | None = None
+    started_at = time.monotonic()
+    allowed_count = 0
+    blocked_counts: dict[str, int] = {}
+    viewports_out: dict[str, Any] = {}
+
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+        )
+        ws_url = _wait_cdp_page_ws(cdp_port, proc, timeout_s=min(15.0, timeout_s))
+        cdp = _LoopbackCdpClient(ws_url, timeout_s=min(20.0, timeout_s))
+        html_b64 = base64.b64encode(html_body.encode("utf-8", errors="replace")).decode("ascii")
+        main_doc_pending = False
+
+        def _handle_cdp_event(ev: dict[str, Any]) -> bool:
+            nonlocal allowed_count, main_doc_pending
+            if ev.get("method") != "Fetch.requestPaused":
+                return False
+            params = ev.get("params") or {}
+            req_id = str(params.get("requestId") or "")
+            req = params.get("request") or {}
+            req_url = str(req.get("url") or "")
+            req_method = str(req.get("method") or "GET").upper()
+            res_type = str(params.get("resourceType") or "")
+            if (
+                main_doc_pending
+                and res_type == "Document"
+                and req_method == "GET"
+                and req_url.rstrip("/") == resolved_target.rstrip("/")
+            ):
+                main_doc_pending = False
+                assert cdp is not None
+                cdp.send(
+                    "Fetch.fulfillRequest",
+                    {
+                        "requestId": req_id,
+                        "responseCode": 200,
+                        "responseHeaders": [{"name": "Content-Type", "value": "text/html; charset=UTF-8"}],
+                        "body": html_b64,
+                    },
+                )
+                allowed_count += 1
+                return True
+            ok, reason = classify_request(req_method, req_url, site_host=site_host)
+            assert cdp is not None
+            if ok:
+                cdp.send("Fetch.continueRequest", {"requestId": req_id})
+                allowed_count += 1
+            else:
+                cdp.send("Fetch.failRequest", {"requestId": req_id, "errorReason": "BlockedByClient"})
+                blocked_counts[reason] = blocked_counts.get(reason, 0) + 1
+            return True
+
+        cdp.event_hook = _handle_cdp_event
+        cdp.call("Page.enable")
+        cdp.call("Runtime.enable")
+        cdp.call("Network.enable")
+        cdp.call("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+
+        for vp_name, width, height, is_mobile in PREVIEW_VIEWPORTS:
+            if time.monotonic() - started_at > timeout_s:
+                break
+            cdp.events.clear()
+            cdp.call(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "width": width,
+                    "height": height,
+                    "deviceScaleFactor": 1,
+                    "mobile": is_mobile,
+                },
+            )
+            cdp.call("Network.setCacheDisabled", {"cacheDisabled": True})
+            main_doc_pending = True
+            cdp.send("Page.navigate", {"url": resolved_target})
+            cdp.wait_for_event("Page.loadEventFired", timeout_s=min(15.0, timeout_s))
+            cdp.drain_events(duration_s=0.9)
+            eval_res = cdp.call(
+                "Runtime.evaluate",
+                {
+                    "expression": _inspect_element_script(
+                        selector=clean_selector,
+                        text=clean_text,
+                        include_matched_rules=(vp_name == "desktop"),
+                    ),
+                    "returnByValue": True,
+                },
+            )
+            raw_val = (eval_res.get("result") or {}).get("value") or "{}"
+            try:
+                parsed = json.loads(raw_val) if isinstance(raw_val, str) else {}
+            except json.JSONDecodeError:
+                parsed = {}
+            viewports_out[vp_name] = parsed if isinstance(parsed, dict) else {}
+    finally:
+        if cdp is not None:
+            cdp.close()
+        if proc is not None:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5.0)
+        shutil.rmtree(user_data_dir, ignore_errors=True)
+
+    desktop = viewports_out.get("desktop") or {}
+    mobile = viewports_out.get("mobile") or {}
+    primary = desktop if desktop.get("found") else mobile
+    warnings: list[str] = []
+    for vp_name, vp_data in (("desktop", desktop), ("mobile", mobile)):
+        for w in vp_data.get("warnings") or []:
+            entry = f"[{vp_name}] {w}"
+            if entry not in warnings and len(warnings) < 12:
+                warnings.append(entry)
+
+    out: dict[str, Any] = {
+        "found": bool(primary.get("found")),
+        "site_id": site.id,
+        "path": clean_path,
+        "target_url": resolved_target,
+        "matched_by": primary.get("matched_by"),
+        "tag": primary.get("tag"),
+        "id": primary.get("id"),
+        "classes": primary.get("classes"),
+        "outer_html": primary.get("outer_html"),
+        "text_content": primary.get("text_content"),
+        "bounding_box": primary.get("bounding_box"),
+        "computed_styles": primary.get("computed_styles") or {},
+        "pseudo_before": primary.get("pseudo_before"),
+        "pseudo_after": primary.get("pseudo_after"),
+        "children": primary.get("children") or [],
+        "matched_rules": desktop.get("matched_rules") or [],
+        "health_checks": primary.get("health_checks") or {},
+        "mobile_bounding_box": mobile.get("bounding_box"),
+        "mobile_health_checks": mobile.get("health_checks") or {},
+        "warnings": warnings,
+        "allowed_requests": allowed_count,
+        "blocked_counts": blocked_counts,
+    }
+    try:
+        secret = bind_credential(site).value
+    except Exception:
+        secret = ""
+    cleaned = scrub_secrets(out, [secret]) if secret else out
+    assert isinstance(cleaned, dict)
+    return cleaned

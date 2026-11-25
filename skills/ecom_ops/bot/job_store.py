@@ -304,14 +304,38 @@ class TelegramJobStore:
             parsed_msg["image_paths"] = norm_images
         return parsed_msg
 
+    _VOLATILE_APPROVAL_SESSION_KEYS = frozenset(
+        {
+            "last_order_id",
+            "last_case_id8",
+            "order_list_shown",
+            "last_product_id",
+            "last_page_id",
+            "last_post_id",
+            "pending_image_paths",
+            "clarify_proposals",
+            "active_wp_review",
+        }
+    )
+
     @staticmethod
     def approval_snapshot(state: dict[str, Any] | None) -> str:
         value = state if isinstance(state, dict) else {}
+        raw_session = value.get("session")
+        session = (
+            {
+                k: v
+                for k, v in raw_session.items()
+                if k not in TelegramJobStore._VOLATILE_APPROVAL_SESSION_KEYS
+            }
+            if isinstance(raw_session, dict)
+            else {}
+        )
         snapshot = {
             "flow": value.get("flow"),
             "step": value.get("step"),
             "slots": value.get("slots") or {},
-            "session": value.get("session") or {},
+            "session": session,
         }
         encoded = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

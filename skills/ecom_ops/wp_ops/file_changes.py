@@ -49,6 +49,12 @@ _HIGH_RISK = re.compile(
     r"checkout|cart|payment|gateway|kassan|varukorg|betalning",
     re.I,
 )
+_CSS_HIGH_RISK = re.compile(
+    r"checkout|payment|gateway|kassan|betalning|<\?|<script\b|javascript:|vbscript:|expression\s*\(|@import\b",
+    re.I,
+)
+_MAX_CSS_SEARCH_BYTES = 512 * 1024
+_CSS_SEARCH_RESULT_BYTES = 8192
 _PLAN_TTL = timedelta(hours=12)
 _MAX_SUMMARY = 200
 _MAX_DIFF_BYTES = 65536
@@ -114,11 +120,27 @@ def rest_reads_allowed() -> bool:
     return str(raw).strip().lower() in {"0", "false", "no", "off"}
 
 
+def is_safe_pure_css_file(relative: str, text: str) -> bool:
+    """True for pure ``.css`` files outside checkout/payment paths with no script/PHP/payment tokens."""
+    clean = str(relative or "").strip().replace("\\", "/")
+    if not clean.lower().endswith(".css"):
+        return False
+    parts = [part.lower() for part in clean.split("/") if part]
+    if any(part in {"checkout", "cart", "gateway", "payment"} for part in parts):
+        return False
+    if _CSS_HIGH_RISK.search(clean) or _CSS_HIGH_RISK.search(text or ""):
+        return False
+    return True
+
+
 def risk_for(relative: str, text: str) -> str:
-    parts = [part.lower() for part in str(relative or "").split("/")]
+    clean = str(relative or "").strip().replace("\\", "/")
+    parts = [part.lower() for part in clean.split("/") if part]
     if any(part in {"checkout", "cart", "gateway", "payment"} for part in parts):
         return "high"
-    if _HIGH_RISK.search(relative or "") or _HIGH_RISK.search(text or ""):
+    if clean.lower().endswith(".css"):
+        return "low" if is_safe_pure_css_file(clean, text) else "high"
+    if _HIGH_RISK.search(clean) or _HIGH_RISK.search(text or ""):
         return "high"
     return "low"
 
@@ -569,22 +591,51 @@ class FileChangeOps:
                     if scanned_files >= _SEARCH_FILES or scanned_bytes >= _SEARCH_BYTES:
                         truncated = True
                         break
+                    resolved_abs = resolve_file(site.files_root, kind, slug, rel)
+                    large_css_used = False
                     try:
-                        raw_bytes = transport.read_bytes(resolve_file(site.files_root, kind, slug, rel))
-                    except (PathRejected, TransportError):
+                        raw_bytes = transport.read_bytes(resolved_abs)
+                    except TransportError as exc:
+                        if (
+                            exc.error_class == "FileTooLarge"
+                            and suffix == ".css"
+                            and hasattr(transport, "read_css_search_bytes")
+                            and callable(transport.read_css_search_bytes)
+                        ):
+                            try:
+                                raw_bytes = transport.read_css_search_bytes(
+                                    resolved_abs, max_bytes=_MAX_CSS_SEARCH_BYTES
+                                )
+                                large_css_used = True
+                            except (PathRejected, TransportError):
+                                continue
+                        else:
+                            continue
+                    except PathRejected:
                         continue
-                    if len(raw_bytes) > _MAX_BYTES or b"\x00" in raw_bytes:
+                    if b"\x00" in raw_bytes:
                         continue
+                    if not large_css_used and len(raw_bytes) > _MAX_BYTES:
+                        if (
+                            suffix == ".css"
+                            and len(raw_bytes) <= _MAX_CSS_SEARCH_BYTES
+                        ):
+                            large_css_used = True
+                        else:
+                            continue
                     try:
                         body = raw_bytes.decode("utf-8")
                     except UnicodeDecodeError:
                         continue
                     encoded = body.encode("utf-8")
                     scanned_files += 1
-                    scanned_bytes += len(encoded)
-                    if scanned_bytes > _SEARCH_BYTES:
-                        truncated = True
-                        break
+                    if large_css_used:
+                        scanned_bytes += min(len(encoded), _MAX_BYTES)
+                    else:
+                        scanned_bytes += len(encoded)
+                        if scanned_bytes > _SEARCH_BYTES:
+                            truncated = True
+                            break
                     scrubbed = _scrub_search_text(editor._scrub(site, body), extra_secrets)
                     matched = _match_text_lines(
                         rel,
@@ -595,6 +646,17 @@ class FileChangeOps:
                         context_lines=ctx,
                         remaining=_SEARCH_HITS - len(hits),
                     )
+                    if large_css_used and matched:
+                        used_hit_bytes = len(json.dumps(hits, ensure_ascii=False).encode("utf-8"))
+                        bounded_matched: list[dict[str, Any]] = []
+                        for item in matched:
+                            item_size = len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+                            if used_hit_bytes + item_size > _CSS_SEARCH_RESULT_BYTES:
+                                truncated = True
+                                break
+                            bounded_matched.append(item)
+                            used_hit_bytes += item_size
+                        matched = bounded_matched
                     hits.extend(matched)
                     if len(hits) >= _SEARCH_HITS:
                         truncated = True

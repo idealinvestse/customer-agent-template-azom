@@ -346,6 +346,7 @@ def test_preview_page_focus_schema_validation_and_forwarding(
         "focus_selector",
         "focus_text",
         "full_page",
+        "reuse_live_baseline",
     }
     assert set(FILE_TOOL_SCHEMAS["wp_preview_page"]["properties"]) == expected_props
     assert _safe_tool_detail(

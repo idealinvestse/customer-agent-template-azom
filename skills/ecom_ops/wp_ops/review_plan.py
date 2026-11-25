@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -20,7 +21,7 @@ from typing import Any
 
 from ecom_ops.audit import log_action
 from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
-from ecom_ops.wp_ops.file_changes import production_deploy_block, risk_for
+from ecom_ops.wp_ops.file_changes import is_safe_pure_css_file, production_deploy_block, risk_for
 from ecom_ops.wp_ops.files import LocalTree, PathRejected, TransportError, resolve_file
 from ecom_ops.wp_ops.models import Site
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
@@ -105,7 +106,12 @@ _PUBLIC = (
     "superseded_by",
     "review_path",
     "summary",
+    "variant_group",
+    "forked_from",
+    "preview_path",
+    "focus_selector",
 )
+_VARIANT_GROUP_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 _TERMINAL = frozenset({"rejected", "denied", "expired", "fork_not_approved", "not_resumable"})
 _NON_EDITABLE = _TERMINAL | frozenset(
     {"staged", "rolled_back", "production_review", "approved_for_production", "deployed", "verified"}
@@ -114,6 +120,16 @@ _STAGE_OK = frozenset({"tests_passed", "review_requested", "approved_for_staging
 _UNREACHABLE = frozenset({"approved_for_production", "deployed", "verified"})
 _ARTIFACT_PNG = re.compile(r"^(?:base|work|live|preview|change|focus)-(?:desktop|mobile)\.png$")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_BASELINE_REUSE_TTL_S = 300.0
+
+
+def _clean_variant_group(raw: str | None) -> str:
+    val = str(raw or "").strip().lower()
+    if not val:
+        return ""
+    if _VARIANT_GROUP_RE.fullmatch(val) is None:
+        raise ReviewError("InvalidToolArguments")
+    return val
 
 
 def review_risk(relative: str, text: str) -> str:
@@ -123,8 +139,19 @@ def review_risk(relative: str, text: str) -> str:
     parts = [part.lower() for part in str(relative or "").replace("\\", "/").split("/")]
     if any(part in _ORDER_PARTS for part in parts):
         return "high"
+    if is_safe_pure_css_file(relative, text):
+        return "low"
     if _ORDER_RISK.search(relative or "") or _ORDER_RISK.search(text or ""):
         return "high"
+    return "low"
+
+
+def _tree_risk(slug: str, files: list[tuple[str, bytes]], summary: str = "") -> str:
+    if review_risk(slug, summary) == "high":
+        return "high"
+    for rel, data in files:
+        if review_risk(rel, data.decode("utf-8", errors="replace")) == "high":
+            return "high"
     return "low"
 
 
@@ -193,7 +220,17 @@ class ReviewPlans:
         summary: str = "",
         verified_theme: VerifiedTheme | None = None,
         verified_plugin: VerifiedPlugin | None = None,
+        variant_group: str = "",
+        base_plan_id: str = "",
     ) -> WpOpsResult:
+        if base_plan_id and str(base_plan_id).strip():
+            return self.fork(
+                site_id,
+                str(base_plan_id).strip(),
+                actor=actor,
+                summary=summary,
+                variant_group=variant_group,
+            )
         denied = self._need(actor, Permission.WP_OPS_OPERATE, action="wp_review_open")
         if denied is not None:
             return denied
@@ -202,6 +239,10 @@ class ReviewPlans:
             return missing
         if kind not in {"theme", "plugin"}:
             return _fail("InvalidTarget", "Ogiltig komponent.")
+        try:
+            clean_vg = _clean_variant_group(variant_group)
+        except ReviewError as exc:
+            return _fail(exc.error_class, "Ogiltig variant_group.")
         summary = str(summary or "")[:200]
         try:
             built = self._prepare(site, kind, slug, verified_theme, verified_plugin)
@@ -233,7 +274,7 @@ class ReviewPlans:
             write_tree(root / "base", built["files"])
             write_tree(root / "work", built["files"])
         now = self._now()
-        risk = review_risk(built["slug"], _risk_text(built["files"], summary))
+        risk = _tree_risk(built["slug"], built["files"], summary)
         plan = {
             "plan_id": plan_id,
             "site_id": site.id,
@@ -261,17 +302,24 @@ class ReviewPlans:
             "superseded_by": "",
             "review_path": f"/wp/{site.id}/reviews/{plan_id}",
             "summary": summary,
+            "variant_group": clean_vg,
+            "forked_from": "",
+            "preview_path": "",
+            "focus_selector": "",
         }
         write_diff(root, "")
         write_manifest(root, plan)
         with _STORE:
             plans = self._load()
             for older in plans:
-                if self._same_target(older, plan) and older.get("status") not in _TERMINAL:
-                    older["superseded_by"] = plan_id
+                if not self._same_target(older, plan) or older.get("status") in _TERMINAL:
+                    continue
+                if clean_vg and str(older.get("variant_group") or "") == clean_vg:
+                    continue
+                older["superseded_by"] = plan_id
             plans.append(self._public(plan))
             self._save(plans)
-        self._audit(actor, plan, "wp_review_open", True)
+        self._audit(actor, plan, "wp_review_open", True, variant_group=clean_vg)
         return _ok(
             "Arbetsytan är skapad. Sajten skrevs inte.",
             plan_id=plan_id,
@@ -279,6 +327,134 @@ class ReviewPlans:
             status=plan["status"],
             risk=plan["risk"],
             theme_relationship=plan["theme_relationship"],
+            variant_group=clean_vg,
+            forked_from="",
+            review_path=plan["review_path"],
+            login_required=True,
+            environment=site.environment,
+        )
+
+    def fork(
+        self,
+        site_id: str,
+        source_plan_id: str,
+        *,
+        actor: str,
+        summary: str = "",
+        variant_group: str = "",
+    ) -> WpOpsResult:
+        """Clone an existing workspace's ``base/``, ``work/``, and ``origin/`` into a new ``wr-*``."""
+        denied = self._need(actor, Permission.WP_OPS_OPERATE, action="wp_review_fork")
+        if denied is not None:
+            return denied
+        site, missing = self._site(site_id)
+        if missing is not None or site is None:
+            return missing if missing is not None else _fail("UnknownSite", "Okänd webbplats.")
+        try:
+            clean_vg_req = _clean_variant_group(variant_group)
+        except ReviewError as exc:
+            return _fail(exc.error_class, "Ogiltig variant_group.")
+
+        source = self._row(site.id, source_plan_id)
+        if source is None:
+            return _fail("UnknownPlan", "Okänd plan.")
+        blocked = self._fresh(source, allow_superseded_read=True)
+        if blocked is not None:
+            return blocked
+        try:
+            src_root = workspace_root(self.data_dir, site.id, source_plan_id)
+        except ReviewError as exc:
+            return _fail(exc.error_class, exc.error_class)
+        if not (src_root / "base").is_dir() or not (src_root / "work").is_dir():
+            return _fail("WorkspaceNotResumable", "Källarbetsytan saknas.")
+
+        base_files = iter_files(src_root / "base")
+        work_files = iter_files(src_root / "work")
+        origin_files = iter_files(src_root / "origin") if (src_root / "origin").is_dir() else []
+
+        clean_vg = clean_vg_req or str(source.get("variant_group") or "")
+        clean_summary = str(summary or source.get("summary") or "")[:200]
+        plan_id = new_plan_id()
+        root = workspace_root(self.data_dir, site.id, plan_id)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "base").mkdir()
+        (root / "work").mkdir()
+        if base_files:
+            write_tree(root / "base", base_files)
+        if work_files:
+            write_tree(root / "work", work_files)
+        if origin_files:
+            write_tree(root / "origin", origin_files)
+
+        now = self._now()
+        slug = str(source.get("slug") or "")
+        risk = _tree_risk(slug, work_files, clean_summary)
+        plan = {
+            "plan_id": plan_id,
+            "site_id": site.id,
+            "environment": site.environment,
+            "kind": str(source.get("kind") or "theme"),
+            "slug": slug,
+            "work_slug": str(source.get("work_slug") or slug),
+            "risk": risk,
+            "status": "validated",
+            "theme_relationship": str(source.get("theme_relationship") or "unknown"),
+            "base_sha256": tree_hash(root / "base"),
+            "work_sha256": tree_hash(root / "work"),
+            "created_at": now.isoformat(),
+            "expires_at": (now + _TTL).isoformat(),
+            "extended": False,
+            "checks": [],
+            "check_run": {},
+            "check_generation": 0,
+            "sandbox": self.gate.stop(
+                {"plan_id": plan_id, "engine": "unavailable", "state": "unavailable"}
+            ),
+            "comments": [],
+            "label": "mock",
+            "error_class": "",
+            "superseded_by": "",
+            "review_path": f"/wp/{site.id}/reviews/{plan_id}",
+            "summary": clean_summary,
+            "variant_group": clean_vg,
+            "forked_from": source_plan_id,
+            "preview_path": str(source.get("preview_path") or ""),
+            "focus_selector": str(source.get("focus_selector") or ""),
+        }
+        write_diff(root, _unified(root))
+        write_manifest(root, plan)
+        with _STORE:
+            plans = self._load()
+            for older in plans:
+                if not self._same_target(older, plan) or older.get("status") in _TERMINAL:
+                    continue
+                if clean_vg and str(older.get("variant_group") or "") == clean_vg:
+                    continue
+                older["superseded_by"] = plan_id
+            plans.append(self._public(plan))
+            self._save(plans)
+        changed = list_work_changes(root)
+        self._audit(
+            actor,
+            plan,
+            "wp_review_fork",
+            True,
+            forked_from=source_plan_id,
+            variant_group=clean_vg,
+            changed_files=len(changed),
+        )
+        return _ok(
+            "Ny arbetsyta klonades från tidigare förslag. Sajten skrevs inte.",
+            plan_id=plan_id,
+            site_id=site.id,
+            forked_from=source_plan_id,
+            variant_group=clean_vg,
+            preview_path=plan["preview_path"],
+            focus_selector=plan["focus_selector"],
+            status=plan["status"],
+            risk=plan["risk"],
+            theme_relationship=plan["theme_relationship"],
+            changed_files=changed,
             review_path=plan["review_path"],
             login_required=True,
             environment=site.environment,
@@ -302,7 +478,7 @@ class ReviewPlans:
         root = workspace_root(self.data_dir, site_id, plan_id)
         plan["work_sha256"] = tree_hash(root / "work")
         plan["base_sha256"] = tree_hash(root / "base")
-        plan["risk"] = review_risk(str(plan.get("slug") or ""), _disk_text(root / "work"))
+        plan["risk"] = _tree_risk(str(plan.get("slug") or ""), iter_files(root / "work"))
         plan["check_generation"] = _generation(plan) + 1
         plan["checks"] = []
         plan["check_run"] = {}
@@ -622,7 +798,7 @@ class ReviewPlans:
         plan = self._row(site_id, plan_id)
         if plan is None:
             return _fail("UnknownPlan", "Okänd plan.")
-        blocked = self._fresh(plan)
+        blocked = self._fresh(plan, allow_superseded_read=True)
         if blocked is not None:
             return blocked
         try:
@@ -656,7 +832,7 @@ class ReviewPlans:
         plan = self._row(site_id, plan_id)
         if plan is None:
             return _fail("UnknownPlan", "Okänd plan.")
-        blocked = self._fresh(plan)
+        blocked = self._fresh(plan, allow_superseded_read=True)
         if blocked is not None:
             return blocked
         try:
@@ -696,7 +872,7 @@ class ReviewPlans:
         plan = self._row(site_id, plan_id)
         if plan is None:
             return _fail("UnknownPlan", "Okänd plan.")
-        blocked = self._fresh(plan)
+        blocked = self._fresh(plan, allow_superseded_read=True)
         if blocked is not None:
             return blocked
         try:
@@ -1122,67 +1298,117 @@ class ReviewPlans:
         )
         return _ok(msg, **out_extra)
 
-    def live_preview(
+    def _reusable_live_baseline_dir(
+        self,
+        site_id: str,
+        plan: dict[str, Any],
+        *,
+        clean_path: str,
+        full_page: bool,
+    ) -> Path | None:
+        """Find a recent artifact dir (same plan or same variant_group) with matching live-*.png."""
+        now_ts = self._now().timestamp()
+        candidates: list[str] = [str(plan.get("plan_id") or "")]
+        vg = str(plan.get("variant_group") or "").strip()
+        if vg:
+            for row in self._load():
+                if (
+                    row.get("site_id") == site_id
+                    and str(row.get("variant_group") or "") == vg
+                    and row.get("plan_id") not in candidates
+                ):
+                    candidates.append(str(row.get("plan_id") or ""))
+        for cand_id in candidates:
+            if not PLAN_ID.fullmatch(cand_id):
+                continue
+            try:
+                art = workspace_root(self.data_dir, site_id, cand_id) / "artifacts"
+            except ReviewError:
+                continue
+            pv_json = art / "preview.json"
+            ld = art / "live-desktop.png"
+            lm = art / "live-mobile.png"
+            if (
+                pv_json.is_symlink()
+                or not pv_json.is_file()
+                or ld.is_symlink()
+                or not ld.is_file()
+                or lm.is_symlink()
+                or not lm.is_file()
+            ):
+                continue
+            try:
+                age = now_ts - ld.stat().st_mtime
+                if age < -5.0 or age > _BASELINE_REUSE_TTL_S:
+                    continue
+                meta = json.loads(pv_json.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeError):
+                continue
+            if (
+                isinstance(meta, dict)
+                and str(meta.get("path") or "") == clean_path
+                and bool(meta.get("full_page")) is bool(full_page)
+            ):
+                return art
+        return None
+
+    def build_overlay_html(
         self,
         site_id: str,
         plan_id: str,
         *,
         actor: str,
         path: str = "/",
-        focus_section: str | None = None,
-        focus_selector: str | None = None,
-        focus_text: str | None = None,
-        full_page: bool = False,
-    ) -> WpOpsResult:
-        """Render a read-only live HTML overlay preview for a workspace without writing prod."""
+        use_cache: bool = True,
+    ) -> tuple[dict[str, Any] | None, WpOpsResult | None]:
+        """Build in-memory overlay HTML for an editable or superseded workspace without writing prod."""
         denied = self._need(actor, Permission.WP_OPS_OPERATE, action="wp_review_live_preview")
         if denied is not None:
-            return denied
-        from ecom_ops.bot.dashboard_links import sandbox_preview_url
+            return None, denied
         from ecom_ops.integrations.wp_live_preview import (
-            build_interactive_sandbox_html,
-            capture_preview,
             fetch_live_html,
             live_preview_enabled,
-            validate_focus_options,
             validate_preview_path,
         )
-        from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
         from ecom_ops.wp_ops.preview_overlay import apply_overlay
 
         if not live_preview_enabled():
-            return _fail("LivePreviewDisabled", "Live-förhandsvisning är inte aktiverad.")
+            return None, _fail("LivePreviewDisabled", "Live-förhandsvisning är inte aktiverad.")
         plan = self._row(site_id, plan_id)
         if plan is None:
-            return _fail("UnknownPlan", "Okänd plan.")
-        blocked = self._fresh(plan)
+            return None, _fail("UnknownPlan", "Okänd plan.")
+        blocked = self._fresh(plan, allow_superseded_read=True)
         if blocked is not None:
-            return blocked
+            return None, blocked
         site, missing = self._site(site_id)
         if missing is not None or site is None:
-            return missing if missing is not None else _fail("UnknownSite", "Okänd webbplats.")
+            return None, (missing if missing is not None else _fail("UnknownSite", "Okänd webbplats."))
         try:
             root = workspace_root(self.data_dir, site_id, plan_id)
             work_dir = root / "work"
             product_edits = _load_product_edits(work_dir)
             effective_path = path
-            if (
-                (effective_path is None or str(effective_path).strip() in {"", "/"})
-                and product_edits
-                and isinstance(product_edits.get("product_path"), str)
-                and str(product_edits.get("product_path")).strip()
-            ):
-                effective_path = str(product_edits["product_path"]).strip()
+            if effective_path is None or str(effective_path).strip() in {"", "/"}:
+                if (
+                    product_edits
+                    and isinstance(product_edits.get("product_path"), str)
+                    and str(product_edits.get("product_path")).strip()
+                ):
+                    effective_path = str(product_edits["product_path"]).strip()
+                elif isinstance(plan.get("preview_path"), str) and str(plan.get("preview_path")).strip():
+                    effective_path = str(plan["preview_path"]).strip()
             clean_path = validate_preview_path(effective_path)
-            clean_section, clean_selector, clean_text, clean_full_page = validate_focus_options(
-                focus_section=focus_section,
-                focus_selector=focus_selector,
-                focus_text=focus_text,
-                full_page=full_page,
-            )
-            fetched = fetch_live_html(site, clean_path)
+            fetch_kwargs: dict[str, Any] = {}
+            if use_cache:
+                try:
+                    sig = inspect.signature(fetch_live_html)
+                    if "use_cache" in sig.parameters:
+                        fetch_kwargs["use_cache"] = True
+                except (TypeError, ValueError):
+                    pass
+            fetched = fetch_live_html(site, clean_path, **fetch_kwargs)
         except ReviewError as exc:
-            return _fail(exc.error_class, exc.error_class)
+            return None, _fail(exc.error_class, exc.error_class)
 
         base_dir = root / "base"
         origin_dir = root / "origin"
@@ -1248,10 +1474,94 @@ class ReviewPlans:
                 product_edits=product_edits,
             )
         except ValueError:
-            return _fail("HtmlTooLarge", "Sidan överskrider storleksgränsen.")
+            return None, _fail("HtmlTooLarge", "Sidan överskrider storleksgränsen.")
+
+        return (
+            {
+                "site": site,
+                "plan": plan,
+                "root": root,
+                "clean_path": clean_path,
+                "fetched": fetched,
+                "overlay": overlay,
+            },
+            None,
+        )
+
+    def live_preview(
+        self,
+        site_id: str,
+        plan_id: str,
+        *,
+        actor: str,
+        path: str = "/",
+        focus_section: str | None = None,
+        focus_selector: str | None = None,
+        focus_text: str | None = None,
+        full_page: bool = False,
+        reuse_live_baseline: bool = True,
+    ) -> WpOpsResult:
+        """Render a read-only live HTML overlay preview for a workspace without writing prod."""
+        from ecom_ops.bot.dashboard_links import sandbox_preview_url
+        from ecom_ops.integrations.wp_live_preview import (
+            build_interactive_sandbox_html,
+            capture_preview,
+            validate_focus_options,
+        )
+        from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
+
+        try:
+            clean_section, clean_selector, clean_text, clean_full_page = validate_focus_options(
+                focus_section=focus_section,
+                focus_selector=focus_selector,
+                focus_text=focus_text,
+                full_page=full_page,
+            )
+        except ReviewError as exc:
+            return _fail(exc.error_class, exc.error_class)
+
+        built, err = self.build_overlay_html(
+            site_id,
+            plan_id,
+            actor=actor,
+            path=path,
+            use_cache=bool(reuse_live_baseline),
+        )
+        if err is not None or built is None:
+            return err if err is not None else _fail("LivePreviewFailed", "Förhandsvisningen misslyckades.")
+
+        site = built["site"]
+        plan = built["plan"]
+        root = built["root"]
+        clean_path = built["clean_path"]
+        fetched = built["fetched"]
+        overlay = built["overlay"]
 
         artifact_dir = root / "artifacts"
         artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        reused_baseline = False
+        baseline_dir: Path | None = None
+        if reuse_live_baseline:
+            baseline_dir = self._reusable_live_baseline_dir(
+                site_id,
+                plan,
+                clean_path=clean_path,
+                full_page=clean_full_page,
+            )
+        saved_live_bytes: dict[str, bytes] = {}
+        if baseline_dir is not None:
+            try:
+                ld_bytes = (baseline_dir / "live-desktop.png").read_bytes()
+                lm_bytes = (baseline_dir / "live-mobile.png").read_bytes()
+                if ld_bytes[:8] == _PNG_MAGIC and lm_bytes[:8] == _PNG_MAGIC:
+                    saved_live_bytes["live-desktop.png"] = ld_bytes
+                    saved_live_bytes["live-mobile.png"] = lm_bytes
+                    reused_baseline = True
+            except OSError:
+                saved_live_bytes = {}
+                reused_baseline = False
+
         for stale in list(artifact_dir.iterdir()):
             if stale.name.startswith(("live-", "preview-", "change-", "focus-")) and stale.suffix.lower() == ".png":
                 try:
@@ -1260,21 +1570,39 @@ class ReviewPlans:
                 except OSError:
                     pass
 
+        if reused_baseline:
+            for name, raw_png in saved_live_bytes.items():
+                (artifact_dir / name).write_bytes(raw_png)
+
+        revisions_arg: list[tuple[str, str]] = (
+            [("preview", overlay.html)]
+            if reused_baseline
+            else [
+                ("live", str(fetched.get("html") or "")),
+                ("preview", overlay.html),
+            ]
+        )
+        capture_extra: dict[str, Any] = {}
+        if reused_baseline:
+            try:
+                cap_sig = inspect.signature(capture_preview)
+                if "preview_kind_override" in cap_sig.parameters:
+                    capture_extra["preview_kind_override"] = "live_overlay"
+            except (TypeError, ValueError):
+                pass
         try:
             rendered = capture_preview(
                 site,
                 path=clean_path,
                 artifact_dir=artifact_dir,
-                revisions=[
-                    ("live", str(fetched.get("html") or "")),
-                    ("preview", overlay.html),
-                ],
+                revisions=revisions_arg,
                 highlight_token=overlay.highlight_token,
                 focus_section=clean_section,
                 focus_selector=clean_selector,
                 focus_text=clean_text,
                 full_page=clean_full_page,
                 target_url=str(fetched.get("final_url") or "") or None,
+                **capture_extra,
             )
         except ReviewError as exc:
             return _fail(exc.error_class, exc.error_class)
@@ -1311,6 +1639,7 @@ class ReviewPlans:
             path=clean_path,
             highlight_token=overlay.highlight_token,
             focus_text=clean_text,
+            focus_selector=clean_selector,
         )
         if secrets_list:
             scrubbed_html = scrub_secrets(interactive_html, secrets_list)
@@ -1320,6 +1649,19 @@ class ReviewPlans:
         if preview_html_path.is_symlink():
             preview_html_path.unlink()
         preview_html_path.write_text(interactive_html, encoding="utf-8")
+
+        # Persist preview_path and focus_selector on the plan record for follow-up iterations
+        meta_changed = False
+        if clean_path and str(plan.get("preview_path") or "") != clean_path:
+            plan["preview_path"] = clean_path
+            meta_changed = True
+        if clean_selector and str(plan.get("focus_selector") or "") != clean_selector:
+            plan["focus_selector"] = clean_selector
+            meta_changed = True
+        if meta_changed:
+            with _STORE:
+                self._replace(plan)
+            write_manifest(root, plan)
 
         preview_route_path = f"/wp/{site_id}/reviews/{plan_id}/preview"
         preview_public_url = sandbox_preview_url(site_id, plan_id)
@@ -1339,6 +1681,8 @@ class ReviewPlans:
         safe_token = scrub_secrets(overlay.highlight_token, secrets_list)
         safe_blocked = scrub_secrets(rendered.get("blocked_counts") or {}, secrets_list)
         safe_focus_target = scrub_secrets(rendered.get("focus_target"), secrets_list)
+        raw_vh = rendered.get("visual_health")
+        safe_visual_health = scrub_secrets(raw_vh, secrets_list) if isinstance(raw_vh, dict) else None
         focus_matched = bool(rendered.get("focus_matched"))
         self._audit(
             actor,
@@ -1356,6 +1700,7 @@ class ReviewPlans:
             focus_matched=focus_matched,
             full_page=clean_full_page,
             preview_html_ready=True,
+            reused_baseline=reused_baseline,
         )
         return _ok(
             "Live-förhandsvisning skapad.",
@@ -1365,11 +1710,13 @@ class ReviewPlans:
             preview_path=preview_route_path,
             preview_url=preview_public_url,
             preview_html_ready=True,
+            reused_live_baseline=reused_baseline,
             screenshots=ordered_shots,
             screenshot_paths=[str(artifact_dir / name) for name in ordered_shots],
             focus_matched=focus_matched,
             focus_target=safe_focus_target,
             full_page=clean_full_page,
+            visual_health=safe_visual_health,
             overlay={
                 "counts": counts,
                 "injected_css_bytes": overlay.injected_css_bytes,
@@ -2016,7 +2363,7 @@ class ReviewPlans:
                 return plan
         return None
 
-    def _fresh(self, plan: dict[str, Any]) -> WpOpsResult | None:
+    def _fresh(self, plan: dict[str, Any], *, allow_superseded_read: bool = False) -> WpOpsResult | None:
         if plan.get("status") == "not_resumable":
             return _fail(
                 "WorkspaceNotResumable",
@@ -2024,7 +2371,7 @@ class ReviewPlans:
                 plan_id=plan.get("plan_id"),
                 status="not_resumable",
             )
-        if plan.get("superseded_by"):
+        if plan.get("superseded_by") and not allow_superseded_read:
             return _fail("StalePlan", "En nyare diff har ett annat plan-id.", plan_id=plan.get("plan_id"))
         if plan.get("status") == "expired" or self._past(plan):
             self._mark_expired(plan)
