@@ -121,3 +121,17 @@ The WordPress file list, with `AZOM_USE_MOCK=1` and `AZOM_WP_SANDBOX=0`:
 Exit 0. `126 passed, 1 skipped in 7.47s`. The skip is `AZOM_WP_RUNTIME_E2E` unset. PHP is still missing. No container and no browser run.
 
 A clipped hit still appended the next candidate, including a later parent file, before selection stopped. `page.php` was listed twice when it was also the assigned template. The loop now stops before that read. Each classic name is listed once. The same WordPress file list then exited 0: `127 passed, 1 skipped in 8.50s`.
+
+## Runtime fetch
+
+`bin/fetch-wp-runtime.py` pins WordPress 7.1.5 (SHA1 `d7d004a092a4e8f2b28dc8f4089a11fea9a38807` from `wordpress.org`) and Windows PHP 8.3.37 NTS (SHA256 from `downloads.php.net` `releases.json`). Linux, macOS, and Windows ARM return `php_binary_unpinned` before a download.
+
+Unit tests do not use the network. From the repo root, with `AZOM_USE_MOCK=1` and `AZOM_WP_SANDBOX=0`:
+
+```
+.\.venv\Scripts\python.exe -m pytest tests/test_wp_runtime_fetch.py --override-ini="addopts=" -q --tb=short -ra
+```
+
+Exit 0. `22 passed in 0.40s`. Ruff on `runtime_fetch.py` and `tests/test_wp_runtime_fetch.py` exited 0.
+
+On this Windows x64 machine the script wrote `%LOCALAPPDATA%\azom\wp-runtime`. Independent checks: the WordPress archive SHA1 matches the pin (37245999 bytes), the PHP x64 archive SHA256 matches the pin (34185054 bytes), `version.php` contains `$wp_version = '7.1.5';`, and `php.exe -v` printed `PHP 8.3.37 (cli)`. `--check` exited 0. `runtime.json` has `sandbox_enabled` false and `server_started` false. `AZOM_WP_SANDBOX` stayed 0. No port was opened. `php_lint` still uses `PATH` and does not read this directory. `AZOM_WP_RUNTIME_E2E` stays unset. This is not a rendered theme.

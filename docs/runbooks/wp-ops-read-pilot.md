@@ -35,7 +35,7 @@ Registret är `config/wp_sites.mock.yaml`. Inget i den filen är en kundsajt.
 
 1. En namngiven sajt i registret, med pinnad hostnyckel och ett eget `*-wp-reader`-konto. Oscar godkänner kontot och att `AZOM_WP_FILES_SSH=1` sätts. Mockläge (`AZOM_USE_MOCK=1`) tvingar ändå den lokala trädmocken.
 2. PHP på värden om `php_lint` ska räknas. Utan binären är raden `unavailable` / `php_binary_missing`, `executed` falskt.
-3. En pinnad lokal WordPress-profil och en webbläsare i sandlådan om `browser_smoke` och `egress_probe` ska räknas. `AZOM_WP_SANDBOX` är av. Den här sprinten har ingen sådan profil och drar ingen image.
+3. En pinnad lokal WordPress-profil och en webbläsare i sandlådan om `browser_smoke` och `egress_probe` ska räknas. `AZOM_WP_SANDBOX` är av. `bin/fetch-wp-runtime.py` kan hämta WordPress 7.1.5 och, på Windows x86/x64, PHP 8.3.37 till en katalog utanför repot. Hämtningen startar ingen server och slår inte på sandlådan. Linux och macOS avslutas med `php_binary_unpinned` innan någon nedladdning, eftersom PHP inte publicerar en officiell binär för dem. Ingen image dras.
 4. En dashboardbas på HTTPS om Telegram ska visa granskningslänken. Länken är en inloggad GET och godkänner inget.
 
 ## Vem godkänner
