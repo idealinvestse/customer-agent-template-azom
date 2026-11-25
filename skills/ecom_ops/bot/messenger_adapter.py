@@ -126,7 +126,16 @@ def actions_to_messenger_buttons(actions: ActionMarkup | None) -> list[dict[str,
             ("order:set", "product:desc", "wpfile:stage", "wpreview:stage")
         ):
             return (1, 1)
-        if "list" in p or p.endswith(":cancel") or p in {"action:no", "escalate:no"}:
+        if p.startswith(("clarify:go:", "clarify:pick:")):
+            return (1, 2)
+        if p.startswith("clarify:other:"):
+            return (3, 5)
+        if (
+            "list" in p
+            or p.endswith(":cancel")
+            or p.startswith("clarify:cancel:")
+            or p in {"action:no", "escalate:no"}
+        ):
             return (4, 0)
         return (3, 0)
 

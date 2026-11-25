@@ -18,6 +18,7 @@ import os
 import re
 import secrets
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -75,18 +76,40 @@ def _explicit_siwc_set() -> bool:
     return any(_env(name) for name in _REQUIRED_ENV)
 
 
+_UUID_URN_RE = re.compile(
+    r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_JWK_THUMBPRINT_URN_RE = re.compile(
+    r"^urn:ietf:params:oauth:jwk-thumbprint:[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=-]{8,200}$"
+)
+_DID_KEY_RE = re.compile(r"^did:key:[A-Za-z0-9._~-]{8,200}$")
+
+
+def _is_valid_host_id_uri(value: str) -> bool:
+    """Validate OpenAI SIWC ``ext_agent_host_id`` URI formats."""
+    candidate = (value or "").strip()
+    if not candidate or len(candidate) > 256 or any(ch.isspace() for ch in candidate):
+        return False
+    return bool(
+        _UUID_URN_RE.fullmatch(candidate)
+        or _JWK_THUMBPRINT_URN_RE.fullmatch(candidate)
+        or _DID_KEY_RE.fullmatch(candidate)
+    )
+
+
 def _default_host_id(*, create: bool = False) -> str:
     path = Path(os.environ.get("AZOM_DATA_DIR", ".azom-data")) / "openai_siwc_host_id"
     try:
         if path.is_file():
             existing = path.read_text(encoding="utf-8").strip()
-            if existing and len(existing) <= 128 and existing.replace("-", "").replace("_", "").isalnum():
+            if _is_valid_host_id_uri(existing):
                 return existing
     except OSError:
         pass
     if not create:
         return ""
-    generated = secrets.token_hex(16)
+    generated = f"urn:uuid:{uuid.uuid4()}"
     try:
         atomic_write_text(path, generated + "\n", mode=0o600)
     except OSError:
@@ -816,6 +839,8 @@ class OpenAIChatGPTOAuthRoute:
         finally:
             response.close()
         data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list) and isinstance(payload, dict):
+            data = payload.get("models")
         if not isinstance(data, list):
             return []
         has_visibility = any(isinstance(it, dict) and "visibility" in it for it in data)
@@ -823,12 +848,12 @@ class OpenAIChatGPTOAuthRoute:
         for item in data:
             if not isinstance(item, dict):
                 continue
-            model_id = str(item.get("id") or "").strip()
+            model_id = str(item.get("id") or item.get("slug") or "").strip()
             if not model_id:
                 continue
             if has_visibility and str(item.get("visibility") or "").strip() != "list":
                 continue
-            label = str(item.get("name") or item.get("display_name") or model_id).strip()
+            label = str(item.get("name") or item.get("display_name") or item.get("title") or model_id).strip()
             out.append({"id": model_id, "name": label})
         return out
 
@@ -867,12 +892,19 @@ class OpenAIChatGPTOAuthRoute:
         usage: dict[str, Any] = {}
         saw_delta = False
         try:
-            for line in response.iter_lines(decode_unicode=True):
+            for raw_line in response.iter_lines(decode_unicode=True):
                 if hard_deadline is not None and time.monotonic() > hard_deadline:
                     raise ModelUnavailableError("ChatGPT stream hard timeout", code="hard_timeout")
-                if not line or not str(line).startswith("data:"):
+                if raw_line is None:
                     continue
-                raw = str(line)[5:].strip()
+                line = (
+                    raw_line.decode("utf-8", errors="replace")
+                    if isinstance(raw_line, (bytes, bytearray))
+                    else str(raw_line)
+                )
+                if not line or not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
                 if raw == "[DONE]":
                     break
                 try:

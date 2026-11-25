@@ -19,6 +19,18 @@ from ecom_ops.bot.catalog import (
     parse_catalog_read,
     parse_catalog_write,
 )
+from ecom_ops.bot.change_clarifier import (
+    CLARIFY_PROTOCOL_GUIDE,
+    MAX_CLARIFY_ROUNDS,
+    ClarificationProposal,
+    build_clarification_prompt_hint,
+    build_fallback_clarification,
+    detect_change_ambiguity,
+    has_clarify_tag,
+    parse_clarify_block,
+    render_clarification_message,
+    strip_clarify_tags,
+)
 from ecom_ops.bot.dialog_actions import (
     PendingAction,
     parse_order_status_intent,
@@ -234,7 +246,8 @@ _CHAT_CORE_POLICY = (
     '<tool_call>{"name":"lookup_order","arguments":{"order_id":"..."}}</tool_call>. '
     "Tillåtna läsningar: lookup_order, list_recent_orders, list_products, show_product, "
     "list_pages, show_page, list_posts, show_post, show_site, list_themes, list_plugins. "
-    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text."
+    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text.\n\n"
+    f"{CLARIFY_PROTOCOL_GUIDE}"
 )
 
 CHAT_RUNTIME_POLICY = (
@@ -256,7 +269,8 @@ CHAT_RUNTIME_POLICY = (
     '<tool_call>{"name":"lookup_order","arguments":{"order_id":"..."}}</tool_call>. '
     "Tillåtna läsningar: lookup_order, list_recent_orders, list_products, show_product, "
     "list_pages, show_page, list_posts, show_post, show_site, list_themes, list_plugins. "
-    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text."
+    "Be aldrig om order-, produkt-, sid- eller inläggsändringar som fri text.\n\n"
+    f"{CLARIFY_PROTOCOL_GUIDE}"
 )
 
 
@@ -280,9 +294,9 @@ SYSTEM_PROMPT, _SYSTEM_PROMPT_VERSION = _build_system_prompt(mode="chat_wp_file"
 
 
 class _SafeTextStream:
-    """Stream natural text while withholding any model tool-call protocol."""
+    """Stream natural text while withholding model tool-call and clarify protocol markers."""
 
-    _MARKER = "<tool_call>"
+    _MARKERS = ("<tool_call>", "<clarify>")
 
     def __init__(
         self,
@@ -310,15 +324,21 @@ class _SafeTextStream:
         if self.blocked or not delta:
             return
         combined = self.pending + delta
-        marker_at = combined.lower().find(self._MARKER)
-        if marker_at >= 0:
+        low = combined.lower()
+        hits = [idx for marker in self._MARKERS if (idx := low.find(marker)) >= 0]
+        if hits:
+            marker_at = min(hits)
             self._emit(combined[:marker_at])
             self.pending = ""
             self.blocked = True
             return
-        low = combined.lower()
         hold = max(
-            (n for n in range(1, len(self._MARKER)) if low.endswith(self._MARKER[:n])),
+            (
+                n
+                for marker in self._MARKERS
+                for n in range(1, len(marker))
+                if low.endswith(marker[:n])
+            ),
             default=0,
         )
         if hold:
@@ -329,15 +349,15 @@ class _SafeTextStream:
             self.pending = ""
 
     def finish(self, content: str) -> None:
-        if self._MARKER in (content or "").lower():
+        low_content = (content or "").lower()
+        if any(marker in low_content for marker in self._MARKERS):
             self.pending = ""
             self.blocked = True
             return
-        if content and content.strip() == (self.emitted + self.pending).strip():
-            self.pending = ""
-            return
         self._emit(self.pending)
         self.pending = ""
+        if content and content.strip() == self.emitted.strip():
+            return
         if content and not self.emitted:
             self._emit(content)
         elif self.emitted and content.startswith(self.emitted):
@@ -808,6 +828,7 @@ class ChatResult:
     file_stage_plan_id: str | None = None
     review_stage_plan_id: str | None = None
     attachments: tuple[str, ...] = ()
+    clarification: ClarificationProposal | None = None
 
 
 def wants_escalate(text: str) -> bool:
@@ -2340,6 +2361,9 @@ def run_chat(
     on_stream_clear: Callable[[], None] | None = None,
     on_phase_change: Callable[[dict[str, Any]], None] | None = None,
     on_checkpoint: Callable[[], list[str]] | None = None,
+    clarification_confirmed: bool = False,
+    clarification_round: int = 1,
+    clarification_context: str = "",
 ) -> ChatResult:
     """Run one hybrid chat turn with tools, sticky context, optional LLM."""
     session = dict(session or {})
@@ -2471,6 +2495,24 @@ def run_chat(
     case_id8 = pref.case_id8
     suggest_ids = pref.suggest_case_ids
     digest = pref.digest or prior_digest
+    try:
+        clarify_round = max(1, int(clarification_round or 1))
+    except (TypeError, ValueError):
+        clarify_round = 1
+    clarification_context_clean = (clarification_context or "").strip()
+    assessment = detect_change_ambiguity(
+        user_message,
+        has_pending_action=pref.pending_action is not None,
+        has_tool_results=bool(tool_bits),
+        has_wp_site_context=has_wp_site_context,
+        clarification_confirmed=bool(clarification_confirmed),
+    )
+    site_id = (
+        str(wp_ops_context.get("site_id") or "").strip() or None
+        if has_wp_site_context and isinstance(wp_ops_context, dict)
+        else None
+    )
+    clarification_proposal: ClarificationProposal | None = None
     hard_esc = wants_hard_escalate_confirm(user_message)
     user_esc = wants_escalate(user_message)
     offer_escalate = hard_esc
@@ -2501,6 +2543,7 @@ def run_chat(
             "file_stage_plan_id": file_stage_plan_id,
             "review_stage_plan_id": review_stage_plan_id,
             "attachments": attachments,
+            "clarification": clarification_proposal,
             **extra,
         }
 
@@ -2555,7 +2598,40 @@ def run_chat(
             return FALLBACK_ERROR
         return FALLBACK_NO_KEY
 
+    def _fallback_clarify_result() -> ChatResult | None:
+        if (
+            not tool_bits
+            and pref.pending_action is None
+            and assessment.is_change_request
+            and assessment.is_ambiguous
+            and not clarification_confirmed
+            and clarify_round <= MAX_CLARIFY_ROUNDS
+        ):
+            proposal = build_fallback_clarification(
+                user_message,
+                assessment,
+                has_wp_site_context=has_wp_site_context,
+                site_id=site_id,
+                sticky_page_id=str(pref.sticky_page_id or sticky_page_id)
+                if (pref.sticky_page_id or sticky_page_id)
+                else None,
+                sticky_product_id=str(pref.sticky_product_id or sticky_product_id)
+                if (pref.sticky_product_id or sticky_product_id)
+                else None,
+            )
+            proposal.round_num = clarify_round
+            rendered = render_clarification_message(proposal)
+            return ChatResult(
+                text=rendered,
+                messages=_with_turn(rendered),
+                **_base(clarification=proposal),
+            )
+        return None
+
     if not router.any_configured():
+        clarify_res = _fallback_clarify_result()
+        if clarify_res is not None:
+            return clarify_res
         text = _no_llm_text("no_key")
         return ChatResult(text=text, messages=_with_turn(text), **_base())
 
@@ -2571,6 +2647,9 @@ def run_chat(
                 "kind": "telegram_chat",
             },
         )
+        clarify_res = _fallback_clarify_result()
+        if clarify_res is not None:
+            return clarify_res
         text = _no_llm_text(
             "budget",
             tools_suffix="\n\n(LLM-budget slut — rå data ovan.)",
@@ -2594,6 +2673,30 @@ def run_chat(
     if context_bits:
         ctx_line = "Session context: " + ", ".join(context_bits)
         tool_block = f"{tool_block}\n{ctx_line}".strip() if tool_block else ctx_line
+    if clarification_context_clean:
+        tool_block = (
+            f"{tool_block}\n\n{clarification_context_clean}".strip()
+            if tool_block
+            else clarification_context_clean
+        )
+    elif (
+        assessment.is_change_request
+        and assessment.is_ambiguous
+        and not clarification_confirmed
+        and clarify_round <= MAX_CLARIFY_ROUNDS
+    ):
+        clarify_hint = build_clarification_prompt_hint(
+            assessment,
+            has_wp_site_context=has_wp_site_context,
+            site_id=site_id,
+            round_num=clarify_round,
+        )
+        if clarify_hint:
+            tool_block = (
+                f"{tool_block}\n\n{clarify_hint}".strip()
+                if tool_block
+                else clarify_hint
+            )
     if WP_CODE_INTENT_RE.search(user_message):
         from ecom_ops.wp_ops.playbooks import format_playbook_hints
 
@@ -2643,8 +2746,14 @@ def run_chat(
     else:
         model = None
 
-    has_wp_code_intent = bool(WP_CODE_INTENT_RE.search(user_message))
-    has_wp_drift_intent = bool(WP_OPS_INTENT_RE.search(user_message))
+    clarify_ctx_wp_code = bool(
+        clarification_context_clean and WP_CODE_INTENT_RE.search(clarification_context_clean)
+    )
+    clarify_ctx_wp_drift = bool(
+        clarification_context_clean and WP_OPS_INTENT_RE.search(clarification_context_clean)
+    )
+    has_wp_code_intent = bool(WP_CODE_INTENT_RE.search(user_message)) or clarify_ctx_wp_code
+    has_wp_drift_intent = bool(WP_OPS_INTENT_RE.search(user_message)) or clarify_ctx_wp_drift
     if has_wp_code_intent:
         prompt_mode = "chat_wp_file"
         default_profile_id = "wp_tool_router"
@@ -2736,8 +2845,12 @@ def run_chat(
         stream.finish(content)
         return content, added
 
-    use_read_loop = _use_read_tool_loop(
-        user_message, pref, has_wp_site_context=has_wp_site_context
+    use_read_loop = (
+        not clarify_ctx_wp_code
+        and not clarify_ctx_wp_drift
+        and _use_read_tool_loop(
+            user_message, pref, has_wp_site_context=has_wp_site_context
+        )
     )
     if use_read_loop and _xai_round():
         model = _FAST_TOOL_MODEL
@@ -3057,6 +3170,33 @@ def run_chat(
                     "till exempel senaste ordrar, en produkt, en sida eller ett inlägg. "
                     "Ändringar väntar på bekräftelse."
                 )
+
+    if has_clarify_tag(content):
+        parsed_clarify = (
+            parse_clarify_block(
+                content,
+                original_request=user_message,
+                round_num=clarify_round,
+            )
+            if (
+                clarify_round <= MAX_CLARIFY_ROUNDS
+                and not clarification_confirmed
+                and pref.pending_action is None
+                and not file_stage_plan_id
+                and not review_stage_plan_id
+            )
+            else None
+        )
+        stripped_intro = strip_clarify_tags(content)
+        if parsed_clarify is not None:
+            clarification_proposal = parsed_clarify
+            content = render_clarification_message(
+                parsed_clarify, intro=stripped_intro
+            )
+        else:
+            content = stripped_intro or (
+                "Kan du förtydliga vad du vill ändra innan jag går vidare?"
+            )
 
     soft_extra = False
     if (

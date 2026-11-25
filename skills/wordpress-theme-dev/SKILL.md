@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Guide surgical edits and multi-file theme refactors using the registered WordPress file/workspace toolchain without touching parent themes, WooCommerce core, or production directly.  
 **Audience:** Coding agents and the OpenClaw chat agent operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
 ## File-loop caps and safety boundaries
 
@@ -25,6 +25,8 @@ version: "3.0.0"
 
 ## Theme engineering workflow
 
+0. **Clarify ambiguous visual or multi-path requests first (`skills/change-verification/SKILL.md`):**
+   - If the request is vague, references an annotated screenshot (e.g., `"ringat in på bilden"`), or could be solved via multiple layers (`theme.json`, child CSS, WooCommerce template override, site plugin, or DB page content), read-only inspection (`wp_theme_overview`, `wp_template_hierarchy`, `wp_page_review`) may run first, then emit `<clarify>{...}</clarify>` to confirm scope and recommended path before opening a `wr-*` workspace or patching files. Clarification never replaces `wpreview:stage:wr-...` or `wpfile:stage:fe-...`.
 1. **Overview and guidance first:**
    - Call `wp_playbook` when you want structured guidance on a topic (`child_theme_edit`, `theme_json_design`, `template_hierarchy_debug`, `woo_template_overrides`, `bulk_refactor`, `static_and_sandbox_qa`, `staging_and_hitl`).
    - Call `wp_list_components(kind="theme")` and `wp_theme_overview` to verify the active stylesheet, parent theme, `theme_kind` (`block` or `classic`), and `woocommerce/` overrides.

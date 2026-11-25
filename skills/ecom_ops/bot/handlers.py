@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -15,7 +16,22 @@ from ecom_ops.bot.actors import (
     resolve_channel_actor,
 )
 from ecom_ops.bot.catalog import execute_page_update, execute_product_update
+from ecom_ops.bot.change_clarifier import (
+    CLARIFY_TTL_SECONDS,
+    MAX_CLARIFY_ROUNDS,
+    ClarificationProposal,
+    build_clarified_request_message,
+    detect_change_ambiguity,
+    render_clarification_message,
+)
 from ecom_ops.bot.chat_agent import (
+    CAPABILITIES_RE,
+    CASES_INTENT_RE,
+    FALLBACK_BUDGET,
+    FALLBACK_NO_KEY,
+    MARKETING_INTENT_RE,
+    OPS_INTENT_RE,
+    RECENT_ORDERS_RE,
     SOFT_ESCALATE_NUDGE,
     ChatResult,
     _accepts_kwarg,
@@ -52,6 +68,7 @@ from ecom_ops.bot.reply import (
     approve_case_actions,
     as_reply,
     bot_reply,
+    clarification_actions,
     order_status_confirm_actions,
     product_desc_confirm_actions,
     proposal_confirm_actions,
@@ -81,8 +98,68 @@ ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
 _FILE_PLAN_ID = re.compile(r"fe-[a-f0-9]{12}")
 _REVIEW_PLAN_ID = re.compile(r"wr-[a-f0-9]{12}")
 _MAX_REVIEW_HASH_CACHE = 8
+_MAX_CLARIFY_SESSION_CACHE = 6
 _PROPOSAL_YES_RE = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
 _PROPOSAL_NO_RE = re.compile(r"^proposal:no:(pr-[0-9a-f]{12})$", re.I)
+_CLARIFY_ID_RE = re.compile(r"^cl-[0-9a-f]{12}$", re.I)
+_CLARIFY_PICK_RE = re.compile(
+    r"^clarify:pick:(cl-[0-9a-f]{12}):([a-z0-9_-]{1,12})$", re.I
+)
+_CLARIFY_GO_RE = re.compile(r"^clarify:go:(cl-[0-9a-f]{12})$", re.I)
+_CLARIFY_OTHER_RE = re.compile(r"^clarify:other:(cl-[0-9a-f]{12})$", re.I)
+_CLARIFY_CANCEL_RE = re.compile(r"^clarify:cancel:(cl-[0-9a-f]{12})$", re.I)
+_CLARIFY_CANCEL_WORDS = frozenset(
+    {"avbryt", "cancel", "nej", "no", "n", "skippa", "glöm det", "stopp"}
+)
+_CLARIFY_CONFIRM_WORDS = frozenset(
+    {
+        "ja",
+        "yes",
+        "y",
+        "j",
+        "stämmer",
+        "stammer",
+        "ok",
+        "okej",
+        "kör",
+        "kor",
+        "bekräfta",
+        "bekrafta",
+    }
+)
+_OFFLINE_READ_OPTION_PROMPTS: dict[str, str] = {
+    "inspect": "visa sajten",
+    "read_first": "lista teman och plugins",
+    "list_pages": "lista sidor",
+    "find_prod": "lista produkter",
+    "show_site": "visa sajten",
+    "show_order": "visa senaste ordrar",
+    "list_orders": "lista senaste ordrar",
+}
+
+
+def _is_unrelated_lookup(text: str) -> bool:
+    """Return True if ``text`` is a standalone read/lookup unrelated to clarification."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if ORDER_FAST_RE.match(raw) or re.fullmatch(r"#?\d{4,12}", raw):
+        return True
+    assess = detect_change_ambiguity(raw)
+    if assess.is_change_request:
+        return False
+    return bool(
+        CASES_INTENT_RE.search(raw)
+        or MARKETING_INTENT_RE.search(raw)
+        or RECENT_ORDERS_RE.search(raw)
+        or OPS_INTENT_RE.search(raw)
+        or CAPABILITIES_RE.search(raw)
+        or re.match(
+            r"^\s*(?:visa|lista|kolla|h[äa]mta|vad\s+[äa]r|hur\s+m[åa]nga|hur\s+g[åa]r|granska)\b",
+            raw,
+            re.I,
+        )
+    )
 
 _PENDING_PROGRESS_LABELS: dict[str, tuple[str, str, str]] = {
     "order_status": ("Orderstatus", "Uppdaterar orderstatus i Woo", "Orderstatus uppdaterad"),
@@ -707,6 +784,12 @@ class BotHandler:
         data: str,
         *,
         on_progress: ProgressCallback | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        on_text_reset: Callable[[], None] | None = None,
+        on_stream_clear: Callable[[], None] | None = None,
+        on_phase_change: Callable[[dict[str, Any]], None] | None = None,
+        on_checkpoint: Callable[[], list[str]] | None = None,
+        task_id: str | None = None,
     ) -> BotReply:
         if not self._peer_allowed(chat_id):
             return self._deny_allowlist()
@@ -716,6 +799,140 @@ class BotHandler:
             return self._deny_actor()
         self._clear_mismatched_wp_context(chat_id, actor)
         raw = (data or "").strip()
+
+        clarify_pick = _CLARIFY_PICK_RE.fullmatch(raw)
+        if clarify_pick:
+            cid = clarify_pick.group(1).lower()
+            opt_id = clarify_pick.group(2).lower()
+            prop = self._consume_clarification(chat_id, cid)
+            if prop is None:
+                return BotReply(
+                    text="Förtydligandet är redan hanterat eller utgånget. Skriv din fråga igen om du vill börja om."
+                )
+            payload = dict(prop.get("payload") or {})
+            proposal = ClarificationProposal.from_dict(payload.get("proposal"))
+            opt = (
+                next((o for o in proposal.options if o.id == opt_id), None)
+                if proposal is not None
+                else None
+            )
+            self._clear_clarify_flow(chat_id, clarify_id=cid)
+            if proposal is None or opt is None:
+                return BotReply(
+                    text="Alternativet är inte längre giltigt. Skriv din fråga igen om du vill börja om."
+                )
+            prior_picks = list(payload.get("picks") or [])
+            picks = [*prior_picks, opt.to_dict()]
+            original_request = str(
+                payload.get("original_request") or proposal.original_request or ""
+            )
+            round_num = int(payload.get("round") or proposal.round_num or 1)
+            next_round = round_num + 1
+            confirmed = next_round > MAX_CLARIFY_ROUNDS
+            return self._execute_clarified_step(
+                chat_id,
+                message=original_request or opt.label,
+                original_request=original_request,
+                picks=picks,
+                round_num=next_round,
+                confirmed=confirmed,
+                picked_option_id=opt.id,
+                on_progress=on_progress,
+                on_text_delta=on_text_delta,
+                on_text_reset=on_text_reset,
+                on_stream_clear=on_stream_clear,
+                on_phase_change=on_phase_change,
+                on_checkpoint=on_checkpoint,
+                task_id=task_id,
+            )
+
+        clarify_go = _CLARIFY_GO_RE.fullmatch(raw)
+        if clarify_go:
+            cid = clarify_go.group(1).lower()
+            prop = self._consume_clarification(chat_id, cid)
+            if prop is None:
+                return BotReply(
+                    text="Förtydligandet är redan hanterat eller utgånget. Skriv din fråga igen om du vill börja om."
+                )
+            payload = dict(prop.get("payload") or {})
+            proposal = ClarificationProposal.from_dict(payload.get("proposal"))
+            picks = list(payload.get("picks") or [])
+            original_request = str(
+                payload.get("original_request")
+                or (proposal.original_request if proposal else "")
+                or ""
+            )
+            round_num = int(
+                payload.get("round") or (proposal.round_num if proposal else 1) or 1
+            )
+            self._clear_clarify_flow(chat_id, clarify_id=cid)
+            msg = original_request or (
+                proposal.understanding if proposal else "Fortsätt enligt bekräftad plan"
+            )
+            return self._execute_clarified_step(
+                chat_id,
+                message=msg,
+                original_request=original_request,
+                picks=picks,
+                round_num=round_num + 1,
+                confirmed=True,
+                on_progress=on_progress,
+                on_text_delta=on_text_delta,
+                on_text_reset=on_text_reset,
+                on_stream_clear=on_stream_clear,
+                on_phase_change=on_phase_change,
+                on_checkpoint=on_checkpoint,
+                task_id=task_id,
+            )
+
+        clarify_other = _CLARIFY_OTHER_RE.fullmatch(raw)
+        if clarify_other:
+            cid = clarify_other.group(1).lower()
+            prop = self._consume_clarification(chat_id, cid)
+            if prop is None:
+                return BotReply(
+                    text="Förtydligandet är redan hanterat eller utgånget. Skriv din fråga igen om du vill börja om."
+                )
+            payload = dict(prop.get("payload") or {})
+            proposal_dict = dict(payload.get("proposal") or {})
+            original_request = str(
+                payload.get("original_request")
+                or proposal_dict.get("original_request")
+                or ""
+            )
+            picks = list(payload.get("picks") or [])
+            round_num = int(
+                payload.get("round") or proposal_dict.get("round_num") or 1
+            )
+            self._set_clarify_flow(
+                chat_id,
+                flow="change_clarify",
+                step="await_other_text",
+                slots={
+                    "clarify_id": cid,
+                    "proposal": proposal_dict,
+                    "original_request": original_request,
+                    "picks": picks,
+                    "round": round_num,
+                },
+            )
+            return BotReply(
+                text=(
+                    "Beskriv kort med egna ord vad du vill ändra "
+                    "(t.ex. vilken sida/del, vad som ska ändras och till vad), "
+                    "så anpassar jag förslaget. Skriv /stop eller avbryt för att avbryta."
+                )
+            )
+
+        clarify_cancel = _CLARIFY_CANCEL_RE.fullmatch(raw)
+        if clarify_cancel:
+            cid = clarify_cancel.group(1).lower()
+            cancelled = self._cancel_clarification(chat_id, cid)
+            if not cancelled:
+                return BotReply(
+                    text="Förtydligandet är redan hanterat eller utgånget. Ingen ändring utförd."
+                )
+            return BotReply(text="Avbrutet — ingen ändring påbörjad.")
 
         prop_yes = _PROPOSAL_YES_RE.fullmatch(raw)
         if prop_yes:
@@ -1026,6 +1243,208 @@ class BotHandler:
         step = state.get("step")
         session = dict(state.get("session") or {})
         slots = dict(state.get("slots") or {})
+
+        if flow == "change_clarify":
+            clarify_id = str(slots.get("clarify_id") or "").strip().lower()
+            proposal = ClarificationProposal.from_dict(slots.get("proposal"))
+            original_request = str(
+                slots.get("original_request")
+                or (proposal.original_request if proposal else "")
+                or ""
+            )
+            prior_picks = list(slots.get("picks") or [])
+            try:
+                round_num = max(
+                    1,
+                    int(slots.get("round") or (proposal.round_num if proposal else 1) or 1),
+                )
+            except (TypeError, ValueError):
+                round_num = 1
+            answer = text.strip().lower()
+
+            if answer in _CLARIFY_CANCEL_WORDS:
+                if clarify_id:
+                    self._cancel_clarification(chat_id, clarify_id)
+                self._clear_clarify_flow(chat_id)
+                return BotReply(text="Avbrutet — ingen ändring påbörjad.")
+
+            if step == "await_choice":
+                if re.fullmatch(r"[1-4]", answer):
+                    idx = int(answer)
+                    if proposal is not None and 1 <= idx <= len(proposal.options):
+                        opt = proposal.options[idx - 1]
+                        if clarify_id:
+                            self._consume_clarification(chat_id, clarify_id)
+                        self._clear_clarify_flow(chat_id)
+                        picks = [*prior_picks, opt.to_dict()]
+                        next_round = round_num + 1
+                        return self._execute_clarified_step(
+                            chat_id,
+                            message=original_request or opt.label,
+                            original_request=original_request,
+                            picks=picks,
+                            round_num=next_round,
+                            confirmed=next_round > MAX_CLARIFY_ROUNDS,
+                            picked_option_id=opt.id,
+                            on_progress=on_progress,
+                            on_text_delta=on_text_delta,
+                            on_text_reset=on_text_reset,
+                            on_stream_clear=on_stream_clear,
+                            on_phase_change=on_phase_change,
+                            on_checkpoint=on_checkpoint,
+                            task_id=task_id,
+                        )
+                    if proposal is not None:
+                        actions = (
+                            clarification_actions(clarify_id, proposal)
+                            if _CLARIFY_ID_RE.fullmatch(clarify_id)
+                            else None
+                        )
+                        return bot_reply(
+                            f"Välj 1–{len(proposal.options)}, skriv med egna ord eller avbryt.",
+                            actions=actions,
+                        )
+                if _is_unrelated_lookup(text):
+                    if clarify_id:
+                        self._cancel_clarification(chat_id, clarify_id)
+                    self._clear_clarify_flow(chat_id)
+                    fast = ORDER_FAST_RE.match(text)
+                    if fast:
+                        oid = fast.group(1)
+                        self._touch_session_order(chat_id, oid)
+                        return BotReply(
+                            text=self._lookup_order_with_progress(
+                                chat_id, oid, on_progress=on_progress
+                            )
+                        )
+                    return self._run_llm_chat(
+                        chat_id,
+                        text,
+                        on_progress=on_progress,
+                        on_text_delta=on_text_delta,
+                        on_text_reset=on_text_reset,
+                        on_stream_clear=on_stream_clear,
+                        on_phase_change=on_phase_change,
+                        on_checkpoint=on_checkpoint,
+                        task_id=task_id,
+                    )
+                if answer in _CLARIFY_CONFIRM_WORDS and len(answer) <= 8:
+                    actions = (
+                        clarification_actions(clarify_id, proposal)
+                        if (proposal is not None and _CLARIFY_ID_RE.fullmatch(clarify_id))
+                        else None
+                    )
+                    return bot_reply(
+                        "Välj ett av alternativen ovan (1–4 eller knapp), eller skriv med egna ord vad du vill ändra.",
+                        actions=actions,
+                    )
+                if clarify_id:
+                    self._consume_clarification(chat_id, clarify_id)
+                self._clear_clarify_flow(chat_id)
+                return self._execute_clarified_step(
+                    chat_id,
+                    message=text,
+                    original_request=original_request,
+                    picks=prior_picks,
+                    round_num=round_num + 1,
+                    confirmed=round_num >= MAX_CLARIFY_ROUNDS,
+                    extra_note=text,
+                    on_progress=on_progress,
+                    on_text_delta=on_text_delta,
+                    on_text_reset=on_text_reset,
+                    on_stream_clear=on_stream_clear,
+                    on_phase_change=on_phase_change,
+                    on_checkpoint=on_checkpoint,
+                    task_id=task_id,
+                )
+
+            if step == "await_confirm":
+                if answer in _CLARIFY_CONFIRM_WORDS:
+                    if clarify_id:
+                        self._consume_clarification(chat_id, clarify_id)
+                    self._clear_clarify_flow(chat_id)
+                    msg = original_request or (
+                        proposal.understanding
+                        if proposal
+                        else "Fortsätt enligt bekräftad plan"
+                    )
+                    return self._execute_clarified_step(
+                        chat_id,
+                        message=msg,
+                        original_request=original_request,
+                        picks=prior_picks,
+                        round_num=round_num + 1,
+                        confirmed=True,
+                        on_progress=on_progress,
+                        on_text_delta=on_text_delta,
+                        on_text_reset=on_text_reset,
+                        on_stream_clear=on_stream_clear,
+                        on_phase_change=on_phase_change,
+                        on_checkpoint=on_checkpoint,
+                        task_id=task_id,
+                    )
+                if _is_unrelated_lookup(text):
+                    if clarify_id:
+                        self._cancel_clarification(chat_id, clarify_id)
+                    self._clear_clarify_flow(chat_id)
+                    fast = ORDER_FAST_RE.match(text)
+                    if fast:
+                        oid = fast.group(1)
+                        self._touch_session_order(chat_id, oid)
+                        return BotReply(
+                            text=self._lookup_order_with_progress(
+                                chat_id, oid, on_progress=on_progress
+                            )
+                        )
+                    return self._run_llm_chat(
+                        chat_id,
+                        text,
+                        on_progress=on_progress,
+                        on_text_delta=on_text_delta,
+                        on_text_reset=on_text_reset,
+                        on_stream_clear=on_stream_clear,
+                        on_phase_change=on_phase_change,
+                        on_checkpoint=on_checkpoint,
+                        task_id=task_id,
+                    )
+                if clarify_id:
+                    self._consume_clarification(chat_id, clarify_id)
+                self._clear_clarify_flow(chat_id)
+                return self._execute_clarified_step(
+                    chat_id,
+                    message=text,
+                    original_request=original_request,
+                    picks=prior_picks,
+                    round_num=round_num + 1,
+                    confirmed=round_num >= MAX_CLARIFY_ROUNDS,
+                    extra_note=text,
+                    on_progress=on_progress,
+                    on_text_delta=on_text_delta,
+                    on_text_reset=on_text_reset,
+                    on_stream_clear=on_stream_clear,
+                    on_phase_change=on_phase_change,
+                    on_checkpoint=on_checkpoint,
+                    task_id=task_id,
+                )
+
+            if step == "await_other_text":
+                self._clear_clarify_flow(chat_id)
+                return self._execute_clarified_step(
+                    chat_id,
+                    message=text,
+                    original_request=original_request,
+                    picks=prior_picks,
+                    round_num=round_num + 1,
+                    confirmed=round_num >= MAX_CLARIFY_ROUNDS,
+                    extra_note=text,
+                    on_progress=on_progress,
+                    on_text_delta=on_text_delta,
+                    on_text_reset=on_text_reset,
+                    on_stream_clear=on_stream_clear,
+                    on_phase_change=on_phase_change,
+                    on_checkpoint=on_checkpoint,
+                    task_id=task_id,
+                )
 
         if flow == "order_lookup" and step == "await_id":
             try:
@@ -1607,6 +2026,312 @@ class BotHandler:
             )
         return BotReply(text=f"{prefix}\n{msg}")
 
+    def _set_clarify_flow(
+        self,
+        chat_id: str | int,
+        *,
+        flow: str | None,
+        step: str | None,
+        slots: dict[str, Any],
+    ) -> None:
+        if hasattr(self.store, "append_turn_atomic"):
+            self.store.append_turn_atomic(
+                chat_id,
+                flow_updates={"flow": flow, "step": step, "slots": slots},
+            )
+            return
+        prev = self.store.get(chat_id) or {}
+        self._merge_state(
+            chat_id,
+            flow=flow,
+            step=step,
+            slots=slots,
+            session=dict(prev.get("session") or {}),
+            messages=prev.get("messages"),
+            tool_digest=prev.get("tool_digest"),
+        )
+
+    def _clear_clarify_flow(
+        self, chat_id: str | int, *, clarify_id: str | None = None
+    ) -> None:
+        prev = self.store.get(chat_id) or {}
+        if prev.get("flow") != "change_clarify":
+            return
+        if clarify_id is not None:
+            stored_cid = str((prev.get("slots") or {}).get("clarify_id") or "").strip().lower()
+            if stored_cid and stored_cid != clarify_id.strip().lower():
+                return
+        self._set_clarify_flow(chat_id, flow=None, step=None, slots={})
+
+    def _store_session_clarification(
+        self,
+        chat_id: str | int,
+        clarify_id: str,
+        payload: dict[str, Any],
+        domain: str | None,
+        site_id: str | None,
+    ) -> None:
+        prev = self.store.get(chat_id) or {}
+        session = dict(prev.get("session") or {})
+        cache = dict(session.get("clarify_proposals") or {})
+        cache.pop(clarify_id, None)
+        cache[clarify_id] = {
+            "kind": "change_clarify",
+            "state": "open",
+            "created_at": time.time(),
+            "payload": payload,
+            "domain": domain,
+            "site_id": site_id,
+        }
+        while len(cache) > _MAX_CLARIFY_SESSION_CACHE:
+            oldest = next(iter(cache))
+            cache.pop(oldest, None)
+        self._update_session_atomic(chat_id, session_updates={"clarify_proposals": cache})
+
+    def _consume_clarification(
+        self, chat_id: str | int, clarify_id: str
+    ) -> dict[str, Any] | None:
+        cid = clarify_id.strip().lower()
+        if self.proposal_store is not None:
+            prop = self.proposal_store.consume_proposal(cid, chat_id=chat_id)
+            if prop is None or str(prop.get("kind") or "") != "change_clarify":
+                return None
+            return prop
+        prev = self.store.get(chat_id) or {}
+        session = dict(prev.get("session") or {})
+        cache = dict(session.get("clarify_proposals") or {})
+        entry = cache.get(cid)
+        if isinstance(entry, dict):
+            if entry.get("state") != "open":
+                return None
+            created_at = float(entry.get("created_at") or 0)
+            if created_at and (time.time() - created_at) > CLARIFY_TTL_SECONDS:
+                cache[cid] = {**entry, "state": "expired"}
+                self._update_session_atomic(
+                    chat_id, session_updates={"clarify_proposals": cache}
+                )
+                return None
+            cache[cid] = {**entry, "state": "consumed"}
+            self._update_session_atomic(
+                chat_id, session_updates={"clarify_proposals": cache}
+            )
+            return dict(entry)
+        slots = dict(prev.get("slots") or {})
+        if (
+            prev.get("flow") == "change_clarify"
+            and str(slots.get("clarify_id") or "").strip().lower() == cid
+        ):
+            return {
+                "kind": "change_clarify",
+                "payload": {
+                    "proposal": slots.get("proposal"),
+                    "original_request": slots.get("original_request") or "",
+                    "picks": list(slots.get("picks") or []),
+                    "round": slots.get("round") or 1,
+                },
+            }
+        return None
+
+    def _cancel_clarification(self, chat_id: str | int, clarify_id: str) -> bool:
+        cid = clarify_id.strip().lower()
+        cancelled = False
+        if self.proposal_store is not None:
+            cancelled = bool(self.proposal_store.cancel_proposal(cid, chat_id=chat_id))
+        else:
+            prev = self.store.get(chat_id) or {}
+            cache = dict((prev.get("session") or {}).get("clarify_proposals") or {})
+            entry = cache.get(cid)
+            if isinstance(entry, dict) and entry.get("state") == "open":
+                cache[cid] = {**entry, "state": "cancelled"}
+                self._update_session_atomic(
+                    chat_id, session_updates={"clarify_proposals": cache}
+                )
+                cancelled = True
+            else:
+                slots = dict(prev.get("slots") or {})
+                if (
+                    prev.get("flow") == "change_clarify"
+                    and str(slots.get("clarify_id") or "").strip().lower() == cid
+                ):
+                    cancelled = True
+        self._clear_clarify_flow(chat_id, clarify_id=cid)
+        return cancelled
+
+    def _start_clarification(
+        self,
+        chat_id: str | int,
+        proposal: ClarificationProposal,
+        text: str,
+        *,
+        original_request: str = "",
+        picks: list[dict[str, Any]] | None = None,
+        round_num: int = 1,
+        task_id: str | None = None,
+        attachments: tuple[str, ...] = (),
+    ) -> BotReply:
+        prev = self.store.get(chat_id) or {}
+        session = dict(prev.get("session") or {})
+        orig = (original_request or proposal.original_request or "").strip()
+        prior_picks = list(picks or [])
+        try:
+            rnum = max(1, int(round_num or proposal.round_num or 1))
+        except (TypeError, ValueError):
+            rnum = 1
+        proposal.original_request = orig
+        proposal.round_num = rnum
+        payload_data: dict[str, Any] = {
+            "proposal": proposal.to_dict(),
+            "original_request": orig,
+            "picks": prior_picks,
+            "round": rnum,
+        }
+        domain = self._session_market(chat_id)
+        wp_ctx = session.get("wp_ops_context")
+        site_id = (
+            str(wp_ctx.get("site_id")).strip()
+            if isinstance(wp_ctx, dict) and wp_ctx.get("site_id")
+            else None
+        )
+        cid = ""
+        if self.proposal_store is not None:
+            create_kwargs: dict[str, Any] = {
+                "kind": "change_clarify",
+                "payload": payload_data,
+                "task_id": task_id,
+                "domain": domain,
+                "site_id": site_id,
+            }
+            if _accepts_kwarg(self.proposal_store.create_proposal, "id_prefix"):
+                create_kwargs["id_prefix"] = "cl"
+            prop = self.proposal_store.create_proposal(chat_id, **create_kwargs)
+            cid = str(prop.get("proposal_id") or "").strip().lower()
+        if not _CLARIFY_ID_RE.fullmatch(cid):
+            cid = f"cl-{uuid.uuid4().hex[:12]}"
+            self._store_session_clarification(chat_id, cid, payload_data, domain, site_id)
+        elif self.proposal_store is None:
+            self._store_session_clarification(chat_id, cid, payload_data, domain, site_id)
+
+        step = (
+            "await_confirm"
+            if (proposal.mode == "confirm" or not proposal.options)
+            else "await_choice"
+        )
+        slots = {
+            "clarify_id": cid,
+            "proposal": proposal.to_dict(),
+            "original_request": orig,
+            "picks": prior_picks,
+            "round": rnum,
+        }
+        self._set_clarify_flow(
+            chat_id,
+            flow="change_clarify",
+            step=step,
+            slots=slots,
+        )
+        attachment_kwargs = {"attachments": attachments} if attachments else {}
+        return bot_reply(
+            text,
+            actions=clarification_actions(cid, proposal),
+            needs_typing=True,
+            **attachment_kwargs,
+        )
+
+    def _execute_clarified_step(
+        self,
+        chat_id: str | int,
+        *,
+        message: str,
+        original_request: str,
+        picks: list[dict[str, Any]],
+        round_num: int,
+        confirmed: bool,
+        extra_note: str = "",
+        picked_option_id: str = "",
+        on_progress: ProgressCallback | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        on_text_reset: Callable[[], None] | None = None,
+        on_stream_clear: Callable[[], None] | None = None,
+        on_phase_change: Callable[[dict[str, Any]], None] | None = None,
+        on_checkpoint: Callable[[], list[str]] | None = None,
+        task_id: str | None = None,
+    ) -> BotReply:
+        clarify_ctx = build_clarified_request_message(
+            original_request,
+            picks,
+            extra_note=extra_note,
+            confirmed=confirmed,
+        )
+        reply = self._run_llm_chat(
+            chat_id,
+            message,
+            on_progress=on_progress,
+            on_text_delta=on_text_delta,
+            on_text_reset=on_text_reset,
+            on_stream_clear=on_stream_clear,
+            on_phase_change=on_phase_change,
+            on_checkpoint=on_checkpoint,
+            task_id=task_id,
+            clarification_confirmed=confirmed,
+            clarification_round=round_num,
+            clarification_context=clarify_ctx,
+            original_request=original_request,
+            prior_picks=picks,
+        )
+        if reply.actions is None and reply.text in {FALLBACK_NO_KEY, FALLBACK_BUDGET}:
+            read_prompt = _OFFLINE_READ_OPTION_PROMPTS.get(picked_option_id)
+            if read_prompt:
+                return self._run_llm_chat(
+                    chat_id,
+                    read_prompt,
+                    on_progress=on_progress,
+                    on_text_delta=on_text_delta,
+                    on_text_reset=on_text_reset,
+                    on_stream_clear=on_stream_clear,
+                    on_phase_change=on_phase_change,
+                    on_checkpoint=on_checkpoint,
+                    task_id=task_id,
+                    clarification_confirmed=True,
+                    clarification_round=round_num,
+                    clarification_context=clarify_ctx,
+                    original_request=original_request,
+                    prior_picks=picks,
+                )
+            if not confirmed and round_num <= MAX_CLARIFY_ROUNDS and picks:
+                picked = picks[-1]
+                label = str(picked.get("label") or picked.get("id") or "Valt spår")
+                summary = str(picked.get("summary") or "").strip()
+                understanding = (
+                    f"Valt spår: {label}" + (f" — {summary}" if summary and summary != label else "")
+                )
+                confirm_prop = ClarificationProposal(
+                    understanding=understanding,
+                    question="Ska jag gå vidare med detta spår eller vill du lägga till exakta värden/ID?",
+                    options=(),
+                    mode="confirm",
+                    original_request=original_request,
+                    round_num=round_num,
+                    source="fallback",
+                )
+                return self._start_clarification(
+                    chat_id,
+                    confirm_prop,
+                    render_clarification_message(confirm_prop),
+                    original_request=original_request,
+                    picks=picks,
+                    round_num=round_num,
+                    task_id=task_id,
+                )
+            return BotReply(
+                text=(
+                    "Ingen LLM-route är konfigurerad just nu, men din inriktning är registrerad.\n"
+                    "Skriv en exakt ändring (t.ex. «sätt order 1001 till completed», "
+                    "«ändra produkt 501 pris till 999» eller «ändra sidan 2 titel till Ny rubrik») "
+                    "så skapar jag ett bekräftelseförslag."
+                )
+            )
+        return reply
+
     def _run_llm_chat(
         self,
         chat_id: str | int,
@@ -1619,6 +2344,11 @@ class BotHandler:
         on_phase_change: Callable[[dict[str, Any]], None] | None = None,
         on_checkpoint: Callable[[], list[str]] | None = None,
         task_id: str | None = None,
+        clarification_confirmed: bool = False,
+        clarification_round: int = 1,
+        clarification_context: str = "",
+        original_request: str | None = None,
+        prior_picks: list[dict[str, Any]] | None = None,
     ) -> BotReply:
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
@@ -1658,6 +2388,12 @@ class BotHandler:
             chat_kwargs["on_stream_clear"] = on_stream_clear
         if on_phase_change is not None and _accepts_kwarg(run_chat, "on_phase_change"):
             chat_kwargs["on_phase_change"] = on_phase_change
+        if _accepts_kwarg(run_chat, "clarification_confirmed"):
+            chat_kwargs["clarification_confirmed"] = bool(clarification_confirmed)
+        if _accepts_kwarg(run_chat, "clarification_round"):
+            chat_kwargs["clarification_round"] = clarification_round
+        if _accepts_kwarg(run_chat, "clarification_context"):
+            chat_kwargs["clarification_context"] = clarification_context
         result = run_chat(message, **chat_kwargs)
 
         review_plan_id = getattr(result, "review_stage_plan_id", None)
@@ -1782,6 +2518,19 @@ class BotHandler:
                 actor=actor_obj,
                 task_id=task_id,
                 **attachment_kwargs,
+            )
+
+        clarification = getattr(result, "clarification", None)
+        if clarification is not None:
+            return self._start_clarification(
+                chat_id,
+                clarification,
+                text,
+                original_request=original_request or clarification.original_request or message,
+                picks=prior_picks,
+                round_num=clarification_round,
+                task_id=task_id,
+                attachments=safe_attachments,
             )
 
         if result.soft_escalate_nudge and SOFT_ESCALATE_NUDGE not in text:

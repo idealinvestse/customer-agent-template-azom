@@ -1155,6 +1155,11 @@ def _process_job(
                     chat_id,
                     str(payload.get("data") or ""),
                     on_progress=progress,
+                    on_text_delta=live.on_text_delta,
+                    on_text_reset=live.on_text_reset,
+                    on_stream_clear=live.on_stream_clear,
+                    on_phase_change=live.on_phase_change,
+                    on_checkpoint=checkpoint,
                     task_id=job.get("task_id"),
                 )
             )

@@ -12,6 +12,7 @@ from typing import Any
 from ecom_ops.bot.dashboard_links import case_detail_url, cases_list_url, link_footer
 
 _WORKSPACE_PNG = re.compile(r"^(?:base|work)-(?:desktop|mobile)\.png$")
+_CLARIFY_ID_RE = re.compile(r"^cl-[0-9a-f]{12}$")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 _MAX_ATTACHMENTS = 4
@@ -140,6 +141,60 @@ def proposal_confirm_actions(proposal_id: str) -> ActionMarkup:
         yes_data=f"proposal:yes:{pid}",
         no_data=f"proposal:no:{pid}",
     )
+
+
+def clarification_actions(clarify_id: str, proposal: Any) -> ActionMarkup:
+    """Build channel-neutral clarify buttons bound to a ``cl-<hex12>`` token."""
+    cid = str(clarify_id or "").strip()
+    if _CLARIFY_ID_RE.fullmatch(cid) is None:
+        raise ValueError(f"Invalid clarify_id: {clarify_id!r}")
+
+    if isinstance(proposal, dict):
+        mode = str(proposal.get("mode") or "options").strip().lower()
+        raw_options = list(proposal.get("options") or ())
+    else:
+        mode = str(getattr(proposal, "mode", "options") or "options").strip().lower()
+        raw_options = list(getattr(proposal, "options", ()) or ())
+
+    if mode == "confirm" or not raw_options:
+        return ActionMarkup(
+            rows=[
+                [ActionButton("✅ Stämmer — börja arbeta", payload=f"clarify:go:{cid}")],
+                [
+                    ActionButton("✍️ Justera / lägg till", payload=f"clarify:other:{cid}"),
+                    ActionButton("✖️ Avbryt", payload=f"clarify:cancel:{cid}"),
+                ],
+            ]
+        )
+
+    rows: list[list[ActionButton]] = []
+    for idx, opt in enumerate(raw_options[:4], start=1):
+        if isinstance(opt, dict):
+            raw_id = str(opt.get("id") or "")
+            raw_label = str(opt.get("label") or f"Alternativ {idx}")
+            recommended = bool(opt.get("recommended", False))
+        else:
+            raw_id = str(getattr(opt, "id", "") or "")
+            raw_label = str(getattr(opt, "label", "") or f"Alternativ {idx}")
+            recommended = bool(getattr(opt, "recommended", False))
+
+        opt_id = re.sub(r"[^a-z0-9_-]+", "", raw_id.strip().lower())[:12] or str(idx)
+        payload = f"clarify:pick:{cid}:{opt_id}"
+        if len(payload.encode("utf-8")) > 64:
+            opt_id = str(idx)
+            payload = f"clarify:pick:{cid}:{opt_id}"
+
+        clean_label = " ".join(raw_label.split()) or f"Alternativ {idx}"
+        label = (f"⭐ {clean_label}" if recommended else clean_label)[:48]
+        rows.append([ActionButton(label=label, payload=payload)])
+
+    rows.append(
+        [
+            ActionButton("✍️ Skriv egen förklaring", payload=f"clarify:other:{cid}"),
+            ActionButton("✖️ Avbryt", payload=f"clarify:cancel:{cid}"),
+        ]
+    )
+    return ActionMarkup(rows=rows)
 
 
 def yes_no_keyboard(*, yes_data: str, no_data: str) -> dict[str, Any]:

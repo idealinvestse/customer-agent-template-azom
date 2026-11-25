@@ -1226,8 +1226,11 @@ class TelegramJobStore:
         task_id: str | None = None,
         domain: str | None = None,
         site_id: str | None = None,
+        id_prefix: str = "pr",
     ) -> dict[str, Any]:
-        proposal_id = f"pr-{uuid.uuid4().hex[:12]}"
+        raw_prefix = str(id_prefix or "")
+        prefix = raw_prefix if re.fullmatch(r"[a-z]{2,4}", raw_prefix) else "pr"
+        proposal_id = f"{prefix}-{uuid.uuid4().hex[:12]}"
         now = _now()
         with self._connection() as conn:
             self._begin(conn)

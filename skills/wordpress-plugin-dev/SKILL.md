@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Guide custom site plugin development (`azom-site-<site_id>`), safe hook-based extensions, and read-only third-party plugin compatibility checks inside isolated `wr-*` workspaces.  
 **Audience:** Coding agents and the OpenClaw chat agent operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
 ## File-loop caps and safety boundaries
 
@@ -25,6 +25,8 @@ version: "3.0.0"
 
 ## Plugin engineering workflow
 
+0. **Clarify ambiguous feature or multi-path requests first (`skills/change-verification/SKILL.md`):**
+   - If the change request is ambiguous, references an annotated screenshot, or spans multiple architectural options (hook in `azom-site-<site_id>` vs theme template/CSS vs WooCommerce setting), run read-only inspection first if needed and emit `<clarify>{...}</clarify>` to confirm direction before opening a `wr-*` workspace or proposing patches. Clarification never replaces `wpreview:stage:wr-...` or `wpfile:stage:fe-...`.
 1. **Inventory and read-only inspection:**
    - Call `wp_playbook` when needed (`plugin_hooks_and_compat`, `site_plugin_scaffold`, `bulk_refactor`, `static_and_sandbox_qa`, `staging_and_hitl`, `component_intel_and_audit`).
    - Run `wp_list_components(kind="plugin")` to list installed slugs, then `wp_plugin_overview` (Oscar-only) to inspect directory structure, main hooks, `has_woo_hpos_declaration`, `wc_tested_up_to`, and `third_party_edit_policy`.

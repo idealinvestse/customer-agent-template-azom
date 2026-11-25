@@ -106,6 +106,14 @@ Utan `MESSENGER_PAGE_ACCESS_TOKEN`:
 
 - Tro att NL “godkänn abcdef01” skickar mail — det är bara confirm UX.
 - Köra prod utan PSID-allowlist och actor map.
+- Tro att ett förtydligande (`clarify:pick`, `clarify:go`, `clarify:other`, `clarify:cancel`) godkänner en filändring, orderändring eller mailutskick.
+
+### Förtydligande innan arbete (`<clarify>`)
+
+Vid oklara ändringsförfrågningar, layoutönskemål eller beskrivningar av markerade/inringade skärmdumpar (`"ringat in på bilden"`) ställer botten en fokuserad motfråga med rekommenderade val innan arbetsytor öppnas eller ändringsförslag skapas (`skills/change-verification/SKILL.md`, max 3 rundor).
+
+- **Knappar och 3-knappsgräns:** Messenger visar högst 3 postback-knappar per meddelande och prioriterar `clarify:go:` samt `clarify:pick:` före `clarify:other:` och `clarify:cancel:`. Alla alternativ visas numrerade i texten så användaren alltid kan svara med `1`–`4` eller fritext.
+- **Strikt HITL-separation:** `clarify:*` låser enbart tolkning och vägval. Själva ändringen kräver alltid efterföljande explicit godkännande (`proposal:yes:pr-...`, `action:yes`, `wpfile:stage:fe-...`, `wpreview:stage:wr-...`, **Godkänn & skicka** / `/cases approve`) och serverns RBAC-kontroll.
 
 Slash/flows speglar Telegram-katalogen: `/help` `/cases` `/order` `/brief` `/status` `/marketing` …
 `/marketing` är **read-only** snapshot — Ads-mutates endast via dashboard/CLI approve.

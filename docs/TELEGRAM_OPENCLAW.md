@@ -16,6 +16,7 @@
 | **Svarutkast** | Assistentens text medan den kommer in; ersätts med det slutliga svaret när turen är klar. |
 | **Hybrid styrning / parallell task** | Reply på ett status- eller svarskort styr alltid den uppgiften; otrådad fritext klassas smart som styrning eller ny parallell task (upp till 3 samtidiga läsuppgifter per chatt). |
 | **Förslagsbunden knapp** | `proposal:yes:pr-<id>` / `proposal:no:pr-<id>` låser payload, domän och sajt vid förslagstillfället (engångskonsumtion). |
+| **Förtydligande innan arbete (`clarify:*`)** | `<clarify>{...}</clarify>` och knapparna `clarify:pick` / `clarify:go` / `clarify:other` / `clarify:cancel` (högst 3 rundor, engångskonsumtion, `cl-<id12>`) låser bara tolkning/vägval före arbete och ger ingen skrivbehörighet. |
 
 **Kod:** `skills/ecom_ops/bot/`  
 **Identitet:** [`SOUL.md`](../SOUL.md)  
@@ -38,14 +39,14 @@ Incoming update
     │            inga orderverktyg och ingen orderdigest
     │            php -l körs med fast kommando när PHP finns; browser/runtime = unavailable
     └─ free text → chat_agent.run_chat
-                     intent heuristics
+                     intent heuristics + pre-change ambiguity check (change_clarifier.py)
                      read tools + confirm-only write proposals
                      bounded named WordPress ops tool loop (site-bound, RBAC checked; Oscar-only read-only SFTP file reads)
                      model-router phrasing (optional; AZOM_TELEGRAM_MODEL_ROUTE pins one route)
-                     BotReply + optional approve / triage keyboards + safe_workspace_attachments
+                     BotReply + optional clarify / approve / triage keyboards + safe_workspace_attachments
 ```
 
-**Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI. En sidgranskning anropar inte orderchatten (`extract_page_review_target` hämtar valfri `target_page` för `"granska sidan <slug|id> källkod"`, och för blockteman läses Site Editor-mallar via `WordPressClient.list_templates()`, annars `site_editor: "unavailable"`). En följdfråga medan jobbet körs stannar i sidgranskningen. Fritext “ja” och `action:yes` godkänner inte granskningen. Den redan körande botprocessen har inte startats om, så `page_review` är inte live förrän en begärd omstart.
+**Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI. Vid oklara ändringsförfrågningar, layoutönskemål eller beskrivningar av markerade skärmdumpar (`"ringat in på bilden"`) håller `_SafeTextStream` inne `<clarify>`-block från svarutkastet och botten ställer en fokuserad motfråga med rekommenderade engångsknappar (`clarify:pick`, `clarify:go`, `clarify:other`, `clarify:cancel`, högst 3 rundor). `clarify:*`-callbacks är icke-muterande (`kind="callback"`, inte `_ACTION_CALLBACK`) och ersätter aldrig `proposal:yes:pr-...`, `action:yes`, `wpfile:stage:fe-...`, `wpreview:stage:wr-...` eller RBAC. En sidgranskning anropar inte orderchatten (`extract_page_review_target` hämtar valfri `target_page` för `"granska sidan <slug|id> källkod"`, och för blockteman läses Site Editor-mallar via `WordPressClient.list_templates()`, annars `site_editor: "unavailable"`). En följdfråga medan jobbet körs stannar i sidgranskningen. Fritext “ja” och `action:yes` godkänner inte granskningen. Den redan körande botprocessen har inte startats om, så `page_review` är inte live förrän en begärd omstart.
 
 En filplansnotis kan länka till dashboardens planvy när `AZOM_DASHBOARD_PUBLIC_URL` är en HTTPS-URL. Länken innehåller bara registrerat `site_id` och `plan_id`, kräver dashboardinloggning och RBAC, och utför eller godkänner ingenting. Utan giltig HTTPS-bas visas ingen absolut länk. Efter `wp_workspace_run_checks` skickar Telegram-sändaren (`_send_attachments` → `_send_photo`) högst fyra allowlistade PNG-skärmdumpar (`base|work-desktop|mobile.png` från `wp_workspaces/.../artifacts/`) via `BotReply.attachments` och `safe_workspace_attachments()` när en riktig sandlådekörning skapat dem; absoluta filsökvägar läggs aldrig i LLM-meddelanden.
 
@@ -261,6 +262,7 @@ Fil- och arbetsyteverktyg körs i en egen bunden tur (`run_bounded_file_tool_loo
 | Plugin on/off | `action:yes` / `action:no` | `WP_OPS_ADMIN` (Oscar) |
 | Stagingfil (`fe-*`) | `wpfile:stage:fe-...` / `wpfile:no:fe-...` | `WP_OPS_OPERATE` på registrerad mock-staging. Produktion har ingen knapp |
 | Staging-arbetsyta (`wr-*`) | `wpreview:stage:wr-...` / `wpreview:no:wr-...` | `WP_OPS_ADMIN` + `CODE_EDIT` (Oscar) + snapshot-hashar + `tests_passed`. Bara lokal mock-staging; aldrig tyst produktionsdeploy |
+| Förtydligande innan arbete | `clarify:pick:cl-<id>:<opt>` · `clarify:go:cl-<id>` · `clarify:other:cl-<id>` · `clarify:cancel:cl-<id>` | **Ingen skrivning.** Låser endast omfattning/val (`flow="change_clarify"`, max 3 rundor); slutlig ändring kräver alltid egen skriv-/stagingknapp och RBAC |
 | Regen draft | `cases:regen:{id8}` | `CASE_REPLY` (Jonatan OK) |
 
 Jonatan kan approve:a cases men **inte** skriva Woo order/product om hen inte är mappad till `agent`/`oscar`.

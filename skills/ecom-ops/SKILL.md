@@ -27,6 +27,7 @@ version: "3.0.0"
 **Router health:** `skills/model-router-health/SKILL.md`  
 **OAuth incident:** `skills/oauth-incident/SKILL.md`  
 **OpenClaw client upgrade:** `skills/openclaw-upgrade/SKILL.md`  
+**Change verification:** `skills/change-verification/SKILL.md`  
 **WordPress review & dev:** `skills/wordpress-review/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `skills/wordpress-plugin-dev/SKILL.md`
 
 ## Prioritized actions
@@ -64,7 +65,7 @@ version: "3.0.0"
 
 Slash: `/help` `/commands` `/status` `/whoami` `/new` `/reset` `/stop` `/tools` `/tasks` `/usage` `/model` `/cases` `/order` `/health` `/brief` `/marketing` `/wp sites` `/wp use <site-id>` `/wp clear`.
 
-Free text uses tool-backed reads and proposals. It can read WooCommerce orders/products and WordPress pages, posts, site title/tagline, themes, and plugin status. Order, product, page, post, and site-text writes wait for their confirmation button; plugin on/off also requires Oscar. A free-text "yes" never authorizes a write. Customer mail only goes through an explicit approve path.
+Free text uses tool-backed reads and proposals. It can read WooCommerce orders/products and WordPress pages, posts, site title/tagline, themes, and plugin status. Ambiguous change requests, visual or annotated screenshot descriptions (such as `"ringat in på bilden"`), layout requests, or multi-path edits trigger the pre-change verification contract (`skills/change-verification/SKILL.md`, `<clarify>{...}</clarify>`) with up to 3 rounds of clickable clarification buttons (`clarify:pick`, `clarify:go`, `clarify:other`, `clarify:cancel`) before opening workspaces or proposing edits. Clarification never writes files or replaces final confirmation buttons (`proposal:yes:pr-...`, `action:yes`, `wpfile:stage:fe-...`, `wpreview:stage:wr-...`). Order, product, page, post, and site-text writes wait for their confirmation button; plugin on/off also requires Oscar. A free-text "yes" never authorizes a write. Customer mail only goes through an explicit approve path.
 
 WordPress operations use the named, site-bound tools `wp_list_sites`, `wp_site_status`, `wp_backup_status`, `wp_security_findings`, `wp_prepare_update_plan`, `wp_prepare_restore_plan`, and `wp_list_open_operations`. The server checks actor and site permissions and limits a turn to 3 calls, 30 seconds, 4 KiB per result, and 10 KiB total. Site context is bound to actor, channel, and conversation for 12 hours; `/wp sites`, `/wp use <site-id>`, and `/wp clear` select or clear it. Update/restore plans are locked previews with no approval or execution path. Status, backup, and security results may be mock or unknown; live health checks, security scanning, version discovery, update execution, and production restore are not implemented.
 

@@ -20,6 +20,7 @@ from ecom_ops.model_router.errors import (
     ModelUnavailableError,
 )
 from ecom_ops.model_router.openai_chatgpt import (
+    MODELS_URL,
     RESPONSES_URL,
     OpenAIChatGPTOAuthRoute,
     _completed_output_text,
@@ -874,3 +875,84 @@ def test_400_generic_vs_unknown_model_and_list_models(monkeypatch):
     )
     models = route.list_models()
     assert [m["id"] for m in models] == ["gpt-5.4-mini", "gpt-6.2-sol"]
+
+
+def test_default_host_id_uses_urn_uuid_and_upgrades_legacy_hex(monkeypatch, tmp_path):
+    import uuid as uuid_mod
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    for k in (
+        "OPENAI_SIWC_CLIENT_ID",
+        "OPENAI_SIWC_REDIRECT_URI",
+        "OPENAI_SIWC_AUTHORIZATION_URL",
+        "OPENAI_SIWC_TOKEN_URL",
+        "OPENAI_SIWC_HOST_ID",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    route = OpenAIChatGPTOAuthRoute()
+    url1, _state1 = route.start_authorization()
+    host1 = parse_qs(urlparse(url1).query)["ext_agent_host_id"][0]
+    assert host1.startswith("urn:uuid:")
+    uuid_mod.UUID(host1.removeprefix("urn:uuid:"))
+
+    host_file = tmp_path / "openai_siwc_host_id"
+    assert host_file.read_text(encoding="utf-8").strip() == host1
+
+    # Reused across subsequent calls
+    url2, _state2 = route.start_authorization()
+    host2 = parse_qs(urlparse(url2).query)["ext_agent_host_id"][0]
+    assert host2 == host1
+
+    # Legacy bare 32-char hex value is automatically upgraded to urn:uuid:<uuid4>
+    host_file.write_text("996aaa4cd1caf5a789b74098363da966\n", encoding="utf-8")
+    url3, _state3 = route.start_authorization()
+    host3 = parse_qs(urlparse(url3).query)["ext_agent_host_id"][0]
+    assert host3.startswith("urn:uuid:")
+    uuid_mod.UUID(host3.removeprefix("urn:uuid:"))
+    assert host_file.read_text(encoding="utf-8").strip() == host3
+
+
+@responses.activate
+def test_live_models_payload_and_bytes_sse_stream_without_content_type(monkeypatch):
+    _configure(monkeypatch)
+    route = OpenAIChatGPTOAuthRoute()
+    _connected(route, fresh=True)
+
+    # ChatGPT OAuth /v1/models returns {"models": [{"slug": ..., "display_name": ..., "visibility": ...}]}
+    responses.add(
+        responses.GET,
+        MODELS_URL,
+        json={
+            "models": [
+                {"slug": "gpt-6.2-sol", "display_name": "GPT-6.2-Sol", "visibility": "list"},
+                {"slug": "gpt-reserve", "display_name": "GPT-Reserve", "visibility": "hide"},
+            ]
+        },
+        status=200,
+    )
+    models = route.list_models()
+    assert models == [{"id": "gpt-6.2-sol", "name": "GPT-6.2-Sol"}]
+
+    # When Content-Type is omitted (encoding=None), iter_lines(decode_unicode=True) yields bytes
+    class _BytesStreamResp:
+        status_code = 200
+        headers = {}
+
+        def iter_lines(self, decode_unicode=True):
+            del decode_unicode
+            yield b"event: response.output_text.delta"
+            yield b'data: {"type":"response.output_text.delta","delta":"PONG"}'
+            yield b""
+            yield b'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}'
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "ecom_ops.model_router.openai_chatgpt.requests.post",
+        lambda *a, **kw: _BytesStreamResp(),
+    )
+    res = route.complete(ModelRequest(messages=[{"role": "user", "content": "ping"}]))
+    assert res.content == "PONG"
+    assert res.total_tokens == 6
