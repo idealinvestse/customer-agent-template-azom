@@ -11,11 +11,9 @@ import difflib
 import hashlib
 import inspect
 import json
-import os
 import re
 import secrets
 import threading
-import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,7 +29,9 @@ from ecom_ops.wp_ops.file_changes import (
     risk_for,
 )
 from ecom_ops.wp_ops.files import LocalTree, PathRejected, TransportError, resolve_file
-from ecom_ops.wp_ops.models import Site
+from ecom_ops.wp_ops.locks import advisory_file_lock
+from ecom_ops.wp_ops.locks import site_lock as _site_lock
+from ecom_ops.wp_ops.models import Site, WpOpsResult
 from ecom_ops.wp_ops.pii import contains_real_pii
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.review_checks import (
@@ -78,7 +78,7 @@ from ecom_ops.wp_ops.review_workspace import (
     write_manifest,
     write_tree,
 )
-from ecom_ops.wp_ops.service import WpOpsResult
+from ecom_ops.wp_ops.store import atomic_write_text
 
 _TTL = timedelta(hours=12)
 _PREVIEW_TTL = timedelta(hours=2)
@@ -221,12 +221,6 @@ def _plan_lock(plan_id: str) -> threading.Lock:
             lock = threading.Lock()
             _PLAN_LOCKS[key] = lock
         return lock
-
-
-def _site_lock(site_id: str) -> threading.Lock:
-    from ecom_ops.wp_ops.service import _site_lock as lock_for
-
-    return lock_for(site_id)
 
 
 class ReviewPlans:
@@ -2713,49 +2707,8 @@ class ReviewPlans:
     @contextlib.contextmanager
     def _store_file_lock(self) -> Iterator[None]:
         """Advisory cross-process lock around ``wp_review_plans.json`` mutations."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = self.path.with_suffix(".json.lock")
-        fh = lock_path.open("a+b")
-        locked = False
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                deadline = time.monotonic() + 5.0
-                while True:
-                    try:
-                        fh.seek(0)
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-                        locked = True
-                        break
-                    except OSError:
-                        if time.monotonic() >= deadline:
-                            break
-                        time.sleep(0.02)
-            else:
-                import fcntl
-
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-                locked = True
+        with advisory_file_lock(self.path.with_suffix(".json.lock")):
             yield
-        finally:
-            if locked:
-                try:
-                    if os.name == "nt":
-                        import msvcrt
-
-                        fh.seek(0)
-                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-                    else:
-                        import fcntl
-
-                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
-            try:
-                fh.close()
-            except OSError:
-                pass
 
     def _load(self) -> list[dict[str, Any]]:
         if not self.path.is_file():
@@ -2770,27 +2723,8 @@ class ReviewPlans:
         return [row for row in plans if isinstance(row, dict)]
 
     def _save(self, plans: list[dict[str, Any]]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(
-            f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
-        )
         payload = json.dumps({"plans": [self._public(row) for row in plans]}, ensure_ascii=False, indent=2)
-        try:
-            temporary.write_text(payload, encoding="utf-8")
-            for attempt in range(5):
-                try:
-                    temporary.replace(self.path)
-                    return
-                except PermissionError:
-                    if attempt >= 4:
-                        raise
-                    time.sleep(0.02 * (attempt + 1))
-        finally:
-            if temporary.exists():
-                try:
-                    temporary.unlink()
-                except OSError:
-                    pass
+        atomic_write_text(self.path, payload)
 
     def _replace(self, plan: dict[str, Any]) -> None:
         with _STORE, self._store_file_lock():

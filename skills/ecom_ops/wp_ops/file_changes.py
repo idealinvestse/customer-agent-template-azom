@@ -11,10 +11,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import json
-import os
 import re
-import secrets
-import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,8 +31,8 @@ from ecom_ops.wp_ops.files import (
     resolve_file,
     transport_message,
 )
-from ecom_ops.wp_ops.models import Site
-from ecom_ops.wp_ops.service import WpOpsResult
+from ecom_ops.wp_ops.models import Site, WpOpsResult
+from ecom_ops.wp_ops.store import atomic_write_text
 
 _PLAN_ID = re.compile(r"^fe-[a-f0-9]{12}$")
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
@@ -185,19 +182,11 @@ def payload_path(data_dir: Path, plan_id: str) -> Path:
 
 def write_payload(data_dir: Path, plan_id: str, new_text: str, diff: str) -> None:
     path = payload_path(data_dir, plan_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(
-        f"{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
-    )
-    temporary.write_text(
+    atomic_write_text(
+        path,
         json.dumps({"new_text": new_text, "diff": diff}, ensure_ascii=False),
-        encoding="utf-8",
+        mode=0o600,
     )
-    try:
-        os.chmod(temporary, 0o600)
-    except OSError:
-        pass
-    temporary.replace(path)
 
 
 def read_payload(data_dir: Path, plan_id: str) -> dict[str, str]:

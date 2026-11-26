@@ -50,7 +50,7 @@ from ecom_ops.wp_ops.files import (
     components_parent,
     resolve_file,
 )
-from ecom_ops.wp_ops.models import Site
+from ecom_ops.wp_ops.models import Site, WpOpsResult
 from ecom_ops.wp_ops.pii import contains_real_pii, normalize_pii_text
 from ecom_ops.wp_ops.playbooks import PLAYBOOK_TOPICS, get_playbook
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
@@ -63,7 +63,7 @@ from ecom_ops.wp_ops.review_workspace import (
     site_plugin_slug,
     workspace_root,
 )
-from ecom_ops.wp_ops.service import WpOpsResult, WpOpsService
+from ecom_ops.wp_ops.service import WpOpsService
 from ecom_ops.wp_ops.static_checks import run_static_checks
 from ecom_ops.wp_ops.wporg_intel import fetch_component_intel
 

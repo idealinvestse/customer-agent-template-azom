@@ -22,9 +22,17 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.wp_ops.config import data_dir_path, is_mock_mode, ssh_files_enabled
-from ecom_ops.wp_ops.models import Site, _files_root, _ssh_host, files_root_narrow
+from ecom_ops.wp_ops.locks import advisory_file_lock
+from ecom_ops.wp_ops.models import (
+    SITE_ID_RE,
+    Site,
+    files_root_narrow,
+    validate_files_root,
+    validate_ssh_host,
+)
+from ecom_ops.wp_ops.store import atomic_write_text
 
-_SITE_ID = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+_SITE_ID = SITE_ID_RE
 _USER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
 _HOST_KEY_TYPES = frozenset(
     {
@@ -187,25 +195,28 @@ def save_ssh(
     """Validate every field, then write. No connection is opened."""
     base = data_dir_path(data_dir)
     with _PROCESS_LOCK:
-        fd = _acquire_file_lock(base)
         try:
-            return _save_locked(
-                base,
-                site,
-                files_root=files_root,
-                ssh_host=ssh_host,
-                ssh_user=ssh_user,
-                ssh_port=ssh_port,
-                ssh_identity_file=ssh_identity_file,
-                private_key=private_key,
-                clear_key=clear_key,
-                global_user=global_user,
-                global_port=global_port,
-                global_identity_file=global_identity_file,
-                host_public_key=host_public_key,
-            )
-        finally:
-            _release_file_lock(fd)
+            lock_cm = advisory_file_lock(base / "wp_ssh.lock", mode=0o600, raise_on_timeout=True)
+            with lock_cm:
+                return _save_locked(
+                    base,
+                    site,
+                    files_root=files_root,
+                    ssh_host=ssh_host,
+                    ssh_user=ssh_user,
+                    ssh_port=ssh_port,
+                    ssh_identity_file=ssh_identity_file,
+                    private_key=private_key,
+                    clear_key=clear_key,
+                    global_user=global_user,
+                    global_port=global_port,
+                    global_identity_file=global_identity_file,
+                    host_public_key=host_public_key,
+                )
+        except SettingsRejected:
+            raise
+        except OSError as exc:
+            raise SettingsRejected(_SAVE) from exc
 
 
 def _save_locked(
@@ -332,12 +343,12 @@ def _changes_from_row(site_id: str, row: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(_ROW)
     changes: dict[str, Any] = {}
     if row.get("files_root"):
-        root = _files_root(row["files_root"], site_id=site_id)
+        root = validate_files_root(row["files_root"], site_id=site_id)
         if not root or not files_root_narrow(root):
             raise ValueError(_ROW)
         changes["files_root"] = root
     if row.get("ssh_host"):
-        host = _ssh_host(row["ssh_host"], site_id=site_id)
+        host = validate_ssh_host(row["ssh_host"], site_id=site_id)
         if not host:
             raise ValueError(_ROW)
         changes["ssh_host"] = host
@@ -385,7 +396,7 @@ def _validated_row(
     root_text = str(files_root or "").strip()
     if root_text:
         try:
-            root = _files_root(root_text, site_id=site_id)
+            root = validate_files_root(root_text, site_id=site_id)
         except ValueError as exc:
             raise SettingsRejected(_ROOT) from exc
         if not root:
@@ -396,7 +407,7 @@ def _validated_row(
     host_text = str(ssh_host or "").strip()
     if host_text:
         try:
-            host = _ssh_host(host_text, site_id=site_id)
+            host = validate_ssh_host(host_text, site_id=site_id)
         except ValueError as exc:
             raise SettingsRejected(_HOST) from exc
         if not host:
@@ -481,13 +492,9 @@ def _write_overlay(data_dir: Path, sites: dict[str, dict[str, Any]]) -> None:
     if _looks_like_key(text):
         raise SettingsRejected(_KEY)
     path = overlay_file(data_dir)
-    tmp = path.with_suffix(".json.tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(path)
+        atomic_write_text(path, text)
     except OSError as exc:
-        _unlink_quiet(tmp)
         raise SettingsRejected(_SAVE) from exc
 
 
@@ -570,46 +577,3 @@ def _unlink_quiet(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def _acquire_file_lock(data_dir: Path) -> int:
-    path = data_dir / "wp_ssh.lock"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    except OSError as exc:
-        raise SettingsRejected(_SAVE) from exc
-    _chmod_mode(path, 0o600)
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            os.lseek(fd, 0, os.SEEK_SET)
-            if os.fstat(fd).st_size < 1:
-                os.write(fd, b"\0")
-                os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fd, fcntl.LOCK_EX)
-    except OSError as exc:
-        os.close(fd)
-        raise SettingsRejected(_SAVE) from exc
-    return fd
-
-
-def _release_file_lock(fd: int) -> None:
-    try:
-        if os.name == "nt":
-            import msvcrt
-
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    except OSError:
-        pass
-    os.close(fd)

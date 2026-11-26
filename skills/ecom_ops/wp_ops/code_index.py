@@ -8,10 +8,30 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
 from typing import Any
 
 from ecom_ops.wp_ops.credentials import scrub_compact
+from ecom_ops.wp_ops.source_scan import (
+    iter_source_files as _iter_files,
+)
+from ecom_ops.wp_ops.source_scan import (
+    line_at as _line_at,
+)
+from ecom_ops.wp_ops.source_scan import (
+    line_number as _line_number,
+)
+from ecom_ops.wp_ops.source_scan import (
+    read_call_args as _read_call_args,
+)
+from ecom_ops.wp_ops.source_scan import (
+    strip_comments_and_find_strings as _strip_comments_and_find_strings,
+)
+from ecom_ops.wp_ops.source_scan import (
+    summarize_callback as _summarize_callback,
+)
+from ecom_ops.wp_ops.source_scan import (
+    unquote_literal as _unquote,
+)
 
 _PHP_EXTENSIONS = frozenset({".php", ".phtml", ".inc"})
 _JS_EXTENSIONS = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
@@ -92,184 +112,8 @@ _KIND_ALIASES = {
 }
 
 
-def _iter_files(
-    files: dict[str, str] | Iterable[tuple[str, str]],
-) -> list[tuple[str, str]]:
-    items = files.items() if isinstance(files, dict) else files
-    normalized: list[tuple[str, str]] = []
-    for raw_path, raw_content in items:
-        if not isinstance(raw_path, str) or not isinstance(raw_content, str):
-            continue
-        clean_path = raw_path.strip().replace("\\", "/").lstrip("./")
-        if not clean_path:
-            continue
-        normalized.append((clean_path, raw_content))
-    normalized.sort(key=lambda pair: pair[0])
-    return normalized
-
-
 def _scrub_signature(text: str, *, max_len: int = 160) -> str:
     return scrub_compact(text, max_len=max_len)
-
-
-def _strip_comments_and_find_strings(
-    text: str,
-    *,
-    allow_hash: bool,
-) -> tuple[str, list[bool], list[int]]:
-    """Replace comments with spaces (preserving newlines) and track string positions & brace depth."""
-    n = len(text)
-    out = list(text)
-    in_string = [False] * n
-    depths = [0] * n
-    i = 0
-    depth = 0
-    state = "code"
-    quote = ""
-    while i < n:
-        ch = text[i]
-        nxt = text[i + 1] if i + 1 < n else ""
-        if state == "code":
-            depths[i] = depth
-            if ch in ("'", '"'):
-                state = "string"
-                quote = ch
-                in_string[i] = True
-            elif ch == "/" and nxt == "/":
-                state = "line_comment"
-                out[i] = " "
-                out[i + 1] = " "
-                depths[i + 1] = depth
-                i += 2
-                continue
-            elif allow_hash and ch == "#":
-                state = "line_comment"
-                out[i] = " "
-            elif ch == "/" and nxt == "*":
-                state = "block_comment"
-                out[i] = " "
-                out[i + 1] = " "
-                depths[i + 1] = depth
-                i += 2
-                continue
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth = max(0, depth - 1)
-                depths[i] = depth
-        elif state == "string":
-            in_string[i] = True
-            depths[i] = depth
-            if ch == "\\":
-                if i + 1 < n:
-                    in_string[i + 1] = True
-                    depths[i + 1] = depth
-                    i += 2
-                    continue
-            elif ch == quote:
-                state = "code"
-        elif state == "line_comment":
-            depths[i] = depth
-            if ch == "\n":
-                state = "code"
-            else:
-                out[i] = " "
-        elif state == "block_comment":
-            depths[i] = depth
-            if ch == "*" and nxt == "/":
-                out[i] = " "
-                out[i + 1] = " "
-                depths[i + 1] = depth
-                state = "code"
-                i += 2
-                continue
-            if ch != "\n":
-                out[i] = " "
-        i += 1
-    return "".join(out), in_string, depths
-
-
-def _line_number(text: str, pos: int) -> int:
-    return text.count("\n", 0, pos) + 1
-
-
-def _line_at(lines: list[str], line_no: int) -> str:
-    if 1 <= line_no <= len(lines):
-        return lines[line_no - 1].strip()
-    return ""
-
-
-def _read_call_args(stripped: str, open_paren_idx: int, *, limit: int = 360) -> list[str]:
-    """Read top-level comma-separated argument expressions starting at '('."""
-    n = len(stripped)
-    if open_paren_idx >= n or stripped[open_paren_idx] != "(":
-        return []
-    args: list[str] = []
-    cur: list[str] = []
-    paren_depth = 1
-    bracket_depth = 0
-    brace_depth = 0
-    quote = ""
-    i = open_paren_idx + 1
-    end_limit = min(n, open_paren_idx + limit)
-    while i < end_limit and paren_depth > 0:
-        ch = stripped[i]
-        if quote:
-            cur.append(ch)
-            if ch == "\\" and i + 1 < end_limit:
-                i += 1
-                cur.append(stripped[i])
-            elif ch == quote:
-                quote = ""
-        else:
-            if ch in ("'", '"'):
-                quote = ch
-                cur.append(ch)
-            elif ch == "(":
-                paren_depth += 1
-                cur.append(ch)
-            elif ch == ")":
-                paren_depth -= 1
-                if paren_depth > 0:
-                    cur.append(ch)
-            elif ch == "[":
-                bracket_depth += 1
-                cur.append(ch)
-            elif ch == "]":
-                bracket_depth = max(0, bracket_depth - 1)
-                cur.append(ch)
-            elif ch == "{":
-                brace_depth += 1
-                cur.append(ch)
-            elif ch == "}":
-                brace_depth = max(0, brace_depth - 1)
-                cur.append(ch)
-            elif ch == "," and paren_depth == 1 and bracket_depth == 0 and brace_depth == 0:
-                args.append(" ".join("".join(cur).split()))
-                cur = []
-            else:
-                cur.append(ch)
-        i += 1
-    tail = " ".join("".join(cur).split())
-    if tail:
-        args.append(tail)
-    return args
-
-
-def _unquote(expr: str) -> str | None:
-    text = expr.strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
-        return text[1:-1]
-    return None
-
-
-def _summarize_callback(expr: str) -> str:
-    clean = " ".join(expr.split())
-    if re.match(r"^(?:static\s+)?(?:function|fn)\s*\(", clean):
-        return "closure"
-    if len(clean) > 64:
-        return clean[:61] + "..."
-    return clean
 
 
 def _extract_headers(path: str, content: str, *, require_plugin_or_theme: bool) -> list[dict[str, Any]]:
@@ -335,13 +179,15 @@ def _extract_block_json(path: str, content: str) -> list[dict[str, Any]]:
     ]
 
 
-def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
-    entries = _extract_headers(path, content, require_plugin_or_theme=True)
-    stripped, in_string, depths = _strip_comments_and_find_strings(content, allow_hash=True)
-    lines = stripped.splitlines()
-
-    # Collect class/interface/trait spans mapped to their opening brace depth.
-    containers: list[tuple[int, int, str]] = []  # (start_pos, body_depth, name)
+def _collect_php_types(
+    path: str,
+    stripped: str,
+    lines: list[str],
+    in_string: list[bool],
+    depths: list[int],
+) -> tuple[list[dict[str, Any]], list[tuple[int, int, str]]]:
+    entries: list[dict[str, Any]] = []
+    containers: list[tuple[int, int, str]] = []
     for match in _PHP_TYPE_RE.finditer(stripped):
         pos = match.start()
         if in_string[pos]:
@@ -360,9 +206,18 @@ def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
         )
         brace_idx = stripped.find("{", match.end())
         if brace_idx != -1:
-            body_depth = depths[brace_idx] + 1
-            containers.append((brace_idx + 1, body_depth, name))
+            containers.append((brace_idx + 1, depths[brace_idx] + 1, name))
+    return entries, containers
 
+
+def _collect_php_functions(
+    path: str,
+    stripped: str,
+    lines: list[str],
+    in_string: list[bool],
+    depths: list[int],
+    containers: list[tuple[int, int, str]],
+) -> list[dict[str, Any]]:
     def _enclosing_class(pos: int) -> str | None:
         cur_depth = depths[pos]
         candidate_name: str | None = None
@@ -375,6 +230,7 @@ def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
                 candidate_name = cname
         return candidate_name
 
+    entries: list[dict[str, Any]] = []
     for match in _PHP_FUNC_RE.finditer(stripped):
         pos = match.start()
         if in_string[pos]:
@@ -382,18 +238,20 @@ def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
         fn_name = match.group(1)
         line_no = _line_number(stripped, pos)
         owner = _enclosing_class(pos)
-        kind = "method" if owner else "function"
-        full_name = f"{owner}::{fn_name}" if owner else fn_name
         entries.append(
             {
-                "kind": kind,
-                "name": full_name,
+                "kind": "method" if owner else "function",
+                "name": f"{owner}::{fn_name}" if owner else fn_name,
                 "path": path,
                 "line": line_no,
                 "signature": _scrub_signature(_line_at(lines, line_no)),
             }
         )
+    return entries
 
+
+def _collect_php_hooks(path: str, stripped: str, in_string: list[bool]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
     for match in _PHP_HOOK_RE.finditer(stripped):
         pos = match.start()
         if in_string[pos]:
@@ -416,7 +274,11 @@ def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
                 "signature": _scrub_signature(sig),
             }
         )
+    return entries
 
+
+def _collect_php_shortcodes(path: str, stripped: str, in_string: list[bool]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
     for match in _PHP_SHORTCODE_RE.finditer(stripped):
         pos = match.start()
         if in_string[pos]:
@@ -435,7 +297,11 @@ def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
                 "signature": _scrub_signature(f"add_shortcode('{tag}'{cb})"),
             }
         )
+    return entries
 
+
+def _collect_php_rest_routes(path: str, stripped: str, in_string: list[bool]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
     for match in _PHP_REST_RE.finditer(stripped):
         pos = match.start()
         if in_string[pos]:
@@ -455,7 +321,11 @@ def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
                 "signature": _scrub_signature(f"register_rest_route({args[0]}, {args[1]})"),
             }
         )
+    return entries
 
+
+def _collect_php_blocks(path: str, stripped: str, in_string: list[bool]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
     for match in _PHP_BLOCK_RE.finditer(stripped):
         pos = match.start()
         if in_string[pos]:
@@ -473,7 +343,11 @@ def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
                 "signature": _scrub_signature(f"register_block_type({args[0]})"),
             }
         )
+    return entries
 
+
+def _collect_php_defines(path: str, stripped: str, in_string: list[bool]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
     for match in _PHP_DEFINE_RE.finditer(stripped):
         pos = match.start()
         if in_string[pos]:
@@ -495,7 +369,21 @@ def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
                 "signature": _scrub_signature(sig),
             }
         )
+    return entries
 
+
+def _extract_php_symbols(path: str, content: str) -> list[dict[str, Any]]:
+    entries = _extract_headers(path, content, require_plugin_or_theme=True)
+    stripped, in_string, depths = _strip_comments_and_find_strings(content, allow_hash=True)
+    lines = stripped.splitlines()
+    type_entries, containers = _collect_php_types(path, stripped, lines, in_string, depths)
+    entries.extend(type_entries)
+    entries.extend(_collect_php_functions(path, stripped, lines, in_string, depths, containers))
+    entries.extend(_collect_php_hooks(path, stripped, in_string))
+    entries.extend(_collect_php_shortcodes(path, stripped, in_string))
+    entries.extend(_collect_php_rest_routes(path, stripped, in_string))
+    entries.extend(_collect_php_blocks(path, stripped, in_string))
+    entries.extend(_collect_php_defines(path, stripped, in_string))
     return entries
 
 

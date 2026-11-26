@@ -10,10 +10,9 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from ecom_ops.wp_ops.code_index import _iter_files
+from ecom_ops.wp_ops.source_scan import iter_source_files, parse_version_tuple
 
 _VERSION_TAG_RE = re.compile(r"(?im)@version\s*[:=]?\s*v?(\d+\.\d+(?:\.\d+)*)")
-_SEMVER_RE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)(?:[-+][A-Za-z0-9_.-]+)?\s*$")
 _CRITICAL_PREFIXES = ("cart/", "checkout/", "emails/", "order/")
 _CRITICAL_KEYWORDS = ("cart", "checkout", "payment", "thankyou", "email")
 
@@ -98,20 +97,10 @@ def parse_template_version(content: str) -> str | None:
     return match.group(1)
 
 
-def _version_tuple(version: str | None) -> tuple[int, ...] | None:
-    if not isinstance(version, str) or not version.strip():
-        return None
-    match = _SEMVER_RE.fullmatch(version.strip())
-    if not match:
-        return None
-    parts = [int(seg) for seg in match.group(1).split(".")]
-    return tuple(parts)
-
-
 def compare_versions(override_ver: str | None, core_ver: str | None) -> str:
     """Compare override template version against core reference version."""
-    left = _version_tuple(override_ver)
-    right = _version_tuple(core_ver)
+    left = parse_version_tuple(override_ver)
+    right = parse_version_tuple(core_ver)
     if left is None or right is None:
         return "unknown"
     width = max(len(left), len(right))
@@ -174,7 +163,7 @@ def audit_overrides(
 ) -> dict[str, Any]:
     """Audit all ``woocommerce/...`` template overrides inside a theme."""
     baseline = _baseline_versions(woo_version, reference_versions)
-    normalized_files = _iter_files(theme_files)
+    normalized_files = iter_source_files(theme_files)
 
     items: list[dict[str, Any]] = []
     outdated = 0

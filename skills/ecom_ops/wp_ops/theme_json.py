@@ -128,9 +128,9 @@ def _parse_list_index(segment: str) -> int:
     return int(segment)
 
 
-def _apply_one(doc: dict[str, Any], parts: list[str], op: str, value: Any) -> None:
+def _traverse_to_parent(doc: dict[str, Any], parent_segments: list[str], op: str) -> Any:
     current: Any = doc
-    for seg in parts[:-1]:
+    for seg in parent_segments:
         if seg == "-":
             raise ValueError("'-' is only valid as the final segment for list append.")
         if isinstance(current, dict):
@@ -147,39 +147,50 @@ def _apply_one(doc: dict[str, Any], parts: list[str], op: str, value: Any) -> No
             current = current[idx]
         else:
             raise ValueError("Cannot traverse through non-container value.")
+    return current
 
+
+def _apply_to_dict(target: dict[str, Any], leaf: str, op: str, value: Any) -> None:
+    if op == "set":
+        target[leaf] = copy.deepcopy(value)
+        return
+    if op == "remove":
+        if leaf not in target:
+            raise ValueError(f"Target key does not exist: {leaf!r}")
+        del target[leaf]
+
+
+def _apply_to_list(target: list[Any], leaf: str, op: str, value: Any) -> None:
+    if op == "set":
+        if leaf == "-":
+            target.append(copy.deepcopy(value))
+            return
+        idx = _parse_list_index(leaf)
+        if idx == len(target):
+            target.append(copy.deepcopy(value))
+        elif 0 <= idx < len(target):
+            target[idx] = copy.deepcopy(value)
+        else:
+            raise ValueError(f"Array index out of bounds: {idx}")
+        return
+    if op == "remove":
+        if leaf == "-":
+            raise ValueError("'-' cannot be used with remove operation.")
+        idx = _parse_list_index(leaf)
+        if not (0 <= idx < len(target)):
+            raise ValueError(f"Array index out of bounds: {idx}")
+        target.pop(idx)
+
+
+def _apply_one(doc: dict[str, Any], parts: list[str], op: str, value: Any) -> None:
+    current = _traverse_to_parent(doc, parts[:-1], op)
     leaf = parts[-1]
     if isinstance(current, dict):
-        if op == "set":
-            current[leaf] = copy.deepcopy(value)
-        elif op == "remove":
-            if leaf not in current:
-                raise ValueError(f"Target key does not exist: {leaf!r}")
-            del current[leaf]
+        _apply_to_dict(current, leaf, op, value)
         return
-
     if isinstance(current, list):
-        if op == "set":
-            if leaf == "-":
-                current.append(copy.deepcopy(value))
-                return
-            idx = _parse_list_index(leaf)
-            if idx == len(current):
-                current.append(copy.deepcopy(value))
-            elif 0 <= idx < len(current):
-                current[idx] = copy.deepcopy(value)
-            else:
-                raise ValueError(f"Array index out of bounds: {idx}")
-            return
-        if op == "remove":
-            if leaf == "-":
-                raise ValueError("'-' cannot be used with remove operation.")
-            idx = _parse_list_index(leaf)
-            if not (0 <= idx < len(current)):
-                raise ValueError(f"Array index out of bounds: {idx}")
-            current.pop(idx)
-            return
-
+        _apply_to_list(current, leaf, op, value)
+        return
     raise ValueError("Target parent is not an object or array.")
 
 

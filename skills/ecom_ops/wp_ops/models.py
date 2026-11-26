@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
-_SITE_ID = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+SITE_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+_SITE_ID = SITE_ID_RE
 _SECRET_REF = re.compile(r"^WP_SECRET_[A-Z0-9_]{1,40}$")
 _ERROR_CLASS = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,39}$")
 _FORBIDDEN_REFS = frozenset({"WP_USERNAME", "WP_APP_PASSWORD", "WORDPRESS_USERNAME"})
@@ -48,6 +50,44 @@ _BROAD_ROOTS = (
     "/var/run",
     "/var/spool",
 )
+
+
+@dataclass
+class WpOpsResult:
+    ok: bool
+    message: str
+    data: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"ok": self.ok, "message": self.message, "data": self.data}
+
+
+def ok_result(message: str, **data: Any) -> WpOpsResult:
+    """Construct a successful ``WpOpsResult`` with optional payload keys."""
+    return WpOpsResult(ok=True, message=message, data=data or None)
+
+
+def fail_result(error_class: str, message: str, **data: Any) -> WpOpsResult:
+    """Construct a failed ``WpOpsResult`` carrying ``error_class``."""
+    return WpOpsResult(ok=False, message=message, data={"error_class": error_class, **data})
+
+
+def ensure_utc(dt: datetime) -> datetime:
+    """Normalize a naive ``datetime`` to UTC, preserving tz-aware instances."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
+
+
+def parse_iso_utc(raw: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp string into a timezone-aware UTC ``datetime``."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    return ensure_utc(parsed)
 
 
 def clean_error_class(value: str | None) -> str | None:
@@ -252,13 +292,16 @@ def parse_site(raw: Any) -> Site:
     )
 
 
-def _files_root(value: Any, *, site_id: str) -> str:
+def validate_files_root(value: Any, *, site_id: str) -> str:
     text = str(value or "").strip().rstrip("/")
     if not text:
         return ""
     if not _FILES_ROOT.fullmatch(text) or ".." in text.split("/"):
         raise ValueError(f"{site_id}: files_root must be an absolute path without '..'")
     return text
+
+
+_files_root = validate_files_root
 
 
 def files_root_narrow(value: str) -> bool:
@@ -273,13 +316,16 @@ def files_root_narrow(value: str) -> bool:
     return True
 
 
-def _ssh_host(value: Any, *, site_id: str) -> str:
+def validate_ssh_host(value: Any, *, site_id: str) -> str:
     text = str(value or "").strip().lower().rstrip(".")
     if not text:
         return ""
     if not _SSH_HOST.fullmatch(text):
         raise ValueError(f"{site_id}: ssh_host must be a hostname")
     return text
+
+
+_ssh_host = validate_ssh_host
 
 
 def _short_text(value: Any, *, field: str, limit: int, allow_empty: bool = False) -> str:

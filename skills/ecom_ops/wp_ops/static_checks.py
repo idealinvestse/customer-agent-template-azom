@@ -9,13 +9,13 @@ import json
 import re
 from typing import Any
 
-from ecom_ops.wp_ops.code_index import (
-    _iter_files,
-    _line_number,
-    _read_call_args,
-    _strip_comments_and_find_strings,
-)
 from ecom_ops.wp_ops.credentials import scrub_compact
+from ecom_ops.wp_ops.source_scan import (
+    iter_source_files,
+    line_number,
+    read_call_args,
+    strip_comments_and_find_strings,
+)
 
 _PHP_EXTENSIONS = frozenset({".php", ".phtml", ".inc"})
 _TEMPLATE_PREFIXES = ("templates/", "woocommerce/", "template-parts/", "parts/")
@@ -167,7 +167,7 @@ def _check_unescaped_superglobals(
     seen_lines: set[int] = set()
     for sg_match in _SUPERGLOBAL_RE.finditer(stripped):
         pos = sg_match.start()
-        line_no = _line_number(stripped, pos)
+        line_no = line_number(stripped, pos)
         if line_no in seen_lines:
             continue
         stmt_start = max(
@@ -219,7 +219,7 @@ def _check_unsafe_sql(
         if in_string[pos]:
             continue
         open_paren = stripped.find("(", match.end() - 1)
-        args = _read_call_args(stripped, open_paren, limit=500)
+        args = read_call_args(stripped, open_paren, limit=500)
         if not args:
             continue
         first_arg = args[0]
@@ -230,7 +230,7 @@ def _check_unsafe_sql(
             if first_arg in unsafe_vars and first_arg not in prepared_vars:
                 is_unsafe = True
         if is_unsafe:
-            line_no = _line_number(stripped, pos)
+            line_no = line_number(stripped, pos)
             findings.append(
                 _finding(
                     "high",
@@ -263,7 +263,7 @@ def _check_dangerous_exec(
             msg = "Unguarded unserialize() without ['allowed_classes' => false]."
         else:
             msg = f"Dangerous code/command execution primitive {fn_name}() detected."
-        line_no = _line_number(stripped, pos)
+        line_no = line_number(stripped, pos)
         findings.append(
             _finding(
                 "high",
@@ -291,7 +291,7 @@ def _check_ajax_and_post_guards(
         has_priv_ajax = any(m.group(1) is None for m in ajax_matches)
         has_nopriv_ajax = any(m.group(1) is not None for m in ajax_matches)
         first_match = ajax_matches[0]
-        line_no = _line_number(stripped, first_match.start())
+        line_no = line_number(stripped, first_match.start())
         if not has_nonce:
             findings.append(
                 _finding(
@@ -318,7 +318,7 @@ def _check_ajax_and_post_guards(
 
     post_match = _POST_VAR_RE.search(stripped)
     if post_match and not has_nonce:
-        line_no = _line_number(stripped, post_match.start())
+        line_no = line_number(stripped, post_match.start())
         findings.append(
             _finding(
                 "high",
@@ -368,7 +368,7 @@ def _check_deprecated_woo(
             pos = match.start()
             if in_string[pos]:
                 continue
-            line_no = _line_number(stripped, pos)
+            line_no = line_number(stripped, pos)
             findings.append(
                 _finding(
                     "medium",
@@ -406,7 +406,7 @@ def run_static_checks(
     max_findings: int = 40,
 ) -> dict[str, Any]:
     """Run pure-Python security and WordPress/WooCommerce quality checks."""
-    normalized_files = _iter_files(files)
+    normalized_files = iter_source_files(files)
     all_findings: list[dict[str, Any]] = []
 
     for path, content in normalized_files:
@@ -418,7 +418,7 @@ def run_static_checks(
             continue
 
         raw_lines = content.splitlines()
-        stripped, in_string, _depths = _strip_comments_and_find_strings(
+        stripped, in_string, _depths = strip_comments_and_find_strings(
             content, allow_hash=True
         )
         all_findings.extend(_check_unescaped_superglobals(path, stripped, raw_lines))

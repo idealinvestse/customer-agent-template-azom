@@ -8,12 +8,10 @@ that file. Live SSH stays off unless mock mode is off and the owner sets
 
 from __future__ import annotations
 
-import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -30,32 +28,13 @@ from ecom_ops.wp_ops.connectors import (
     UptimeConnector,
 )
 from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
-from ecom_ops.wp_ops.models import Site, clean_error_class, tone_for
+from ecom_ops.wp_ops.locks import hold_site as _hold_site
+from ecom_ops.wp_ops.locks import site_lock as _site_lock
+from ecom_ops.wp_ops.models import Site, WpOpsResult, clean_error_class, tone_for
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.store import WpOpsStore
 
 _SIGNAL_CHECKS = frozenset({"http_uptime", "tls", "dns", "wp_rest", "inventory"})
-_LOCKS: dict[str, threading.Lock] = {}
-_LOCK_GUARD = threading.Lock()
-
-
-def _site_lock(site_id: str) -> threading.Lock:
-    with _LOCK_GUARD:
-        lock = _LOCKS.get(site_id)
-        if lock is None:
-            lock = threading.Lock()
-            _LOCKS[site_id] = lock
-        return lock
-
-
-@dataclass
-class WpOpsResult:
-    ok: bool
-    message: str
-    data: dict[str, Any] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"ok": self.ok, "message": self.message, "data": self.data}
 
 
 class WpOpsService:
@@ -727,12 +706,8 @@ class WpOpsService:
 
     @contextmanager
     def hold_site(self, site_id: str) -> Iterator[None]:
-        lock = _site_lock(site_id)
-        lock.acquire()
-        try:
+        with _hold_site(site_id):
             yield
-        finally:
-            lock.release()
 
     def _site_for_write(
         self, site_id: str, *, actor: str, action: str

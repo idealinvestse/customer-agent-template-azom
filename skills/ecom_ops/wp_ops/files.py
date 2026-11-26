@@ -17,9 +17,8 @@ from typing import Any, Protocol
 
 from ecom_ops.rbac import Permission
 from ecom_ops.wp_ops.credentials import bind_credential, redact_secret_text, scrub_secrets
-from ecom_ops.wp_ops.models import Site, files_root_narrow
+from ecom_ops.wp_ops.models import Site, WpOpsResult, files_root_narrow
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
-from ecom_ops.wp_ops.service import WpOpsResult
 from ecom_ops.wp_ops.store import WpOpsStore
 
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9_-]{0,60}$")

@@ -17,10 +17,10 @@ from typing import Any
 from ecom_ops.integrations.wp_org_client import WpOrgClientError, fetch_wporg_json
 from ecom_ops.wp_ops.config import is_mock_mode, wporg_intel_live_enabled
 from ecom_ops.wp_ops.credentials import scrub_compact
+from ecom_ops.wp_ops.source_scan import parse_semver_key
 
 _VALID_KINDS = frozenset({"theme", "plugin"})
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
-_SEMVER_RE = re.compile(r"^\s*v?(\d+(?:\.\d+)*)(?:[-+]([A-Za-z0-9_.-]+))?\s*$")
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 _MOCK_INTEL: dict[tuple[str, str], dict[str, Any]] = {
@@ -97,22 +97,10 @@ _MOCK_INTEL: dict[tuple[str, str], dict[str, Any]] = {
 }
 
 
-def _parse_version_key(version: str | None) -> tuple[tuple[int, ...], int, str] | None:
-    if not isinstance(version, str) or not version.strip():
-        return None
-    match = _SEMVER_RE.fullmatch(version.strip())
-    if not match:
-        return None
-    nums = tuple(int(part) for part in match.group(1).split("."))
-    pre = (match.group(2) or "").lower()
-    stability = 0 if pre else 1
-    return nums, stability, pre
-
-
 def newer_available(installed_version: str | None, latest_version: str | None) -> bool | None:
     """Return True if ``latest_version`` is strictly newer than ``installed_version``."""
-    cur = _parse_version_key(installed_version)
-    latest = _parse_version_key(latest_version)
+    cur = parse_semver_key(installed_version)
+    latest = parse_semver_key(latest_version)
     if cur is None or latest is None:
         return None
     width = max(len(cur[0]), len(latest[0]))
