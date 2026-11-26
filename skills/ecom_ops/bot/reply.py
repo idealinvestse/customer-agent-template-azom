@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.bot.dashboard_links import case_detail_url, cases_list_url, link_footer
+from ecom_ops.research.clarifier import is_research_clarify_category
 
 _WORKSPACE_PNG = re.compile(
     r"^(?:base|work|live|preview|change|focus|compare)-(?:desktop|mobile)\.png$"
@@ -247,7 +248,12 @@ def bound_action_markup(
     return ActionMarkup(rows=new_rows)
 
 
-def clarification_actions(clarify_id: str, proposal: Any) -> ActionMarkup:
+def clarification_actions(
+    clarify_id: str,
+    proposal: Any,
+    *,
+    dialog_kind: str | None = None,
+) -> ActionMarkup:
     """Build channel-neutral clarify buttons bound to a ``cl-<hex12>`` token."""
     cid = str(clarify_id or "").strip()
     if _CLARIFY_ID_RE.fullmatch(cid) is None:
@@ -256,14 +262,30 @@ def clarification_actions(clarify_id: str, proposal: Any) -> ActionMarkup:
     if isinstance(proposal, dict):
         mode = str(proposal.get("mode") or "options").strip().lower()
         raw_options = list(proposal.get("options") or ())
+        prop_kind = str(proposal.get("dialog_kind") or "").strip().lower()
+        prop_cat = str(proposal.get("category") or "").strip().lower()
     else:
         mode = str(getattr(proposal, "mode", "options") or "options").strip().lower()
         raw_options = list(getattr(proposal, "options", ()) or ())
+        prop_kind = str(getattr(proposal, "dialog_kind", "") or "").strip().lower()
+        prop_cat = str(getattr(proposal, "category", "") or "").strip().lower()
+
+    if dialog_kind is not None:
+        resolved_kind = "research" if str(dialog_kind).strip().lower() == "research" else "change"
+    elif prop_kind == "research" or is_research_clarify_category(prop_cat):
+        resolved_kind = "research"
+    else:
+        resolved_kind = "change"
 
     if mode == "confirm" or not raw_options:
+        confirm_label = (
+            "✅ Starta research"
+            if resolved_kind == "research"
+            else "✅ Stämmer — börja arbeta"
+        )
         return ActionMarkup(
             rows=[
-                [ActionButton("✅ Stämmer — börja arbeta", payload=f"clarify:go:{cid}")],
+                [ActionButton(confirm_label, payload=f"clarify:go:{cid}")],
                 [
                     ActionButton("✍️ Justera / lägg till", payload=f"clarify:other:{cid}"),
                     ActionButton("✖️ Avbryt", payload=f"clarify:cancel:{cid}"),

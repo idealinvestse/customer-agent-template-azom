@@ -13,21 +13,288 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.bot import dashboard_links
 from ecom_ops.bot.messenger_adapter import (
     InboundEvent,
     process_inbound,
     send_bot_reply,
     send_sender_action,
 )
+from ecom_ops.bot.progress_events import sanitize_status_fragment
+from ecom_ops.bot.reply import ActionButton, ActionMarkup, BotReply, with_dashboard_footer
+from ecom_ops.bot.store import ConversationStore
+from ecom_ops.research.config import is_mock_mode
+from ecom_ops.runtime_env import env_flag
 
 log = logging.getLogger(__name__)
 
 _MAX_ATTEMPTS = 2
+_MESSENGER_24H_WINDOW_S = 24 * 3600
+_RESEARCH_TERMINAL_STATUSES = frozenset({"completed", "partial", "failed", "cancelled"})
 _WORKERS_LOCK = threading.Lock()
 _QUEUES: dict[str, MessengerJobQueue] = {}
+
+
+def _parse_iso_timestamp(value: str | None) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _within_messenger_24h_window(
+    peer_id: str,
+    *,
+    data_dir: Path,
+    job_created_at: str | None = None,
+    now_ts: float | None = None,
+) -> bool:
+    """Return True if ``peer_id`` had inbound activity within Meta's 24h RESPONSE window."""
+    now = float(now_ts) if now_ts is not None else time.time()
+    candidates: list[float] = []
+
+    job_ts = _parse_iso_timestamp(job_created_at)
+    if job_ts is not None:
+        candidates.append(job_ts)
+
+    q_db = data_dir / "messenger_jobs.sqlite3"
+    if q_db.is_file():
+        try:
+            conn = sqlite3.connect(str(q_db), timeout=5.0)
+            try:
+                row = conn.execute(
+                    "SELECT MAX(created_at) FROM messenger_jobs WHERE peer_id=?",
+                    (str(peer_id),),
+                ).fetchone()
+                if row and row[0] is not None:
+                    candidates.append(float(row[0]))
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+    state_path = data_dir / "messenger_state.json"
+    if state_path.is_file():
+        try:
+            conv = ConversationStore(path=state_path)
+            st = conv.get(peer_id)
+            if isinstance(st, dict) and st.get("updated_at") is not None:
+                candidates.append(float(st["updated_at"]))
+        except Exception:
+            pass
+
+    if not candidates:
+        return False
+    latest = max(candidates)
+    return 0.0 <= (now - latest) <= _MESSENGER_24H_WINDOW_S or latest > now
+
+
+def build_messenger_research_completion_reply(
+    job: Any,
+    *,
+    data_dir: Path | str | None = None,
+    store: Any | None = None,
+) -> BotReply:
+    """Build a concise Swedish Messenger completion reply with HTTPS dashboard link + Quick Replies."""
+    base = Path(data_dir) if data_dir is not None else Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    rid = str(getattr(job, "research_id", "") or "")
+    status = str(getattr(job, "status", "") or "").lower()
+    spec = getattr(job, "spec", None)
+    topic = sanitize_status_fragment(getattr(spec, "topic", "") if spec else "", max_len=120)
+    brief_url = dashboard_links.research_brief_url(rid)
+
+    quick_actions = ActionMarkup(
+        rows=[
+            [
+                ActionButton(label="Visa brief", payload=f"research:show:{rid}"),
+                ActionButton(label="Status", payload=f"research:status:{rid}"),
+            ],
+            [
+                ActionButton(label="Ärenden", payload="cases:list"),
+                ActionButton(label="Avbryt", payload=f"research:cancel:{rid}"),
+            ],
+            *([[ActionButton(label="Öppna i dashboard", url=brief_url)]] if brief_url else []),
+        ]
+    )
+
+    if status == "cancelled":
+        text = f"🛑 Research {rid} avbröts."
+        if topic:
+            text += f"\nÄmne: {topic}"
+        return BotReply(text=with_dashboard_footer(text, brief_url), actions=quick_actions)
+
+    if status == "failed":
+        err_cls = sanitize_status_fragment(getattr(job, "error_class", "") or "", max_len=60)
+        suffix = f" ({err_cls})" if err_cls else ""
+        text = f"⚠️ Research {rid} misslyckades{suffix}."
+        if topic:
+            text += f"\nÄmne: {topic}"
+        return BotReply(text=with_dashboard_footer(text, brief_url), actions=quick_actions)
+
+    brief_payload: dict[str, Any] = {}
+    if status in {"completed", "partial"}:
+        rstore = store
+        if rstore is None and (base / "research_jobs.sqlite3").is_file():
+            from ecom_ops.research.store import ResearchStore
+
+            rstore = ResearchStore(
+                path=base / "research_jobs.sqlite3",
+                artifacts_dir=base / "research_artifacts",
+            )
+        if rstore is not None:
+            try:
+                loaded = rstore.read_brief(rid)
+                if isinstance(loaded, dict) and loaded.get("ok"):
+                    brief_payload = loaded
+            except Exception:
+                brief_payload = {}
+
+    brief = brief_payload.get("brief") if isinstance(brief_payload.get("brief"), dict) else {}
+    header = "🔎 Delvis research klar" if status == "partial" else "🔎 Research klar"
+    ev_status = str(
+        brief.get("evidence_status") or getattr(job, "evidence_status", "") or "insufficient"
+    )
+    provenance = str(brief.get("provenance") or "mock")
+    prov_label = "mock" if provenance in {"mock", "mock_fixture"} else "live"
+
+    lines = [f"{header} ({rid}) · {ev_status} · {prov_label}"]
+    if topic:
+        lines.append(f"Ämne: {topic}")
+
+    summary = str(brief.get("summary") or "").strip()
+    if summary:
+        if len(summary) > 1400:
+            summary = summary[:1397].rstrip() + "…"
+        lines.extend(["", summary])
+
+    recs = [str(r).strip() for r in (brief.get("recommendations") or []) if str(r).strip()]
+    if recs:
+        lines.append("")
+        lines.append("Rekommendationer:")
+        for rec in recs[:3]:
+            lines.append(f"• {rec[:220]}")
+
+    cits = [c for c in (brief.get("citations") or []) if isinstance(c, dict)]
+    if cits:
+        lines.append("")
+        lines.append(f"Källor ({len(cits)} st):")
+        for cit in cits[:3]:
+            cid = str(cit.get("id") or "S")
+            title = str(cit.get("title") or cit.get("domain") or "")[:90]
+            domain = str(cit.get("domain") or "")[:60]
+            lines.append(f"[{cid}] {title} ({domain})" if domain else f"[{cid}] {title}")
+
+    return BotReply(
+        text=with_dashboard_footer("\n".join(lines), brief_url),
+        actions=quick_actions,
+    )
+
+
+def _update_messenger_session_research_ids(
+    peer_id: str,
+    research_id: str,
+    *,
+    data_dir: Path,
+) -> None:
+    try:
+        conv = ConversationStore(path=data_dir / "messenger_state.json")
+
+        def _mutate(state: dict[str, Any]) -> dict[str, Any]:
+            sess = dict(state.get("session") or {})
+            recent = [str(x) for x in (sess.get("recent_research_ids") or []) if str(x).strip()]
+            sess["last_research_id"] = research_id
+            sess["recent_research_ids"] = ([research_id] + [x for x in recent if x != research_id])[:5]
+            state["session"] = sess
+            return state
+
+        conv.update_atomic(peer_id, _mutate)
+    except Exception:
+        pass
+
+
+def deliver_messenger_research_completion(
+    job: Any,
+    *,
+    data_dir: Path | str | None = None,
+    page_token: str | None = None,
+    dry_run: bool | None = None,
+    store: Any | None = None,
+    now_ts: float | None = None,
+) -> list[dict[str, Any]] | None:
+    """Push terminal Messenger research completion via ``send_bot_reply`` inside 24h window."""
+    if str(getattr(job, "channel", "") or "").lower() != "messenger":
+        return None
+    peer_id = str(getattr(job, "peer_id", "") or "").strip()
+    if not peer_id:
+        return None
+    status = str(getattr(job, "status", "") or "").lower()
+    if status not in _RESEARCH_TERMINAL_STATUSES:
+        return None
+    if str(getattr(job, "delivery_state", "pending") or "pending") != "pending":
+        return None
+
+    base = Path(data_dir) if data_dir is not None else Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    rid = str(getattr(job, "research_id", "") or "")
+    rstore = store
+    if rstore is None and (base / "research_jobs.sqlite3").is_file():
+        from ecom_ops.research.store import ResearchStore
+
+        rstore = ResearchStore(
+            path=base / "research_jobs.sqlite3",
+            artifacts_dir=base / "research_artifacts",
+        )
+
+    if not _within_messenger_24h_window(
+        peer_id,
+        data_dir=base,
+        job_created_at=getattr(job, "created_at", None),
+        now_ts=now_ts,
+    ):
+        if rstore is not None:
+            try:
+                rstore.update_progress(rid, delivery_state="expired_window")
+            except Exception:
+                pass
+        return None
+
+    reply = build_messenger_research_completion_reply(job, data_dir=base, store=rstore)
+    tok = (
+        page_token
+        if page_token is not None
+        else ((os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip() or None)
+    )
+    is_dry = dry_run if dry_run is not None else (not tok)
+    results = send_bot_reply(peer_id, reply, page_token=tok, dry_run=is_dry)
+    _update_messenger_session_research_ids(peer_id, rid, data_dir=base)
+    if rstore is not None and results and all(r.get("ok") or r.get("dry_run") for r in results):
+        try:
+            rstore.update_progress(rid, delivery_state="delivered")
+        except Exception:
+            pass
+    return results
+
+
+def on_messenger_research_complete(
+    job: Any,
+    *,
+    data_dir: Path | str | None = None,
+    page_token: str | None = None,
+    dry_run: bool | None = None,
+) -> list[dict[str, Any]] | None:
+    """Worker completion callback wrapper for Messenger research jobs."""
+    return deliver_messenger_research_completion(
+        job,
+        data_dir=data_dir,
+        page_token=page_token,
+        dry_run=dry_run,
+    )
 
 
 class MessengerJobQueue:
@@ -227,6 +494,14 @@ class MessengerJobQueue:
                 errors += 1
         return handled, errors
 
+    def on_research_complete(self, job: Any) -> list[dict[str, Any]] | None:
+        return deliver_messenger_research_completion(
+            job,
+            data_dir=self.db_path.parent,
+            page_token=self._page_token,
+            dry_run=self._dry_run,
+        )
+
     def ensure_started(
         self,
         *,
@@ -246,6 +521,16 @@ class MessengerJobQueue:
                 t = threading.Thread(target=self._worker_loop, daemon=True)
                 t.start()
                 self._threads.append(t)
+        if not env_flag("AZOM_DISABLE_BACKGROUND_WORKERS", default=False) and not is_mock_mode():
+            try:
+                from ecom_ops.research.worker import ensure_research_worker_started
+
+                ensure_research_worker_started(
+                    data_dir=self.db_path.parent,
+                    on_job_complete=self.on_research_complete,
+                )
+            except Exception as exc:
+                log.warning("Messenger research worker start skipped: %s", type(exc).__name__)
         self._wakeup.set()
 
     def _worker_loop(self) -> None:

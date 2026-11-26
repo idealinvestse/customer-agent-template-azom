@@ -12,6 +12,7 @@ RouteMode = Literal["new_task", "steer"]
 _TASK_CMD = re.compile(r"^/task(?:@\w+)?(?:\s+([\s\S]+))?$", re.I)
 _STEER_CMD = re.compile(r"^/steer(?:@\w+)?(?:\s+([\s\S]+))?$", re.I)
 _HEX_PREFIX = re.compile(r"^[0-9a-f]{4,32}$", re.I)
+_RES_PREFIX = re.compile(r"^res-[0-9a-f]{4,12}$", re.I)
 
 _NEW_TASK_PHRASE = re.compile(
     r"^(?:ny uppgift|ny task|parallellt|samtidigt|medan du|kolla (?:även|också))\b",
@@ -57,6 +58,11 @@ _DOMAIN_PATTERNS: dict[str, re.Pattern[str]] = {
     "catalog": re.compile(
         r"\b(?:produkt\w*|sida|sidor|sidan|inlägg\w*|pris\w*|lager\w*|tagline|"
         r"katalog\w*|artikel\w*)\b",
+        re.I,
+    ),
+    "research": re.compile(
+        r"\b(?:research\w*|webbsök\w*|webresearch\w*|konkurrentanalys\w*|"
+        r"marknadsanalys\w*|källgransk\w*|djupanalys\w*|webben)\b|\bres-[0-9a-f]{4,12}\b",
         re.I,
     ),
 }
@@ -115,6 +121,8 @@ def _job_message_ids(job: dict[str, Any]) -> set[int]:
     for candidate in (payload.get("source_message_id"), job.get("status_message_id")):
         if isinstance(candidate, int) and not isinstance(candidate, bool):
             ids.add(candidate)
+        elif isinstance(candidate, str) and candidate.strip().isdigit():
+            ids.add(int(candidate.strip()))
     raw_answers = job.get("answer_message_ids")
     if raw_answers is None:
         raw_answers = _decode_json(job.get("answer_message_ids_json"), [])
@@ -122,11 +130,13 @@ def _job_message_ids(job: dict[str, Any]) -> set[int]:
         for candidate in raw_answers:
             if isinstance(candidate, int) and not isinstance(candidate, bool):
                 ids.add(candidate)
+            elif isinstance(candidate, str) and candidate.strip().isdigit():
+                ids.add(int(candidate.strip()))
     return ids
 
 
 def _is_steerable_kind(job: dict[str, Any]) -> bool:
-    return str(job.get("kind") or "") in {"read_turn", "page_review"}
+    return str(job.get("kind") or "") in {"read_turn", "page_review", "research"}
 
 
 def _has_steer_capacity(job: dict[str, Any], max_steers_per_job: int) -> bool:
@@ -182,7 +192,12 @@ def _match_jobs_by_prefix(
     for job in running_jobs:
         job_id = str(job.get("job_id") or "").lower()
         task_id = str(job.get("task_id") or "").lower()
-        if (job_id and job_id.startswith(needle)) or (task_id and task_id.startswith(needle)):
+        research_id = str(job.get("research_id") or "").lower()
+        if (
+            (job_id and job_id.startswith(needle))
+            or (task_id and task_id.startswith(needle))
+            or (research_id and research_id.startswith(needle))
+        ):
             matched.append(job)
     return matched
 
@@ -221,7 +236,9 @@ def decide_message_routing(
                 reason="steer_empty",
             )
         parts = body.split(None, 1)
-        if len(parts) == 2 and _HEX_PREFIX.fullmatch(parts[0]):
+        if len(parts) == 2 and (
+            _HEX_PREFIX.fullmatch(parts[0]) or _RES_PREFIX.fullmatch(parts[0])
+        ):
             prefix, rest = parts[0], parts[1].strip()
             matches = _match_jobs_by_prefix(running_jobs, prefix)
             if len(matches) == 1:

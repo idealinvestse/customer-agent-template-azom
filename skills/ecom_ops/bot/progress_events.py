@@ -19,8 +19,9 @@ from typing import Any
 
 _SECRET_KV_RE = re.compile(
     r"(?i)\b(token|access_token|refresh_token|id_token|api_key|apikey|secret|"
-    r"password|authorization|code|code_verifier)\s*[=:]\s*\S+"
+    r"password|authorization|code|code_verifier|query|sökfråga)\s*[=:]\s*\S+"
 )
+_URL_QUERY_RE = re.compile(r"(https?://[^\s?#]+)\?[^\s#]+")
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-+/=]+")
 _KEY_PREFIX_RE = re.compile(r"\b(?:sk-[A-Za-z0-9_\-]{10,}|xai-[A-Za-z0-9_\-]{10,})\b")
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
@@ -57,6 +58,7 @@ def sanitize_status_fragment(value: object, *, max_len: int = 160) -> str:
         return ""
     cleaned = _BEARER_RE.sub("Bearer [REDACTED]", raw)
     cleaned = _SECRET_KV_RE.sub(r"\1=[REDACTED]", cleaned)
+    cleaned = _URL_QUERY_RE.sub(r"\1", cleaned)
     cleaned = _KEY_PREFIX_RE.sub("[REDACTED_KEY]", cleaned)
     cleaned = _EMAIL_RE.sub("[e-post]", cleaned)
     cleaned = _SSN_RE.sub("[id]", cleaned)
@@ -140,13 +142,88 @@ _PHASE_ICONS = {
     "steer": "↪",
     "route_switch": "↻",
     "info": "•",
+    "research:planning": "🧭",
+    "research:searching": "🔎",
+    "research:fetching": "🌐",
+    "research:evaluating": "⚖️",
+    "research:synthesizing": "📝",
 }
+
+RESEARCH_PHASE_LABELS: dict[str, str] = {
+    "research:planning": "Planerar sökfrågor",
+    "research:searching": "Söker externa källor",
+    "research:fetching": "Hämtar källsidor",
+    "research:evaluating": "Utvärderar källor",
+    "research:synthesizing": "Sammanställer brief",
+    "planning": "Planerar sökfrågor",
+    "searching": "Söker externa källor",
+    "fetching": "Hämtar källsidor",
+    "evaluating": "Utvärderar källor",
+    "synthesizing": "Sammanställer brief",
+}
+
+
+def progress_event_from_research_event(event: dict[str, Any]) -> ProgressEvent:
+    """Convert a ``research_events`` row into a sanitized ``ProgressEvent``."""
+    raw_phase = str(event.get("phase") or "info").strip().lower()
+    round_num = int(event.get("round_num") or 0)
+    provenance_raw = str(event.get("provenance") or "").strip().lower()
+    provenance = provenance_raw if provenance_raw in {"live", "mock", "mock_fixture", "system"} else None
+    if provenance == "mock_fixture":
+        provenance = "mock"
+    elif provenance == "system":
+        provenance = None
+
+    research_key = (
+        raw_phase
+        if raw_phase.startswith("research:")
+        else (f"research:{raw_phase}" if f"research:{raw_phase}" in RESEARCH_PHASE_LABELS else "")
+    )
+    if research_key in RESEARCH_PHASE_LABELS:
+        label = RESEARCH_PHASE_LABELS[research_key]
+        phase = research_key
+    elif raw_phase in {"completed", "partial"}:
+        label = "Research klar" if raw_phase == "completed" else "Delvis research klar"
+        phase = "completed"
+    elif raw_phase in {"failed", "cancelled"}:
+        label = "Research avbruten" if raw_phase == "cancelled" else "Research misslyckades"
+        phase = "failed"
+    elif raw_phase in {"steer_queued", "steer_applied"}:
+        label = "Styrning till research"
+        phase = "steer"
+    else:
+        label = "Djupresearch"
+        phase = "info"
+
+    detail = f"runda {round_num}" if round_num > 0 else None
+    raw_msg = str(event.get("message") or "").strip()
+    # Keep only safe phase/count status messages; never forward raw search query strings.
+    safe_outcome: str | None = None
+    if raw_msg and not re.search(r"(?i)\b(?:query|queries|sökfråga|url)\s*[:=]", raw_msg):
+        safe_outcome = sanitize_status_fragment(raw_msg, max_len=100)
+    if not safe_outcome and research_key in RESEARCH_PHASE_LABELS:
+        safe_outcome = "pågår…"
+
+    return ProgressEvent(
+        step_id=f"research:{raw_phase}:{round_num}",
+        tool="research",
+        label=label,
+        phase=phase,
+        provenance=provenance,
+        detail=detail,
+        outcome=safe_outcome,
+    )
 
 
 def format_progress_line(event: ProgressEvent) -> str:
     """Format one ``ProgressEvent`` into a rich, concise Swedish status line."""
     ev = event.sanitized()
     icon = _PHASE_ICONS.get(ev.phase, "•")
+    label = ev.label
+    if ev.phase in RESEARCH_PHASE_LABELS and (
+        not label or label == "Steg" or label == ev.phase or label == ev.phase.removeprefix("research:")
+    ):
+        label = RESEARCH_PHASE_LABELS[ev.phase]
     step_prefix = ""
     if ev.step_index is not None and ev.step_total is not None and ev.step_total > 0:
         step_prefix = f"[{ev.step_index}/{ev.step_total}] "
@@ -164,23 +241,23 @@ def format_progress_line(event: ProgressEvent) -> str:
     if ev.elapsed_ms is not None and ev.elapsed_ms >= 0:
         dur = f" · {format_elapsed(ev.elapsed_ms / 1000.0)}"
 
-    if ev.phase in {"started", "running"}:
+    if ev.phase in {"started", "running"} or ev.phase in RESEARCH_PHASE_LABELS:
         tail = ev.outcome or "pågår…"
-        return f"{icon} {step_prefix}{ev.label}{meta} — {tail}{dur}"
+        return f"{icon} {step_prefix}{label}{meta} — {tail}{dur}"
     if ev.phase == "failed":
         err = f" ({ev.error_class})" if ev.error_class else ""
         tail = ev.outcome or f"misslyckades{err}"
         if err and ev.error_class not in tail:
             tail = f"{tail}{err}"
-        return f"{icon} {step_prefix}{ev.label}{meta} — {tail}{dur}"
+        return f"{icon} {step_prefix}{label}{meta} — {tail}{dur}"
     if ev.phase == "skipped":
         tail = ev.outcome or "ej körd"
-        return f"{icon} {step_prefix}{ev.label}{meta} — {tail}{dur}"
+        return f"{icon} {step_prefix}{label}{meta} — {tail}{dur}"
     if ev.phase in {"steer", "route_switch", "info"}:
         tail = f": {ev.outcome}" if ev.outcome else ""
-        return f"{icon} {step_prefix}{ev.label}{meta}{tail}{dur}"
+        return f"{icon} {step_prefix}{label}{meta}{tail}{dur}"
     tail = ev.outcome or "resultat mottaget"
-    return f"{icon} {step_prefix}{ev.label}{meta} — {tail}{dur}"
+    return f"{icon} {step_prefix}{label}{meta} — {tail}{dur}"
 
 
 def mark_event_consumer(fn: Callable[[Any], None]) -> Callable[[Any], None]:
@@ -235,8 +312,10 @@ class LiveStatusBoard:
         title: str | None = None,
         started_at: float | None = None,
     ) -> None:
-        self.job_id = (job_id or "")[:8]
-        self.task_id = (task_id or "")[:8]
+        raw_jid = str(job_id or "")
+        raw_tid = str(task_id or "")
+        self.job_id = raw_jid[:16] if raw_jid.startswith("res-") else raw_jid[:8]
+        self.task_id = raw_tid[:16] if raw_tid.startswith("res-") else raw_tid[:8]
         self.kind = kind or "read_turn"
         self.title = sanitize_status_fragment(title or "", max_len=72)
         self.started_at = started_at if started_at is not None else time.monotonic()
@@ -265,7 +344,9 @@ class LiveStatusBoard:
             if not self.raw_lines or self.raw_lines[-1] != line:
                 self.raw_lines.append(line)
             # Clear active model phase banner once a concrete tool step starts after it
-            if ev.phase in {"started", "running"} and ev.tool != "model_router":
+            if (
+                ev.phase in {"started", "running"} or ev.phase in RESEARCH_PHASE_LABELS
+            ) and ev.tool != "model_router":
                 self.model_phase = ""
                 self.model_phase_started_at = None
             del ts
@@ -395,6 +476,7 @@ class LiveStatusBoard:
             "page_review": "Startsidegranskning",
             "action": "Godkänd åtgärd",
             "callback": "Snabbval",
+            "research": "Djupresearch",
         }
         kind_label = kind_labels.get(self.kind, self.kind)
         badge = f"#{self.job_id}" if self.job_id else ""

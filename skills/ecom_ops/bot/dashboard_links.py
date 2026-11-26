@@ -27,19 +27,14 @@ def dashboard_url(path: str = "/", *, query: dict[str, str] | None = None) -> st
     return url
 
 
-def review_plan_url(site_id: str, plan_id: str) -> str | None:
-    """Build an authenticated review URL only from a configured HTTPS origin."""
-    site = str(site_id or "")
-    plan = str(plan_id or "")
-    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", site):
-        return None
-    if not re.fullmatch(r"wr-[a-f0-9]{12}", plan):
-        return None
+def _https_dashboard_origin() -> str | None:
+    """Return configured public dashboard base URL only if strict HTTPS origin."""
     base = dashboard_public_base()
     if not base:
         return None
     try:
         parsed = urlsplit(base)
+        _ = parsed.port
         if (
             parsed.scheme != "https"
             or not parsed.hostname
@@ -51,7 +46,30 @@ def review_plan_url(site_id: str, plan_id: str) -> str | None:
             return None
     except ValueError:
         return None
+    return base
+
+
+def review_plan_url(site_id: str, plan_id: str) -> str | None:
+    """Build an authenticated review URL only from a configured HTTPS origin."""
+    site = str(site_id or "")
+    plan = str(plan_id or "")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", site):
+        return None
+    if not re.fullmatch(r"wr-[a-f0-9]{12}", plan):
+        return None
+    if not _https_dashboard_origin():
+        return None
     return dashboard_url(f"/wp/{site}/reviews/{plan}")
+
+
+def research_brief_url(research_id: str) -> str | None:
+    """Build an authenticated research brief URL only from a configured HTTPS origin."""
+    rid = str(research_id or "")
+    if not re.fullmatch(r"res-[0-9a-f]{12}", rid):
+        return None
+    if not _https_dashboard_origin():
+        return None
+    return dashboard_url(f"/research/{rid}")
 
 
 def sandbox_preview_url(site_id: str, plan_id: str) -> str | None:

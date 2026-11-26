@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.bot.actors import channel_peer_allowed, resolve_channel_actor
+from ecom_ops.bot.progress_events import sanitize_status_fragment
 from ecom_ops.bot.steer_router import decide_message_routing
 from ecom_ops.bot.telegram_oauth import is_ephemeral_oauth_message
 from ecom_ops.wp_ops.page_review_intent import is_page_review
@@ -25,6 +27,16 @@ JOB_LEASE_SECONDS = 120
 JOB_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 _CONTROL = re.compile(r"^/(status|jobs|stop|cancel|reconcile)(?:@\w+)?(?:\s+(.*))?$", re.I)
+_STEER_RES_CMD = re.compile(r"^/steer(?:@\w+)?\s+(res-[0-9a-f]{4,12})(?:\s+([\s\S]*))?$", re.I)
+_RESEARCH_ACTIVE_STATUSES = (
+    "queued",
+    "planning",
+    "searching",
+    "fetching",
+    "evaluating",
+    "synthesizing",
+    "running",
+)
 _ACTION_COMMAND = re.compile(
     r"^/cases\s+(?:approve|send|close|regenerate|regen|redraft)\b", re.I
 )
@@ -50,6 +62,130 @@ def _decode_json(value: str | None, default: Any) -> Any:
         return json.loads(value) if value else default
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+def research_jobs_summary_for_peer(
+    channel: str,
+    peer_id: str | int,
+    actor: str,
+    *,
+    data_dir: Path | str | None = None,
+    active_only: bool = False,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Query ``ResearchStore`` safely for research jobs belonging to ``(channel, peer_id)``."""
+    base = Path(data_dir) if data_dir is not None else Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    db_path = base / "research_jobs.sqlite3"
+    if not db_path.is_file():
+        return []
+    ch = str(channel or "").strip().lower()
+    pid = str(peer_id or "").strip()
+    if not ch or not pid:
+        return []
+    try:
+        from ecom_ops.rbac import AccessDenied
+        from ecom_ops.research.store import ResearchStore
+
+        rstore = ResearchStore(
+            path=db_path,
+            artifacts_dir=base / "research_artifacts",
+        )
+        jobs = rstore.list_jobs(actor=actor, limit=50)
+    except (AccessDenied, sqlite3.Error, OSError, ValueError):
+        return []
+    except Exception:
+        return []
+
+    chat_ref = f"chat:{ch}:{pid}"
+    lim = max(1, min(int(limit), 50))
+    out: list[dict[str, Any]] = []
+    for job in jobs:
+        if not ((job.channel.lower() == ch and job.peer_id == pid) or job.target_ref == chat_ref):
+            continue
+        if active_only and job.status not in _RESEARCH_ACTIVE_STATUSES:
+            continue
+        topic_raw = job.spec.topic if job.spec is not None else ""
+        profile_id = job.spec.profile_id if job.spec is not None else "deep_general"
+        depth = job.spec.depth if job.spec is not None else "standard"
+        out.append(
+            {
+                "research_id": job.research_id,
+                "job_id": job.research_id,
+                "task_id": job.research_id,
+                "kind": "research",
+                "status": job.status,
+                "state": job.status,
+                "profile_id": profile_id,
+                "depth": depth,
+                "topic": sanitize_status_fragment(topic_raw, max_len=72),
+                "channel": job.channel,
+                "peer_id": job.peer_id,
+                "status_message_id": job.status_message_id,
+                "current_round": job.current_round,
+                "queries_used": job.queries_used,
+                "fetches_used": job.fetches_used,
+                "evidence_status": str(job.evidence_status) if job.evidence_status else None,
+                "delivery_state": job.delivery_state,
+                "cancel_requested": job.cancel_requested,
+                "created_at": job.created_at,
+                "updated_at": job.updated_at,
+                "completed_at": job.completed_at,
+            }
+        )
+        if len(out) >= lim:
+            break
+    return out
+
+
+def _active_research_jobs_for_steer(data_dir: Path, chat_id: str) -> list[dict[str, Any]]:
+    """Return active Telegram research jobs formatted for ``decide_message_routing``."""
+    db_path = data_dir / "research_jobs.sqlite3"
+    if not db_path.is_file():
+        return []
+    marks = ",".join("?" for _ in _RESEARCH_ACTIVE_STATUSES)
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=5000")
+        try:
+            rows = conn.execute(
+                f"SELECT j.id, j.topic, j.status_message_id, "
+                "(SELECT COUNT(*) FROM research_steers s "
+                " WHERE s.job_id=j.id AND s.consumed_at IS NOT NULL) AS steer_used, "
+                "(SELECT COUNT(*) FROM research_steers s "
+                " WHERE s.job_id=j.id AND s.consumed_at IS NULL) AS steer_pending "
+                f"FROM research_jobs j WHERE j.channel='telegram' AND j.peer_id=? "
+                f"AND j.status IN ({marks}) ORDER BY j.created_at ASC LIMIT 20",
+                (str(chat_id), *_RESEARCH_ACTIVE_STATUSES),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        raw_mid = r["status_message_id"]
+        status_mid: int | None = None
+        if isinstance(raw_mid, int) and not isinstance(raw_mid, bool):
+            status_mid = raw_mid
+        elif isinstance(raw_mid, str) and raw_mid.strip().isdigit():
+            status_mid = int(raw_mid.strip())
+        jid = str(r["id"])
+        out.append(
+            {
+                "job_id": jid,
+                "task_id": jid,
+                "research_id": jid,
+                "kind": "research",
+                "payload": {"text": str(r["topic"] or "")},
+                "status_message_id": status_mid,
+                "answer_message_ids": [],
+                "steer_used": int(r["steer_used"] or 0),
+                "steer_pending": int(r["steer_pending"] or 0),
+            }
+        )
+    return out
 
 
 class TelegramJobStore:
@@ -338,6 +474,8 @@ class TelegramJobStore:
             "pending_image_paths",
             "clarify_proposals",
             "active_wp_review",
+            "last_research_id",
+            "recent_research_ids",
         }
     )
 
@@ -527,6 +665,7 @@ class TelegramJobStore:
                     for r in running_rows
                 ]
                 parallel = bool(running_jobs)
+                research_running = _active_research_jobs_for_steer(self.path.parent, chat_id)
                 if msg_image_paths:
                     cleaned_text = text
                     kind = "read_turn"
@@ -534,10 +673,62 @@ class TelegramJobStore:
                     decision = decide_message_routing(
                         text,
                         reply_to_message_id=parsed.get("reply_to_message_id"),
-                        running_jobs=running_jobs,
+                        running_jobs=running_jobs + research_running,
                         max_steers_per_job=MAX_STEERS_PER_JOB,
                     )
                     if decision.mode == "steer" and decision.target_job_id:
+                        if str(decision.target_job_id).startswith("res-"):
+                            r_target = next(
+                                (j for j in research_running if j["job_id"] == decision.target_job_id),
+                                None,
+                            )
+                            steer_ok = False
+                            if (
+                                r_target is not None
+                                and (r_target["steer_used"] + r_target["steer_pending"]) < MAX_STEERS_PER_JOB
+                                and channel_peer_allowed("telegram", chat_id)
+                            ):
+                                try:
+                                    actor_name = resolve_channel_actor("telegram", chat_id)
+                                    from ecom_ops.research import get_research_service
+
+                                    get_research_service(self.path.parent).steer_research(
+                                        decision.target_job_id,
+                                        decision.cleaned_text,
+                                        actor=actor_name,
+                                    )
+                                    steer_ok = True
+                                except Exception:
+                                    steer_ok = False
+                            if steer_ok:
+                                conn.execute(
+                                    "UPDATE telegram_inbox SET state='steer',disposition='steer',"
+                                    "payload_json=NULL WHERE update_id=?",
+                                    (update_id,),
+                                )
+                                conn.commit()
+                                return {
+                                    "disposition": "steer",
+                                    "job_id": decision.target_job_id,
+                                    "chat_id": chat_id,
+                                    "update_id": update_id,
+                                    "source_message_id": source_message_id,
+                                    "kind": "research",
+                                }
+                            control_payload = {
+                                "action": "steer",
+                                "args": f"{decision.target_job_id} {decision.cleaned_text}".strip(),
+                                "chat_id": chat_id,
+                                "update_id": update_id,
+                            }
+                            conn.execute(
+                                "UPDATE telegram_inbox SET state='control',disposition='control',"
+                                "payload_json=? WHERE update_id=?",
+                                (_json(control_payload), update_id),
+                            )
+                            conn.commit()
+                            return {"disposition": "control", "control": control_payload}
+
                         target = next(
                             (j for j in running_jobs if j["job_id"] == decision.target_job_id),
                             None,
@@ -582,6 +773,22 @@ class TelegramJobStore:
                                 "update_id": update_id,
                                 "source_message_id": source_message_id,
                             }
+
+                    if _STEER_RES_CMD.fullmatch(text.strip()):
+                        res_args = text.strip().split(None, 1)[1]
+                        control_payload = {
+                            "action": "steer",
+                            "args": res_args,
+                            "chat_id": chat_id,
+                            "update_id": update_id,
+                        }
+                        conn.execute(
+                            "UPDATE telegram_inbox SET state='control',disposition='control',"
+                            "payload_json=? WHERE update_id=?",
+                            (_json(control_payload), update_id),
+                        )
+                        conn.commit()
+                        return {"disposition": "control", "control": control_payload}
 
                     cleaned_text = decision.cleaned_text
                     if _ACTION_COMMAND.match(cleaned_text.strip()):
@@ -1019,6 +1226,24 @@ class TelegramJobStore:
                 (str(chat_id), max(1, min(int(limit), 20))),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def research_jobs_summary(
+        self,
+        channel: str,
+        peer_id: str | int,
+        actor: str,
+        *,
+        active_only: bool = False,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        return research_jobs_summary_for_peer(
+            channel,
+            peer_id,
+            actor,
+            data_dir=self.path.parent,
+            active_only=active_only,
+            limit=limit,
+        )
 
     def events(self, job_id: str, *, limit: int = 10) -> list[dict[str, Any]]:
         with self._connection() as conn:

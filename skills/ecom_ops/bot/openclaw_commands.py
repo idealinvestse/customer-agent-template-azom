@@ -17,6 +17,7 @@ from ecom_ops.bot.recovery import (
 )
 from ecom_ops.bot.reply import BotReply
 from ecom_ops.bot.store import ConversationStore, clamp_messages
+from ecom_ops.rbac import Permission
 from ecom_ops.security import mask_email
 
 HandlerFn = Callable[["CommandContext"], str | BotReply]
@@ -82,6 +83,7 @@ class CommandSpec:
     description: str
     handler: HandlerFn
     aliases: tuple[str, ...] = ()
+    permission: Permission | None = None
 
 
 def _parse_command(text: str) -> tuple[str | None, str]:
@@ -105,7 +107,7 @@ def cmd_help(ctx: CommandContext) -> str:
         "/status · /whoami · /new · /reset · /stop\n"
         "Telegram har också /jobs, /cancel [job-id] och Oscars /reconcile.\n"
         "/tools · /tasks · /usage · /model · /context\n"
-        "/order · /cases · /wp · /oauth · /ops · /health · /brief · /marketing · /commands"
+        "/order · /cases · /wp · /search · /research · /oauth · /ops · /health · /brief · /marketing · /commands"
     )
 
 
@@ -784,6 +786,20 @@ def cmd_wp(ctx: CommandContext) -> str:
     return "/wp sites · /wp use <site-id> · /wp plans [site-id] · /wp plan <plan-id> · /wp clear"
 
 
+def cmd_search(ctx: CommandContext) -> str:
+    """Quick read-only web search command (dispatched by BotHandler)."""
+    arg = ctx.args.strip()
+    if not arg or arg.lower() in {"help", "?"}:
+        return "Användning: /search <sökfråga> (t.ex. /search postnord driftstörning)"
+    return f"__SEARCH__:{arg}"
+
+
+def cmd_research(ctx: CommandContext) -> str:
+    """Deep async research command (dispatched by BotHandler)."""
+    arg = ctx.args.strip()
+    return f"__RESEARCH__:{arg}"
+
+
 def cmd_ops(ctx: CommandContext) -> str:
     """Oscar-only runtime health summary (poller, queues, breakers, OAuth TTL, disk, errors)."""
     from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
@@ -825,6 +841,19 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("cases", "Ärenden: list|show|approve|close", cmd_cases),
     CommandSpec("order", "Orderstatus (read-only)", cmd_order),
     CommandSpec("wp", "WP: sites|use|plans|plan|clear", cmd_wp),
+    CommandSpec(
+        "search",
+        "Snabbsök webben (read-only)",
+        cmd_search,
+        aliases=("web",),
+        permission=Permission.WEB_SEARCH,
+    ),
+    CommandSpec(
+        "research",
+        "Djupare research (start/list/status/show/cancel/steer)",
+        cmd_research,
+        permission=Permission.RESEARCH_RUN,
+    ),
     CommandSpec("oauth", "Oscar: länka ChatGPT Plus & xAI OAuth", cmd_oauth),
     CommandSpec("ops", "Oscar: drifthälsa, köer & disk", cmd_ops),
 ]
@@ -858,10 +887,40 @@ TELEGRAM_MENU_COMMANDS: list[dict[str, str]] = [
         "brief",
         "skill",
         "wp",
+        "search",
+        "research",
         "oauth",
         "ops",
     }
 ]
+
+
+def _check_command_permission(
+    spec: CommandSpec,
+    channel: str,
+    chat_id: str | int,
+) -> str | None:
+    if spec.permission is None:
+        return None
+    from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
+    from ecom_ops.rbac import AccessDenied, require_permission, resolve_actor
+
+    try:
+        actor_name = resolve_channel_actor(channel, chat_id)
+    except ChannelActorDenied:
+        map_name = (
+            "MESSENGER_ACTOR_MAP" if channel == "messenger" else "TELEGRAM_ACTOR_MAP"
+        )
+        return (
+            "Din chat saknar actor-mapping. "
+            f"Be Oscar lägga till dig i {map_name}."
+        )
+    try:
+        actor = resolve_actor(actor_name)
+        require_permission(actor, spec.permission)
+    except AccessDenied:
+        return f"Åtkomst nekad: /{spec.name} kräver behörighet {spec.permission.value}."
+    return None
 
 
 def dispatch_openclaw_command(
@@ -881,11 +940,15 @@ def dispatch_openclaw_command(
     spec = _BY_NAME.get(name)
     if not spec:
         return f"Okänt kommando /{name}. /commands · /help"
+    norm_channel = (channel or "telegram").strip().lower()
+    denied = _check_command_permission(spec, norm_channel, chat_id)
+    if denied is not None:
+        return denied
     ctx = CommandContext(
         chat_id=chat_id,
         text=text,
         args=args,
         store=store,
-        channel=(channel or "telegram").strip().lower(),
+        channel=norm_channel,
     )
     return spec.handler(ctx)

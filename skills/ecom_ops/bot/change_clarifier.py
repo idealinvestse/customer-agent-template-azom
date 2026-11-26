@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 from ecom_ops.bot.wp_intents import (
     NEW_PAGE_CREATE_RE as _NEW_PAGE_CREATION_RE,
@@ -23,6 +23,10 @@ from ecom_ops.bot.wp_intents import (
 )
 from ecom_ops.bot.wp_intents import (
     WP_CODE_FILE_RE as _CODE_FILE_RE,
+)
+from ecom_ops.research.clarifier import (
+    RESEARCH_CLARIFY_CATEGORIES,
+    is_research_clarify_category,
 )
 
 MAX_CLARIFY_ROUNDS = 3
@@ -37,7 +41,8 @@ _FENCE_START_RE = re.compile(r"^\s*```(?:json)?\s*", re.I)
 _FENCE_END_RE = re.compile(r"\s*```\s*$")
 
 _VALID_MODES = frozenset({"options", "confirm"})
-_VALID_CATEGORIES = frozenset(
+_VALID_DIALOG_KINDS = frozenset({"change", "research"})
+VALID_CATEGORIES = frozenset(
     {
         "wp_visual",
         "wp_code",
@@ -46,8 +51,10 @@ _VALID_CATEGORIES = frozenset(
         "site_settings",
         "order",
         "general_change",
+        *RESEARCH_CLARIFY_CATEGORIES,
     }
 )
+_VALID_CATEGORIES = VALID_CATEGORIES
 _OPTION_ID_RE = re.compile(r"^[a-z0-9_-]{1,12}$")
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>.*?</tool_call>", re.I | re.S)
@@ -188,13 +195,59 @@ class ClarificationOption:
         )
 
 
-def _normalize_options(raw_options: Any) -> tuple[ClarificationOption, ...]:
+def _scrub_spec_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 3:
+        return None
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _scrub_text(value, max_len=240, single_line=True)
+    if isinstance(value, (list, tuple)):
+        out: list[Any] = []
+        for item in value[:12]:
+            cleaned = _scrub_spec_value(item, depth=depth + 1)
+            if cleaned is not None and cleaned != "":
+                out.append(cleaned)
+        return out
+    if isinstance(value, dict):
+        out_dict: dict[str, Any] = {}
+        for idx, (k, v) in enumerate(value.items()):
+            if idx >= 16:
+                break
+            key = _scrub_text(k, max_len=40, single_line=True)
+            if not key:
+                continue
+            cleaned = _scrub_spec_value(v, depth=depth + 1)
+            if cleaned is not None:
+                out_dict[key] = cleaned
+        return out_dict
+    return _scrub_text(value, max_len=240, single_line=True)
+
+
+def _scrub_spec(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    cleaned = _scrub_spec_value(raw, depth=0)
+    return cleaned if isinstance(cleaned, dict) else {}
+
+
+def _normalize_options(
+    raw_options: Any, *, max_label_len: int = 44
+) -> tuple[ClarificationOption, ...]:
     if not raw_options:
         return ()
     parsed: list[ClarificationOption] = []
     for idx, item in enumerate(raw_options, start=1):
         opt = ClarificationOption.from_dict(item, fallback_index=idx)
         if opt is not None:
+            if max_label_len < 44 and len(opt.label) > max_label_len:
+                opt = ClarificationOption(
+                    id=opt.id,
+                    label=opt.label[:max_label_len].rstrip() or opt.id,
+                    summary=opt.summary,
+                    action_hint=opt.action_hint,
+                    recommended=opt.recommended,
+                )
             parsed.append(opt)
     if not parsed:
         return ()
@@ -243,7 +296,7 @@ def _normalize_options(raw_options: Any) -> tuple[ClarificationOption, ...]:
 
 @dataclass
 class ClarificationProposal:
-    """Structured pre-change verification question and selectable options."""
+    """Structured pre-change or pre-research verification question and selectable options."""
 
     understanding: str
     question: str
@@ -255,6 +308,8 @@ class ClarificationProposal:
     target_summary: str = ""
     round_num: int = 1
     source: str = "model"
+    dialog_kind: Literal["change", "research"] = "change"
+    spec: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.understanding = _scrub_text(self.understanding, max_len=500, single_line=False)
@@ -263,21 +318,35 @@ class ClarificationProposal:
         self.target_summary = _scrub_text(self.target_summary, max_len=200, single_line=True)
         mode_norm = str(self.mode or "options").strip().lower()
         self.mode = mode_norm if mode_norm in _VALID_MODES else "options"
-        cat_norm = str(self.category or "general_change").strip().lower()
-        self.category = cat_norm if cat_norm in _VALID_CATEGORIES else "general_change"
+        cat_norm = str(self.category or "").strip().lower()
+        kind_norm = str(self.dialog_kind or "change").strip().lower()
+        if is_research_clarify_category(cat_norm):
+            self.dialog_kind = "research"
+        elif kind_norm == "research":
+            self.dialog_kind = "research"
+        else:
+            self.dialog_kind = "change"
+        if cat_norm in _VALID_CATEGORIES:
+            self.category = cat_norm
+        elif self.dialog_kind == "research":
+            self.category = "research_general"
+        else:
+            self.category = "general_change"
         try:
             rnum = int(self.round_num or 1)
         except (TypeError, ValueError):
             rnum = 1
         self.round_num = max(1, rnum)
         self.source = _scrub_text(self.source or "model", max_len=32, single_line=True) or "model"
+        self.spec = _scrub_spec(self.spec)
         steps: list[str] = []
         for s in (self.plan_steps or ())[:5]:
             cleaned = _scrub_text(s, max_len=200, single_line=True)
             if cleaned:
                 steps.append(cleaned)
         self.plan_steps = tuple(steps)
-        self.options = _normalize_options(self.options)
+        max_label_len = 20 if self.dialog_kind == "research" else 44
+        self.options = _normalize_options(self.options, max_label_len=max_label_len)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -291,6 +360,8 @@ class ClarificationProposal:
             "target_summary": self.target_summary,
             "round_num": self.round_num,
             "source": self.source,
+            "dialog_kind": self.dialog_kind,
+            "spec": dict(self.spec),
         }
 
     @classmethod
@@ -304,22 +375,33 @@ class ClarificationProposal:
         mode = str(raw.get("mode") or "options").strip().lower()
         if mode not in _VALID_MODES:
             mode = "options"
-        options = _normalize_options(raw.get("options") or ())
+        raw_cat = str(raw.get("category") or "general_change").strip().lower()
+        raw_kind = str(raw.get("dialog_kind") or "change").strip().lower()
+        dialog_kind: Literal["change", "research"] = (
+            "research"
+            if (raw_kind == "research" or is_research_clarify_category(raw_cat))
+            else "change"
+        )
+        max_label_len = 20 if dialog_kind == "research" else 44
+        options = _normalize_options(raw.get("options") or (), max_label_len=max_label_len)
         if mode == "options" and len(options) < 2:
             return None
         steps_raw = raw.get("plan_steps")
         steps = tuple(steps_raw) if isinstance(steps_raw, (list, tuple)) else ()
+        raw_spec = raw.get("spec")
         return cls(
             understanding=understanding,
             question=question,
             options=options,
             plan_steps=steps,
             mode=mode,
-            category=str(raw.get("category") or "general_change"),
+            category=raw_cat or ("research_general" if dialog_kind == "research" else "general_change"),
             original_request=str(raw.get("original_request") or ""),
             target_summary=str(raw.get("target_summary") or ""),
             round_num=raw.get("round_num", 1),
             source=str(raw.get("source") or "model"),
+            dialog_kind=dialog_kind,
+            spec=dict(raw_spec) if isinstance(raw_spec, dict) else {},
         )
 
 
@@ -387,24 +469,41 @@ def parse_clarify_block(
     if mode not in _VALID_MODES:
         mode = "options"
 
-    options = _normalize_options(payload.get("options") or ())
+    raw_cat = str(payload.get("category") or "").strip().lower()
+    raw_kind = str(payload.get("dialog_kind") or "change").strip().lower()
+    dialog_kind: Literal["change", "research"] = (
+        "research"
+        if (raw_kind == "research" or is_research_clarify_category(raw_cat))
+        else "change"
+    )
+    category = (
+        raw_cat
+        if raw_cat in _VALID_CATEGORIES
+        else ("research_general" if dialog_kind == "research" else "general_change")
+    )
+
+    max_label_len = 20 if dialog_kind == "research" else 44
+    options = _normalize_options(payload.get("options") or (), max_label_len=max_label_len)
     if mode == "options" and not (2 <= len(options) <= MAX_CLARIFY_OPTIONS):
         return None
 
     steps_raw = payload.get("plan_steps")
     steps = tuple(steps_raw) if isinstance(steps_raw, (list, tuple)) else ()
     orig = original_request or str(payload.get("original_request") or "")
+    raw_spec = payload.get("spec")
     return ClarificationProposal(
         understanding=understanding,
         question=question,
         options=options,
         plan_steps=steps,
         mode=mode,
-        category=str(payload.get("category") or "general_change"),
+        category=category,
         original_request=orig,
         target_summary=str(payload.get("target_summary") or ""),
         round_num=round_num,
         source=str(payload.get("source") or "model"),
+        dialog_kind=dialog_kind,
+        spec=dict(raw_spec) if isinstance(raw_spec, dict) else {},
     )
 
 
@@ -762,6 +861,7 @@ def build_clarified_request_message(
     *,
     extra_note: str = "",
     confirmed: bool = False,
+    dialog_kind: str = "change",
 ) -> str:
     """Assemble clarified user intent context for subsequent model/handler turns."""
     orig = _scrub_text(original_request, max_len=1000, single_line=False)
@@ -783,27 +883,48 @@ def build_clarified_request_message(
     clean_note = _scrub_text(extra_note, max_len=600, single_line=False)
     if clean_note:
         lines.append(f"Användarens tillägg: {clean_note}")
+    is_research = str(dialog_kind or "change").strip().lower() == "research"
     if confirmed:
-        lines.append(
-            "Status: Användaren har bekräftat inriktningen. Gå vidare enligt vanliga "
-            "läs- och bekräftelseregler (skapa förslag/arbetsyta med godkännandeknapp; "
-            "utför aldrig tysta skrivningar)."
-        )
+        if is_research:
+            lines.append(
+                "Status: Användaren har bekräftat research-uppdraget. Starta read-only "
+                "research enligt specifikation (ändrar aldrig butik eller filer)."
+            )
+        else:
+            lines.append(
+                "Status: Användaren har bekräftat inriktningen. Gå vidare enligt vanliga "
+                "läs- och bekräftelseregler (skapa förslag/arbetsyta med godkännandeknapp; "
+                "utför aldrig tysta skrivningar)."
+            )
     else:
-        lines.append(
-            "Status: Användaren har valt ett steg. Fortsätt med fokuserat förtydligande "
-            "om något fortfarande är oklart, eller läs och förbered bekräftelseförslag."
-        )
+        if is_research:
+            lines.append(
+                "Status: Användaren har valt ett research-steg. Fortsätt med fokuserad "
+                "kravställning om något fortfarande saknas, eller presentera mode='confirm'."
+            )
+        else:
+            lines.append(
+                "Status: Användaren har valt ett steg. Fortsätt med fokuserat förtydligande "
+                "om något fortfarande är oklart, eller läs och förbered bekräftelseförslag."
+            )
     return "\n".join(lines)
 
 
 def render_clarification_message(proposal: ClarificationProposal, *, intro: str = "") -> str:
     """Render a scannable Swedish clarification card for Telegram / Messenger."""
-    header = (
-        "✅ Bekräfta innan jag börjar arbeta"
-        if proposal.mode == "confirm"
-        else "🔍 Dubbelkoll innan jag börjar arbeta"
-    )
+    is_research = proposal.dialog_kind == "research"
+    if is_research:
+        header = (
+            "✅ Bekräfta research-uppdrag"
+            if proposal.mode == "confirm"
+            else "🔎 Kravställning inför research"
+        )
+    else:
+        header = (
+            "✅ Bekräfta innan jag börjar arbeta"
+            if proposal.mode == "confirm"
+            else "🔍 Dubbelkoll innan jag börjar arbeta"
+        )
     if proposal.round_num > 1:
         header = f"{header} (steg {proposal.round_num}/{MAX_CLARIFY_ROUNDS})"
 
@@ -832,7 +953,12 @@ def render_clarification_message(proposal: ClarificationProposal, *, intro: str 
                 opt_lines.append(f"{idx}. {tag}")
         parts.append("\n".join(opt_lines))
 
-    parts.append("Ingen ändring utförs förrän vi är överens och du bekräftar slutligt förslag.")
+    footer = (
+        "Research är read-only i bakgrunden och ändrar aldrig butik eller filer."
+        if is_research
+        else "Ingen ändring utförs förrän vi är överens och du bekräftar slutligt förslag."
+    )
+    parts.append(footer)
     return "\n\n".join(parts)
 
 
@@ -1026,6 +1152,106 @@ _FALLBACK_SPECS: dict[str, _FallbackSpec] = {
             ),
         ),
     ),
+    "research_design": _FallbackSpec(
+        understanding="Du vill samla UX- och designinspiration innan vi tar fram ett konkret upplägg.",
+        question="Vilken inriktning och bredd passar bäst för din UX-research?",
+        options=(
+            ClarificationOption(
+                id="ux_se_no",
+                label="SE+NO UX standard",
+                summary="Balanserad research på svenska/norska e-handlare och UX-mönster.",
+                action_hint="profile=design_inspiration markets=SE,NO depth=standard",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="ux_quick",
+                label="Snabb UX-koll",
+                summary="Kort checklista med de viktigaste konverteringsmönstren (~45s).",
+                action_hint="profile=design_inspiration depth=quick",
+            ),
+            ClarificationOption(
+                id="ux_deep",
+                label="Djup UX-analys",
+                summary="Grundlig nordisk + internationell benchmark med full rapport (~3–5 min).",
+                action_hint="profile=design_inspiration markets=SE,NO,EN depth=deep",
+            ),
+        ),
+    ),
+    "research_market": _FallbackSpec(
+        understanding="Du vill göra en konkurrent- eller marknadsanalys med tydlig omfattning.",
+        question="Vilka marknader och vilket djup ska analysen täcka?",
+        options=(
+            ClarificationOption(
+                id="mkt_nordic",
+                label="SE+NO+DK standard",
+                summary="Jämför nordiska konkurrenter, prisläge, USP och garanti (~2 min).",
+                action_hint="profile=competitor_market markets=SE,NO,DK depth=standard",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="mkt_se_quick",
+                label="Snabb SE-koll",
+                summary="Snabb överblick av svenska konkurrenter (~45s).",
+                action_hint="profile=competitor_market markets=SE depth=quick",
+            ),
+            ClarificationOption(
+                id="mkt_deep",
+                label="Djup nordisk",
+                summary="Omfattande konkurrent- och positioneringsanalys i Norden (~3–5 min).",
+                action_hint="profile=competitor_market markets=SE,NO,DK depth=deep",
+            ),
+        ),
+    ),
+    "research_tech": _FallbackSpec(
+        understanding="Du vill undersöka teknisk dokumentation, hooks eller implementationer.",
+        question="Hur grundlig teknisk research vill du köra?",
+        options=(
+            ClarificationOption(
+                id="tech_std",
+                label="Docs standard",
+                summary="Kolla officiell WooCommerce/WordPress-dokumentation (~2 min).",
+                action_hint="profile=technical_docs markets=EN depth=standard",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="tech_quick",
+                label="Snabb doc-koll",
+                summary="Snabb verifiering av API, hook eller specifikation (~45s).",
+                action_hint="profile=technical_docs markets=EN depth=quick",
+            ),
+            ClarificationOption(
+                id="tech_deep",
+                label="Djup kodresearch",
+                summary="Utförlig genomgång med alternativa lösningar och källor (~3–5 min).",
+                action_hint="profile=technical_docs markets=EN depth=deep",
+            ),
+        ),
+    ),
+    "research_general": _FallbackSpec(
+        understanding="Du vill starta en research-uppgift, men mål, marknad och djup behöver avgränsas.",
+        question="Vilket spår och djup passar bäst?",
+        options=(
+            ClarificationOption(
+                id="gen_std",
+                label="Standard (SE)",
+                summary="Balanserad faktakollad briefing på svenska (~2 min).",
+                action_hint="profile=deep_general markets=SE depth=standard",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="gen_quick",
+                label="Snabb översikt",
+                summary="Kort research-sammanfattning med källor (~45s).",
+                action_hint="profile=deep_general markets=SE depth=quick",
+            ),
+            ClarificationOption(
+                id="gen_deep",
+                label="Djup nordisk",
+                summary="Grundlig flerstegsresearch över SE/NO/DK (~3–5 min).",
+                action_hint="profile=deep_general markets=SE,NO,DK depth=deep",
+            ),
+        ),
+    ),
 }
 
 
@@ -1041,6 +1267,9 @@ def build_fallback_clarification(
     """Build a tailored 3-option Swedish clarification proposal without an LLM call."""
     del has_wp_site_context
     category = assessment.category if assessment.category in _VALID_CATEGORIES else "general_change"
+    dialog_kind: Literal["change", "research"] = (
+        "research" if is_research_clarify_category(category) else "change"
+    )
 
     target_bits: list[str] = []
     if site_id:
@@ -1074,4 +1303,5 @@ def build_fallback_clarification(
         target_summary=target_summary,
         round_num=1,
         source="fallback",
+        dialog_kind=dialog_kind,
     )
