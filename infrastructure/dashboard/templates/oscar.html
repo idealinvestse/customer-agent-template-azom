@@ -461,7 +461,7 @@
       <form
         method="post"
         action="/oscar/models/profiles/reset"
-        data-confirm="Återställa alla 7 modellprofiler till standard?"
+        data-confirm="Återställa alla 9 modellprofiler till standard?"
         data-confirm-title="Återställ alla profiler"
         data-confirm-ok="Återställ alla"
         data-confirm-danger="1"
@@ -524,7 +524,7 @@
               <div>
                 <label class="az-label" for="prof-{{ pid }}-prompt_ref">Prompt</label>
                 <select class="az-select" id="prof-{{ pid }}-prompt_ref" name="prompt_ref">
-                  {% for pr in ['chat', 'classify', 'draft', 'product_desc', 'wp_coder'] %}
+                  {% for pr in ['chat', 'classify', 'draft', 'product_desc', 'wp_coder', 'research_planner', 'research_synthesizer'] %}
                   <option value="{{ pr }}" {% if prof.prompt_ref == pr %}selected{% endif %}>{{ pr }}</option>
                   {% endfor %}
                 </select>

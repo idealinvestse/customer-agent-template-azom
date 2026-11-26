@@ -7,7 +7,7 @@
 <div class="space-y-6">
   {% call ui.page_header(
     "Oscar · Beteende & Prompter",
-    "Systemprompter för chatt, klassificering, kundutkast, produkttext och WP-kodare. En ändrad prompt får en ny version; kundmail skickas aldrig härifrån.",
+    "Systemprompter för chatt, klassificering, kundutkast, produkttext, WP-kodare och webbresearch. En ändrad prompt får en ny version; kundmail skickas aldrig härifrån.",
     badge_text="Endast Oscar",
     badge_tone="oscar"
   ) %}
@@ -27,7 +27,9 @@
       ('classify', 'Klassificering', 'Kategorisering och språk-/riskbedömning av inkommande kundärenden.'),
       ('draft', 'Kundutkast', 'Svarsutkast som alltid kräver mänskligt godkännande före utskick.'),
       ('product_desc', 'Produkttext', 'Generering och förbättring av produktbeskrivningar.'),
-      ('wp_coder', 'WP-kodare', 'Föreslagna ändringar i WordPress-teman och plugins (granskningsdata).')
+      ('wp_coder', 'WP-kodare', 'Föreslagna ändringar i WordPress-teman och plugins (granskningsdata).'),
+      ('research_planner', 'Research-planerare', 'Frågeuppdelning och luckanalys (strikt JSON) för webbresearch.'),
+      ('research_synthesizer', 'Research-syntes', 'Citerad svensk sammanställning av externa källor med [S#]-referenser.')
     ] %}
     {% set row = prompts.get(name, {}) %}
     {% set text_val = row.get('system', '') %}

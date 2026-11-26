@@ -514,3 +514,160 @@ profiles:
         recommended_model: grok-4.7
         tier: coding
         enabled: true
+
+  research_planner:
+    description: "Strukturerad JSON-planering, frågeuppdelning och luckanalys för deep research"
+    workload_class: batch_classify
+    prompt_ref: research_planner
+    runtime_policy_mode: none
+    untrusted_data_isolation: true
+    use_global_route_order: true
+    generation:
+      max_output_tokens: 1200
+      temperature: 0.1
+      reasoning_effort: low
+      stream: false
+      response_format:
+        type: json_schema
+        json_schema:
+          name: research_planner_v1
+          strict: false
+          schema:
+            type: object
+            additionalProperties: true
+            properties:
+              sub_questions:
+                type: array
+                items:
+                  type: string
+              queries:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+              sufficient:
+                type: boolean
+              gaps:
+                type: array
+                items:
+                  type: string
+              follow_up_queries:
+                type: array
+                items:
+                  type: string
+              rationale:
+                type: string
+    timeouts:
+      idle_s: 25
+      hard_s: 60
+      phase_budget_s: 90
+    context_budget:
+      max_history_turns: 0
+      max_history_chars: 0
+      max_total_input_chars: 48000
+    fallback_policy:
+      allow_fallback: true
+      on_schema_error: escalate_next_slot
+      on_rate_limit: immediate_failover
+      on_all_failed: template_fallback
+      batch_mode: true
+    mounts:
+      - slot_id: primary
+        route_id: chatgpt_oauth
+        model_id: inherit_env
+        recommended_model: gpt-5.4-mini
+        tier: fast
+        enabled: true
+      - slot_id: fallback_or_fast
+        route_id: openrouter
+        model_id: anthropic/claude-haiku-5.5
+        recommended_model: anthropic/claude-haiku-5.5
+        tier: fast
+        enabled: true
+      - slot_id: fallback_or_long
+        route_id: openrouter
+        model_id: google/gemini-3.8-flash
+        recommended_model: google/gemini-3.8-flash
+        tier: long_context
+        enabled: true
+      - slot_id: fallback_grok_build
+        route_id: xai_grok_build
+        model_id: grok-4.7-build-fast
+        recommended_model: grok-4.7-build-fast
+        tier: fast
+        enabled: true
+      - slot_id: fallback_or_budget
+        route_id: openrouter
+        model_id: inherit_env
+        recommended_model: deepseek/deepseek-v4.1-flash-1017
+        tier: budget
+        enabled: true
+      - slot_id: fallback_xai_api
+        route_id: xai_api_key
+        model_id: inherit_env
+        recommended_model: grok-4.1-fast
+        tier: fast
+        enabled: true
+
+  research_synthesizer:
+    description: "Citerad svensk/nordisk research-sammanställning med [S#]-källhänvisningar"
+    workload_class: deep_prose
+    prompt_ref: research_synthesizer
+    runtime_policy_mode: none
+    untrusted_data_isolation: true
+    use_global_route_order: true
+    generation:
+      max_output_tokens: 4096
+      temperature: 0.25
+      reasoning_effort: medium
+      stream: false
+    timeouts:
+      idle_s: 35
+      hard_s: 120
+      phase_budget_s: 180
+    context_budget:
+      max_history_turns: 0
+      max_history_chars: 0
+      max_total_input_chars: 80000
+    fallback_policy:
+      allow_fallback: true
+      on_schema_error: template_fallback
+      on_rate_limit: immediate_failover
+      on_all_failed: template_fallback
+    mounts:
+      - slot_id: primary
+        route_id: chatgpt_oauth
+        model_id: inherit_env
+        recommended_model: gpt-6.2-sol
+        tier: balanced
+        enabled: true
+      - slot_id: fallback_grok_build
+        route_id: xai_grok_build
+        model_id: grok-4.3
+        recommended_model: grok-4.3
+        tier: long_context
+        enabled: true
+      - slot_id: fallback_or_quality
+        route_id: openrouter
+        model_id: anthropic/claude-sonnet-5.5
+        recommended_model: anthropic/claude-sonnet-5.5
+        tier: quality
+        enabled: true
+      - slot_id: fallback_or_long
+        route_id: openrouter
+        model_id: google/gemini-3.8-flash
+        recommended_model: google/gemini-3.8-flash
+        tier: long_context
+        enabled: true
+      - slot_id: fallback_or_budget
+        route_id: openrouter
+        model_id: inherit_env
+        recommended_model: deepseek/deepseek-v4.1-flash-1017
+        tier: budget
+        enabled: true
+      - slot_id: fallback_xai_api
+        route_id: xai_api_key
+        model_id: inherit_env
+        recommended_model: grok-4
+        tier: balanced
+        enabled: true

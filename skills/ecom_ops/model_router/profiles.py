@@ -14,7 +14,9 @@ from ecom_ops.model_router.store import atomic_write_text, data_dir
 
 _VALID_ROUTE_IDS = frozenset({"chatgpt_oauth", "xai_grok_build", "xai_api_key", "openrouter"})
 _VALID_EFFORTS = frozenset({"", "none", "minimal", "low", "medium", "high", "xhigh"})
-_VALID_PROMPT_REFS = frozenset({"chat", "classify", "draft", "product_desc", "wp_coder"})
+_VALID_PROMPT_REFS = frozenset(
+    {"chat", "classify", "draft", "product_desc", "wp_coder", "research_planner", "research_synthesizer"}
+)
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,120}$")
 _SECRET_WORDS = ("token", "secret", "password", "api_key", "apikey", "private_key", "auth_json")
 
@@ -147,6 +149,7 @@ class ProfileFallbackPolicy:
     on_schema_error: str = "none"
     on_rate_limit: str = "immediate_failover"
     on_all_failed: str = "template_fallback"
+    batch_mode: bool = False
 
 
 @dataclass(frozen=True)
@@ -286,6 +289,75 @@ def _builtin_raw_profiles() -> dict[str, Any]:
                     {"slot_id": "fallback_xai_api", "route_id": "xai_api_key", "model_id": "grok-4.7"},
                 ],
             },
+            "research_planner": {
+                "workload_class": "batch_classify",
+                "prompt_ref": "research_planner",
+                "runtime_policy_mode": "none",
+                "untrusted_data_isolation": True,
+                "generation": {
+                    "max_output_tokens": 1200,
+                    "temperature": 0.1,
+                    "reasoning_effort": "low",
+                    "stream": False,
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "research_planner_v1",
+                            "strict": False,
+                            "schema": {
+                                "type": "object",
+                                "additionalProperties": True,
+                                "properties": {
+                                    "sub_questions": {"type": "array", "items": {"type": "string"}},
+                                    "queries": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+                                    "sufficient": {"type": "boolean"},
+                                    "gaps": {"type": "array", "items": {"type": "string"}},
+                                    "follow_up_queries": {"type": "array", "items": {"type": "string"}},
+                                    "rationale": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+                "timeouts": {"idle_s": 25, "hard_s": 60, "phase_budget_s": 90},
+                "context_budget": {"max_history_turns": 0, "max_history_chars": 0, "max_total_input_chars": 48000},
+                "fallback_policy": {
+                    "allow_fallback": True,
+                    "on_schema_error": "escalate_next_slot",
+                    "batch_mode": True,
+                },
+                "mounts": [
+                    {"slot_id": "primary", "route_id": "chatgpt_oauth", "model_id": "inherit_env"},
+                    {"slot_id": "fallback_or_fast", "route_id": "openrouter", "model_id": "anthropic/claude-haiku-5.5"},
+                    {"slot_id": "fallback_or_long", "route_id": "openrouter", "model_id": "google/gemini-3.8-flash"},
+                    {"slot_id": "fallback_grok_build", "route_id": "xai_grok_build", "model_id": "grok-4.7-build-fast"},
+                    {"slot_id": "fallback_or_budget", "route_id": "openrouter", "model_id": "inherit_env"},
+                    {"slot_id": "fallback_xai_api", "route_id": "xai_api_key", "model_id": "inherit_env"},
+                ],
+            },
+            "research_synthesizer": {
+                "workload_class": "deep_prose",
+                "prompt_ref": "research_synthesizer",
+                "runtime_policy_mode": "none",
+                "untrusted_data_isolation": True,
+                "generation": {
+                    "max_output_tokens": 4096,
+                    "temperature": 0.25,
+                    "reasoning_effort": "medium",
+                    "stream": False,
+                },
+                "timeouts": {"idle_s": 35, "hard_s": 120, "phase_budget_s": 180},
+                "context_budget": {"max_history_turns": 0, "max_history_chars": 0, "max_total_input_chars": 80000},
+                "fallback_policy": {"allow_fallback": True, "on_schema_error": "template_fallback"},
+                "mounts": [
+                    {"slot_id": "primary", "route_id": "chatgpt_oauth", "model_id": "inherit_env"},
+                    {"slot_id": "fallback_grok_build", "route_id": "xai_grok_build", "model_id": "grok-4.3"},
+                    {"slot_id": "fallback_or_quality", "route_id": "openrouter", "model_id": "anthropic/claude-sonnet-5.5"},
+                    {"slot_id": "fallback_or_long", "route_id": "openrouter", "model_id": "google/gemini-3.8-flash"},
+                    {"slot_id": "fallback_or_budget", "route_id": "openrouter", "model_id": "inherit_env"},
+                    {"slot_id": "fallback_xai_api", "route_id": "xai_api_key", "model_id": "inherit_env"},
+                ],
+            },
         },
     }
 
@@ -362,6 +434,7 @@ def _parse_profile(pid: str, base_raw: dict[str, Any], ovr_raw: dict[str, Any] |
         on_schema_error=str(fb_raw.get("on_schema_error") or "none"),
         on_rate_limit=str(fb_raw.get("on_rate_limit") or "immediate_failover"),
         on_all_failed=str(fb_raw.get("on_all_failed") or "template_fallback"),
+        batch_mode=bool(fb_raw.get("batch_mode", False)),
     )
 
     mounts_list: list[MountSlot] = []

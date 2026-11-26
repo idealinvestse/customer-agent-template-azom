@@ -440,7 +440,15 @@ def register_oscar_routes(app: Flask) -> None:
         if request.method == "POST":
             updates = {
                 name: request.form.get(name, "")
-                for name in ("chat", "classify", "draft", "product_desc", "wp_coder")
+                for name in (
+                    "chat",
+                    "classify",
+                    "draft",
+                    "product_desc",
+                    "wp_coder",
+                    "research_planner",
+                    "research_synthesizer",
+                )
                 if name in request.form
             }
             try:
@@ -460,7 +468,15 @@ def register_oscar_routes(app: Flask) -> None:
                 _flash(msg, "ok" if changed else "info")
                 return redirect(url_for("oscar_behavior", msg=msg))
         prompts = {}
-        for name in ("chat", "classify", "draft", "product_desc", "wp_coder"):
+        for name in (
+            "chat",
+            "classify",
+            "draft",
+            "product_desc",
+            "wp_coder",
+            "research_planner",
+            "research_synthesizer",
+        ):
             system, version = get_prompt(name)
             prompts[name] = {
                 "system": submitted_drafts[name] if name in submitted_drafts else system,
