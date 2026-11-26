@@ -10,36 +10,66 @@ from __future__ import annotations
 
 import base64
 import html as html_lib
-import ipaddress
 import json
 import os
 import re
-import secrets
 import shutil
-import socket
-import struct
 import subprocess
 import tempfile
-import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
-import zlib
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.integrations.wp import http_guard as _http_guard
+from ecom_ops.integrations.wp.http_guard import (  # noqa: F401
+    _MAX_HTML_BYTES,
+    _PREVIEW_USER_AGENT,
+    _REFUSED_PATH_TOKENS,
+    _SITE_BLOCKED_SUBSTRINGS,
+    _STATIC_ASSET_HOSTS,
+    _TRACKER_HOSTS,
+    BLOCKED_WP_PATHS,
+    STATIC_ASSET_HOSTS,
+    _allowed_site_hosts,
+    _AllowlistedSiteRedirectHandler,
+    _blocked_site_path_reason,
+    _host_matches_suffix,
+    _host_resolves_public,
+    _is_ip_literal,
+    _safe_https_parsed,
+    _unquote_iteratively,
+    classify_request,
+    clear_live_html_cache,
+    fetch_site_rest_json,
+    validate_preview_path,
+)
+from ecom_ops.integrations.wp.png_composite import (  # noqa: F401
+    _MINI_FONT_5X7,
+    _compose_with_stdlib_png,
+    _decode_png_rgb,
+    _encode_png_rgb,
+    build_comparison_composite,
+)
+from ecom_ops.integrations.wp.png_composite import (
+    PNG_MAGIC as _PNG_MAGIC,
+)
+from ecom_ops.integrations.wp.png_composite import (
+    png_dimensions as _png_dimensions,
+)
+from ecom_ops.integrations.wp.process_env import (
+    build_php_child_env,
+    terminate_process_tree,
+)
+from ecom_ops.integrations.wp.process_env import (
+    pick_loopback_port as _pick_loopback_port,
+)
 from ecom_ops.integrations.wp_browser_smoke import (
-    _PNG_MAGIC,
     _WP_FATAL_MARKERS,
     _LoopbackCdpClient,
-    _pick_loopback_port,
-    _png_dimensions,
     _wait_cdp_page_ws,
     find_browser_binary,
 )
-from ecom_ops.integrations.wp_local_runtime import build_php_child_env, terminate_process_tree
 from ecom_ops.runtime_env import env_flag
 from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
 from ecom_ops.wp_ops.file_changes import rest_reads_allowed
@@ -50,64 +80,6 @@ PREVIEW_VIEWPORTS: tuple[tuple[str, int, int, bool], ...] = (
     ("desktop", 1280, 800, False),
     ("mobile", 390, 844, True),
 )
-_PREVIEW_PATH_RE = re.compile(r"^/[A-Za-z0-9/_\-.%]{0,200}$")
-BLOCKED_WP_PATHS: tuple[str, ...] = (
-    "wp-admin",
-    "wp-login",
-    "admin-ajax",
-    "wc-ajax",
-    "/wp-json",
-    "rest_route",
-    "xmlrpc",
-    "wp-cron",
-    "add-to-cart",
-    "/cart",
-    "/checkout",
-    "/my-account",
-    "/handlekurv",
-    "/kasse",
-    "/min-konto",
-    "/varukorg",
-    "/kassa",
-    "/kassan",
-    "/mitt-konto",
-    "/betalning",
-    "/kurv",
-)
-_SITE_BLOCKED_SUBSTRINGS = BLOCKED_WP_PATHS
-_REFUSED_PATH_TOKENS: tuple[str, ...] = tuple(
-    "wp-json" if token == "/wp-json" else token for token in BLOCKED_WP_PATHS
-)
-_STATIC_ASSET_HOSTS = frozenset(
-    {
-        "fonts.googleapis.com",
-        "fonts.gstatic.com",
-        "ajax.googleapis.com",
-        "cdnjs.cloudflare.com",
-        "cdn.jsdelivr.net",
-        "unpkg.com",
-        "use.typekit.net",
-        "p.typekit.net",
-        "assets.website-files.com",
-        "uploads-ssl.webflow.com",
-        "d3e54v103j8qbb.cloudfront.net",
-    }
-)
-_TRACKER_HOSTS = (
-    "google-analytics.com",
-    "googletagmanager.com",
-    "doubleclick.net",
-    "facebook.net",
-    "facebook.com",
-    "hotjar.com",
-    "clarity.ms",
-    "tiktok.com",
-    "snapchat.com",
-    "bing.com",
-    "pinterest.com",
-)
-_PREVIEW_USER_AGENT = "Mozilla/5.0 (AzomOps read-only preview)"
-_MAX_HTML_BYTES = 3_000_000
 FOCUS_SECTIONS: tuple[str, ...] = ("top", "header", "hero", "main", "footer", "bottom")
 _FOCUS_SECTIONS_SET = frozenset(FOCUS_SECTIONS)
 _MAX_FOCUS_LEN = 120
@@ -223,190 +195,6 @@ def validate_focus_options(
     return clean_section, clean_selector, clean_text, full_page
 
 
-def _unquote_iteratively(value: str, *, max_rounds: int = 6) -> str:
-    current = str(value or "")
-    for _ in range(max_rounds):
-        nxt = urllib.parse.unquote(current)
-        if nxt == current:
-            break
-        current = nxt
-    return current
-
-
-def validate_preview_path(path: str | None) -> str:
-    """Validate and normalize a public GET preview path."""
-    raw = "/" if path is None or str(path).strip() == "" else str(path).strip()
-    if not raw.startswith("/"):
-        raw = "/" + raw
-    if "?" in raw or "#" in raw or "\\" in raw or ".." in raw or "//" in raw:
-        raise ReviewError("PreviewPathRefused")
-    if _PREVIEW_PATH_RE.fullmatch(raw) is None:
-        raise ReviewError("PreviewPathRefused")
-    decoded = _unquote_iteratively(raw)
-    if "?" in decoded or "#" in decoded or "\\" in decoded or ".." in decoded or "//" in decoded:
-        raise ReviewError("PreviewPathRefused")
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in decoded):
-        raise ReviewError("PreviewPathRefused")
-    for text in (raw.lower(), decoded.lower()):
-        if any(token in text for token in _REFUSED_PATH_TOKENS):
-            raise ReviewError("PreviewPathRefused")
-    return raw
-
-
-def _allowed_site_hosts(site_host: str) -> frozenset[str]:
-    host = str(site_host or "").strip().lower().rstrip(".")
-    if not host:
-        return frozenset()
-    if host.startswith("www."):
-        bare = host[4:]
-        return frozenset({host, bare}) if bare else frozenset({host})
-    return frozenset({host, f"www.{host}"})
-
-
-def _host_matches_suffix(host: str, domain: str) -> bool:
-    return host == domain or host.endswith(f".{domain}")
-
-
-def _is_ip_literal(host: str) -> bool:
-    raw = host.strip("[]")
-    try:
-        ipaddress.ip_address(raw)
-        return True
-    except ValueError:
-        return False
-
-
-def _safe_https_parsed(parsed: urllib.parse.ParseResult) -> tuple[bool, str, str]:
-    if parsed.scheme != "https":
-        return False, "", "non_https_blocked"
-    if parsed.username or parsed.password:
-        return False, "", "userinfo_blocked"
-    try:
-        port = parsed.port
-    except ValueError:
-        return False, "", "invalid_url"
-    if port not in (None, 443):
-        return False, "", "port_blocked"
-    host = (parsed.hostname or "").strip().lower().rstrip(".")
-    if not host or host in {"localhost", "127.0.0.1", "::1"} or _is_ip_literal(host):
-        return False, "", "host_blocked"
-    if host.endswith(".example.test"):
-        return False, "", "synthetic_host_blocked"
-    return True, host, ""
-
-
-def _host_resolves_public(host: str) -> bool:
-    try:
-        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    except OSError:
-        return False
-    if not infos:
-        return False
-    for info in infos:
-        sockaddr = info[4]
-        if not sockaddr:
-            return False
-        ip_str = str(sockaddr[0]).split("%", 1)[0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        if not ip.is_global:
-            return False
-    return True
-
-
-def _blocked_site_path_reason(
-    parsed: urllib.parse.ParseResult,
-    *,
-    allow_wp_json: bool = False,
-) -> str | None:
-    path_and_query = parsed.path or "/"
-    if parsed.query:
-        path_and_query = f"{path_and_query}?{parsed.query}"
-    decoded_pq = _unquote_iteratively(path_and_query)
-    for candidate in (path_and_query.lower(), decoded_pq.lower()):
-        for blocked in _SITE_BLOCKED_SUBSTRINGS:
-            if allow_wp_json and blocked == "/wp-json":
-                continue
-            if blocked in candidate:
-                return f"site_path_blocked:{blocked.strip('/')}"
-    return None
-
-
-def classify_request(method: str, url: str, *, site_host: str) -> tuple[bool, str]:
-    """Decide whether headless preview Chrome may issue this subresource request."""
-    verb = str(method or "").strip().upper()
-    if verb not in {"GET", "HEAD"}:
-        return False, "method_blocked"
-    raw_url = str(url or "").strip()
-    lower_url = raw_url.lower()
-    if lower_url.startswith(("data:", "blob:", "about:")):
-        return True, "inline"
-    try:
-        parsed = urllib.parse.urlparse(raw_url)
-    except ValueError:
-        return False, "invalid_url"
-    ok_url, host, err_reason = _safe_https_parsed(parsed)
-    if not ok_url:
-        return False, err_reason
-    if any(_host_matches_suffix(host, tracker) for tracker in _TRACKER_HOSTS):
-        return False, "tracker_blocked"
-
-    site_hosts = _allowed_site_hosts(site_host)
-    if host in site_hosts:
-        blocked_reason = _blocked_site_path_reason(parsed)
-        if blocked_reason:
-            return False, blocked_reason
-        return True, "site_asset"
-    if host in _STATIC_ASSET_HOSTS:
-        return True, "cdn_asset"
-    return False, "foreign_host_blocked"
-
-
-class _AllowlistedSiteRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Refuse HTTP redirects that leave the registered site's allowlisted hosts."""
-
-    def __init__(self, allowed_hosts: frozenset[str], *, allow_wp_json: bool = False) -> None:
-        super().__init__()
-        self._allowed_hosts = allowed_hosts
-        self._allow_wp_json = allow_wp_json
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
-        parsed = urllib.parse.urlparse(str(newurl or ""))
-        ok_url, host, err_reason = _safe_https_parsed(parsed)
-        if not ok_url or host not in self._allowed_hosts or not _host_resolves_public(host):
-            raise urllib.error.HTTPError(
-                newurl,
-                code,
-                f"Redirect refused ({err_reason or 'foreign_host'}): {host}",
-                headers,
-                fp,
-            )
-        blocked_reason = _blocked_site_path_reason(parsed, allow_wp_json=self._allow_wp_json)
-        if blocked_reason:
-            raise urllib.error.HTTPError(
-                newurl,
-                code,
-                f"Redirect to blocked WordPress path refused ({blocked_reason})",
-                headers,
-                fp,
-            )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-_LIVE_HTML_CACHE_TTL_S = 300.0
-_LIVE_HTML_CACHE_MAX = 8
-_LIVE_HTML_CACHE_LOCK = threading.Lock()
-_LIVE_HTML_CACHE: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
-
-
-def clear_live_html_cache() -> None:
-    """Clear the bounded in-process live HTML fetch cache."""
-    with _LIVE_HTML_CACHE_LOCK:
-        _LIVE_HTML_CACHE.clear()
-
-
 def fetch_live_html(
     site: Site,
     path: str = "/",
@@ -416,64 +204,14 @@ def fetch_live_html(
     use_cache: bool = False,
 ) -> dict[str, Any]:
     """Fetch public live HTML via HTTPS GET with no cookies and no site credentials."""
-    clean_path = validate_preview_path(path)
-    parsed_base = urllib.parse.urlparse(str(site.canonical_url or ""))
-    ok_url, site_host, _err = _safe_https_parsed(parsed_base)
-    if not ok_url or not _host_resolves_public(site_host):
-        raise ReviewError("LiveFetchFailed")
-
-    cache_key = (f"{site.id}:{site_host}", clean_path)
-    now_mono = time.monotonic()
-    if use_cache:
-        with _LIVE_HTML_CACHE_LOCK:
-            cached = _LIVE_HTML_CACHE.get(cache_key)
-            if cached is not None and (now_mono - cached[0]) <= _LIVE_HTML_CACHE_TTL_S:
-                return dict(cached[1])
-
-    target_url = urllib.parse.urlunsplit(("https", parsed_base.netloc, clean_path, "", ""))
-    allowed_hosts = _allowed_site_hosts(site_host)
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),
-        _AllowlistedSiteRedirectHandler(allowed_hosts),
+    return _http_guard.fetch_live_html(
+        site,
+        path,
+        timeout=timeout,
+        max_bytes=max_bytes,
+        use_cache=use_cache,
+        public_host_check=_host_resolves_public,
     )
-    req = urllib.request.Request(
-        target_url,
-        method="GET",
-        headers={
-            "User-Agent": _PREVIEW_USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-        },
-    )
-    try:
-        with opener.open(req, timeout=float(timeout)) as resp:
-            status = int(getattr(resp, "status", 200) or 200)
-            final_url = str(resp.geturl() or target_url)
-            final_parsed = urllib.parse.urlparse(final_url)
-            ok_final, final_host, _ferr = _safe_https_parsed(final_parsed)
-            if not ok_final or final_host not in allowed_hosts or _blocked_site_path_reason(final_parsed):
-                raise ReviewError("LiveFetchFailed")
-            raw = resp.read(max_bytes + 1)
-    except ReviewError:
-        raise
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError, ValueError) as exc:
-        raise ReviewError("LiveFetchFailed") from exc
-
-    if len(raw) > max_bytes:
-        raise ReviewError("HtmlTooLarge")
-    html = raw.decode("utf-8", errors="replace")
-    result = {
-        "status": status,
-        "final_url": final_url,
-        "html": html,
-        "bytes": len(raw),
-    }
-    if use_cache:
-        with _LIVE_HTML_CACHE_LOCK:
-            if len(_LIVE_HTML_CACHE) >= _LIVE_HTML_CACHE_MAX and cache_key not in _LIVE_HTML_CACHE:
-                oldest_key = min(_LIVE_HTML_CACHE.items(), key=lambda item: item[1][0])[0]
-                _LIVE_HTML_CACHE.pop(oldest_key, None)
-            _LIVE_HTML_CACHE[cache_key] = (time.monotonic(), dict(result))
-    return result
 
 
 def _compute_focus_clip(
@@ -2120,438 +1858,3 @@ def inspect_element(
     cleaned = scrub_secrets(out, [secret]) if secret else out
     assert isinstance(cleaned, dict)
     return cleaned
-
-
-_MINI_FONT_5X7: dict[str, tuple[int, ...]] = {
-    " ": (0, 0, 0, 0, 0, 0, 0),
-    "-": (0, 0, 0, 0b11111, 0, 0, 0),
-    ".": (0, 0, 0, 0, 0, 0b01100, 0b01100),
-    ":": (0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0),
-    "(": (0b00100, 0b01000, 0b10000, 0b10000, 0b10000, 0b01000, 0b00100),
-    ")": (0b00100, 0b00010, 0b00001, 0b00001, 0b00001, 0b00010, 0b00100),
-    "/": (0b00001, 0b00010, 0b00100, 0b00100, 0b01000, 0b10000, 0),
-    "0": (0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110),
-    "1": (0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110),
-    "2": (0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111),
-    "3": (0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110),
-    "4": (0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010),
-    "5": (0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110),
-    "6": (0b01110, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b01110),
-    "7": (0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000),
-    "8": (0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110),
-    "9": (0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110),
-    "A": (0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
-    "B": (0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110),
-    "C": (0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110),
-    "D": (0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100),
-    "E": (0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111),
-    "F": (0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000),
-    "G": (0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110),
-    "H": (0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001),
-    "I": (0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110),
-    "J": (0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100),
-    "K": (0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001),
-    "L": (0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111),
-    "M": (0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001),
-    "N": (0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001),
-    "O": (0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110),
-    "P": (0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000),
-    "Q": (0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101),
-    "R": (0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001),
-    "S": (0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110),
-    "T": (0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100),
-    "U": (0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110),
-    "V": (0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100),
-    "W": (0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001),
-    "X": (0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001),
-    "Y": (0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100),
-    "Z": (0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111),
-}
-
-
-def _paeth_predictor(a: int, b: int, c: int) -> int:
-    p = a + b - c
-    pa = abs(p - a)
-    pb = abs(p - b)
-    pc = abs(p - c)
-    if pa <= pb and pa <= pc:
-        return a
-    if pb <= pc:
-        return b
-    return c
-
-
-def _decode_png_rgb(raw: bytes) -> tuple[int, int, bytearray] | None:
-    """Decode standard 8-bit non-interlaced RGB/RGBA/Grayscale PNG into flat RGB bytearray."""
-    if len(raw) < 33 or raw[:8] != _PNG_MAGIC:
-        return None
-    pos = 8
-    width = 0
-    height = 0
-    bit_depth = 0
-    color_type = -1
-    interlace = 0
-    idat_chunks: list[bytes] = []
-    while pos + 12 <= len(raw):
-        chunk_len = struct.unpack(">I", raw[pos : pos + 4])[0]
-        chunk_type = raw[pos + 4 : pos + 8]
-        data_start = pos + 8
-        data_end = data_start + chunk_len
-        if data_end + 4 > len(raw):
-            return None
-        chunk_data = raw[data_start:data_end]
-        if chunk_type == b"IHDR":
-            if chunk_len != 13:
-                return None
-            width, height, bit_depth, color_type, comp, flt, interlace = struct.unpack(">IIBBBBB", chunk_data)
-            if width <= 0 or height <= 0 or width > 8192 or height > 12000:
-                return None
-            if bit_depth != 8 or comp != 0 or flt != 0 or interlace != 0:
-                return None
-        elif chunk_type == b"IDAT":
-            idat_chunks.append(chunk_data)
-        elif chunk_type == b"IEND":
-            break
-        pos = data_end + 4
-
-    bpp_map = {0: 1, 2: 3, 6: 4}
-    bpp = bpp_map.get(color_type)
-    if bpp is None or width <= 0 or height <= 0 or not idat_chunks:
-        return None
-    try:
-        decompressed = zlib.decompress(b"".join(idat_chunks))
-    except zlib.error:
-        return None
-    stride = width * bpp
-    expected_len = height * (stride + 1)
-    if len(decompressed) < expected_len:
-        return None
-
-    prev_row = bytearray(stride)
-    rgb = bytearray(width * height * 3)
-    src_off = 0
-    for y in range(height):
-        ftype = decompressed[src_off]
-        src_off += 1
-        row = bytearray(decompressed[src_off : src_off + stride])
-        src_off += stride
-        if ftype == 1:
-            for i in range(bpp, stride):
-                row[i] = (row[i] + row[i - bpp]) & 0xFF
-        elif ftype == 2:
-            for i in range(stride):
-                row[i] = (row[i] + prev_row[i]) & 0xFF
-        elif ftype == 3:
-            for i in range(stride):
-                left = row[i - bpp] if i >= bpp else 0
-                row[i] = (row[i] + ((left + prev_row[i]) >> 1)) & 0xFF
-        elif ftype == 4:
-            for i in range(stride):
-                a = row[i - bpp] if i >= bpp else 0
-                b = prev_row[i]
-                c = prev_row[i - bpp] if i >= bpp else 0
-                row[i] = (row[i] + _paeth_predictor(a, b, c)) & 0xFF
-        elif ftype != 0:
-            return None
-        prev_row = row
-
-        dst_base = y * width * 3
-        if color_type == 2:
-            rgb[dst_base : dst_base + width * 3] = row
-        elif color_type == 6:
-            for x in range(width):
-                si = x * 4
-                di = dst_base + x * 3
-                alpha = row[si + 3]
-                if alpha == 255:
-                    rgb[di] = row[si]
-                    rgb[di + 1] = row[si + 1]
-                    rgb[di + 2] = row[si + 2]
-                else:
-                    inv = 255 - alpha
-                    rgb[di] = (row[si] * alpha + 255 * inv) // 255
-                    rgb[di + 1] = (row[si + 1] * alpha + 255 * inv) // 255
-                    rgb[di + 2] = (row[si + 2] * alpha + 255 * inv) // 255
-        else:
-            for x in range(width):
-                g = row[x]
-                di = dst_base + x * 3
-                rgb[di] = g
-                rgb[di + 1] = g
-                rgb[di + 2] = g
-    return width, height, rgb
-
-
-def _png_chunk(tag: bytes, payload: bytes) -> bytes:
-    crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
-    return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
-
-
-def _encode_png_rgb(width: int, height: int, rgb: bytearray) -> bytes:
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    raw_rows = bytearray()
-    row_bytes = width * 3
-    for y in range(height):
-        raw_rows.append(0)
-        start = y * row_bytes
-        raw_rows.extend(rgb[start : start + row_bytes])
-    compressed = zlib.compress(bytes(raw_rows), level=6)
-    return _PNG_MAGIC + _png_chunk(b"IHDR", ihdr) + _png_chunk(b"IDAT", compressed) + _png_chunk(b"IEND", b"")
-
-
-def _resize_and_crop_rgb(
-    width: int,
-    height: int,
-    rgb: bytearray,
-    *,
-    max_width: int,
-    max_height: int,
-) -> tuple[int, int, bytearray]:
-    new_w = width
-    new_h = height
-    if width > max_width:
-        scale = max_width / float(width)
-        new_w = max(1, int(round(width * scale)))
-        new_h = max(1, int(round(height * scale)))
-    cropped_h = min(new_h, max_height)
-    if new_w == width and cropped_h == height:
-        return width, height, rgb
-    out = bytearray(new_w * cropped_h * 3)
-    for dy in range(cropped_h):
-        sy = min(height - 1, int(dy * height / new_h))
-        src_row = sy * width * 3
-        dst_row = dy * new_w * 3
-        for dx in range(new_w):
-            sx = min(width - 1, int(dx * width / new_w))
-            si = src_row + sx * 3
-            di = dst_row + dx * 3
-            out[di] = rgb[si]
-            out[di + 1] = rgb[si + 1]
-            out[di + 2] = rgb[si + 2]
-    return new_w, cropped_h, out
-
-
-def _draw_mini_text_rgb(
-    canvas: bytearray,
-    canvas_w: int,
-    canvas_h: int,
-    x0: int,
-    y0: int,
-    text: str,
-    color: tuple[int, int, int],
-    *,
-    scale: int = 2,
-    max_x: int | None = None,
-) -> None:
-    translit = (
-        str(text or "")
-        .replace("Å", "A")
-        .replace("å", "A")
-        .replace("Ä", "A")
-        .replace("ä", "A")
-        .replace("Ö", "O")
-        .replace("ö", "O")
-        .replace("Ø", "O")
-        .replace("ø", "O")
-        .replace("Æ", "AE")
-        .replace("æ", "AE")
-        .upper()
-    )
-    limit_x = canvas_w if max_x is None else min(canvas_w, max_x)
-    cx = x0
-    r, g, b = color
-    for ch in translit:
-        glyph = _MINI_FONT_5X7.get(ch, _MINI_FONT_5X7[" "])
-        if cx + 5 * scale >= limit_x:
-            break
-        for row_idx, bits in enumerate(glyph):
-            for col_idx in range(5):
-                if bits & (1 << (4 - col_idx)):
-                    for sy in range(scale):
-                        py = y0 + row_idx * scale + sy
-                        if py < 0 or py >= canvas_h:
-                            continue
-                        row_off = py * canvas_w * 3
-                        for sx in range(scale):
-                            px = cx + col_idx * scale + sx
-                            if 0 <= px < limit_x:
-                                di = row_off + px * 3
-                                canvas[di] = r
-                                canvas[di + 1] = g
-                                canvas[di + 2] = b
-        cx += 6 * scale
-
-
-def _compose_with_stdlib_png(
-    valid_panels: list[tuple[str, Path]],
-    out_path: Path,
-    *,
-    max_panel_width: int,
-    max_height: int,
-) -> Path | None:
-    decoded: list[tuple[str, int, int, bytearray]] = []
-    for label, path in valid_panels:
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            continue
-        parsed = _decode_png_rgb(raw)
-        if parsed is None:
-            continue
-        w, h, rgb = _resize_and_crop_rgb(
-            parsed[0], parsed[1], parsed[2], max_width=max_panel_width, max_height=max_height
-        )
-        decoded.append((label, w, h, rgb))
-    if len(decoded) < 2:
-        return None
-
-    header_h = 38
-    divider_w = 2
-    total_w = sum(item[1] for item in decoded) + divider_w * (len(decoded) - 1)
-    body_h = max(item[2] for item in decoded)
-    total_h = header_h + body_h
-
-    # Dark slate canvas (#0f172a)
-    canvas = bytearray([15, 23, 42] * (total_w * total_h))
-
-    # 2px top green accent bar (#22c55e)
-    for y in range(min(2, total_h)):
-        off = y * total_w * 3
-        canvas[off : off + total_w * 3] = bytes([34, 197, 94]) * total_w
-
-    # 1px header bottom border (#334155)
-    if header_h - 1 < total_h:
-        off = (header_h - 1) * total_w * 3
-        canvas[off : off + total_w * 3] = bytes([51, 65, 85]) * total_w
-
-    cursor_x = 0
-    for idx, (label, pw, ph, prgb) in enumerate(decoded):
-        _draw_mini_text_rgb(
-            canvas,
-            total_w,
-            total_h,
-            cursor_x + 10,
-            12,
-            label,
-            (248, 250, 252),
-            scale=2,
-            max_x=cursor_x + pw - 6,
-        )
-        # Paste panel pixels below header
-        for y in range(ph):
-            src_start = y * pw * 3
-            dst_start = ((header_h + y) * total_w + cursor_x) * 3
-            canvas[dst_start : dst_start + pw * 3] = prgb[src_start : src_start + pw * 3]
-        cursor_x += pw
-        if idx < len(decoded) - 1:
-            for y in range(total_h):
-                for dx in range(divider_w):
-                    di = (y * total_w + cursor_x + dx) * 3
-                    canvas[di] = 51
-                    canvas[di + 1] = 65
-                    canvas[di + 2] = 85
-            cursor_x += divider_w
-
-    png_bytes = _encode_png_rgb(total_w, total_h, canvas)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-    try:
-        tmp.write_bytes(png_bytes)
-        tmp.replace(out_path)
-    except OSError:
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
-        return None
-    return out_path
-
-
-def build_comparison_composite(
-    panels: Sequence[tuple[str, Path]],
-    out_path: Path,
-    *,
-    max_panel_width: int = 720,
-    max_height: int = 1200,
-) -> Path | None:
-    """Compose 2–4 preview PNGs side-by-side with a crisp dark header bar and divider borders.
-
-    Uses Pillow when available and falls back to a zero-dependency pure-Python PNG compositor
-    so side-by-side ``compare-desktop.png`` artifacts work reliably in every environment.
-    """
-    valid_panels: list[tuple[str, Path]] = []
-    for raw_label, raw_path in list(panels)[:4]:
-        p = Path(raw_path)
-        if p.is_symlink() or not p.is_file():
-            continue
-        label = " ".join(str(raw_label or "").split()).strip()[:48] or "Panel"
-        valid_panels.append((label, p))
-    if len(valid_panels) < 2:
-        return None
-
-    cap_w = max(64, min(1440, int(max_panel_width)))
-    cap_h = max(64, min(2400, int(max_height)))
-
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-    except ImportError:
-        return _compose_with_stdlib_png(
-            valid_panels,
-            Path(out_path),
-            max_panel_width=cap_w,
-            max_height=cap_h,
-        )
-
-    loaded: list[tuple[str, Any]] = []
-    for label, path in valid_panels:
-        try:
-            with Image.open(path) as img:
-                rgb = img.convert("RGB")
-                if rgb.width > cap_w:
-                    new_h = max(1, int(round(rgb.height * (cap_w / float(rgb.width)))))
-                    resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
-                    rgb = rgb.resize((cap_w, new_h), resample)
-                if rgb.height > cap_h:
-                    rgb = rgb.crop((0, 0, rgb.width, cap_h))
-                loaded.append((label, rgb))
-        except Exception:
-            continue
-    if len(loaded) < 2:
-        return None
-
-    header_h = 38
-    divider_w = 2
-    total_w = sum(im.width for _, im in loaded) + divider_w * (len(loaded) - 1)
-    body_h = max(im.height for _, im in loaded)
-    total_h = header_h + body_h
-
-    canvas = Image.new("RGB", (total_w, total_h), (15, 23, 42))
-    draw = ImageDraw.Draw(canvas)
-    draw.rectangle([(0, 0), (total_w - 1, 1)], fill=(34, 197, 94))
-    draw.line([(0, header_h - 1), (total_w - 1, header_h - 1)], fill=(51, 65, 85), width=1)
-    font = ImageFont.load_default()
-
-    cursor_x = 0
-    for idx, (label, im) in enumerate(loaded):
-        draw.text((cursor_x + 10, 12), label, fill=(248, 250, 252), font=font)
-        canvas.paste(im, (cursor_x, header_h))
-        cursor_x += im.width
-        if idx < len(loaded) - 1:
-            draw.rectangle([(cursor_x, 0), (cursor_x + divider_w - 1, total_h - 1)], fill=(51, 65, 85))
-            cursor_x += divider_w
-
-    target = Path(out_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-    try:
-        canvas.save(tmp, format="PNG", optimize=True)
-        tmp.replace(target)
-    except OSError:
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
-        return None
-    return target

@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 
+from ecom_ops.integrations.wp.process_env import probe_subprocess_env
+from ecom_ops.integrations.wp.process_env import utc_now_iso as _now
 from ecom_ops.integrations.wp_runtime_fetch import resolve_php_from_manifest
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def _artifact(artifact_dir: Path | None, payload: dict) -> str | None:
@@ -76,11 +72,7 @@ def run_php_lint(
                         text=True,
                         timeout=8,
                         check=False,
-                        env={
-                            key: value
-                            for key, value in os.environ.items()
-                            if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"}
-                        },
+                        env=probe_subprocess_env(),
                     )
                     results.append(
                         {

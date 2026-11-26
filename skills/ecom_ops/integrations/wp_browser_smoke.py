@@ -23,18 +23,30 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.integrations.wp.png_composite import (
+    PNG_MAGIC as _PNG_MAGIC,  # noqa: F401
+)
+from ecom_ops.integrations.wp.png_composite import (
+    png_dimensions as _png_dimensions,
+)
+from ecom_ops.integrations.wp.process_env import (
+    build_php_child_env,
+    terminate_process_tree,
+)
+from ecom_ops.integrations.wp.process_env import (
+    pick_loopback_port as _pick_loopback_port,
+)
+from ecom_ops.integrations.wp.process_env import (
+    utc_now_iso as _now,
+)
 from ecom_ops.integrations.wp_local_runtime import (
     LocalWordPressSandbox,
-    _pick_loopback_port,
-    build_php_child_env,
     make_local_sandbox_gate,
     resolve_local_runtime,
     runtime_dir_from_env,
-    terminate_process_tree,
 )
 from ecom_ops.integrations.wp_review_process import run_php_lint
 from ecom_ops.integrations.wp_runtime_fetch import RuntimeFetchError
@@ -55,7 +67,6 @@ VIEWPORTS: tuple[tuple[str, int, int, bool], ...] = (
     ("desktop", 1280, 800, False),
     ("mobile", 390, 844, True),
 )
-_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _WP_FATAL_MARKERS = (
     "there has been a critical error on this website",
     "fatal error:",
@@ -70,10 +81,6 @@ _WINDOWS_BROWSER_PATHS = (
     Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
 )
 _PATH_BROWSER_NAMES = ("google-chrome", "chromium", "chromium-browser", "chrome", "msedge")
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 def find_browser_binary() -> str | None:
@@ -96,13 +103,6 @@ def assert_loopback_http_url(url: str) -> urllib.parse.ParseResult:
     if parsed.username or parsed.password:
         raise ReviewError("NonLoopbackUrlRefused")
     return parsed
-
-
-def _png_dimensions(data: bytes) -> tuple[int, int] | None:
-    if len(data) < 24 or not data.startswith(_PNG_MAGIC) or data[12:16] != b"IHDR":
-        return None
-    width, height = struct.unpack(">II", data[16:24])
-    return int(width), int(height)
 
 
 def _is_loopback_or_inline_url(url: str) -> bool:

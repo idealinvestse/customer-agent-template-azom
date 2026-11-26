@@ -317,6 +317,7 @@ def test_wporg_intel_fail_closed_mock_and_client(monkeypatch: pytest.MonkeyPatch
         raise AssertionError("network must not be called")
 
     monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
+    monkeypatch.setattr(urllib.request, "build_opener", fail_urlopen)
 
     monkeypatch.setenv("AZOM_USE_MOCK", "0")
     monkeypatch.delenv("AZOM_WPORG_INTEL", raising=False)
@@ -391,10 +392,18 @@ def test_wporg_intel_fail_closed_mock_and_client(monkeypatch: pytest.MonkeyPatch
         def __exit__(self, *_a):
             return False
 
+    class _FakeOpener:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+
+        def open(self, req, timeout=5.0):
+            del req, timeout
+            return _FakeResp(self._payload)
+
     monkeypatch.setattr(
         urllib.request,
-        "urlopen",
-        lambda req, timeout=5.0: _FakeResp(json.dumps({"version": "4.6.1"}).encode("utf-8")),
+        "build_opener",
+        lambda *handlers: _FakeOpener(json.dumps({"version": "4.6.1"}).encode("utf-8")),
     )
     ok_json = fetch_wporg_json(
         "https://api.wordpress.org/themes/info/1.2/?action=theme_information&request[slug]=storefront"
@@ -403,8 +412,8 @@ def test_wporg_intel_fail_closed_mock_and_client(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(
         urllib.request,
-        "urlopen",
-        lambda req, timeout=5.0: _FakeResp(b"x" * 2048),
+        "build_opener",
+        lambda *handlers: _FakeOpener(b"x" * 2048),
     )
     with pytest.raises(WpOrgClientError):
         fetch_wporg_json(

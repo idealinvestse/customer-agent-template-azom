@@ -13,8 +13,6 @@ import json
 import os
 import re
 import shutil
-import signal
-import socket
 import sqlite3
 import subprocess
 import time
@@ -23,18 +21,34 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.integrations.wp.process_env import (  # noqa: F401
+    ALLOWED_OS_ENV as _ALLOWED_OS_ENV,
+)
+from ecom_ops.integrations.wp.process_env import (  # noqa: F401
+    FORBIDDEN_ENV_PREFIXES as _FORBIDDEN_PREFIXES,
+)
+from ecom_ops.integrations.wp.process_env import (  # noqa: F401
+    PROBE_ENV_KEYS as _PROBE_ENV_KEYS,
+)
+from ecom_ops.integrations.wp.process_env import (
+    WP_VERSION_RE as _WP_VERSION_RE,
+)
+from ecom_ops.integrations.wp.process_env import (
+    build_php_child_env,
+    probe_subprocess_env,
+    terminate_process_tree,
+)
+from ecom_ops.integrations.wp.process_env import (
+    pick_loopback_port as _pick_loopback_port,
+)
 from ecom_ops.integrations.wp_runtime_fetch import RuntimeFetchError, check_runtime, default_dest
-from ecom_ops.wp_ops.review_runner import FORBIDDEN_ENV_NAMES, SandboxGate, sandbox_enabled
+from ecom_ops.wp_ops.review_runner import SandboxGate, sandbox_enabled
 from ecom_ops.wp_ops.review_workspace import SLUG, ReviewError
 
-_ALLOWED_OS_ENV = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
-_FORBIDDEN_PREFIXES = ("WP_SECRET_", "WOO_", "MAIL_", "SMTP_", "OPENROUTER_", "TELEGRAM_", "MESSENGER_")
 _STARTUP_TIMEOUT_S = 15.0
 _PLUGIN_ENTRY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,60}/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.php$")
 _PLUGIN_MAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.php$")
 _PHP_SYS_VERSION_RE = re.compile(r"PHP (8\.[234]\.\d+)")
-_WP_VERSION_RE = re.compile(r"\$wp_version\s*=\s*(['\"])([^'\"]+)\1\s*;")
-_PROBE_ENV_KEYS = ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
 
 
 def runtime_dir_from_env(explicit: Path | None = None) -> Path:
@@ -45,26 +59,6 @@ def runtime_dir_from_env(explicit: Path | None = None) -> Path:
     if configured:
         return Path(configured)
     return default_dest()
-
-
-def build_php_child_env() -> dict[str, str]:
-    """Return a minimal synthetic env for the PHP child process. Never copies secrets."""
-    env: dict[str, str] = {"AZOM_REVIEW_SYNTHETIC": "1"}
-    for key in _ALLOWED_OS_ENV:
-        value = os.environ.get(key)
-        if value is not None:
-            env[key] = value
-    if FORBIDDEN_ENV_NAMES.intersection(env):
-        raise ReviewError("SandboxSecretRefused")
-    if any(name.upper().startswith(_FORBIDDEN_PREFIXES) for name in env):
-        raise ReviewError("SandboxSecretRefused")
-    return env
-
-
-def _pick_loopback_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _copy_component_tree(source: Path, dest: Path) -> None:
@@ -162,7 +156,7 @@ def resolve_local_runtime(runtime_dir: Path) -> dict[str, Any]:
     if not version_file.is_file() or version_file.is_symlink() or not php_path:
         raise ReviewError("SandboxRuntimeUnavailable")
 
-    probe_env = {k: v for k, v in os.environ.items() if k.upper() in _PROBE_ENV_KEYS}
+    probe_env = probe_subprocess_env()
     try:
         ver_proc = subprocess.run(
             [php_path, "-v"],
@@ -841,46 +835,6 @@ require_once $azom_wp_config;
 wp();
 require_once ABSPATH . WPINC . '/template-loader.php';
 """
-
-
-def terminate_process_tree(proc: subprocess.Popen[Any] | None, *, timeout_s: float = 5.0) -> None:
-    """Terminate a child process and its descendants without raising on cleanup."""
-    if proc is None:
-        return
-    try:
-        if proc.poll() is not None:
-            return
-        proc.terminate()
-        try:
-            proc.wait(timeout=timeout_s)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        if os.name == "nt":
-            try:
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                    shell=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=timeout_s,
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError):
-                pass
-        else:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
-        try:
-            if proc.poll() is None:
-                proc.kill()
-            proc.wait(timeout=timeout_s)
-        except (OSError, subprocess.SubprocessError):
-            pass
-    except (OSError, subprocess.SubprocessError):
-        pass
 
 
 class LocalWordPressSandbox:
