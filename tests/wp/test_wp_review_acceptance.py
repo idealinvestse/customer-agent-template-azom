@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
-import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from _helpers import (
+    MOCK_REGISTRY as REGISTRY,
+)
+from _helpers import (
+    REPO_ROOT as ROOT,
+)
+from _helpers import (
+    clear_dashboard_password_env,
+)
+from _helpers import (
+    dashboard_auth_headers as _auth,
+)
+from _helpers import (
+    load_dashboard_app as _load_app,
+)
 
 from ecom_ops.bot.dashboard_links import review_plan_url
 from ecom_ops.integrations.wordpress import InMemoryWpTransport, WordPressClient
@@ -24,10 +38,7 @@ from ecom_ops.wp_ops.review_workspace import (
 )
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[2]
 SYNTAX_MARKER = "AZOM_FAKE_PHP_SYNTAX_ERROR"
-REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
-DASH = ROOT / "infrastructure" / "dashboard"
 SHOP = "SHOP_ONLY_SECRET"
 STAGING = "STAGING_ONLY_TEXT"
 
@@ -51,36 +62,6 @@ def _open_child(plans: ReviewPlans):
     )
 
 
-def _load_app():
-    if str(ROOT / "skills") not in sys.path:
-        sys.path.insert(0, str(ROOT / "skills"))
-    dash = str(DASH)
-    if dash not in sys.path:
-        sys.path.insert(0, dash)
-    for name in ("azom_dashboard", "wp_routes", "settings_store", "auth", "support"):
-        sys.modules.pop(name, None)
-    spec = importlib.util.spec_from_file_location("azom_dashboard", DASH / "app.py")
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["azom_dashboard"] = mod
-    spec.loader.exec_module(mod)
-    mod._configure_secret_key()
-    return mod.app
-
-
-def _auth(client, user: str) -> dict[str, str]:
-    import base64
-
-    token = base64.b64encode(f"{user}:{user}".encode()).decode()
-    headers = {"Authorization": f"Basic {token}"}
-    client.get("/wp", headers=headers)
-    with client.session_transaction() as sess:
-        csrf = sess.get("csrf_token")
-    if csrf:
-        headers["X-CSRF-Token"] = csrf
-    return headers
-
-
 def _dashboard(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
     monkeypatch.setenv("AZOM_WP_SANDBOX", "0")
@@ -89,11 +70,8 @@ def _dashboard(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    clear_dashboard_password_env(monkeypatch)
     for name in (
-        "DASHBOARD_PASSWORD",
-        "DASHBOARD_PASSWORD_HASH",
-        "DASHBOARD_OSCAR_PASSWORD",
-        "DASHBOARD_OSCAR_PASSWORD_HASH",
         "WP_APP_PASSWORD",
         "WP_BASE_URL",
         "WOO_BASE_URL",

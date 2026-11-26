@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _helpers import MOCK_REGISTRY, seed_mock_child_theme
+from _helpers import REPO_ROOT as ROOT
 
 from ecom_ops.integrations.wp_live_preview import (
     _AllowlistedSiteRedirectHandler,
@@ -36,9 +38,6 @@ from ecom_ops.wp_ops.review_plan import ReviewPlans, review_risk
 from ecom_ops.wp_ops.review_workspace import ReviewError, bulk_replace_work, place_work_file
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[2]
-MOCK_REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
-
 
 def _setup_mock_wp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[WpOpsService, WpAgentTools]:
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
@@ -48,13 +47,10 @@ def _setup_mock_wp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[WpO
     monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
     monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
     clear_rbac_cache()
-    theme_dir = tmp_path / "wp_files_mock" / "mock-staging" / "wp-content" / "themes" / "azom-child"
-    theme_dir.mkdir(parents=True, exist_ok=True)
-    (theme_dir / "style.css").write_text(
-        "/*\nTheme Name: Azom Child\nTemplate: parent-base\n*/\n.btn { color: #111; }\n",
-        encoding="utf-8",
+    seed_mock_child_theme(
+        tmp_path,
+        style_css="/*\nTheme Name: Azom Child\nTemplate: parent-base\n*/\n.btn { color: #111; }\n",
     )
-    (theme_dir / "functions.php").write_text("<?php\n// child theme\n", encoding="utf-8")
     service = WpOpsService(data_dir=tmp_path, registry_path=MOCK_REGISTRY)
     tools = WpAgentTools(service)
     return service, tools

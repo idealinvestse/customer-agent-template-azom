@@ -7,6 +7,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _helpers import (
+    LIVE_REGISTRY,
+    MOCK_REGISTRY,
+    seed_mock_child_theme,
+    tool_call,
+)
+from _helpers import (
+    PNG_1X1 as _PNG_1X1,
+)
+from _helpers import (
+    REPO_ROOT as ROOT,
+)
 
 from ecom_ops.integrations.wp_live_preview import clear_live_html_cache
 from ecom_ops.rbac import clear_rbac_cache
@@ -24,16 +36,6 @@ from ecom_ops.wp_ops.review_plan import ReviewPlans
 from ecom_ops.wp_ops.review_workspace import VerifiedTheme
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[2]
-MOCK_REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
-LIVE_REGISTRY = ROOT / "config" / "wp_sites.yaml"
-
-_PNG_1X1 = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc`\x00\x00"
-    b"\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82"
-)
-
 
 def _setup_mock_wp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[WpOpsService, WpAgentTools]:
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
@@ -44,20 +46,18 @@ def _setup_mock_wp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[WpO
     monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
     clear_rbac_cache()
     clear_live_html_cache()
-    theme_dir = tmp_path / "wp_files_mock" / "mock-staging" / "wp-content" / "themes" / "azom-child"
-    theme_dir.mkdir(parents=True, exist_ok=True)
-    (theme_dir / "style.css").write_text(
-        "/*\nTheme Name: Azom Child\nTemplate: parent-base\n*/\nbody { font-family: Oswald, sans-serif; }\n",
-        encoding="utf-8",
+    seed_mock_child_theme(
+        tmp_path,
+        style_css="/*\nTheme Name: Azom Child\nTemplate: parent-base\n*/\nbody { font-family: Oswald, sans-serif; }\n",
+        functions_php="<?php\n// child\n",
     )
-    (theme_dir / "functions.php").write_text("<?php\n// child\n", encoding="utf-8")
     service = WpOpsService(data_dir=tmp_path, registry_path=MOCK_REGISTRY)
     tools = WpAgentTools(service)
     return service, tools
 
 
 def _tool_call(name: str, arguments: dict[str, Any]) -> str:
-    return f"<tool_call>{json.dumps({'name': name, 'arguments': arguments}, ensure_ascii=False)}</tool_call>"
+    return tool_call(name, arguments, ensure_ascii=False)
 
 
 def test_catalog_products_include_image_currency_permalink_and_upsells(

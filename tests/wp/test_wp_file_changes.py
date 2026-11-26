@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
+from _helpers import (
+    MOCK_REGISTRY,
+    clear_dashboard_password_env,
+)
+from _helpers import (
+    REPO_ROOT as ROOT,
+)
+from _helpers import (
+    tool_call as _call,
+)
 
 from ecom_ops.bot.handlers import BotHandler
 from ecom_ops.bot.store import ConversationStore
@@ -24,8 +31,6 @@ from ecom_ops.wp_ops.files import PathRejected, TransportError
 from ecom_ops.wp_ops.registry import load_sites
 from ecom_ops.wp_ops.service import WpOpsResult, WpOpsService
 
-ROOT = Path(__file__).resolve().parents[2]
-DASH = ROOT / "infrastructure" / "dashboard"
 EMPTY = hashlib.sha256(b"").hexdigest()
 TOKEN = "AZOM-FILE-TOKEN-9f3c"
 
@@ -40,7 +45,7 @@ def _service(tmp_path, monkeypatch, registry: Path | None = None) -> WpOpsServic
     monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
     clear_rbac_cache()
     return WpOpsService(
-        registry_path=registry or (ROOT / "config" / "wp_sites.mock.yaml"),
+        registry_path=registry or MOCK_REGISTRY,
         data_dir=tmp_path,
     )
 
@@ -67,10 +72,6 @@ def _style(tmp_path: Path, site_id: str) -> Path:
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _call(name: str, arguments: dict | None = None) -> str:
-    return f'<tool_call>{json.dumps({"name": name, "arguments": arguments or {}})}</tool_call>'
 
 
 def test_shell_names_and_extra_fields_are_rejected(tmp_path, monkeypatch):
@@ -635,44 +636,12 @@ def test_file_loop_does_not_keep_source_in_the_returned_summary(tmp_path, monkey
     assert any(TOKEN in blob for blob in seen)
 
 
-def _load_app():
-    if str(ROOT / "skills") not in sys.path:
-        sys.path.insert(0, str(ROOT / "skills"))
-    dash = str(DASH)
-    if dash not in sys.path:
-        sys.path.insert(0, dash)
-    for name in ("azom_dashboard", "wp_routes", "settings_store", "auth", "support"):
-        sys.modules.pop(name, None)
-    spec = importlib.util.spec_from_file_location("azom_dashboard", DASH / "app.py")
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["azom_dashboard"] = module
-    spec.loader.exec_module(module)
-    module._configure_secret_key()
-    return module.app
-
-
-def _auth(client, user: str) -> dict[str, str]:
-    token = base64.b64encode(f"{user}:{user}".encode()).decode()
-    headers = {"Authorization": f"Basic {token}"}
-    client.get("/wp", headers=headers)
-    with client.session_transaction() as sess:
-        csrf = sess.get("csrf_token")
-    if csrf:
-        headers["X-CSRF-Token"] = csrf
-    return headers
-
-
-def test_dashboard_review_shows_the_diff_and_deploy_stays_closed(tmp_path, monkeypatch):
+def test_dashboard_review_shows_the_diff_and_deploy_stays_closed(
+    tmp_path, monkeypatch, dashboard_app, dashboard_auth
+):
     service = _service(tmp_path, monkeypatch)
     monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
-    for name in (
-        "DASHBOARD_PASSWORD",
-        "DASHBOARD_PASSWORD_HASH",
-        "DASHBOARD_OSCAR_PASSWORD",
-        "DASHBOARD_OSCAR_PASSWORD_HASH",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    clear_dashboard_password_env(monkeypatch)
     path = _style(tmp_path, "mock-shop")
     before = path.read_bytes()
     body = f"/* mock theme */\n/* {TOKEN} */\n"
@@ -688,11 +657,10 @@ def test_dashboard_review_shows_the_diff_and_deploy_stays_closed(tmp_path, monke
     )
     plan_id = plan.data["plan"]["plan_id"]
     record = plan.data["plan"]
-    app = _load_app()
-    app.config["TESTING"] = True
+    app = dashboard_app()
     client = app.test_client()
-    jonatan = _auth(client, "jonatan")
-    oscar = _auth(client, "oscar")
+    jonatan = dashboard_auth(client, "jonatan")
+    oscar = dashboard_auth(client, "oscar")
     assert client.get(f"/wp/mock-shop/files/plan/{plan_id}", headers=jonatan).status_code == 403
     page = client.get(f"/wp/mock-shop/files/plan/{plan_id}", headers=oscar)
     html = page.get_data(as_text=True)

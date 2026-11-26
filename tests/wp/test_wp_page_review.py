@@ -714,3 +714,93 @@ def test_page_review_job_auto_resolves_explicit_site_id(monkeypatch):
     ctx = handler.store.get("5")["session"]["wp_ops_context"]
     assert ctx["site_id"] == "mock-staging"
     assert ctx["actor_id"] == "oscar"
+
+
+def _block_theme_tree(tmp_path: Path, slug: str = "twentytwentyfive") -> LocalTree:
+    local = tmp_path / "tree"
+    theme = local / "wp-content" / "themes" / slug
+    (theme / "templates").mkdir(parents=True)
+    (theme / "theme.json").write_text('{"version": 3}\n', encoding="utf-8")
+    (theme / "style.css").write_text("/* block theme */\n", encoding="utf-8")
+    (theme / "templates" / "front-page.html").write_text("<!-- wp:paragraph /-->\n", encoding="utf-8")
+    (theme / "templates" / "page.html").write_text("<!-- wp:post-content /-->\n", encoding="utf-8")
+    return LocalTree("/var/www/mock-staging", local)
+
+
+def test_page_review_target_intent_loop_and_site_editor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from ecom_ops.wp_ops.page_review_intent import extract_page_review_target, is_page_review
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+
+    assert is_page_review("granska startsidans källkod") is True
+    assert extract_page_review_target("granska startsidans källkod") is None
+    assert is_page_review("granska sidan om-oss källkod") is True
+    assert extract_page_review_target("granska sidan om-oss källkod") == "om-oss"
+    assert is_page_review("granska sidan 2 källkod") is True
+    assert extract_page_review_target("granska sidan 2 källkod") == "2"
+    assert is_page_review("visa sidan om-oss") is False
+    assert extract_page_review_target("visa sidan om-oss") is None
+
+    memory = InMemoryWpTransport()
+    memory.settings["show_on_front"] = "page"
+    memory.settings["page_on_front"] = 2
+    memory.posts[2]["slug"] = "om-oss"
+    memory.posts[2]["name"] = "om-oss"
+    memory.posts[2]["content"] = {"rendered": "<p>Azom AB</p>", "raw": "<!-- wp:paragraph --><p>Om oss</p>"}
+    memory.themes["twentytwentyfive"]["template"] = "twentytwentyfive"
+    client = WordPressClient(base_url="https://mock.local", transport=memory)
+    transport = _block_theme_tree(tmp_path)
+
+    # Empty templates -> site_editor == "unavailable"
+    by_slug = run_bounded_page_review_loop(
+        site_id="mock-staging",
+        actor="oscar",
+        client=client,
+        transport=transport,
+        registry_path=REGISTRY,
+        data_dir=tmp_path,
+        target_page="om-oss",
+    )
+    home_slug = by_slug.steps[0]
+    assert home_slug["status"] == "read"
+    assert home_slug["page_id"] == 2
+    assert home_slug["front_page"]["slug"] == "om-oss"
+    assert home_slug["theme_kind"] == "block"
+    assert home_slug["site_editor"] == "unavailable"
+    assert home_slug["site_editor_templates"] == []
+
+    # Populated templates -> site_editor == "read" + site_editor_templates, and numeric target_page="2"
+    memory.templates = [
+        {"id": "twentytwentyfive//front-page", "slug": "front-page"},
+        {"id": "twentytwentyfive//page", "slug": "page"},
+    ]
+    by_id = run_bounded_page_review_loop(
+        site_id="mock-staging",
+        actor="oscar",
+        client=client,
+        transport=transport,
+        registry_path=REGISTRY,
+        data_dir=tmp_path,
+        target_page="2",
+    )
+    home_id = by_id.steps[0]
+    assert home_id["status"] == "read"
+    assert home_id["page_id"] == 2
+    assert home_id["site_editor"] == "read"
+    assert home_id["site_editor_templates"] == ["front-page", "page"]
+
+    # Unknown target slug -> target_page_not_found
+    unknown = run_bounded_page_review_loop(
+        site_id="mock-staging",
+        actor="oscar",
+        client=client,
+        transport=transport,
+        registry_path=REGISTRY,
+        data_dir=tmp_path,
+        target_page="finns-inte",
+    )
+    assert unknown.steps[0]["status"] == "not_run"
+    assert unknown.steps[0]["reason"] == "target_page_not_found"

@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _helpers import MOCK_REGISTRY as REGISTRY
+from _helpers import REPO_ROOT as ROOT
+from _helpers import write_theme_file as _write_theme
 
 from ecom_ops.bot import dashboard_links
 from ecom_ops.bot.site_content import (
@@ -29,8 +32,6 @@ from ecom_ops.wp_ops.agent_tools import (
 from ecom_ops.wp_ops.review_workspace import workspace_root
 from ecom_ops.wp_ops.service import WpOpsResult, WpOpsService
 
-ROOT = Path(__file__).resolve().parents[2]
-REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
@@ -52,13 +53,6 @@ def _setup_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> WpOpsService:
     _setup_env(tmp_path, monkeypatch)
     return WpOpsService(registry_path=REGISTRY, data_dir=tmp_path)
-
-
-def _write_theme(tmp_path: Path, site_id: str, slug: str, rel: str, text: str) -> Path:
-    dest = tmp_path / "wp_files_mock" / site_id / "wp-content" / "themes" / slug / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(text.encode("utf-8"))
-    return dest
 
 
 def _open_child_workspace(tmp_path: Path, tools: WpAgentTools, site_id: str = "mock-staging") -> str:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import json
 import stat
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,6 +10,18 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from _helpers import (
+    MOCK_REGISTRY as REGISTRY,
+)
+from _helpers import (
+    REPO_ROOT as ROOT,
+)
+from _helpers import (
+    tool_call as _call,
+)
+from _helpers import (
+    write_theme_file as _write_theme,
+)
 
 from ecom_ops.integrations.wp_files_ssh import SshFileTransport
 from ecom_ops.rbac import ROLE_PERMISSIONS, Permission, clear_rbac_cache
@@ -28,8 +39,6 @@ from ecom_ops.wp_ops.files import TransportError, transport_message
 from ecom_ops.wp_ops.models import parse_site
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[2]
-REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 
@@ -54,17 +63,6 @@ def _service(
 ) -> WpOpsService:
     _setup_env(tmp_path, monkeypatch)
     return WpOpsService(registry_path=registry or REGISTRY, data_dir=tmp_path)
-
-
-def _write_theme(tmp_path: Path, site_id: str, slug: str, rel: str, text: str) -> Path:
-    dest = tmp_path / "wp_files_mock" / site_id / "wp-content" / "themes" / slug / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(text.encode("utf-8"))
-    return dest
-
-
-def _call(name: str, arguments: dict[str, Any] | None = None) -> str:
-    return f'<tool_call>{json.dumps({"name": name, "arguments": arguments or {}})}</tool_call>'
 
 
 def _make_ssh_site() -> Any:

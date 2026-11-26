@@ -3,45 +3,27 @@
 from __future__ import annotations
 
 import base64
-import importlib.util
 import json
 import os
-import struct
-import sys
-import zlib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-DASH_DIR = ROOT / "infrastructure" / "dashboard"
+from _helpers import (
+    REPO_ROOT as ROOT,
+)
+from _helpers import (
+    clear_dashboard_password_env,
+)
+from _helpers import (
+    dashboard_auth_headers as _auth,
+)
+from _helpers import (
+    load_dashboard_app as _load_app,
+)
+from _helpers import (
+    make_png as _make_png,
+)
+
 SECRET = "dashboard-shop-password-ccc"
-
-
-def _load_app():
-    if str(ROOT / "skills") not in sys.path:
-        sys.path.insert(0, str(ROOT / "skills"))
-    dash_dir = str(DASH_DIR)
-    if dash_dir not in sys.path:
-        sys.path.insert(0, dash_dir)
-    for name in ("azom_dashboard", "wp_routes", "settings_store", "auth", "support"):
-        sys.modules.pop(name, None)
-    spec = importlib.util.spec_from_file_location("azom_dashboard", DASH_DIR / "app.py")
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["azom_dashboard"] = mod
-    spec.loader.exec_module(mod)
-    mod._configure_secret_key()
-    return mod.app
-
-
-def _auth(client, user: str) -> dict[str, str]:
-    token = base64.b64encode(f"{user}:{user}".encode()).decode()
-    headers = {"Authorization": f"Basic {token}"}
-    client.get("/wp", headers=headers)
-    with client.session_transaction() as sess:
-        csrf = sess.get("csrf_token")
-    if csrf:
-        headers["X-CSRF-Token"] = csrf
-    return headers
 
 
 def test_dashboard_shows_unknown_backup_and_blocks_viewer_check(tmp_path, monkeypatch):
@@ -400,22 +382,6 @@ def test_dashboard_ssh_settings_hide_the_key_and_block_viewers(tmp_path, monkeyp
         assert marker not in runtime.read_text(encoding="utf-8")
 
 
-def _make_png(width: int = 4, height: int = 4) -> bytes:
-    raw = b"".join(b"\x00" + b"\x22\x88\x44" * width for _ in range(height))
-
-    def _chunk(tag: bytes, payload: bytes) -> bytes:
-        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
-        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
-
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + _chunk(b"IHDR", ihdr)
-        + _chunk(b"IDAT", zlib.compress(raw))
-        + _chunk(b"IEND", b"")
-    )
-
-
 def _setup_dashboard_env(tmp_path: Path, monkeypatch) -> object:
     monkeypatch.setenv("AZOM_USE_MOCK", "1")
     monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
@@ -424,13 +390,7 @@ def _setup_dashboard_env(tmp_path: Path, monkeypatch) -> object:
     monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
     monkeypatch.setenv("WP_SECRET_MOCK_SHOP", SECRET)
     monkeypatch.setenv("WP_SECRET_MOCK_STAGING", "mock-staging-app-password-bbb")
-    for name in (
-        "DASHBOARD_PASSWORD",
-        "DASHBOARD_PASSWORD_HASH",
-        "DASHBOARD_OSCAR_PASSWORD",
-        "DASHBOARD_OSCAR_PASSWORD_HASH",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    clear_dashboard_password_env(monkeypatch)
     from ecom_ops.rbac import clear_rbac_cache
 
     clear_rbac_cache()
@@ -919,3 +879,87 @@ def test_wp_review_compare_composite_and_push_draft_flow(tmp_path, monkeypatch):
     j_after = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=jonatan)
     assert j_after.status_code == 200
     assert 'data-draft-page-card="true"' not in j_after.get_data(as_text=True)
+
+
+def test_dashboard_review_artifact_and_template(
+    tmp_path: Path, monkeypatch, dashboard_app, dashboard_auth, audit_path
+) -> None:
+    from ecom_ops.rbac import clear_rbac_cache
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+    from ecom_ops.wp_ops.review_workspace import workspace_root
+
+    del audit_path
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.setenv("WP_SECRET_MOCK_SHOP", "secret-shop")
+    monkeypatch.setenv("WP_SECRET_MOCK_STAGING", "secret-staging")
+    clear_dashboard_password_env(monkeypatch)
+    clear_rbac_cache()
+
+    plans = ReviewPlans(data_dir=tmp_path, registry_path=ROOT / "config" / "wp_sites.mock.yaml")
+    opened = plans.open("mock-staging", "plugin", "", actor="oscar")
+    assert opened.ok
+    plan_id = opened.data["plan_id"]
+    adir = workspace_root(tmp_path, "mock-staging", plan_id) / "artifacts"
+    adir.mkdir(parents=True, exist_ok=True)
+    png_bytes = _make_png(4, 4)
+
+    app = dashboard_app()
+    client = app.test_client()
+    oscar = dashboard_auth(client, "oscar")
+    jonatan = dashboard_auth(client, "jonatan")
+
+    # Without browser_smoke pass and without PNG -> data-rendered-preview="false", no Syntetiska skärmdumpar
+    page_no_preview = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=oscar)
+    assert page_no_preview.status_code == 200
+    html_no_preview = page_no_preview.get_data(as_text=True)
+    assert 'data-rendered-preview="false"' in html_no_preview
+    assert "Syntetiska skärmdumpar" not in html_no_preview
+
+    # Write valid PNG and invalid PNG
+    (adir / "work-desktop.png").write_bytes(png_bytes)
+    (adir / "base-mobile.png").write_bytes(b"not-a-valid-png")
+
+    # Even with PNG on disk, without passing executed browser_smoke check -> data-rendered-preview="false"
+    page_unverified = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=oscar)
+    assert page_unverified.status_code == 200
+    assert 'data-rendered-preview="false"' in page_unverified.get_data(as_text=True)
+
+    # Mark an executed passing browser_smoke check in wp_review_plans.json
+    stored = json.loads((tmp_path / "wp_review_plans.json").read_text(encoding="utf-8"))
+    stored["plans"][0]["checks"] = [
+        {
+            "job": "browser_smoke",
+            "status": "passed",
+            "summary": "browser_smoke passed",
+            "command": ["chrome"],
+            "started_at": "2026-11-24T00:00:00+00:00",
+            "finished_at": "2026-11-24T00:00:01+00:00",
+            "exit_code": 0,
+            "executed": True,
+            "simulated": False,
+        }
+    ]
+    (tmp_path / "wp_review_plans.json").write_text(json.dumps(stored), encoding="utf-8")
+
+    page_with_preview = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=oscar)
+    assert page_with_preview.status_code == 200
+    html_with_preview = page_with_preview.get_data(as_text=True)
+    assert 'data-rendered-preview="true"' in html_with_preview
+    assert "Syntetiska skärmdumpar" in html_with_preview
+
+    # Artifact endpoint RBAC & validation
+    ok_resp = client.get(f"/wp/mock-staging/reviews/{plan_id}/artifact/work-desktop.png", headers=oscar)
+    assert ok_resp.status_code == 200
+    assert ok_resp.mimetype == "image/png"
+    assert ok_resp.headers.get("Cache-Control") == "no-store"
+    assert ok_resp.data == png_bytes
+
+    denied_resp = client.get(f"/wp/mock-staging/reviews/{plan_id}/artifact/work-desktop.png", headers=jonatan)
+    assert denied_resp.status_code == 403
+
+    for bad_name in ("evil.php", "..", "other.png", "base-mobile.png", "work-mobile.png"):
+        bad_resp = client.get(f"/wp/mock-staging/reviews/{plan_id}/artifact/{bad_name}", headers=oscar)
+        assert bad_resp.status_code == 404

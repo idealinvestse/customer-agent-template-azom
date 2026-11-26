@@ -3,57 +3,17 @@
 from __future__ import annotations
 
 import json
-import struct
-import zlib
 from pathlib import Path
 from typing import Any
 
 import pytest
+from _helpers import make_solid_png as _make_solid_png
 
 from ecom_ops.integrations.wordpress import InMemoryWpTransport, WordPressClient, wp_client_from_env
 from ecom_ops.integrations.wp_browser_smoke import _PNG_MAGIC, _png_dimensions
 from ecom_ops.integrations.wp_live_preview import build_comparison_composite
-from ecom_ops.rbac import clear_rbac_cache
 from ecom_ops.wp_ops.agent_tools import WpAgentTools, run_bounded_file_tool_loop
 from ecom_ops.wp_ops.review_workspace import workspace_root
-from ecom_ops.wp_ops.service import WpOpsService
-
-ROOT = Path(__file__).resolve().parents[2]
-MOCK_REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
-
-
-def _make_solid_png(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
-    """Create a valid 8-bit RGB PNG with given dimensions and fill color."""
-    r, g, b = rgb
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    row = bytes([0]) + bytes([r, g, b]) * width
-    compressed = zlib.compress(row * height, level=6)
-
-    def _chunk(tag: bytes, payload: bytes) -> bytes:
-        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
-        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
-
-    return _PNG_MAGIC + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", compressed) + _chunk(b"IEND", b"")
-
-
-def _setup_mock_wp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[WpOpsService, WpAgentTools]:
-    monkeypatch.setenv("AZOM_USE_MOCK", "1")
-    monkeypatch.setenv("AZOM_WP_SANDBOX", "0")
-    monkeypatch.setenv("AZOM_WP_FILES_SSH", "0")
-    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
-    monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
-    clear_rbac_cache()
-    theme_dir = tmp_path / "wp_files_mock" / "mock-staging" / "wp-content" / "themes" / "azom-child"
-    theme_dir.mkdir(parents=True, exist_ok=True)
-    (theme_dir / "style.css").write_text(
-        "/*\nTheme Name: Azom Child\nTemplate: parent-base\n*/\n.btn { background: #111; color: #fff; }\n",
-        encoding="utf-8",
-    )
-    (theme_dir / "functions.php").write_text("<?php\n// child theme\n", encoding="utf-8")
-    service = WpOpsService(data_dir=tmp_path, registry_path=MOCK_REGISTRY)
-    tools = WpAgentTools(service)
-    return service, tools
 
 
 def _create_draft_plan(tools: WpAgentTools, *, slug: str = "takk-for-bestillingen") -> tuple[str, dict[str, Any]]:
@@ -164,9 +124,9 @@ def test_wordpress_client_create_page_mock_and_live_mock_and_refuses_publish() -
 
 
 def test_push_page_draft_enforces_rbac_digests_pii_and_persists_draft_page(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wp_service_tools
 ) -> None:
-    service, tools = _setup_mock_wp(tmp_path, monkeypatch)
+    service, tools = wp_service_tools(mock="1", files_ssh="0", sandbox="0", with_child_theme=True)
     plan_id, row = _create_draft_plan(tools)
     base_sha = str(row["base_sha256"])
     work_sha = str(row["work_sha256"])
@@ -307,9 +267,9 @@ def test_build_comparison_composite_2_panel_and_3_panel_dimensions_and_crop(tmp_
 
 
 def test_live_preview_generates_before_after_compare_and_loop_builds_variant_comparison(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wp_service_tools
 ) -> None:
-    _service, tools = _setup_mock_wp(tmp_path, monkeypatch)
+    _service, tools = wp_service_tools(mock="1", files_ssh="0", sandbox="0", with_child_theme=True)
     plans = tools._review_plans()
 
     # Create 3 variants in the same variant_group with desktop preview PNGs
@@ -405,9 +365,9 @@ def test_live_preview_generates_before_after_compare_and_loop_builds_variant_com
 
 
 def test_live_preview_automatically_generates_compare_desktop_png(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wp_service_tools
 ) -> None:
-    _service, tools = _setup_mock_wp(tmp_path, monkeypatch)
+    _service, tools = wp_service_tools(mock="1", files_ssh="0", sandbox="0", with_child_theme=True)
     monkeypatch.setenv("AZOM_USE_MOCK", "0")
     monkeypatch.setenv("AZOM_WP_LIVE_PREVIEW", "1")
     opened = tools.execute(
