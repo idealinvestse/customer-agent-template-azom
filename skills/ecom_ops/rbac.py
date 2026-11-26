@@ -29,6 +29,9 @@ class Permission(str, Enum):
     WP_OPS_OPERATE = "wp_ops_operate"
     WP_OPS_ADMIN = "wp_ops_admin"
     WP_OPS_RESTORE = "wp_ops_restore"
+    WEB_SEARCH = "web_search"
+    RESEARCH_RUN = "research_run"
+    RESEARCH_ADMIN = "research_admin"
 
 
 ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
@@ -41,6 +44,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.MARKETING_READ,
             Permission.MARKETING_SUGGEST,
             Permission.WP_OPS_READ,
+            Permission.WEB_SEARCH,
+            Permission.RESEARCH_RUN,
         }
     ),
     # ``read_only`` is an alias for ``viewer`` (kept for config compatibility).
@@ -53,6 +58,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.MARKETING_READ,
             Permission.MARKETING_SUGGEST,
             Permission.WP_OPS_READ,
+            Permission.WEB_SEARCH,
+            Permission.RESEARCH_RUN,
         }
     ),
     "operator": frozenset(
@@ -68,6 +75,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[Permission]] = {
             Permission.MARKETING_READ,
             Permission.WP_OPS_READ,
             Permission.WP_OPS_OPERATE,
+            Permission.WEB_SEARCH,
+            Permission.RESEARCH_RUN,
         }
     ),
     "full_admin": frozenset(set(Permission)),

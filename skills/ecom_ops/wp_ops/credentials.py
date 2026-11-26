@@ -16,8 +16,7 @@ from ecom_ops.wp_ops.models import Site
 
 _URI_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s]+:)[^@/\s]+(@)")
 _AUTH_HEADER_RE = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}")
-_TOKEN_LITERAL_RE = re.compile(
-    r"(?:"
+_TOKEN_LITERAL_PATTERN = (
     r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}\b|"
     r"\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b|"
     r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{8,}\b|"
@@ -25,9 +24,12 @@ _TOKEN_LITERAL_RE = re.compile(
     r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|"
     r"\bAIza[0-9A-Za-z_-]{16,}\b|"
     r"\bAKIA[0-9A-Z]{16}\b|"
+    r"\bBSA[A-Za-z0-9_-]{12,}\b|"
+    r"\btvly-[A-Za-z0-9_-]{8,}\b|"
+    r"\bpplx-[A-Za-z0-9_-]{8,}\b|"
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r")"
 )
+_TOKEN_LITERAL_RE = re.compile(rf"(?:{_TOKEN_LITERAL_PATTERN})")
 _CRED_LINE_RE = re.compile(
     r"(?im)^([^\r\n]*?(?:db_password|db_pass|db_user|secret|password|passwd|passphrase|"
     r"token|api[_-]?key|private[_-]?key|auth(?:orization)?[_-]?(?:key|token|secret|salt)?|"
@@ -55,14 +57,8 @@ _REDACT_SECRET_LINE_RE = re.compile(
     r"(?im)^.*(?:"
     r"[a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s]+:[^@/\s]+@|"
     r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}|"
-    r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}\b|"
-    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b|"
-    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{8,}\b|"
-    r"\bxai-[A-Za-z0-9_-]{8,}\b|"
-    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|"
-    r"\bAIza[0-9A-Za-z_-]{16,}\b|"
-    r"\bAKIA[0-9A-Z]{16}\b|"
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
+    + _TOKEN_LITERAL_PATTERN
+    + r"|"
     r"define\s*\(\s*['\"]"
     + _SECRET_KEY_NAME
     + r"['\"]\s*,\s*['\"][^'\"\r\n]{1,}['\"]|"

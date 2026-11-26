@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import base64
-import ipaddress
 import json
 import re
-import socket
 import sys
 import threading
 import time
@@ -16,6 +14,7 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
+from ecom_ops.integrations import _http_guard as _shared_http_guard
 from ecom_ops.wp_ops.credentials import bind_credential
 from ecom_ops.wp_ops.models import Site
 from ecom_ops.wp_ops.review_workspace import ReviewError
@@ -147,58 +146,31 @@ _host_matches_suffix = host_matches_suffix
 
 
 def is_ip_literal(host: str) -> bool:
-    raw = host.strip("[]")
-    try:
-        ipaddress.ip_address(raw)
-        return True
-    except ValueError:
-        return False
+    """Return True if *host* is an IPv4/IPv6 literal (including legacy numeric/hex/octal forms)."""
+    return _shared_http_guard.is_ip_literal(host)
 
 
 _is_ip_literal = is_ip_literal
 
 
 def safe_https_parsed(parsed: urllib.parse.ParseResult) -> tuple[bool, str, str]:
-    if parsed.scheme != "https":
-        return False, "", "non_https_blocked"
-    if parsed.username or parsed.password:
-        return False, "", "userinfo_blocked"
-    try:
-        port = parsed.port
-    except ValueError:
-        return False, "", "invalid_url"
-    if port not in (None, 443):
-        return False, "", "port_blocked"
-    host = (parsed.hostname or "").strip().lower().rstrip(".")
-    if not host or host in {"localhost", "127.0.0.1", "::1"} or is_ip_literal(host):
-        return False, "", "host_blocked"
-    if host.endswith(".example.test"):
-        return False, "", "synthetic_host_blocked"
-    return True, host, ""
+    """Validate a parsed URL for WP preview/REST reads, preserving legacy reason tokens."""
+    return _shared_http_guard.classify_https_parse_result(
+        parsed,
+        allow_non_443=False,
+        block_example_test_tlds=False,
+    )
 
 
 _safe_https_parsed = safe_https_parsed
 
 
 def host_resolves_public(host: str) -> bool:
+    """Return True iff *host* resolves solely to globally routable public IPs."""
     try:
-        infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-    except OSError:
+        return bool(_shared_http_guard.resolve_and_validate_public_ips(host, 443))
+    except (OSError, ValueError):
         return False
-    if not infos:
-        return False
-    for info in infos:
-        sockaddr = info[4]
-        if not sockaddr:
-            return False
-        ip_str = str(sockaddr[0]).split("%", 1)[0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        if not ip.is_global:
-            return False
-    return True
 
 
 _host_resolves_public = host_resolves_public

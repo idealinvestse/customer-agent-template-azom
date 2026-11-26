@@ -35,7 +35,8 @@ _URL_RE = re.compile(r"https?://\S+", re.I)
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{6,}")
 _API_KEY_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{8,}|xai-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{10,}|"
-    r"EAA[A-Za-z0-9]{12,}|AIza[A-Za-z0-9_-]{12,}|rk-[A-Za-z0-9_-]{8,})\b"
+    r"EAA[A-Za-z0-9]{12,}|AIza[A-Za-z0-9_-]{12,}|rk-[A-Za-z0-9_-]{8,}|"
+    r"BSA[A-Za-z0-9_-]{12,}|tvly-[A-Za-z0-9_-]{8,}|pplx-[A-Za-z0-9_-]{8,})\b"
 )
 _QUERY_SECRET_RE = re.compile(
     r"(?i)([?&](?:token|key|secret|code|access_token|refresh_token|authorization|sig)=)[^&\s]+"

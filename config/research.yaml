@@ -1,0 +1,154 @@
+# Unified Web Search and Async Deep Research configuration.
+# Fail-closed posture: live egress requires AZOM_USE_MOCK=0, process-env
+# AZOM_WEB_SEARCH_ENABLED=1 / AZOM_WEB_FETCH_ENABLED=1 / AZOM_RESEARCH_ENABLED=1,
+# and kill switches unset. Provider API keys belong in Oscar secrets.env / env only.
+
+schema_version: 1
+enabled: false
+kill_switch_env: AZOM_WEB_SEARCH_KILL
+research_kill_switch_env: AZOM_RESEARCH_KILL
+
+default_route_order:
+  - parallel
+  - exa
+  - brave
+  - tavily
+  - searxng
+
+providers:
+  parallel:
+    enabled: true
+    mode_quick: fast
+    mode_deep: basic
+  exa:
+    enabled: true
+    search_type_quick: auto
+    search_type_deep: deep
+  brave:
+    enabled: true
+  tavily:
+    enabled: true
+    search_depth_quick: basic
+    search_depth_deep: advanced
+  searxng:
+    enabled: false
+
+budgets:
+  max_queries_per_day: 200
+  max_fetches_per_day: 300
+  monthly_external_usd_cap: 25.0
+  warn_ratio: 0.8
+  per_turn_quick_search_max: 3
+  per_turn_quick_fetch_max: 2
+  max_concurrent_jobs: 2
+  depth_tiers:
+    quick:
+      max_rounds: 1
+      max_queries: 4
+      max_fetches: 4
+      max_wall_s: 45
+      max_llm_calls: 3
+    standard:
+      max_rounds: 2
+      max_queries: 8
+      max_fetches: 10
+      max_wall_s: 150
+      max_llm_calls: 6
+    deep:
+      max_rounds: 3
+      max_queries: 12
+      max_fetches: 15
+      max_wall_s: 300
+      max_llm_calls: 9
+
+cache:
+  enabled: true
+  default_ttl_hours: 6
+  docs_ttl_hours: 24
+  news_ttl_hours: 1
+  max_entries: 1000
+  max_mb: 50
+
+retention:
+  artifact_ttl_days: 14
+  artifact_grace_hours: 24
+
+egress:
+  https_only: true
+  max_redirects: 3
+  connect_timeout_s: 5
+  fetch_timeout_s: 10
+  max_raw_bytes: 524288
+  max_decompressed_bytes: 1048576
+  max_extracted_chars: 12000
+  min_domain_interval_s: 2.0
+  max_retry_after_s: 5.0
+  denylist_domains: []
+  allowlist_domains: []
+
+profiles:
+  design_inspiration:
+    preferred_providers: [exa, parallel, tavily, brave]
+    market_defaults: [en, sv, nb, da]
+    freshness_days: 730
+    corroboration_mode: inspiration_and_heuristics
+    authority_domains:
+      - baymard.com
+      - nngroup.com
+      - smashingmagazine.com
+      - web.dev
+      - wordpress.org
+    pii_strictness: standard
+  technical_docs:
+    preferred_providers: [parallel, exa, brave, tavily]
+    market_defaults: [en]
+    freshness_days: 540
+    corroboration_mode: authoritative_primary
+    authority_domains:
+      - developer.wordpress.org
+      - woocommerce.com
+      - developer.mozilla.org
+      - php.net
+      - github.com
+    pii_strictness: standard
+  competitor_market:
+    preferred_providers: [parallel, exa, brave, tavily]
+    market_defaults: [SE, NO, DK]
+    freshness_days: 365
+    corroboration_mode: triangulated_market
+    authority_domains: []
+    pii_strictness: high
+  support_fact_check:
+    preferred_providers: [parallel, brave, exa, tavily]
+    market_defaults: [SE, NO, DK]
+    freshness_days: 30
+    corroboration_mode: strict_factual
+    authority_domains:
+      - postnord.se
+      - postnord.no
+      - postnord.dk
+      - bring.se
+      - bring.no
+      - dhl.com
+      - konsumentverket.se
+      - forbrukerradet.no
+      - lovdata.no
+      - forbrug.dk
+    pii_strictness: strict
+  marketing_intel:
+    preferred_providers: [exa, parallel, brave, tavily]
+    market_defaults: [SE, NO, DK, en]
+    freshness_days: 365
+    corroboration_mode: triangulated_market
+    authority_domains:
+      - support.google.com
+      - developers.google.com
+      - blog.google
+    pii_strictness: high
+  deep_general:
+    preferred_providers: [parallel, exa, tavily, brave]
+    market_defaults: [SE, en]
+    freshness_days: 365
+    corroboration_mode: triangulated_factual
+    authority_domains: []
+    pii_strictness: high

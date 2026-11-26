@@ -459,7 +459,10 @@ def download_messenger_image(
     if safe_url is None:
         return None
 
-    opener = urllib.request.build_opener(_SafeHttpsImageRedirectHandler())
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _SafeHttpsImageRedirectHandler(),
+    )
     req = urllib.request.Request(
         safe_url,
         headers={"User-Agent": "AzomEcomOps/3.0"},

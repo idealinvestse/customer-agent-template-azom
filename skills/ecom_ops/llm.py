@@ -62,9 +62,9 @@ def _complete_request(
     messages: list[dict[str, str]],
     *,
     model: str | None = None,
-    max_tokens: int = 400,
+    max_tokens: int | None = None,
     temperature: float = 0.3,
-    timeout: int = 30,
+    timeout: int | None = None,
     telemetry: Telemetry | None = None,
     site: str = "azom",
     case_id: str | None = None,
@@ -82,12 +82,22 @@ def _complete_request(
     validator: Callable[[str], Any] | None = None,
 ) -> ModelResult:
     """Run one router completion and return the full result, including model."""
+    router = get_model_router()
+    use_profile = bool(profile_id and hasattr(router, "complete_profile"))
+    resolved_max_tokens = (
+        max_tokens if use_profile else (400 if max_tokens is None else max_tokens)
+    )
+    resolved_timeout = (
+        (45 if timeout is None else timeout)
+        if use_profile
+        else (30 if timeout is None else timeout)
+    )
     request = ModelRequest(
         messages=messages,
         model=model,
-        max_output_tokens=max_tokens,
+        max_output_tokens=resolved_max_tokens,  # type: ignore[arg-type]
         temperature=temperature,
-        timeout=timeout,
+        timeout=resolved_timeout,
         site=site,
         case_id=case_id,
         actor=actor,
@@ -99,10 +109,9 @@ def _complete_request(
         profile_id=profile_id,
         response_format=response_format,
     )
-    router = get_model_router()
-    if profile_id and hasattr(router, "complete_profile"):
+    if use_profile:
         return router.complete_profile(
-            profile_id,
+            profile_id,  # type: ignore[arg-type]
             request,
             telemetry=telemetry,
             route_override=route_id,
@@ -119,9 +128,9 @@ def chat_completion(
     messages: list[dict[str, str]],
     *,
     model: str | None = None,
-    max_tokens: int = 400,
+    max_tokens: int | None = None,
     temperature: float = 0.3,
-    timeout: int = 30,
+    timeout: int | None = None,
     telemetry: Telemetry | None = None,
     site: str = "azom",
     case_id: str | None = None,
