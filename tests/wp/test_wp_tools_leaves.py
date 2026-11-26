@@ -54,6 +54,7 @@ def test_tools_leaves_have_no_banned_tokens_or_integrations_imports() -> None:
         "html_parse.py",
         "workspace_io.py",
         "catalog.py",
+        "loop_state.py",
     }
     all_files = sorted(tools_dir.glob("*.py"))
     assert len(all_files) >= 8
