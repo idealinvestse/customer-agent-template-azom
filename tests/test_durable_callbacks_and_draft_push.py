@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -313,5 +314,56 @@ def test_unbound_and_gc_purged_legacy_callback_fails_closed_when_proposal_store_
     resurrect = bot.handle_callback(100, "order:set:1001:cancelled")
     assert "saknas eller har löpt ut" in resurrect.text.lower()
     assert executed == []
+
+
+def test_legacy_sqlite_migration_adds_callback_key_before_index(tmp_path):
+    legacy_db = tmp_path / "legacy_telegram_jobs.sqlite3"
+    conn = sqlite3.connect(str(legacy_db))
+    conn.executescript(
+        """
+        CREATE TABLE bot_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            task_id TEXT,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            domain TEXT,
+            site_id TEXT,
+            state TEXT NOT NULL DEFAULT 'open',
+            created_at REAL NOT NULL,
+            consumed_at REAL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = TelegramJobStore(legacy_db)
+    with store._connection() as verify_conn:
+        cols = {
+            row["name"]
+            for row in verify_conn.execute("PRAGMA table_info(bot_proposals)")
+        }
+        indexes = {
+            row["name"]
+            for row in verify_conn.execute("PRAGMA index_list(bot_proposals)")
+        }
+    assert {"expires_at", "callback_key"}.issubset(cols)
+    assert "bot_proposals_chat_cb" in indexes
+
+    store.bind_callback_proposal(
+        100,
+        "order:set:1001:completed",
+        actor="oscar",
+        domain="se",
+        target_id="1001",
+        payload={"order_id": "1001", "status": "completed"},
+    )
+    status, prop = store.consume_callback_proposal(
+        100, "order:set:1001:completed", actor="oscar"
+    )
+    assert status == "ok"
+    assert prop is not None and prop["domain"] == "se"
+
 
 

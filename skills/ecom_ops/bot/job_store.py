@@ -181,8 +181,6 @@ class TelegramJobStore:
                 );
                 CREATE INDEX IF NOT EXISTS bot_proposals_chat_state
                     ON bot_proposals(chat_id, state);
-                CREATE INDEX IF NOT EXISTS bot_proposals_chat_cb
-                    ON bot_proposals(chat_id, callback_key, state);
                 CREATE TABLE IF NOT EXISTS wp_review_pins (
                     chat_id TEXT NOT NULL,
                     plan_id TEXT NOT NULL,
