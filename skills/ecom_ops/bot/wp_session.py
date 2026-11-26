@@ -6,11 +6,13 @@ validation, hash-pinning, and actor/channel-switch cleanup rails.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ecom_ops.model_router.base import MAX_MULTIMODAL_IMAGE_BYTES, detect_image_format
 from ecom_ops.wp_ops.agent_tools import context_matches
 
 FILE_PLAN_ID_RE = re.compile(r"^fe-[a-f0-9]{12}$")
@@ -20,10 +22,62 @@ MAX_REVIEW_HASH_CACHE = 24
 ACTIVE_WP_REVIEW_TTL_SECONDS = 12 * 60 * 60
 
 
-def _validate_image_paths(paths: Any, *, limit: int) -> list[str]:
-    from ecom_ops.bot.chat_agent import _validate_chat_image_paths
+def is_allowed_chat_image_path(item: Any) -> str | None:
+    """Return resolved path when ``item`` is a valid, safe image under AZOM_DATA_DIR."""
+    if not isinstance(item, (str, Path)):
+        return None
+    raw = str(item).strip()
+    if not raw or "\x00" in raw:
+        return None
+    path = Path(raw)
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        resolved = path.resolve()
+        env_data_dir = (os.environ.get("AZOM_DATA_DIR") or "").strip()
+        data_root = (
+            Path(env_data_dir).resolve()
+            if env_data_dir
+            else Path(".azom-data").resolve()
+        )
+        in_inbox = resolved.is_relative_to(data_root / "telegram_inbox_media")
+        in_messenger_inbox = resolved.is_relative_to(data_root / "messenger_inbox_media")
+        in_workspaces = resolved.is_relative_to(data_root / "wp_workspaces")
+        is_direct_test_file = bool(env_data_dir) and resolved.parent == data_root
+        if not (in_inbox or in_messenger_inbox or in_workspaces or is_direct_test_file):
+            return None
+        size = resolved.stat().st_size
+        if size <= 0 or size > MAX_MULTIMODAL_IMAGE_BYTES:
+            return None
+        head = resolved.read_bytes()[:16]
+    except OSError:
+        return None
+    if detect_image_format(head) is None:
+        return None
+    return str(resolved)
 
-    return _validate_chat_image_paths(paths, limit=limit)
+
+def validate_chat_image_paths(
+    image_paths: list[str] | tuple[str, ...] | None,
+    *,
+    limit: int = 4,
+) -> list[str]:
+    """Keep unique, existing, non-symlink PNG/JPEG/WEBP files within AZOM_DATA_DIR."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in image_paths or ():
+        resolved = is_allowed_chat_image_path(item)
+        if not resolved or resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(resolved)
+    if len(out) > limit:
+        out = out[-limit:]
+    return out
+
+
+def _validate_image_paths(paths: Any, *, limit: int) -> list[str]:
+    return validate_chat_image_paths(paths, limit=limit)
 
 
 def _normalize_page_draft_meta(raw: Any) -> dict[str, str] | None:
@@ -361,11 +415,13 @@ __all__ = [
     "REVIEW_PLAN_ID_RE",
     "SITE_ID_TOKEN_RE",
     "drop_review_hash",
+    "is_allowed_chat_image_path",
     "merge_active_wp_review",
     "pick_followup_images",
     "prune_mismatched_wp_session",
     "prune_review_hashes",
     "resolve_pinned_hashes",
     "valid_active_wp_review",
+    "validate_chat_image_paths",
     "with_review_hashes",
 ]
