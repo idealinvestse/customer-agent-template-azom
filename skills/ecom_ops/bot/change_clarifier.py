@@ -15,6 +15,16 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ecom_ops.bot.wp_intents import (
+    NEW_PAGE_CREATE_RE as _NEW_PAGE_CREATION_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    SITE_REFUSAL_RE as _SITE_REFUSAL_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    WP_CODE_FILE_RE as _CODE_FILE_RE,
+)
+
 MAX_CLARIFY_ROUNDS = 3
 MAX_CLARIFY_OPTIONS = 4
 CLARIFY_TTL_SECONDS = 12 * 3600
@@ -414,18 +424,6 @@ _SHORT_ACK_RE = re.compile(
     re.I,
 )
 
-_SITE_REFUSAL_RE = re.compile(
-    r"\b(?:"
-    r"(?:installera|avinstallera|radera|ta\s+bort|delete)\s+"
-    r"(?:ett\s+|det\s+|nytt\s+|hela\s+)?(?:plugin(?:et|s)?|till[äa]gg(?:et)?|tema(?:t|n)?|theme(?!\.json\b))|"
-    r"(?:byt|byta|v[äa]xla)\s+(?:det\s+|ett\s+|nytt\s+|annat\s+|nuvarande\s+|aktiva?\s+)?(?:tema(?:t|n)?|theme(?!\.json\b))|"
-    r"(?:radera|ta\s+bort|delete)\s+(?:ett\s+|det\s+)?(?:inl[äa]gg(?:et)?|post)|"
-    r"(?:skapa|l[äa]gg\s+till)\s+(?:ett\s+)?nytt\s+(?:blogginl[äa]gg|inl[äa]gg|post)|"
-    r"nytt\s+(?:blogginl[äa]gg|inl[äa]gg|post)"
-    r")\b",
-    re.I,
-)
-
 _EXPLICIT_CHANGE_VERB_RE = re.compile(
     r"\b(?:"
     r"[äa]ndra|uppdatera|byt|byta|justera|fixa|g[öo]r\s+om|g[öo]r\s+s[åa]|"
@@ -512,15 +510,6 @@ _SWITCH_TARGET_RE = re.compile(
     re.I,
 )
 
-_NEW_PAGE_CREATION_RE = re.compile(
-    r"\b(?:"
-    r"(?:skapa|bygg(?:a)?|designa|create|build)\s+(?:en\s+|ett\s+|ny\s+|nytt\s+)*"
-    r"(?:ny\s+)?(?:sida|tacksida|thank[- ]?you(?:\s*sida)?|landningssida|kampanjsida|undersida|page)|"
-    r"ny\s+(?:sida|tacksida|thank[- ]?you(?:\s*sida)?|landningssida|kampanjsida|undersida)"
-    r")\b",
-    re.I,
-)
-
 _POST_ONLY_RE = re.compile(r"\b(?:inl[äa]gg(?:et|en)?|blogginl[äa]gg(?:et)?)\b", re.I)
 
 _ANCHORED_UI_CUE_RE = re.compile(
@@ -535,19 +524,6 @@ _ANCHORED_UI_CUE_RE = re.compile(
     r"f[öo]rslag(?:et|en)?|f[öo]rhandsvisning(?:en|ar)?|sandl[åa]da(?:n)?|sandbox|"
     r"rendera|preview|screenshot(?:s)?|sk[äa]rmdump(?:ar|en)?|"
     r"[öo]verlapp\w*|intryckt|wr-[a-f0-9]{4,12}"
-    r")\b",
-    re.I,
-)
-
-_CODE_FILE_RE = re.compile(
-    r"functions\.php|style\.css|theme\.json|header\.php|footer\.php|single\.php|"
-    r"page\.php|front-page\.php|archive\.php|woocommerce/|"
-    r"\b(?:"
-    r"[a-z0-9_-]+\.(?:php|css|scss|js|json|html)|"
-    r"temafil(?:er)?|pluginfil(?:er)?|temakod|pluginkod|k[äa]llkod(?:en)?|"
-    r"barntema(?:t|n)?|child[\s_-]?theme|snippet(?:s)?|hook(?:s|ar)?|"
-    r"add_action|add_filter|shortcode(?:s)?|template(?:s)?|mall(?:ar|en)?|"
-    r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|css|php|scss"
     r")\b",
     re.I,
 )
@@ -860,6 +836,199 @@ def render_clarification_message(proposal: ClarificationProposal, *, intro: str 
     return "\n\n".join(parts)
 
 
+@dataclass(frozen=True)
+class _FallbackSpec:
+    understanding: str
+    question: str
+    options: tuple[ClarificationOption, ...]
+    screenshot_understanding: str | None = None
+    screenshot_question: str | None = None
+
+
+_FALLBACK_SPECS: dict[str, _FallbackSpec] = {
+    "wp_visual": _FallbackSpec(
+        understanding="Du vill ändra utseende, placering eller layout på webbplatsen.",
+        question="Vilket spår passar bäst för att precisera ändringen?",
+        screenshot_understanding=(
+            "Du hänvisar till en bild eller markering som jag inte kan se direkt i textchatten, "
+            "och vill göra en visuell eller layoutmässig ändring."
+        ),
+        screenshot_question="Vilket element eller område gäller det, och vilket spår stämmer bäst?",
+        options=(
+            ClarificationOption(
+                id="css",
+                label="Justera styling/CSS",
+                summary="Ändra färg, storlek, marginal eller placering via tema-CSS.",
+                action_hint="Föreslå säker CSS-justering efter läsning",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="layout",
+                label="Ändra sidans block/layout",
+                summary="Justera sektion, textblock eller knapp direkt i sidans innehåll eller mall.",
+                action_hint="Kontrollera sidans innehåll och blockstruktur",
+            ),
+            ClarificationOption(
+                id="inspect",
+                label="Granska sidan först",
+                summary="Läs nuvarande tema- och sidstruktur innan vi väljer ändringssätt.",
+                action_hint="Läs sajt- och temadata utan att föreslå skrivning",
+            ),
+        ),
+    ),
+    "wp_code": _FallbackSpec(
+        understanding="Du vill göra en kodändring i WordPress-tema, plugin eller mallfiler.",
+        question="Hur vill du att vi förbereder ändringen innan några filer rörs?",
+        options=(
+            ClarificationOption(
+                id="workspace",
+                label="Öppna granskningsyta",
+                summary="Inspektera tema-/pluginfiler i isolerad arbetsyta och ta fram granskningsbar diff.",
+                action_hint="Använd isolerad wr-arbetsyta efter läsning",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="single_diff",
+                label="Enfils diff-förslag",
+                summary="Ta fram en riktad diffplan för en specifik tema- eller pluginfil.",
+                action_hint="Föreslå enfils diffplan med bas-/resultathash",
+            ),
+            ClarificationOption(
+                id="read_first",
+                label="Läs aktiva filer först",
+                summary="Lista och läs berörda tema-/pluginfiler innan vi bestämmer ändring.",
+                action_hint="Endast läsning av tema/plugin-översikt",
+            ),
+        ),
+    ),
+    "page_content": _FallbackSpec(
+        understanding="Du vill uppdatera innehåll, rubrik eller status på en sida eller ett inlägg.",
+        question="Vilken typ av sid- eller inläggsändring vill du göra?",
+        options=(
+            ClarificationOption(
+                id="text",
+                label="Ändra text eller rubrik",
+                summary="Uppdatera titel eller brödtext på en utpekad sida eller ett inlägg.",
+                action_hint="Specificera sid-/inläggs-ID och ny text",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="status",
+                label="Ändra publiceringsstatus",
+                summary="Sätt sidan eller inlägget till publicerad, utkast eller privat.",
+                action_hint="Specificera mål-ID och ny status",
+            ),
+            ClarificationOption(
+                id="list_pages",
+                label="Lista sidor/inlägg först",
+                summary="Visa aktuella sidor och inlägg så att du kan peka ut rätt ID.",
+                action_hint="Kör read-only lista av sidor/inlägg",
+            ),
+        ),
+    ),
+    "product": _FallbackSpec(
+        understanding="Du vill uppdatera en produkt i WooCommerce, men produkt-ID eller fältvärde saknas.",
+        question="Vilken produktändring gäller det?",
+        options=(
+            ClarificationOption(
+                id="price_stock",
+                label="Pris eller lagerstatus",
+                summary="Ändra ordinarie pris, lagersaldo eller lagerstatus på vald produkt.",
+                action_hint="Ange produkt-ID samt nytt pris eller lagervärde",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="prod_text",
+                label="Produktnamn/beskrivning",
+                summary="Uppdatera titel, kort beskrivning eller generera ny produktbeskrivning.",
+                action_hint="Ange produkt-ID och önskad textändring",
+            ),
+            ClarificationOption(
+                id="find_prod",
+                label="Sök/lista produkter först",
+                summary="Visa produkter i katalogen för att hitta rätt produkt-ID först.",
+                action_hint="Läs produktlista utan skrivning",
+            ),
+        ),
+    ),
+    "site_settings": _FallbackSpec(
+        understanding="Du vill ändra en övergripande sajtinställning eller plugin-status.",
+        question="Vilken sajtinställning eller vilket plugin vill du hantera?",
+        options=(
+            ClarificationOption(
+                id="identity",
+                label="Sajttitel eller tagline",
+                summary="Uppdatera webbplatsens titel eller undertitel (tagline).",
+                action_hint="Ange fält (sajttitel/tagline) och nytt värde",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="plugin_stat",
+                label="Slå på/av plugin",
+                summary="Aktivera eller inaktivera ett befintligt plugin (kräver Oscar-behörighet).",
+                action_hint="Ange plugin-slug och önskat läge",
+            ),
+            ClarificationOption(
+                id="show_site",
+                label="Visa nuvarande status",
+                summary="Kontrollera sajtens titel, tagline och aktiva plugins först.",
+                action_hint="Read-only sajt- och pluginstatus",
+            ),
+        ),
+    ),
+    "order": _FallbackSpec(
+        understanding="Du vill ändra en order i WooCommerce, men ordernummer eller ny status behöver preciseras.",
+        question="Vad vill du göra med ordern?",
+        options=(
+            ClarificationOption(
+                id="status",
+                label="Ändra orderstatus",
+                summary="Föreslå ny status (t.ex. processing, completed, on-hold, cancelled).",
+                action_hint="Ange ordernummer och ny status",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="show_order",
+                label="Visa ordern först",
+                summary="Slå upp orderns nuvarande status och detaljer innan förslag.",
+                action_hint="Read-only orderuppslag",
+            ),
+            ClarificationOption(
+                id="list_orders",
+                label="Lista senaste ordrar",
+                summary="Visa de senaste ordrarna för att välja rätt ordernummer.",
+                action_hint="Read-only orderlista",
+            ),
+        ),
+    ),
+    "general_change": _FallbackSpec(
+        understanding="Du vill göra en ändring, men mål och exakt resultat behöver förtydligas innan jag föreslår något.",
+        question="Vilket område gäller din ändring?",
+        options=(
+            ClarificationOption(
+                id="site_ui",
+                label="Design, sida eller text",
+                summary="Ändra utseende, layout, sidtext eller tema-/CSS-detalj på webbplatsen.",
+                action_hint="Precisera sida/element och önskat utseende",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="catalog",
+                label="Produkt eller order",
+                summary="Uppdatera pris, lager, beskrivning eller orderstatus i WooCommerce.",
+                action_hint="Precisera order-/produkt-ID och nytt värde",
+            ),
+            ClarificationOption(
+                id="inspect",
+                label="Inspektera först",
+                summary="Gör en läskontroll av berörd del innan vi tar fram ett ändringsförslag.",
+                action_hint="Read-only kontroll",
+            ),
+        ),
+    ),
+}
+
+
 def build_fallback_clarification(
     text: str,
     assessment: ChangeAssessment,
@@ -882,186 +1051,23 @@ def build_fallback_clarification(
         target_bits.append(f"Produkt #{sticky_product_id}")
     target_summary = " · ".join(target_bits)
 
-    if category == "wp_visual":
-        if assessment.mentions_screenshot_or_annotation:
-            understanding = (
-                "Du hänvisar till en bild eller markering som jag inte kan se direkt i textchatten, "
-                "och vill göra en visuell eller layoutmässig ändring."
-            )
-            question = "Vilket element eller område gäller det, och vilket spår stämmer bäst?"
-        else:
-            understanding = "Du vill ändra utseende, placering eller layout på webbplatsen."
-            question = "Vilket spår passar bäst för att precisera ändringen?"
-        options = (
-            ClarificationOption(
-                id="css",
-                label="Justera styling/CSS",
-                summary="Ändra färg, storlek, marginal eller placering via tema-CSS.",
-                action_hint="Föreslå säker CSS-justering efter läsning",
-                recommended=True,
-            ),
-            ClarificationOption(
-                id="layout",
-                label="Ändra sidans block/layout",
-                summary="Justera sektion, textblock eller knapp direkt i sidans innehåll eller mall.",
-                action_hint="Kontrollera sidans innehåll och blockstruktur",
-            ),
-            ClarificationOption(
-                id="inspect",
-                label="Granska sidan först",
-                summary="Läs nuvarande tema- och sidstruktur innan vi väljer ändringssätt.",
-                action_hint="Läs sajt- och temadata utan att föreslå skrivning",
-            ),
-        )
-    elif category == "wp_code":
-        understanding = "Du vill göra en kodändring i WordPress-tema, plugin eller mallfiler."
-        question = "Hur vill du att vi förbereder ändringen innan några filer rörs?"
-        options = (
-            ClarificationOption(
-                id="workspace",
-                label="Öppna granskningsyta",
-                summary="Inspektera tema-/pluginfiler i isolerad arbetsyta och ta fram granskningsbar diff.",
-                action_hint="Använd isolerad wr-arbetsyta efter läsning",
-                recommended=True,
-            ),
-            ClarificationOption(
-                id="single_diff",
-                label="Enfils diff-förslag",
-                summary="Ta fram en riktad diffplan för en specifik tema- eller pluginfil.",
-                action_hint="Föreslå enfils diffplan med bas-/resultathash",
-            ),
-            ClarificationOption(
-                id="read_first",
-                label="Läs aktiva filer först",
-                summary="Lista och läs berörda tema-/pluginfiler innan vi bestämmer ändring.",
-                action_hint="Endast läsning av tema/plugin-översikt",
-            ),
-        )
-    elif category == "page_content":
-        understanding = "Du vill uppdatera innehåll, rubrik eller status på en sida eller ett inlägg."
-        question = "Vilken typ av sid- eller inläggsändring vill du göra?"
-        options = (
-            ClarificationOption(
-                id="text",
-                label="Ändra text eller rubrik",
-                summary="Uppdatera titel eller brödtext på en utpekad sida eller ett inlägg.",
-                action_hint="Specificera sid-/inläggs-ID och ny text",
-                recommended=True,
-            ),
-            ClarificationOption(
-                id="status",
-                label="Ändra publiceringsstatus",
-                summary="Sätt sidan eller inlägget till publicerad, utkast eller privat.",
-                action_hint="Specificera mål-ID och ny status",
-            ),
-            ClarificationOption(
-                id="list_pages",
-                label="Lista sidor/inlägg först",
-                summary="Visa aktuella sidor och inlägg så att du kan peka ut rätt ID.",
-                action_hint="Kör read-only lista av sidor/inlägg",
-            ),
-        )
-    elif category == "product":
-        understanding = "Du vill uppdatera en produkt i WooCommerce, men produkt-ID eller fältvärde saknas."
-        question = "Vilken produktändring gäller det?"
-        options = (
-            ClarificationOption(
-                id="price_stock",
-                label="Pris eller lagerstatus",
-                summary="Ändra ordinarie pris, lagersaldo eller lagerstatus på vald produkt.",
-                action_hint="Ange produkt-ID samt nytt pris eller lagervärde",
-                recommended=True,
-            ),
-            ClarificationOption(
-                id="prod_text",
-                label="Produktnamn/beskrivning",
-                summary="Uppdatera titel, kort beskrivning eller generera ny produktbeskrivning.",
-                action_hint="Ange produkt-ID och önskad textändring",
-            ),
-            ClarificationOption(
-                id="find_prod",
-                label="Sök/lista produkter först",
-                summary="Visa produkter i katalogen för att hitta rätt produkt-ID först.",
-                action_hint="Läs produktlista utan skrivning",
-            ),
-        )
-    elif category == "site_settings":
-        understanding = "Du vill ändra en övergripande sajtinställning eller plugin-status."
-        question = "Vilken sajtinställning eller vilket plugin vill du hantera?"
-        options = (
-            ClarificationOption(
-                id="identity",
-                label="Sajttitel eller tagline",
-                summary="Uppdatera webbplatsens titel eller undertitel (tagline).",
-                action_hint="Ange fält (sajttitel/tagline) och nytt värde",
-                recommended=True,
-            ),
-            ClarificationOption(
-                id="plugin_stat",
-                label="Slå på/av plugin",
-                summary="Aktivera eller inaktivera ett befintligt plugin (kräver Oscar-behörighet).",
-                action_hint="Ange plugin-slug och önskat läge",
-            ),
-            ClarificationOption(
-                id="show_site",
-                label="Visa nuvarande status",
-                summary="Kontrollera sajtens titel, tagline och aktiva plugins först.",
-                action_hint="Read-only sajt- och pluginstatus",
-            ),
-        )
-    elif category == "order":
-        understanding = "Du vill ändra en order i WooCommerce, men ordernummer eller ny status behöver preciseras."
-        question = "Vad vill du göra med ordern?"
-        options = (
-            ClarificationOption(
-                id="status",
-                label="Ändra orderstatus",
-                summary="Föreslå ny status (t.ex. processing, completed, on-hold, cancelled).",
-                action_hint="Ange ordernummer och ny status",
-                recommended=True,
-            ),
-            ClarificationOption(
-                id="show_order",
-                label="Visa ordern först",
-                summary="Slå upp orderns nuvarande status och detaljer innan förslag.",
-                action_hint="Read-only orderuppslag",
-            ),
-            ClarificationOption(
-                id="list_orders",
-                label="Lista senaste ordrar",
-                summary="Visa de senaste ordrarna för att välja rätt ordernummer.",
-                action_hint="Read-only orderlista",
-            ),
-        )
-    else:
-        understanding = "Du vill göra en ändring, men mål och exakt resultat behöver förtydligas innan jag föreslår något."
-        question = "Vilket område gäller din ändring?"
-        options = (
-            ClarificationOption(
-                id="site_ui",
-                label="Design, sida eller text",
-                summary="Ändra utseende, layout, sidtext eller tema-/CSS-detalj på webbplatsen.",
-                action_hint="Precisera sida/element och önskat utseende",
-                recommended=True,
-            ),
-            ClarificationOption(
-                id="catalog",
-                label="Produkt eller order",
-                summary="Uppdatera pris, lager, beskrivning eller orderstatus i WooCommerce.",
-                action_hint="Precisera order-/produkt-ID och nytt värde",
-            ),
-            ClarificationOption(
-                id="inspect",
-                label="Inspektera först",
-                summary="Gör en läskontroll av berörd del innan vi tar fram ett ändringsförslag.",
-                action_hint="Read-only kontroll",
-            ),
-        )
+    spec = _FALLBACK_SPECS.get(category, _FALLBACK_SPECS["general_change"])
+    use_screenshot_copy = (
+        assessment.mentions_screenshot_or_annotation
+        and spec.screenshot_understanding is not None
+        and spec.screenshot_question is not None
+    )
+    understanding = (
+        spec.screenshot_understanding if use_screenshot_copy and spec.screenshot_understanding else spec.understanding
+    )
+    question = (
+        spec.screenshot_question if use_screenshot_copy and spec.screenshot_question else spec.question
+    )
 
     return ClarificationProposal(
         understanding=understanding,
         question=question,
-        options=options,
+        options=spec.options,
         mode="options",
         category=category,
         original_request=text,

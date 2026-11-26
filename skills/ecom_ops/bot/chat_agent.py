@@ -51,6 +51,22 @@ from ecom_ops.bot.site_content import (
     site_tool_result,
 )
 from ecom_ops.bot.store import clamp_messages
+from ecom_ops.bot.wp_intents import (
+    NEW_PAGE_CREATE_RE as _NEW_PAGE_CREATE_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    VISION_WP_INTENT_RE as _VISION_WP_INTENT_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    WP_CODE_INTENT_RE,
+    WP_OPS_INTENT_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    WP_CONTEXT_CONTINUITY_RE as _WP_CONTEXT_CONTINUITY_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    WP_UI_FOLLOWUP_RE as _WP_UI_FOLLOWUP_RE,
+)
 from ecom_ops.llm import DEFAULT_MODEL, chat_completion, get_last_result, openrouter_cap_usd
 from ecom_ops.model_router import get_model_router
 from ecom_ops.model_router.base import MAX_MULTIMODAL_IMAGE_BYTES, detect_image_format
@@ -71,7 +87,7 @@ from ecom_ops.wp_ops.agent_tools import (
     run_bounded_wp_tool_loop,
     tool_name_from,
 )
-from ecom_ops.wp_ops.page_review_intent import extract_page_review_target, is_page_review
+from ecom_ops.wp_ops.page_review_intent import is_page_review
 from ecom_ops.wp_ops.registry import resolve_site_id_from_text
 
 # Prefer shared extractor (SB1) for SV/NO/DK labels + near-status forms.
@@ -148,60 +164,6 @@ _LIST_COUNT_RE = re.compile(
     re.I,
 )
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.I | re.S)
-WP_OPS_INTENT_RE = re.compile(
-    r"\b(wordpress|wordpress-sajt|wp[- ]?ops|wp-cli|plugin(?:er)?|tema(?:n|t|r)?|"
-    r"theme(?:s)?|backup(?:s)?|säkerhets(?:fynd|skanning|koll)|uppdateringsplan|"
-    r"wordpressdrift|wordpress-drift|sajt(?:en|er|erna)?|webbplats(?:en|er)?|"
-    r"functions\.php|style\.css|temafil(?:er)?|pluginfil(?:er)?|arbetsyta(?:n)?|hook(?:s|ar)?)\b",
-    re.I,
-)
-WP_CODE_INTENT_RE = re.compile(
-    r"functions\.php|style\.css|theme\.json|header\.php|footer\.php|"
-    r"single\.php|page\.php|front-page\.php|archive\.php|woocommerce/|"
-    r"\b(?:[a-z0-9_-]+\.(?:php|css|scss|js|json|html)|"
-    r"temafil(?:er)?|pluginfil(?:er)?|temakod|pluginkod|k[äa]llkod(?:en)?|"
-    r"child[\s_-]?theme|barntema(?:t|n)?|modertema(?:t)?|f[öo]r[äa]ldratema(?:t)?|parent[\s_-]?theme|"
-    r"blocktema(?:t)?|block[\s_-]?theme|block\.json|mallhierarki|template[\s_-]?hierarch\w*|"
-    r"hooks?|hookar|filters?|actions?|add_action|add_filter|do_action|apply_filters|"
-    r"register_rest_route|register_block_type|wp_enqueue_(?:script|style)|"
-    r"shortcodes?|snippets?|overrides?|templates?|mall(?:ar|en)?|"
-    r"hpos|custom_order_tables|wc_tested_up_to|"
-    r"arbetsyta(?:n)?|workspace|refaktor(?:era|ering)|bulk[\s_-]?replace|mass[äa]ndr\w*|"
-    r"sajtplugin|site[\s_-]?plugin|azom-site-|scaffold|"
-    r"static[\s_-]?checks?|statisk(?:a)?\s+kontroll(?:er)?|sandbox|"
-    r"sandl[åa]da(?:n)?|sk[äa]rmdump(?:ar|en)?|screenshot(?:s)?|"
-    r"print(?:screen)?|html(?:-?kod(?:en)?)?|rendera(?:d|t|r)?|f[öo]rhandsvisning(?:en)?|"
-    r"produktsid(?:a|an|or|orna)|k[öo]pknapp(?:en|ar)?|"
-    r"inring(?:a|ad|at|ade|ning(?:en)?)?|bifogad\s+bild|"
-    r"(?:[äa]ndra|redigera|uppdatera|byt(?:a)?|justera)\s+(?:en\s+|denna\s+|det\s+)?"
-    r"(?:produkt(?:en|sida(?:n)?)?|k[öo]pknapp(?:en)?|inring\w*)|"
-    r"component[\s_-]?intel|wp\.org|wordpress\.org|playbook|"
-    r"tacksid(?:a|an|or)?|thank[\s_-]?you|orderbekr[äa]ftelse(?:n)?|"
-    r"landningssid(?:a|an|or)?|kampanjsid(?:a|an|or)?|ny\s+sid(?:a|an)|"
-    r"(?:skapa|bygg|designa)\s+(?:en\s+|ny\s+|en\s+ny\s+)?(?:[a-zåäö0-9_-]+\s+)?sid(?:a|an)|"
-    r"exempelprodukt(?:er)?|exempeldata|"
-    r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|theme_overview|plugin_overview|"
-    r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file|"
-    r"list_products|get_product|list_pages|get_page|build_sample_data|fetch_page_html|preview_page|inspect_element)|"
-    r"wc_template_overrides_audit|"
-    r"(?:skapa|bygg|utveckla|granska|fels[öo]k|analysera|kod(?:a)?|skriv(?:a)?)\s+"
-    r"(?:ett\s+|en\s+|nytt\s+|detta\s+)?(?:plugin(?:et)?|till[äa]gg(?:et)?|barntema(?:t)?)|"
-    r"(?:plugin|till[äa]gg)(?:et|s)?\s+(?:f[öo]r|med|som|kod|konflikt)|"
-    r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|"
-    r"kod(?:en)?|css|php|scss|block(?:en|et|s)?)\b",
-    re.I,
-)
-_VISION_WP_INTENT_RE = re.compile(
-    r"\b(?:"
-    r"[äa]ndra|redigera|uppdatera|byt(?:a)?|fixa|justera|ta\s+bort|l[äa]gg\s+till|"
-    r"skapa|g[öo]r(?:a)?|granska|kolla|visa|inspektera|titta|"
-    r"inring\w*|marker\w*|cirkel\w*|pil(?:en)?|sk[äa]rmdump\w*|screenshot\w*|print\w*|bild(?:en)?|"
-    r"produkt\w*|sid(?:a|an|or|orna)|knapp\w*|k[öo]pknapp\w*|pris(?:et)?|rubrik\w*|text(?:en)?|"
-    r"f[äa]rg\w*|layout\w*|design\w*|sektion\w*|banner\w*|hero|header|footer|"
-    r"sandbox|sandl[åa]da\w*|f[öo]rhandsvisning\w*|preview|tema\w*|plugin\w*|html|css|mall\w*"
-    r")\b",
-    re.I,
-)
 _VISION_SYSTEM_GUIDE = (
     "Bifogad skärmdump (vision-läge): "
     "Granska noggrant vad användaren har ringat in eller markerat i bilden "
@@ -2416,34 +2378,6 @@ def _run_fast_read_loop(
 _ACTIVE_WP_REVIEW_TTL_SECONDS = 12 * 60 * 60
 _REVIEW_PLAN_ID_RE = re.compile(r"^wr-[a-f0-9]{12}$")
 _SITE_ID_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
-_WP_UI_FOLLOWUP_RE = re.compile(
-    r"\b(?:"
-    r"knapp(?:en|ar)?|k[öo]pknapp(?:en|ar)?|ikon(?:en|er)?|kundvagnsikon(?:en)?|"
-    r"f[äa]rg(?:en|er)?|st[öo]rre|mindre|tydligare|snyggare|kompakt(?:are)?|"
-    r"fixa|justera|bort|d[öo]lj|flytta|centrera|runda(?:d|de)?|"
-    r"ram(?:en)?|border|padding|marginal(?:er)?|margin|gap|spacing|hover|"
-    r"text(?:en)?|rubrik(?:en)?|storlek(?:en)?|bredd(?:en)?|h[öo]jd(?:en)?|"
-    r"f[öo]rslag(?:et|en)?|variant(?:er)?|f[öo]rhandsvisning(?:en)?|preview|"
-    r"rendera(?:d|t|r)?|screenshot(?:s)?|sk[äa]rmdump(?:ar|en)?|"
-    r"tacksid(?:a|an)?|sid(?:a|an)|sektion(?:en|er)?|exempeldata|orderdetaljer|guider?|"
-    r"layout(?:en)?|stil(?:en)?|css|style|produkt(?:sida(?:n)?)?|block(?:et)?|"
-    r"sandl[åa]da(?:n)?|sandbox"
-    r")\b",
-    re.I,
-)
-_NEW_PAGE_CREATE_RE = re.compile(
-    r"\b(?:skapa|bygg(?:a)?|designa|g[öo]r(?:a)?)\s+(?:en\s+|ett\s+)?"
-    r"(?:helt\s+)?ny(?:tt|a)?\s+(?:[a-zåäö0-9_-]+\s+){0,2}"
-    r"(?:sid(?:a|an)|tacksid(?:a|an)|landningssid(?:a|an)|kampanjsid(?:a|an)|uppsell(?:sid(?:a|an))?|mall(?:en)?)\b"
-    r"|\bny\s+(?:tacksid(?:a|an)|landningssid(?:a|an)|kampanjsid(?:a|an)|thank[\s_-]?you(?:\s+sida)?)\b",
-    re.I,
-)
-_WP_CONTEXT_CONTINUITY_RE = re.compile(
-    r"\b(?:wordpress|wp|sajt\w*|hemsid\w*|tema\w*|plugin\w*|staging|produktion|deploy\w*|"
-    r"sandbox|sandl[åa]d\w*|granskning\w*|f[öo]rhandsvisning\w*|preview|kontroll(?:er)?|"
-    r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12})\b",
-    re.I,
-)
 
 
 def _normalize_page_draft_meta(raw: Any) -> dict[str, str] | None:
@@ -2921,65 +2855,34 @@ def run_chat(
     )) or active_review_followup
 
     if not valid_images and is_page_review(user_message):
+        from ecom_ops.bot.page_review_runtime import run_page_review_turn
         from ecom_ops.wp_ops.page_review_loop import run_bounded_page_review_loop
 
-        bound = wp_ops_context if isinstance(wp_ops_context, dict) else None
-        site_id = ""
-        if context_matches(
-            bound,
+        turn = run_page_review_turn(
+            text=user_message,
             actor=actor,
             channel=channel,
             conversation_id=conversation_id,
-        ):
-            site_id = str(bound.get("site_id") or "")
-        if not site_id:
-            candidate = resolve_site_id_from_text(user_message)
-            if candidate:
-                try:
-                    allowed_read = resolve_actor(actor).has(Permission.WP_OPS_READ)
-                except Exception:
-                    allowed_read = False
-                if allowed_read:
-                    site_id = candidate
-                    bound = context_for_storage(
-                        actor=actor,
-                        channel=channel,
-                        conversation_id=conversation_id,
-                        site_id=site_id,
-                        operation_ids=(),
-                    )
-        from ecom_ops.bot.page_review_runtime import page_review_client
-
-        page_review_kwargs: dict[str, Any] = {
-            "site_id": site_id,
-            "actor": actor,
-            "client": page_review_client(site_id, actor) if site_id else None,
-            "on_progress": on_progress,
-            "target_page": extract_page_review_target(user_message),
-        }
-        if on_checkpoint is not None and _accepts_kwarg(
-            run_bounded_page_review_loop, "on_checkpoint"
-        ):
-            page_review_kwargs["on_checkpoint"] = on_checkpoint
-        outcome = run_bounded_page_review_loop(**page_review_kwargs)
-        text = outcome.text
-        from ecom_ops.bot.reply import safe_workspace_attachments
-
-        attachments = safe_workspace_attachments(getattr(outcome, "attachments", ()))
+            wp_ops_context=wp_ops_context if isinstance(wp_ops_context, dict) else None,
+            loop_fn=run_bounded_page_review_loop,
+            on_progress=on_progress,
+            on_checkpoint=on_checkpoint,
+            require_site_id=False,
+        )
         return ChatResult(
-            text=text,
-            messages=_with_turn(text),
-            new_messages=_turn_messages(text),
+            text=turn.text,
+            messages=_with_turn(turn.text),
+            new_messages=_turn_messages(turn.text),
             tool_digest="",
             clear_tool_digest=True,
-            attachments=attachments,
+            attachments=turn.attachments,
             sticky_order_id=str(sticky_order_id) if sticky_order_id else None,
             sticky_case_id8=str(sticky_case_id8) if sticky_case_id8 else None,
             sticky_market=str(sticky_market) if sticky_market else None,
             sticky_product_id=str(sticky_product_id) if sticky_product_id else None,
             sticky_page_id=str(sticky_page_id) if sticky_page_id else None,
             sticky_post_id=str(sticky_post_id) if sticky_post_id else None,
-            wp_ops_context=bound if site_id else None,
+            wp_ops_context=turn.wp_ops_context,
             active_wp_review=prior_active_review,
         )
 

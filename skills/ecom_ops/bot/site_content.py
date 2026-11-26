@@ -8,11 +8,39 @@ from __future__ import annotations
 
 import html
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
 from ecom_ops.bot.dialog_actions import PendingAction
+from ecom_ops.bot.wp_intents import (
+    PACKAGE_FALLTHROUGH_REFUSE_RE as _PACKAGE_FALLTHROUGH_REFUSE_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    PACKAGE_REFUSE_RE as _PACKAGE_REFUSE_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    POST_CREATE_RE as _POST_CREATE_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    POST_DELETE_RE as _POST_DELETE_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    THEME_FALLTHROUGH_REFUSE_RE as _THEME_FALLTHROUGH_REFUSE_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    THEME_TOUCH_RE as _THEME_TOUCH_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    WP_CODE_FALLTHROUGH_RE as _WP_CODE_FALLTHROUGH_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    WP_FILE_REFUSE_RE as _FILE_RE,
+)
+from ecom_ops.bot.wp_intents import (
+    WP_WORKSPACE_INTENT_RE as _WP_WORKSPACE_INTENT_RE,
+)
 from ecom_ops.security import SecurityError, sanitize_text
 
 _POST_NOUN_RE = re.compile(
@@ -37,14 +65,6 @@ _POST_FIELD_RE = re.compile(
     r"content|status)\b\s*(?:till|to|:)\s*(?P<value>.+)$",
     re.I | re.S,
 )
-_POST_DELETE_RE = re.compile(
-    r"\b(?:radera|ta\s+bort|rensa|delete)\s+(?:inl[äa]gg(?:et)?|post)\b",
-    re.I,
-)
-_POST_CREATE_RE = re.compile(
-    r"\b(?:skapa|nytt)\s+(?:ett\s+)?(?:blogginl[äa]gg|inl[äa]gg|post)\b",
-    re.I,
-)
 _SITE_SHOW_RE = re.compile(
     r"\b(?:sajttitel|tagline(?:n)?|undertitel(?:n)?|sajtbeskrivning(?:en)?)\b"
     r"|\bvad\s+heter\s+sajten\b"
@@ -66,21 +86,6 @@ _THEME_LIST_RE = re.compile(
     r"|\b(?:tema|theme)\s+(?:är|ar|listan)\b",
     re.I,
 )
-_THEME_TOUCH_RE = re.compile(
-    r"\b(?:byt|byta|aktivera|v[äa]xla|anv[äa]nd|installera|uppdatera|updatera|"
-    r"radera|ta\s+bort|redigera|ändra|andra)\b.{0,40}\b(?:teman?|themes?)\b"
-    r"|\b(?:tema(?:t)?|theme)\b.{0,24}\b(?:till|byta|aktivera)\b",
-    re.I,
-)
-_THEME_FALLTHROUGH_REFUSE_RE = re.compile(
-    r"\b(?:byt|byta|v[äa]xla|aktivera|installera|avinstallera|"
-    r"radera|ta\s+bort|delete)\s+(?:det\s+|ett\s+|nytt\s+|annat\s+|"
-    r"nuvarande\s+|aktiva?\s+|mitt\s+|v[åa]rt\s+)?"
-    r"(?:tema(?:t|n)?|theme)(?!\.json\b)\b"
-    r"|\b(?:byt|byta|v[äa]xla|aktivera)\s+tema(?:t)?\s+till\b"
-    r"|\b(?:tema(?:t)?|theme)(?!\.json\b)\s+(?:ska\s+(?:bytas|aktiveras)|byts)\b",
-    re.I,
-)
 _PLUGIN_LIST_RE = re.compile(
     r"\b(?:visa|lista|hämta|hamta|vilka|which|list)\s+"
     r"(?:aktiva?\s+|active\s+)?(?:plugins?|till[äa]gg(?:en)?)\b"
@@ -98,69 +103,6 @@ _PLUGIN_OFF_RE = re.compile(
     rf"(?:plugin(?:et)?|till[äa]gget?)\s+{_PLUGIN_ID_TOKEN}",
     re.I,
 )
-_PACKAGE_REFUSE_RE = re.compile(
-    r"\b(?:installera|avinstallera|radera|ta\s+bort|uppdatera|updatera|delete)\s+"
-    r"(?:plugin(?:et|s)?|till[äa]gg(?:et)?|tema(?:t|n)?|theme)\b",
-    re.I,
-)
-_PACKAGE_FALLTHROUGH_REFUSE_RE = re.compile(
-    r"\b(?:installera|avinstallera|radera|ta\s+bort|delete)\s+"
-    r"(?:det\s+|ett\s+|nytt\s+|hela\s+)?"
-    r"(?:plugin(?:et|s)?|till[äa]gg(?:et)?|tema(?:t|n)?|theme(?!\.json\b))\b",
-    re.I,
-)
-_WP_CODE_FALLTHROUGH_RE = re.compile(
-    r"functions\.php|style\.css|theme\.json|header\.php|footer\.php|"
-    r"single\.php|single-product\.php|content-single-product\.php|"
-    r"page\.php|front-page\.php|archive\.php|woocommerce/|/(?:produkt|product)/|"
-    r"\b(?:[a-z0-9_-]+\.(?:php|css|scss|js|json|html)|"
-    r"temafil(?:er)?|pluginfil(?:er)?|temakod|pluginkod|k[äa]llkod(?:en)?|"
-    r"barntema(?:t|n)?|child[\s_-]?theme|modertema(?:t)?|f[öo]r[äa]ldratema(?:t)?|parent[\s_-]?theme|"
-    r"blocktema(?:t)?|block[\s_-]?theme|block\.json|mallhierarki|template[\s_-]?hierarch\w*|"
-    r"hooks?|hookar|filters?|actions?|add_action|add_filter|do_action|apply_filters|"
-    r"register_rest_route|register_block_type|wp_enqueue_(?:script|style)|"
-    r"shortcodes?|snippets?|overrides?|templates?|mall(?:ar|en)?|produktmall(?:ar|en)?|"
-    r"produktsid(?:a|an|or|orna|e|en|er)|product[\s_-]?page|k[öo]pknapp(?:en|ar|arna)?|"
-    r"tacksid(?:a|an)|thank[- ]?you|orderbekr[äa]ftelse|landningssid(?:a|an)|kampanjsid(?:a|an)|"
-    r"ny\s+sida|(?:skapa|bygg(?:a)?)\s+(?:en\s+|ny\s+)?sida|exempelprodukt(?:er|erna)?|exempeldata|hj[äa]lpguide(?:r|n|rna)?|"
-    r"knapp(?:en|ar|arna)?|ikon(?:en|er|erna)?|kundvagnsikon(?:en)?|add[\s_-]?to[\s_-]?cart|"
-    r"f[äa]rg(?:en|er|erna)?|padding|marginal(?:en|er|erna)?|ram(?:en|ar|arna)?|hover|"
-    r"inring(?:a|ad|at|ade|ning|ningen)?|bifogad\s+bild|sandboxsid(?:a|an)|"
-    r"(?:redigera|ändra|andra)\s+(?:en\s+|den\s+)?produkt(?:en|er|sid(?:a|an))?|"
-    r"hpos|custom_order_tables|wc_tested_up_to|"
-    r"arbetsyta(?:n)?|workspace|refaktor(?:era|ering)|bulk[\s_-]?replace|mass[äa]ndr\w*|"
-    r"sajtplugin|site[\s_-]?plugin|azom-site-|scaffold|"
-    r"static[\s_-]?checks?|statisk(?:a)?\s+kontroll(?:er)?|sandbox|"
-    r"sandl[åa]da(?:n)?|sk[äa]rmdump(?:ar|en)?|screenshot(?:s)?|"
-    r"print(?:screen)?|html(?:-?kod(?:en)?)?|rendera(?:d|t|r)?|f[öo]rhandsvisning(?:en|ar)?|"
-    r"component[\s_-]?intel|wp\.org|wordpress\.org|playbook|"
-    r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|theme_overview|plugin_overview|"
-    r"code_index|template_hierarchy|component_intel|playbook|propose_\w+|read_theme_plugin_file|"
-    r"list_products|get_product|list_pages|get_page|build_sample_data|fetch_page_html|preview_page|inspect_element)|"
-    r"wc_template_overrides_audit|"
-    r"skapa\s+(?:ett\s+)?(?:nytt\s+)?(?:plugin|till[äa]gg|barntema)|"
-    r"granska\s+(?:plugin(?:et)?|till[äa]gg(?:et)?|tema(?:t)?|koden)|"
-    r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|"
-    r"kod(?:en)?|css|php|scss)\b",
-    re.I,
-)
-_WP_WORKSPACE_INTENT_RE = re.compile(
-    r"single-product\.php|content-single-product\.php|"
-    r"\b(?:arbetsyta(?:n)?|workspace|sandl[åa]da(?:n)?|sandbox|sandboxsid(?:a|an)|"
-    r"produktsid(?:a|an|or|orna)|product[\s_-]?page|"
-    r"tacksid(?:a|an)|thank[- ]?you|orderbekr[äa]ftelse|landningssid(?:a|an)|kampanjsid(?:a|an)|"
-    r"ny\s+sida|(?:skapa|bygg(?:a)?)\s+(?:en\s+|ny\s+)?sida|exempelprodukt(?:er|erna)?|exempeldata|hj[äa]lpguide(?:r|n|rna)?|"
-    r"knapp(?:en|ar|arna)?|k[öo]pknapp(?:en|ar|arna)?|ikon(?:en|er|erna)?|kundvagnsikon(?:en)?|"
-    r"css|f[äa]rg(?:en|er|erna)?|padding|marginal(?:en|er|erna)?|ram(?:en|ar|arna)?|hover|"
-    r"f[öo]rhandsvisning(?:en|ar)?|"
-    r"inring(?:a|ad|at|ade|ning|ningen)?|bifogad\s+bild|"
-    r"wr-[a-f0-9]{4,12}|fe-[a-f0-9]{4,12}|"
-    r"wp_(?:open_review_workspace|list_workspaces|workspace_\w+|"
-    r"theme_overview|plugin_overview|code_index|template_hierarchy|"
-    r"read_theme_plugin_file|list_products|get_product|list_pages|get_page|"
-    r"build_sample_data|fetch_page_html|preview_page|inspect_element))\b",
-    re.I,
-)
 _CRITICAL_PLUGIN_SLUGS = frozenset(
     {
         "woocommerce",
@@ -170,10 +112,6 @@ _CRITICAL_PLUGIN_SLUGS = frozenset(
         "woocommerce-gateway-stripe",
         "svea-checkout-for-woocommerce",
     }
-)
-_FILE_RE = re.compile(
-    r"functions\.php|style\.css|\btemafil(?:er)?\b|\bpluginfil(?:er)?\b",
-    re.I,
 )
 _POST_STATUS = {
     "utkast": "draft",
@@ -307,6 +245,58 @@ def site_tool_result(
     return turn.results[0][1]
 
 
+def _wp_client(domain: str | None) -> Any:
+    """Resolve WordPress client via ``ecom_ops.integrations.wordpress`` so test patches apply."""
+    from ecom_ops.integrations import wordpress as wp_mod
+
+    return wp_mod.wp_client_from_env(use_mock=None, domain=domain)
+
+
+def _run_wp_read(
+    *,
+    domain: str | None,
+    fail_prefix: str,
+    build_turn: Callable[[Any], SiteTurn],
+) -> SiteTurn:
+    try:
+        wp = _wp_client(domain)
+        return build_turn(wp)
+    except Exception as exc:
+        return SiteTurn(
+            consumed=True,
+            results=[("site_content", f"{fail_prefix}: {_public_failure(exc)}")],
+        )
+
+
+def _execute_wp_write(
+    *,
+    actor: str,
+    permission: Any,
+    domain: str | None,
+    action: str,
+    target: str,
+    perform: Callable[[Any], tuple[str, dict[str, Any], str]],
+) -> tuple[bool, str]:
+    from ecom_ops.audit import log_action
+    from ecom_ops.rbac import require_permission, resolve_actor
+
+    try:
+        actor_obj = resolve_actor(actor)
+        require_permission(actor_obj, permission)
+        wp = _wp_client(domain)
+        target_id, details, message = perform(wp)
+    except Exception as exc:
+        return False, _fail_text(exc)
+    log_action(
+        actor=actor_obj.name,
+        action=action,
+        target=target,
+        target_id=target_id,
+        details=details,
+    )
+    return True, message
+
+
 def execute_post_update(
     *,
     post_id: str,
@@ -314,34 +304,33 @@ def execute_post_update(
     actor: str,
     domain: str | None = None,
 ) -> tuple[bool, str]:
-    from ecom_ops.audit import log_action
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-    from ecom_ops.rbac import Permission, require_permission, resolve_actor
+    from ecom_ops.rbac import Permission
     from ecom_ops.security import validate_order_id
 
-    try:
-        actor_obj = resolve_actor(actor)
-        require_permission(actor_obj, Permission.WP_OPS_OPERATE)
+    def _perform(wp: Any) -> tuple[str, dict[str, Any], str]:
         pid = validate_order_id(post_id)
         clean = _revalidate_post_fields(fields)
-        wp = wp_client_from_env(use_mock=None, domain=domain)
         updated = wp.update_post(
             pid,
             title=clean.get("title"),
             content=clean.get("content"),
             status=clean.get("status"),
         )
-    except Exception as exc:
-        return False, _fail_text(exc)
-    log_action(
-        actor=actor_obj.name,
+        shown = ", ".join(sorted(clean))
+        return (
+            str(updated.id),
+            {"fields": sorted(clean), "domain": domain or ""},
+            f"Inlägg {updated.id} ({_plain(updated.title)}) är uppdaterat. Fält: {shown}.",
+        )
+
+    return _execute_wp_write(
+        actor=actor,
+        permission=Permission.WP_OPS_OPERATE,
+        domain=domain,
         action="telegram_post_update",
         target="post",
-        target_id=str(updated.id),
-        details={"fields": sorted(clean), "domain": domain or ""},
+        perform=_perform,
     )
-    shown = ", ".join(sorted(clean))
-    return True, f"Inlägg {updated.id} ({_plain(updated.title)}) är uppdaterat. Fält: {shown}."
 
 
 def execute_site_update(
@@ -350,31 +339,30 @@ def execute_site_update(
     actor: str,
     domain: str | None = None,
 ) -> tuple[bool, str]:
-    from ecom_ops.audit import log_action
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-    from ecom_ops.rbac import Permission, require_permission, resolve_actor
+    from ecom_ops.rbac import Permission
 
-    try:
-        actor_obj = resolve_actor(actor)
-        require_permission(actor_obj, Permission.WP_OPS_OPERATE)
+    def _perform(wp: Any) -> tuple[str, dict[str, Any], str]:
         clean = _revalidate_site_fields(fields)
-        wp = wp_client_from_env(use_mock=None, domain=domain)
         updated = wp.update_site_identity(
             title=clean.get("title"),
             description=clean.get("description"),
         )
-    except Exception as exc:
-        return False, _fail_text(exc)
-    log_action(
-        actor=actor_obj.name,
+        shown = ", ".join(sorted(clean))
+        title = _plain(updated.get("title") or "")
+        return (
+            "site",
+            {"fields": sorted(clean), "domain": domain or ""},
+            f"Sajten ({title}) är uppdaterad. Fält: {shown}.",
+        )
+
+    return _execute_wp_write(
+        actor=actor,
+        permission=Permission.WP_OPS_OPERATE,
+        domain=domain,
         action="telegram_site_update",
         target="settings",
-        target_id="site",
-        details={"fields": sorted(clean), "domain": domain or ""},
+        perform=_perform,
     )
-    shown = ", ".join(sorted(clean))
-    title = _plain(updated.get("title") or "")
-    return True, f"Sajten ({title}) är uppdaterad. Fält: {shown}."
 
 
 def execute_plugin_status(
@@ -384,31 +372,31 @@ def execute_plugin_status(
     actor: str,
     domain: str | None = None,
 ) -> tuple[bool, str]:
-    from ecom_ops.audit import log_action
-    from ecom_ops.integrations.wordpress import _validate_plugin_id, wp_client_from_env
-    from ecom_ops.rbac import Permission, require_permission, resolve_actor
+    from ecom_ops.integrations.wordpress import _validate_plugin_id
+    from ecom_ops.rbac import Permission
 
-    try:
-        actor_obj = resolve_actor(actor)
-        require_permission(actor_obj, Permission.WP_OPS_ADMIN)
+    def _perform(wp: Any) -> tuple[str, dict[str, Any], str]:
         plugin_id = _validate_plugin_id(plugin)
         normalized = str(status).strip().lower()
         if normalized not in _PLUGIN_STATUS_SV:
             raise SecurityError("Invalid plugin status")
-        wp = wp_client_from_env(use_mock=None, domain=domain)
         updated = wp.set_plugin_status(plugin_id, normalized)
-    except Exception as exc:
-        return False, _fail_text(exc)
-    name = _plain(updated.get("name") or plugin_id)
-    log_action(
-        actor=actor_obj.name,
+        name = _plain(updated.get("name") or plugin_id)
+        label = _PLUGIN_STATUS_SV[normalized]
+        return (
+            plugin_id,
+            {"status": normalized, "domain": domain or ""},
+            f"Plugin {name} ({plugin_id}) är {label}.",
+        )
+
+    return _execute_wp_write(
+        actor=actor,
+        permission=Permission.WP_OPS_ADMIN,
+        domain=domain,
         action="telegram_plugin_status",
         target="plugin",
-        target_id=plugin_id,
-        details={"status": normalized, "domain": domain or ""},
+        perform=_perform,
     )
-    label = _PLUGIN_STATUS_SV[normalized]
-    return True, f"Plugin {name} ({plugin_id}) är {label}."
 
 
 def _refusal(text: str, *, allow_wp_ops_fallthrough: bool = False) -> str | None:
@@ -542,213 +530,165 @@ def _coerce_post_field(token: str, value: str) -> tuple[dict[str, Any], str, str
 
 
 def _propose_post(write: _Write, *, domain: str | None) -> SiteTurn:
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
-    try:
-        wp = wp_client_from_env(use_mock=None, domain=domain)
+    def _build(wp: Any) -> SiteTurn:
         post = wp.get_post(write.target_id or "")
-    except Exception as exc:
+        pid = str(post.id)
+        pending = PendingAction(
+            kind="post_update",
+            payload={
+                "post_id": pid,
+                "fields": dict(write.fields),
+                "label": write.label,
+                "preview": write.preview,
+                "domain": domain,
+            },
+        )
+        propose = (
+            f"FÖRESLÅ ändring (ej utförd): inlägg {pid} ({_plain(post.title)}) "
+            f"{write.label} → {write.preview}."
+        )
         return SiteTurn(
             consumed=True,
-            results=[("site_content", f"Inlägget svarade inte: {_public_failure(exc)}")],
+            results=[
+                ("show_post", _render_post(post)),
+                ("propose_post_update", propose),
+            ],
+            pending=pending,
+            sticky_post_id=pid,
         )
-    pid = str(post.id)
-    pending = PendingAction(
-        kind="post_update",
-        payload={
-            "post_id": pid,
-            "fields": dict(write.fields),
-            "label": write.label,
-            "preview": write.preview,
-            "domain": domain,
-        },
-    )
-    propose = (
-        f"FÖRESLÅ ändring (ej utförd): inlägg {pid} ({_plain(post.title)}) "
-        f"{write.label} → {write.preview}."
-    )
-    return SiteTurn(
-        consumed=True,
-        results=[
-            ("show_post", _render_post(post)),
-            ("propose_post_update", propose),
-        ],
-        pending=pending,
-        sticky_post_id=pid,
-    )
+
+    return _run_wp_read(domain=domain, fail_prefix="Inlägget svarade inte", build_turn=_build)
 
 
 def _propose_site(write: _Write, *, domain: str | None) -> SiteTurn:
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
-    try:
-        wp = wp_client_from_env(use_mock=None, domain=domain)
+    def _build(wp: Any) -> SiteTurn:
         settings = wp.get_settings()
-    except Exception as exc:
+        pending = PendingAction(
+            kind="site_update",
+            payload={
+                "fields": dict(write.fields),
+                "label": write.label,
+                "preview": write.preview,
+                "domain": domain,
+            },
+        )
+        propose = f"FÖRESLÅ ändring (ej utförd): {write.label} → {write.preview}."
         return SiteTurn(
             consumed=True,
-            results=[("site_content", f"Sajten svarade inte: {_public_failure(exc)}")],
+            results=[
+                ("show_site", _render_site(settings, host=_host(wp))),
+                ("propose_site_update", propose),
+            ],
+            pending=pending,
         )
-    pending = PendingAction(
-        kind="site_update",
-        payload={
-            "fields": dict(write.fields),
-            "label": write.label,
-            "preview": write.preview,
-            "domain": domain,
-        },
-    )
-    propose = f"FÖRESLÅ ändring (ej utförd): {write.label} → {write.preview}."
-    return SiteTurn(
-        consumed=True,
-        results=[
-            ("show_site", _render_site(settings, host=_host(wp))),
-            ("propose_site_update", propose),
-        ],
-        pending=pending,
-    )
+
+    return _run_wp_read(domain=domain, fail_prefix="Sajten svarade inte", build_turn=_build)
 
 
 def _propose_plugin(write: _Write, *, domain: str | None) -> SiteTurn:
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
     token = write.target_id or ""
-    try:
-        wp = wp_client_from_env(use_mock=None, domain=domain)
+
+    def _build(wp: Any) -> SiteTurn:
         rows = wp.list_plugins()
-    except Exception as exc:
+        plugin, error = _resolve_plugin(rows, token)
+        if error or plugin is None:
+            return SiteTurn(consumed=True, results=[("site_content", error or "Pluginet saknas.")])
+        plugin_id = str(plugin.get("plugin") or "")
+        slug = plugin_id.split("/", 1)[0].lower()
+        is_critical = (
+            write.fields.get("status") == "inactive" and slug in _CRITICAL_PLUGIN_SLUGS
+        )
+        payload: dict[str, Any] = {
+            "plugin": plugin_id,
+            "status": write.fields.get("status"),
+            "name": _component_name(plugin),
+            "label": write.label,
+            "preview": write.preview,
+            "domain": domain,
+        }
+        if is_critical:
+            payload["critical"] = True
+        pending = PendingAction(kind="plugin_status", payload=payload)
+        current = _PLUGIN_STATUS_SV.get(
+            str(plugin.get("status") or ""), str(plugin.get("status") or "")
+        )
+        propose = (
+            f"FÖRESLÅ ändring (ej utförd): plugin {plugin_id} "
+            f"({_component_name(plugin)}) → {write.preview}. Nu: {current}."
+        )
+        if is_critical:
+            propose = (
+                "VARNING: kritiskt e-handelsplugin — inaktivering kan slå ut kassa/butik. "
+                + propose
+            )
         return SiteTurn(
             consumed=True,
-            results=[("site_content", f"Pluginlistan svarade inte: {_public_failure(exc)}")],
+            results=[
+                ("list_plugins", _render_plugins([plugin], host=_host(wp))),
+                ("propose_plugin_status", propose),
+            ],
+            pending=pending,
         )
-    plugin, error = _resolve_plugin(rows, token)
-    if error or plugin is None:
-        return SiteTurn(consumed=True, results=[("site_content", error or "Pluginet saknas.")])
-    plugin_id = str(plugin.get("plugin") or "")
-    slug = plugin_id.split("/", 1)[0].lower()
-    is_critical = (
-        write.fields.get("status") == "inactive" and slug in _CRITICAL_PLUGIN_SLUGS
-    )
-    payload: dict[str, Any] = {
-        "plugin": plugin_id,
-        "status": write.fields.get("status"),
-        "name": _component_name(plugin),
-        "label": write.label,
-        "preview": write.preview,
-        "domain": domain,
-    }
-    if is_critical:
-        payload["critical"] = True
-    pending = PendingAction(
-        kind="plugin_status",
-        payload=payload,
-    )
-    current = _PLUGIN_STATUS_SV.get(str(plugin.get("status") or ""), str(plugin.get("status") or ""))
-    propose = (
-        f"FÖRESLÅ ändring (ej utförd): plugin {plugin_id} "
-        f"({_component_name(plugin)}) → {write.preview}. Nu: {current}."
-    )
-    if is_critical:
-        propose = (
-            "VARNING: kritiskt e-handelsplugin — inaktivering kan slå ut kassa/butik. "
-            + propose
-        )
-    return SiteTurn(
-        consumed=True,
-        results=[
-            ("list_plugins", _render_plugins([plugin], host=_host(wp))),
-            ("propose_plugin_status", propose),
-        ],
-        pending=pending,
-    )
+
+    return _run_wp_read(domain=domain, fail_prefix="Pluginlistan svarade inte", build_turn=_build)
 
 
 def _read_posts(*, domain: str | None, status: str) -> SiteTurn:
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
-    try:
-        wp = wp_client_from_env(use_mock=None, domain=domain)
+    def _build(wp: Any) -> SiteTurn:
         rows = wp.list_posts(per_page=20, status=status)
-    except Exception as exc:
+        sticky = str(rows[0].id) if len(rows) == 1 else None
         return SiteTurn(
             consumed=True,
-            results=[("site_content", f"Inläggslistan svarade inte: {_public_failure(exc)}")],
+            results=[("list_posts", _render_posts(rows, host=_host(wp)))],
+            sticky_post_id=sticky,
         )
-    sticky = str(rows[0].id) if len(rows) == 1 else None
-    return SiteTurn(
-        consumed=True,
-        results=[("list_posts", _render_posts(rows, host=_host(wp)))],
-        sticky_post_id=sticky,
-    )
+
+    return _run_wp_read(domain=domain, fail_prefix="Inläggslistan svarade inte", build_turn=_build)
 
 
 def _read_post(post_id: str, *, domain: str | None) -> SiteTurn:
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
-    try:
-        wp = wp_client_from_env(use_mock=None, domain=domain)
+    def _build(wp: Any) -> SiteTurn:
         post = wp.get_post(post_id)
-    except Exception as exc:
         return SiteTurn(
             consumed=True,
-            results=[("site_content", f"Inlägget svarade inte: {_public_failure(exc)}")],
+            results=[("show_post", _render_post(post))],
+            sticky_post_id=str(post.id),
         )
-    return SiteTurn(
-        consumed=True,
-        results=[("show_post", _render_post(post))],
-        sticky_post_id=str(post.id),
-    )
+
+    return _run_wp_read(domain=domain, fail_prefix="Inlägget svarade inte", build_turn=_build)
 
 
 def _read_site(*, domain: str | None) -> SiteTurn:
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
-    try:
-        wp = wp_client_from_env(use_mock=None, domain=domain)
+    def _build(wp: Any) -> SiteTurn:
         settings = wp.get_settings()
-    except Exception as exc:
         return SiteTurn(
             consumed=True,
-            results=[("site_content", f"Sajten svarade inte: {_public_failure(exc)}")],
+            results=[("show_site", _render_site(settings, host=_host(wp)))],
         )
-    return SiteTurn(
-        consumed=True,
-        results=[("show_site", _render_site(settings, host=_host(wp)))],
-    )
+
+    return _run_wp_read(domain=domain, fail_prefix="Sajten svarade inte", build_turn=_build)
 
 
 def _read_themes(*, domain: str | None) -> SiteTurn:
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
-    try:
-        wp = wp_client_from_env(use_mock=None, domain=domain)
+    def _build(wp: Any) -> SiteTurn:
         rows = wp.list_themes()
-    except Exception as exc:
         return SiteTurn(
             consumed=True,
-            results=[("site_content", f"Temalistan svarade inte: {_public_failure(exc)}")],
+            results=[("list_themes", _render_themes(rows, host=_host(wp)))],
         )
-    return SiteTurn(
-        consumed=True,
-        results=[("list_themes", _render_themes(rows, host=_host(wp)))],
-    )
+
+    return _run_wp_read(domain=domain, fail_prefix="Temalistan svarade inte", build_turn=_build)
 
 
 def _read_plugins(*, domain: str | None) -> SiteTurn:
-    from ecom_ops.integrations.wordpress import wp_client_from_env
-
-    try:
-        wp = wp_client_from_env(use_mock=None, domain=domain)
+    def _build(wp: Any) -> SiteTurn:
         rows = wp.list_plugins()
-    except Exception as exc:
         return SiteTurn(
             consumed=True,
-            results=[("site_content", f"Pluginlistan svarade inte: {_public_failure(exc)}")],
+            results=[("list_plugins", _render_plugins(rows, host=_host(wp)))],
         )
-    return SiteTurn(
-        consumed=True,
-        results=[("list_plugins", _render_plugins(rows, host=_host(wp)))],
-    )
+
+    return _run_wp_read(domain=domain, fail_prefix="Pluginlistan svarade inte", build_turn=_build)
 
 
 def _render_posts(rows: list[Any], *, host: str) -> str:
