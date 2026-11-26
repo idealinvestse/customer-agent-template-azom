@@ -24,7 +24,7 @@ from ecom_ops.wp_ops.review_workspace import (
 )
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SYNTAX_MARKER = "AZOM_FAKE_PHP_SYNTAX_ERROR"
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 DASH = ROOT / "infrastructure" / "dashboard"

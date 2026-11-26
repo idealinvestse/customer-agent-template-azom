@@ -28,7 +28,7 @@ from ecom_ops.wp_ops.review_runner import versions_unknown
 from ecom_ops.wp_ops.review_workspace import VerifiedTheme
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SOURCE_SECRET = "AZOM-SECRET-SRC-91b7"
 
 

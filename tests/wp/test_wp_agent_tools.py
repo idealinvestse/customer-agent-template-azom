@@ -19,7 +19,7 @@ from ecom_ops.wp_ops.agent_tools import (
 )
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture

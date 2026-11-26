@@ -83,7 +83,7 @@ from ecom_ops.wp_ops.woo_templates import (
 )
 from ecom_ops.wp_ops.wporg_intel import fetch_component_intel, newer_available
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 
 

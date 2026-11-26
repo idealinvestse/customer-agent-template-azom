@@ -22,7 +22,7 @@ from ecom_ops.wp_ops.review_checks import PROFILE, PROFILE_VERSION, requirements
 from ecom_ops.wp_ops.review_plan import ReviewPlans
 from ecom_ops.wp_ops.review_workspace import VerifiedTheme, workspace_root
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 
 pytestmark = pytest.mark.skipif(

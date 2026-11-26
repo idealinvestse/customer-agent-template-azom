@@ -20,7 +20,7 @@ from ecom_ops.wp_ops.models import parse_site
 from ecom_ops.wp_ops.registry import load_sites
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 MARKER = "AZOM-SSH-KEY-MARKER"
 KEY = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{MARKER}\n-----END OPENSSH PRIVATE KEY-----\n"
 IDENTITY = "C:/keys/azom-ssh-test"

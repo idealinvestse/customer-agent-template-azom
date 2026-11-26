@@ -28,7 +28,7 @@ from ecom_ops.wp_ops.files import TransportError, transport_message
 from ecom_ops.wp_ops.models import parse_site
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 

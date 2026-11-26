@@ -24,7 +24,7 @@ from ecom_ops.wp_ops.files import PathRejected, TransportError
 from ecom_ops.wp_ops.registry import load_sites
 from ecom_ops.wp_ops.service import WpOpsResult, WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DASH = ROOT / "infrastructure" / "dashboard"
 EMPTY = hashlib.sha256(b"").hexdigest()
 TOKEN = "AZOM-FILE-TOKEN-9f3c"

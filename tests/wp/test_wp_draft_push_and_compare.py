@@ -18,7 +18,7 @@ from ecom_ops.wp_ops.agent_tools import WpAgentTools, run_bounded_file_tool_loop
 from ecom_ops.wp_ops.review_workspace import workspace_root
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 MOCK_REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 
 

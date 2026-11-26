@@ -29,7 +29,7 @@ from ecom_ops.wp_ops.agent_tools import (
 from ecom_ops.wp_ops.review_workspace import workspace_root
 from ecom_ops.wp_ops.service import WpOpsResult, WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 

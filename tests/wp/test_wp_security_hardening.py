@@ -36,7 +36,7 @@ from ecom_ops.wp_ops.review_plan import ReviewPlans, review_risk
 from ecom_ops.wp_ops.review_workspace import ReviewError, bulk_replace_work, place_work_file
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 MOCK_REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 
 

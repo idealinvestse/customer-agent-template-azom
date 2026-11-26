@@ -16,7 +16,7 @@ from ecom_ops.wp_ops.credentials import bind_credential
 from ecom_ops.wp_ops.registry import load_sites
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SHOP_SECRET = "mock-shop-app-password-aaa"
 STAGING_SECRET = "mock-staging-app-password-bbb"
 

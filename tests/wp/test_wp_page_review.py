@@ -27,7 +27,7 @@ from ecom_ops.wp_ops.review_plan import ReviewPlans
 from ecom_ops.wp_ops.review_runner import SandboxGate, synthetic_env
 from ecom_ops.wp_ops.review_workspace import VerifiedTheme
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SYNTAX_MARKER = "AZOM_FAKE_PHP_SYNTAX_ERROR"
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 RAW = "<!-- wp:paragraph --><p>Hem</p>"

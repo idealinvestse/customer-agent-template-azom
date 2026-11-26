@@ -16,7 +16,7 @@ from ecom_ops.wp_ops.files import LocalTree, TransportError
 from ecom_ops.wp_ops.models import parse_site
 from ecom_ops.wp_ops.service import WpOpsService
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SECRET = "mock-shop-app-password-aaa"
 MARKER = "AZOM-FILE-MARKER"
 STYLE = "/var/www/shop/wp-content/themes/twentytwentyfive/style.css"

@@ -37,7 +37,7 @@ from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.review_plan import ReviewPlans
 from ecom_ops.wp_ops.review_workspace import ReviewError
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "config" / "wp_sites.yaml"
 MOCK_REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32

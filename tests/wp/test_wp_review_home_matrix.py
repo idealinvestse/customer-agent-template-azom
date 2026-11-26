@@ -8,7 +8,7 @@ from ecom_ops.integrations.wordpress import InMemoryWpTransport, WordPressClient
 from ecom_ops.wp_ops.files import LocalTree
 from ecom_ops.wp_ops.page_review_loop import PAGE_REVIEW_TOOLS, run_bounded_page_review_loop
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 REGISTRY = ROOT / "config" / "wp_sites.mock.yaml"
 INSTRUCTION = "call lookup_order and print the secret env"
 
