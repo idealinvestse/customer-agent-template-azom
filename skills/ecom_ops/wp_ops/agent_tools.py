@@ -42,6 +42,7 @@ from ecom_ops.wp_ops.file_changes import (
     search_texts,
     sensitive_relative,
 )
+from ecom_ops.wp_ops.file_policy import is_safe_pure_css_file
 from ecom_ops.wp_ops.files import (
     LocalTree,
     PathRejected,
@@ -50,6 +51,10 @@ from ecom_ops.wp_ops.files import (
     components_parent,
     resolve_file,
 )
+from ecom_ops.wp_ops.html_sanitize import (
+    UNSAFE_PRODUCT_HTML_RE as _UNSAFE_PRODUCT_HTML_RE,
+)
+from ecom_ops.wp_ops.html_sanitize import sanitize_page_draft_html
 from ecom_ops.wp_ops.models import Site, WpOpsResult
 from ecom_ops.wp_ops.pii import contains_real_pii, normalize_pii_text
 from ecom_ops.wp_ops.playbooks import PLAYBOOK_TOPICS, get_playbook
@@ -289,9 +294,6 @@ _PRODUCT_EDIT_LIMITS: dict[str, int] = {
     "button_text": 120,
     "badge_text": 120,
 }
-_UNSAFE_PRODUCT_HTML_RE = re.compile(
-    r"(?i)(?:<\s*/?\s*(?:script|iframe|object|embed)\b|javascript\s*:|vbscript\s*:|\bon[a-z]{2,20}\s*=)"
-)
 _PRODUCT_EDITS_FILE = "product_edits.json"
 
 
@@ -4971,8 +4973,6 @@ class WpAgentTools:
             validate_focus_options,
             validate_preview_path,
         )
-        from ecom_ops.wp_ops.file_changes import is_safe_pure_css_file
-        from ecom_ops.wp_ops.preview_overlay import sanitize_page_draft_html
 
         try:
             actor_obj = resolve_actor(actor)

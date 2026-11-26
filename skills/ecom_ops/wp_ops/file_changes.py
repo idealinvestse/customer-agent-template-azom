@@ -20,6 +20,14 @@ from typing import Any
 from ecom_ops.rbac import Permission
 from ecom_ops.wp_ops.config import rest_reads_allowed as _config_rest_reads_allowed
 from ecom_ops.wp_ops.credentials import bind_credential, redact_secret_text
+from ecom_ops.wp_ops.file_policy import (
+    is_safe_pure_css_file,  # noqa: F401  # compatibility re-export
+    production_deploy_block,
+    risk_for,
+)
+from ecom_ops.wp_ops.file_policy import (
+    normalize_css_for_check as _normalize_css_for_check,  # noqa: F401  # compatibility re-export
+)
 from ecom_ops.wp_ops.files import (
     _MAX_BYTES,
     FileEditor,
@@ -44,19 +52,6 @@ _SENSITIVE = re.compile(
     r"(?i)(^\.env(?:$|\.)|^wp-config[^/]*\.php$|"
     r"(?:^|[-_.])(?:secrets?|credentials?|tokens?|passwords?|auth|private[-_.]?key|api[-_.]?key)(?:[-_.]|$)|"
     r"\.(?:bak|backup|sql|sqlite3?|dump|swp|orig)$)"
-)
-_HIGH_RISK = re.compile(
-    r"checkout|cart|payment|gateway|kassan|varukorg|betalning",
-    re.I,
-)
-_CSS_COMMENT_RE = re.compile(r"/\*[\s\S]*?(?:\*/|$)")
-_CSS_HEX_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\r\n\f]?")
-_CSS_CHAR_ESCAPE_RE = re.compile(r"\\([^\r\n\f0-9a-fA-F])")
-_CSS_HIGH_RISK = re.compile(
-    r"checkout|payment|gateway|kassan|betalning|<\?|<script\b|</|"
-    r"javascript:|vbscript:|expression\s*\(|url\s*\(|image-set\s*\(|"
-    r"@import\b|behavior\s*:|-moz-binding\s*:",
-    re.I,
 )
 _MAX_CSS_SEARCH_BYTES = 512 * 1024
 _CSS_SEARCH_RESULT_BYTES = 8192
@@ -101,73 +96,11 @@ def rest_reads_allowed() -> bool:
     return _config_rest_reads_allowed()
 
 
-def _normalize_css_for_check(text: str) -> str:
-    """Strip CSS comments and decode CSS backslash/hex escapes before security regex checks."""
-    cleaned = _CSS_COMMENT_RE.sub("", str(text or ""))
-
-    def _decode_hex(match: re.Match[str]) -> str:
-        try:
-            cp = int(match.group(1), 16)
-        except ValueError:
-            return ""
-        if cp == 0 or cp > 0x10FFFF:
-            return "\ufffd"
-        return chr(cp)
-
-    cleaned = _CSS_HEX_ESCAPE_RE.sub(_decode_hex, cleaned)
-    cleaned = _CSS_CHAR_ESCAPE_RE.sub(lambda m: m.group(1), cleaned)
-    return cleaned
-
-
-def is_safe_pure_css_file(relative: str, text: str) -> bool:
-    """True for pure ``.css`` files outside checkout/payment paths with no script/PHP/exfil tokens."""
-    clean = str(relative or "").strip().replace("\\", "/")
-    if not clean.lower().endswith(".css"):
-        return False
-    parts = [part.lower() for part in clean.split("/") if part]
-    if any(part in {"checkout", "cart", "gateway", "payment"} for part in parts):
-        return False
-    raw_text = text or ""
-    normalized = _normalize_css_for_check(raw_text)
-    if (
-        _CSS_HIGH_RISK.search(clean)
-        or _CSS_HIGH_RISK.search(raw_text)
-        or _CSS_HIGH_RISK.search(normalized)
-    ):
-        return False
-    return True
-
-
-def risk_for(relative: str, text: str) -> str:
-    clean = str(relative or "").strip().replace("\\", "/")
-    parts = [part.lower() for part in clean.split("/") if part]
-    if any(part in {"checkout", "cart", "gateway", "payment"} for part in parts):
-        return "high"
-    if clean.lower().endswith(".css"):
-        return "low" if is_safe_pure_css_file(clean, text) else "high"
-    if _HIGH_RISK.search(clean) or _HIGH_RISK.search(text or ""):
-        return "high"
-    return "low"
-
-
 def sensitive_relative(relative: str) -> bool:
     parts = [part for part in str(relative or "").replace("\\", "/").split("/") if part]
     if any(part.lower() in _SKIP_DIRS or _SENSITIVE.search(part) for part in parts):
         return True
     return False
-
-
-def production_deploy_block() -> dict[str, Any]:
-    """Production writes stay closed. A mock manifest is not a backup."""
-    return {
-        "executed": False,
-        "error_class": "BackupNotVerified",
-        "backup_offsite": False,
-        "bytes_copied": False,
-        "encryption": "unconfigured",
-        "restore": "RestoreNotInMvp",
-        "live_calls": False,
-    }
 
 
 def payload_path(data_dir: Path, plan_id: str) -> Path:
