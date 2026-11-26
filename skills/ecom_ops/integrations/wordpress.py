@@ -19,9 +19,10 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import quote, unquote
 
+from ecom_ops.integrations._http_transport import HttpTransport, RequestsTransport
 from ecom_ops.security import SecurityError, get_env, sanitize_text
 
 _PAGE_STATUSES = frozenset({"draft", "publish", "private", "pending"})
@@ -48,21 +49,13 @@ class WpPost:
 # --------------------------------------------------------------------------- #
 
 
-class WpHttpTransport(Protocol):
-    def request(
-        self,
-        method: str,
-        url: str,
-        *,
-        auth: tuple[str, str] | None = None,
-        json: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-        timeout: float = 30,
-    ) -> Any: ...
+WpHttpTransport = HttpTransport
 
 
 class InMemoryWpTransport:
     """Test double for WordPress REST without network."""
+
+    requires_auth: bool = False
 
     def __init__(self) -> None:
         self.posts: dict[int, dict[str, Any]] = {
@@ -186,58 +179,79 @@ class InMemoryWpTransport:
 
         # Collection-level
         if len(parts) == 1:
-            if method.upper() == "GET":
-                rows = list(store.values())
-                # Filter by type for posts/pages collections
-                if collection == "posts":
-                    rows = [r for r in rows if r.get("type") == "post"]
-                elif collection == "pages":
-                    rows = [r for r in rows if r.get("type") == "page"]
-                params = params or {}
-                search = str(params.get("search") or "").lower()
-                if search:
-                    rows = [
-                        r
-                        for r in rows
-                        if search in str(r.get("title", {}).get("rendered", "")).lower()
-                        or search in str(r.get("name", "")).lower()
-                    ]
-                per_page = int(params.get("per_page") or 10)
-                page = int(params.get("page") or 1)
-                start = (page - 1) * per_page
-                return rows[start : start + per_page]
-            if method.upper() == "POST":
-                row = dict(json or {})
-                row["id"] = self._next_id
-                self._next_id += 1
-                if collection == "posts":
-                    row.setdefault("type", "post")
-                elif collection == "pages":
-                    row.setdefault("type", "page")
-                else:
-                    row.setdefault("type", collection.rstrip("s"))
-                row.setdefault("status", "draft")
-                if "title" in row and not isinstance(row["title"], dict):
-                    row["title"] = {"rendered": str(row["title"])}
-                elif "title" not in row:
-                    row["title"] = {"rendered": ""}
-                if collection == "pages":
-                    slug_val = str(row.get("slug") or "").strip().lower()
-                    if not slug_val:
-                        slug_val = f"page-{row['id']}"
-                    row["slug"] = slug_val
-                    row.setdefault("link", f"https://mock.local/{slug_val}/")
-                store[row["id"]] = row
-                return row
-            raise SecurityError(f"Unhandled WP collection op: {method}")
+            return self._handle_collection(method.upper(), collection, store, json=json, params=params)
 
         # Item-level
-        item_id = parts[1]
+        return self._handle_item(method.upper(), collection, store, parts[1], json=json, params=params)
+
+    def _handle_collection(
+        self,
+        verb: str,
+        collection: str,
+        store: dict[int, dict[str, Any]],
+        *,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        if verb == "GET":
+            rows = list(store.values())
+            if collection == "posts":
+                rows = [r for r in rows if r.get("type") == "post"]
+            elif collection == "pages":
+                rows = [r for r in rows if r.get("type") == "page"]
+            query = params or {}
+            search = str(query.get("search") or "").lower()
+            if search:
+                rows = [
+                    r
+                    for r in rows
+                    if search in str(r.get("title", {}).get("rendered", "")).lower()
+                    or search in str(r.get("name", "")).lower()
+                ]
+            per_page = int(query.get("per_page") or 10)
+            page = int(query.get("page") or 1)
+            start = (page - 1) * per_page
+            return rows[start : start + per_page]
+        if verb == "POST":
+            row = dict(json or {})
+            row["id"] = self._next_id
+            self._next_id += 1
+            if collection == "posts":
+                row.setdefault("type", "post")
+            elif collection == "pages":
+                row.setdefault("type", "page")
+            else:
+                row.setdefault("type", collection.rstrip("s"))
+            row.setdefault("status", "draft")
+            if "title" in row and not isinstance(row["title"], dict):
+                row["title"] = {"rendered": str(row["title"])}
+            elif "title" not in row:
+                row["title"] = {"rendered": ""}
+            if collection == "pages":
+                slug_val = str(row.get("slug") or "").strip().lower()
+                if not slug_val:
+                    slug_val = f"page-{row['id']}"
+                row["slug"] = slug_val
+                row.setdefault("link", f"https://mock.local/{slug_val}/")
+            store[row["id"]] = row
+            return row
+        raise SecurityError(f"Unhandled WP collection op: {verb}")
+
+    def _handle_item(
+        self,
+        verb: str,
+        collection: str,
+        store: dict[int, dict[str, Any]],
+        item_id: str,
+        *,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
         try:
             iid = int(item_id)
         except ValueError:
             raise SecurityError(f"WP API error 404: invalid id {item_id}")
-        if method.upper() == "GET":
+        if verb == "GET":
             if iid not in store:
                 raise SecurityError(f"WP API error 404: {collection}/{item_id}")
             row = store[iid]
@@ -248,19 +262,19 @@ class InMemoryWpTransport:
                 hidden.pop("raw", None)
                 return {**row, "content": hidden}
             return row
-        if method.upper() in {"POST", "PUT", "PATCH"}:
+        if verb in {"POST", "PUT", "PATCH"}:
             if iid not in store:
                 raise SecurityError(f"WP API error 404: {collection}/{item_id}")
             store[iid] = {**store[iid], **(json or {})}
-            if "title" in json and not isinstance(store[iid]["title"], dict):
+            if json and "title" in json and not isinstance(store[iid]["title"], dict):
                 store[iid]["title"] = {"rendered": str(json["title"])}
             return store[iid]
-        if method.upper() == "DELETE":
+        if verb == "DELETE":
             removed = store.pop(iid, None)
             if removed:
                 return {"deleted": True, "id": iid}
             raise SecurityError(f"WP API error 404: {collection}/{item_id}")
-        raise SecurityError(f"Unhandled WP item op: {method}")
+        raise SecurityError(f"Unhandled WP item op: {verb}")
 
     def _themes(self, method: str, parts: list[str]) -> Any:
         if method.upper() != "GET" or len(parts) != 1:
@@ -303,11 +317,8 @@ class InMemoryWpTransport:
         return None
 
 
-# Reuse the robust RequestsTransport from woocommerce.py for live HTTP
-def _make_live_transport(timeout: float):
-    from ecom_ops.integrations.woocommerce import RequestsTransport
-
-    return RequestsTransport(default_timeout=timeout)
+def _make_live_transport(timeout: float) -> RequestsTransport:
+    return RequestsTransport(default_timeout=timeout, service_name="WordPress")
 
 
 # --------------------------------------------------------------------------- #
@@ -329,7 +340,7 @@ class WordPressClient:
         base_url: str,
         username: str | None = None,
         app_password: str | None = None,
-        transport: WpHttpTransport | None = None,
+        transport: HttpTransport | None = None,
         timeout: float = 30.0,
         domain: str | None = None,
     ) -> None:
@@ -339,14 +350,14 @@ class WordPressClient:
         self.app_password = app_password or get_env("WP_APP_PASSWORD", "")
         self.transport = transport or _make_live_transport(timeout)
         self.timeout = float(timeout)
-        if not isinstance(self.transport, InMemoryWpTransport):
+        if getattr(self.transport, "requires_auth", True):
             if not self.username or not self.app_password:
                 raise SecurityError(
                     "WP_USERNAME and WP_APP_PASSWORD are required for WordPress REST"
                 )
 
     def _auth(self) -> tuple[str, str] | None:
-        if isinstance(self.transport, InMemoryWpTransport):
+        if not getattr(self.transport, "requires_auth", True):
             return None
         return (self.username, self.app_password)
 
@@ -415,15 +426,17 @@ class WordPressClient:
         )
         return self._to_post(data)
 
-    def update_post(
+    def _update_entry(
         self,
-        post_id: str | int,
+        collection: str,
+        label: str,
+        entry_id: str | int,
         *,
         title: str | None = None,
         content: str | None = None,
         status: str | None = None,
     ) -> WpPost:
-        pid = _validate_int_id(post_id)
+        eid = _validate_int_id(entry_id)
         payload: dict[str, Any] = {}
         if title is not None:
             payload["title"] = sanitize_text(title, max_len=300)
@@ -432,18 +445,30 @@ class WordPressClient:
         if status is not None:
             normalized = str(status).strip().lower()
             if normalized not in _PAGE_STATUSES:
-                raise SecurityError(f"Invalid post status: {status}")
+                raise SecurityError(f"Invalid {label} status: {status}")
             payload["status"] = normalized
         if not payload:
-            raise SecurityError("No post fields to update")
+            raise SecurityError(f"No {label} fields to update")
         data = self.transport.request(
             "POST",
-            self._url(f"/wp-json/wp/v2/posts/{pid}"),
+            self._url(f"/wp-json/wp/v2/{collection}/{eid}"),
             auth=self._auth(),
             json=payload,
             timeout=self.timeout,
         )
         return self._to_post(data)
+
+    def update_post(
+        self,
+        post_id: str | int,
+        *,
+        title: str | None = None,
+        content: str | None = None,
+        status: str | None = None,
+    ) -> WpPost:
+        return self._update_entry(
+            "posts", "post", post_id, title=title, content=content, status=status
+        )
 
     def delete_post(self, post_id: str | int) -> dict[str, Any]:
         pid = _validate_int_id(post_id)
@@ -510,7 +535,7 @@ class WordPressClient:
         clean_slug = re.sub(r"[^a-z0-9-]+", "-", str(slug or "").strip().lower()).strip("-")[:80]
 
         target_base = self.base_url
-        if domain and not isinstance(self.transport, InMemoryWpTransport):
+        if domain and getattr(self.transport, "requires_auth", True):
             from ecom_ops.config import woo_base_url_for_domain
 
             resolved = woo_base_url_for_domain(domain)
@@ -565,27 +590,9 @@ class WordPressClient:
         status: str | None = None,
     ) -> WpPost:
         """Update one page over the REST API. Does not delete or create."""
-        pid = _validate_int_id(page_id)
-        payload: dict[str, Any] = {}
-        if title is not None:
-            payload["title"] = sanitize_text(title, max_len=300)
-        if content is not None:
-            payload["content"] = sanitize_text(content, max_len=8000)
-        if status is not None:
-            normalized = str(status).strip().lower()
-            if normalized not in _PAGE_STATUSES:
-                raise SecurityError(f"Invalid page status: {status}")
-            payload["status"] = normalized
-        if not payload:
-            raise SecurityError("No page fields to update")
-        data = self.transport.request(
-            "POST",
-            self._url(f"/wp-json/wp/v2/pages/{pid}"),
-            auth=self._auth(),
-            json=payload,
-            timeout=self.timeout,
+        return self._update_entry(
+            "pages", "page", page_id, title=title, content=content, status=status
         )
-        return self._to_post(data)
 
     # --- media                                                            #
 
@@ -680,32 +687,23 @@ class WordPressClient:
 
     # --- themes and plugins (no install, update, or delete) -------------- #
 
-    def list_themes(self) -> list[dict[str, Any]]:
+    def _list_dicts(self, path: str) -> list[dict[str, Any]]:
         data = self.transport.request(
             "GET",
-            self._url("/wp-json/wp/v2/themes"),
+            self._url(path),
             auth=self._auth(),
             timeout=self.timeout,
         )
         return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def list_themes(self) -> list[dict[str, Any]]:
+        return self._list_dicts("/wp-json/wp/v2/themes")
 
     def list_templates(self) -> list[dict[str, Any]]:
-        data = self.transport.request(
-            "GET",
-            self._url("/wp-json/wp/v2/templates"),
-            auth=self._auth(),
-            timeout=self.timeout,
-        )
-        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+        return self._list_dicts("/wp-json/wp/v2/templates")
 
     def list_plugins(self) -> list[dict[str, Any]]:
-        data = self.transport.request(
-            "GET",
-            self._url("/wp-json/wp/v2/plugins"),
-            auth=self._auth(),
-            timeout=self.timeout,
-        )
-        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+        return self._list_dicts("/wp-json/wp/v2/plugins")
 
     def set_plugin_status(self, plugin: str, status: str) -> dict[str, Any]:
         """Turn one existing plugin on or off. Does not install, update, or delete."""

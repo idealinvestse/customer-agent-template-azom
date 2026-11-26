@@ -246,3 +246,100 @@ def test_wp_client_from_env_live_with_domain(monkeypatch):
     c = wp_client_from_env(use_mock=False, domain="no")
     assert c.base_url == "https://azom.no"
     assert c.domain == "no"
+
+
+# --------------------------------------------------------------------------- #
+# Shared HttpTransport protocol, RequestsTransport service_name & wp_client_for_site
+# --------------------------------------------------------------------------- #
+
+
+class _CustomDoubleTransport:
+    """Custom HttpTransport test double (not a subclass of InMemoryWpTransport)."""
+
+    def __init__(self, *, requires_auth: bool = False) -> None:
+        self.requires_auth = requires_auth
+        self.calls: list[tuple[str, str, tuple[str, str] | None]] = []
+
+    def request(self, method, url, *, auth=None, json=None, params=None, timeout=30):
+        self.calls.append((method, url, auth))
+        return [{"stylesheet": "custom-theme", "status": "active"}]
+
+
+def test_wordpress_client_accepts_custom_transport_with_requires_auth_false(monkeypatch):
+    monkeypatch.delenv("WP_USERNAME", raising=False)
+    monkeypatch.delenv("WORDPRESS_USERNAME", raising=False)
+    monkeypatch.delenv("WP_APP_PASSWORD", raising=False)
+    double = _CustomDoubleTransport(requires_auth=False)
+    client = WordPressClient(base_url="https://mock.local", transport=double)
+    assert client.list_themes() == [{"stylesheet": "custom-theme", "status": "active"}]
+    assert double.calls[-1][2] is None
+
+
+def test_wordpress_client_requires_creds_when_custom_transport_requires_auth(monkeypatch):
+    monkeypatch.delenv("WP_USERNAME", raising=False)
+    monkeypatch.delenv("WORDPRESS_USERNAME", raising=False)
+    monkeypatch.delenv("WP_APP_PASSWORD", raising=False)
+    with pytest.raises(SecurityError, match="WP_USERNAME and WP_APP_PASSWORD"):
+        WordPressClient(
+            base_url="https://example.test",
+            transport=_CustomDoubleTransport(requires_auth=True),
+        )
+
+
+def test_requests_transport_uses_service_name_in_errors():
+    from ecom_ops.integrations._http_transport import RequestsTransport
+
+    class _Resp:
+        def __init__(self, status_code: int, text: str = ""):
+            self.status_code = status_code
+            self.text = text
+            self.content = text.encode("utf-8")
+            self.headers: dict[str, str] = {}
+
+        def json(self):
+            raise ValueError("bad json")
+
+    class _Sess:
+        def __init__(self, resp):
+            self._resp = resp
+
+        def request(self, *args, **kwargs):
+            return self._resp
+
+    wp_404 = RequestsTransport(
+        session=_Sess(_Resp(404, "missing")), max_retries=0, service_name="WordPress"
+    )
+    with pytest.raises(SecurityError, match=r"WordPress API error 404"):
+        wp_404.request("GET", "https://example.test/wp-json/wp/v2/posts")
+
+    wp_bad_json = RequestsTransport(
+        session=_Sess(_Resp(200, "not-json")), max_retries=0, service_name="WordPress"
+    )
+    with pytest.raises(SecurityError, match=r"WordPress API returned non-JSON"):
+        wp_bad_json.request("GET", "https://example.test/wp-json/wp/v2/posts")
+
+
+def test_wp_client_for_site_binds_per_site_secret_and_respects_fallback(monkeypatch):
+    from ecom_ops.integrations.wp_component_reads import wp_client_for_site
+    from ecom_ops.wp_ops.registry import load_sites, site_by_id
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    site = site_by_id(load_sites(), "mock-shop")
+    assert site is not None
+    monkeypatch.setenv("WP_SECRET_MOCK_SHOP", "site_reader:app-pass-123")
+    bound = wp_client_for_site(site, fallback_to_env=False)
+    assert bound is not None
+    assert bound.base_url == "https://mock-shop.example.test"
+    assert bound.username == "site_reader"
+    assert bound.app_password == "app-pass-123"
+
+    monkeypatch.delenv("WP_SECRET_MOCK_SHOP", raising=False)
+    assert wp_client_for_site(site, fallback_to_env=False) is None
+
+    monkeypatch.setenv("WP_USERNAME", "shared_user")
+    monkeypatch.setenv("WP_APP_PASSWORD", "shared-pass")
+    monkeypatch.setenv("WP_BASE_URL", "https://fallback.example.test")
+    fallback = wp_client_for_site(site, fallback_to_env=True)
+    assert fallback is not None
+    assert fallback.base_url == "https://fallback.example.test"
+    assert fallback.username == "shared_user"

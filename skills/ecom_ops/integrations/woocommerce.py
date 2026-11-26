@@ -17,15 +17,12 @@ from __future__ import annotations
 
 import os
 import re
-import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import urljoin
 
-import requests
-
+from ecom_ops.integrations._http_transport import HttpTransport, RequestsTransport
 from ecom_ops.security import (
     SecurityError,
     get_env,
@@ -84,137 +81,8 @@ class WooSystemStatus:
 
 
 # --------------------------------------------------------------------------- #
-# Transport protocol
+# Transport protocol (shared via _http_transport; re-exported here)
 # --------------------------------------------------------------------------- #
-
-
-class HttpTransport(Protocol):
-    def request(
-        self,
-        method: str,
-        url: str,
-        *,
-        auth: tuple[str, str] | None = None,
-        json: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-        timeout: float = 30,
-    ) -> Any: ...
-
-
-class RequestsTransport:
-    """Live HTTP transport with session reuse + retry/backoff for 429/5xx.
-
-    Honors Woo Store API ``RateLimit-*`` headers and ``Retry-After`` when
-    present. Retries are bounded (default 3) with exponential backoff.
-    """
-
-    def __init__(
-        self,
-        *,
-        session: requests.Session | None = None,
-        max_retries: int = 3,
-        backoff_base: float = 0.5,
-        default_timeout: float = 30.0,
-    ) -> None:
-        self.session = session or requests.Session()
-        self.max_retries = max(0, int(max_retries))
-        self.backoff_base = max(0.0, float(backoff_base))
-        self.default_timeout = float(default_timeout)
-
-    def request(
-        self,
-        method: str,
-        url: str,
-        *,
-        auth: tuple[str, str] | None = None,
-        json: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-        timeout: float = 30,
-    ) -> Any:
-        last_exc: Exception | None = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                resp = self.session.request(
-                    method,
-                    url,
-                    auth=auth,
-                    json=json,
-                    params=params,
-                    timeout=timeout or self.default_timeout,
-                )
-            except requests.RequestException as exc:
-                last_exc = exc
-                # Network blip — backoff and retry
-                if attempt >= self.max_retries:
-                    raise SecurityError(f"WooCommerce transport error: {exc}") from exc
-                self._sleep_backoff(attempt)
-                continue
-
-            # Retryable status codes
-            if resp.status_code in {429, 500, 502, 503, 504}:
-                if attempt >= self.max_retries:
-                    break  # fall through to error raise below
-                retry_after = self._retry_after(resp)
-                wait = retry_after if retry_after is not None else self._sleep_backoff(attempt, return_wait=True)
-                time.sleep(wait)
-                continue
-
-            if resp.status_code >= 400:
-                raise SecurityError(
-                    f"WooCommerce API error {resp.status_code}: {resp.text[:300]}"
-                )
-            if resp.status_code == 204 or not resp.content:
-                return {}
-            try:
-                return resp.json()
-            except ValueError as exc:
-                raise SecurityError(
-                    f"WooCommerce API returned non-JSON body: {resp.text[:200]}"
-                ) from exc
-
-        # Exhausted retries on a retryable status
-        if last_exc is not None:
-            raise SecurityError(f"WooCommerce transport error: {last_exc}")
-        raise SecurityError(
-            f"WooCommerce API error {resp.status_code} after {self.max_retries} retries: "
-            f"{resp.text[:300]}"
-        )
-
-    def _retry_after(self, resp: requests.Response) -> float | None:
-        """Return seconds to wait from Retry-After / RateLimit-Retry-After.
-
-        Supports both delta-seconds (RFC 7231 §7.1.3) and HTTP-date format.
-        """
-        from email.utils import parsedate_to_datetime
-
-        for header in ("Retry-After", "RateLimit-Retry-After"):
-            val = resp.headers.get(header)
-            if not val:
-                continue
-            # Try delta-seconds first
-            try:
-                return max(0.0, float(val))
-            except ValueError:
-                pass
-            # Try HTTP-date format
-            try:
-                dt = parsedate_to_datetime(val)
-                if dt is not None:
-                    from datetime import datetime
-
-                    now = datetime.now(UTC)
-                    wait = (dt - now).total_seconds()
-                    return max(0.0, wait)
-            except (TypeError, ValueError):
-                pass
-        return None
-
-    def _sleep_backoff(self, attempt: int, *, return_wait: bool = False) -> float | None:
-        wait = self.backoff_base * (2 ** attempt)
-        if not return_wait:
-            time.sleep(wait)
-            return None
-        return wait
 
 
 class InMemoryWooTransport:
@@ -224,6 +92,8 @@ class InMemoryWooTransport:
     customers, coupons, reports, stock, products list, system_status,
     and webhook management endpoints.
     """
+
+    requires_auth: bool = False
 
     def __init__(self) -> None:
         self.orders: dict[str, dict[str, Any]] = {
@@ -594,16 +464,18 @@ class WooCommerceClient:
         self.domain = domain
         self.consumer_key = consumer_key or get_env("WOO_CONSUMER_KEY", "")
         self.consumer_secret = consumer_secret or get_env("WOO_CONSUMER_SECRET", "")
-        self.transport = transport or RequestsTransport(default_timeout=timeout)
+        self.transport = transport or RequestsTransport(
+            default_timeout=timeout, service_name="WooCommerce"
+        )
         self.timeout = float(timeout)
-        if not isinstance(self.transport, InMemoryWooTransport):
+        if getattr(self.transport, "requires_auth", True):
             if not self.consumer_key or not self.consumer_secret:
                 raise SecurityError(
                     "WOO_CONSUMER_KEY and WOO_CONSUMER_SECRET are required"
                 )
 
     def _auth(self) -> tuple[str, str] | None:
-        if isinstance(self.transport, InMemoryWooTransport):
+        if not getattr(self.transport, "requires_auth", True):
             return None
         return (self.consumer_key or "", self.consumer_secret or "")
 

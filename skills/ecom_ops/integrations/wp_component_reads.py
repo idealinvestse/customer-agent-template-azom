@@ -13,7 +13,17 @@ if TYPE_CHECKING:
     from ecom_ops.wp_ops.models import Site
 
 
-def _client_for_site(site: Site | None) -> WordPressClient:
+def wp_client_for_site(
+    site: Site | None,
+    *,
+    fallback_to_env: bool = True,
+) -> WordPressClient | None:
+    """Bind a per-site WordPressClient using ``site.secret_ref`` (``user:app_password``).
+
+    When ``site`` has no valid ``user:app_password`` secret ref, falls back to
+    ``wp_client_from_env(use_mock=False)`` if ``fallback_to_env`` is True;
+    otherwise returns ``None``.
+    """
     from ecom_ops.integrations.wordpress import WordPressClient, wp_client_from_env
 
     if site is not None:
@@ -30,16 +40,23 @@ def _client_for_site(site: Site | None) -> WordPressClient:
                     username=user_clean,
                     app_password=pass_clean,
                 )
+    if not fallback_to_env:
+        return None
     return wp_client_from_env(use_mock=False)
 
 
+_client_for_site = wp_client_for_site
+
+
 def load_theme_rows(*, site: Site | None = None) -> list[dict[str, str]]:
-    client = _client_for_site(site)
+    client = wp_client_for_site(site)
+    assert client is not None
     return [_public_row(row) for row in client.list_themes() if isinstance(row, dict)]
 
 
 def load_plugin_rows(*, site: Site | None = None) -> list[dict[str, str]]:
-    client = _client_for_site(site)
+    client = wp_client_for_site(site)
+    assert client is not None
     return [_public_row(row) for row in client.list_plugins() if isinstance(row, dict)]
 
 
