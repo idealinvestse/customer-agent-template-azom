@@ -216,6 +216,11 @@ def register_wp_routes(app: Flask) -> None:
     def wp_review_extend(site_id: str, plan_id: str):
         return _post_review_extend(site_id, plan_id)
 
+    @app.route("/wp/<site_id>/reviews/<plan_id>/push-draft", methods=["POST"])
+    @_auth_required
+    def wp_review_push_draft(site_id: str, plan_id: str):
+        return _post_review_push_draft(site_id, plan_id)
+
     @app.route("/wp/<site_id>/reviews/<plan_id>/artifact/<name>")
     @_auth_required
     def wp_review_artifact(site_id: str, plan_id: str, name: str):
@@ -580,7 +585,32 @@ def _safe_variant_group(value: object) -> str:
     return re.sub(r"[\r\n\t]+", " ", text)
 
 
-def _load_raw_plan_extras(ops: object, site_id: str) -> dict[str, dict[str, str]]:
+def _safe_http_url(value: object) -> str:
+    text = str(value or "").strip()
+    if text.startswith(("https://", "http://")) and not any(ch in text for ch in "\r\n\t\"'<> "):
+        return text[:400]
+    return ""
+
+
+def _sanitize_draft_page(site_id: str, raw: object) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        return {}
+    edit_url = _safe_http_url(raw.get("edit_url"))
+    link = _safe_http_url(raw.get("link"))
+    if not (raw.get("id") or edit_url or link or raw.get("slug")):
+        return {}
+    return {
+        "id": raw.get("id"),
+        "slug": _scrub_posted(site_id, str(raw.get("slug") or "").strip())[:120],
+        "status": _scrub_posted(site_id, str(raw.get("status") or "draft").strip())[:40],
+        "edit_url": edit_url,
+        "link": link,
+        "pushed_at": str(raw.get("pushed_at") or "").strip()[:40],
+        "pushed_by": _scrub_posted(site_id, str(raw.get("pushed_by") or "").strip())[:60],
+    }
+
+
+def _load_raw_plan_extras(ops: object, site_id: str) -> dict[str, dict[str, object]]:
     """Read optional iterative-workspace metadata from wp_review_plans.json safely."""
     path = getattr(ops, "path", None)
     if path is None or not hasattr(path, "is_file") or not path.is_file():
@@ -592,7 +622,7 @@ def _load_raw_plan_extras(ops: object, site_id: str) -> dict[str, dict[str, str]
     plans = raw.get("plans") if isinstance(raw, dict) else None
     if not isinstance(plans, list):
         return {}
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, object]] = {}
     for row in plans:
         if not isinstance(row, dict):
             continue
@@ -607,6 +637,7 @@ def _load_raw_plan_extras(ops: object, site_id: str) -> dict[str, dict[str, str]
             "variant_group": _safe_variant_group(row.get("variant_group")),
             "preview_path": str(row.get("preview_path") or "")[:200],
             "focus_selector": str(row.get("focus_selector") or "")[:120],
+            "draft_page": _sanitize_draft_page(site_id, row.get("draft_page")),
         }
     return out
 
@@ -717,8 +748,16 @@ def _build_live_overlay_comparison(
     *,
     standalone: bool = False,
 ) -> dict[str, list[dict[str, str]]]:
-    """Group live-overlay or standalone-page screenshots into Fokus, Desktop, and Mobil sections."""
+    """Group live-overlay or standalone-page screenshots into Compare, Fokus, Desktop, and Mobil sections."""
     present = set(live_overlay_shots)
+    compare_items: list[dict[str, str]] = []
+    for name, label in (
+        ("compare-desktop.png", "Jämförelsebild — Desktop"),
+        ("compare-mobile.png", "Jämförelsebild — Mobil"),
+    ):
+        if name in present:
+            compare_items.append({"name": name, "label": label, "role": "compare"})
+
     focus_items: list[dict[str, str]] = []
     focus_labels = (
         (
@@ -764,6 +803,7 @@ def _build_live_overlay_comparison(
         )
 
     return {
+        "compare": compare_items,
         "focus": focus_items,
         "desktop": desktop_items,
         "mobile": mobile_items,
@@ -871,7 +911,9 @@ def _render_review(
     screenshots = ops.list_artifacts(site_id, plan_id, actor=g.actor["name"]) if admin else []
     sandbox_screenshots = [name for name in screenshots if name.startswith(("base-", "work-"))]
     live_overlay_screenshots = [
-        name for name in screenshots if name.startswith(("live-", "preview-", "change-", "focus-"))
+        name
+        for name in screenshots
+        if name.startswith(("compare-", "live-", "preview-", "change-", "focus-"))
     ]
     has_interactive_preview = _has_preview_html_fast(ops, site_id, plan_id) if admin else False
     browser_passed = any(
@@ -890,6 +932,13 @@ def _render_review(
         else {}
     )
     page_draft = _read_page_draft_meta(ops, site_id, plan_id) if admin else {}
+    draft_page = (
+        _sanitize_draft_page(site_id, plan.get("draft_page") or plan_extra.get("draft_page"))
+        if admin
+        else {}
+    )
+    if draft_page and not plan.get("draft_page"):
+        plan["draft_page"] = draft_page
     is_standalone_page = (
         bool(page_draft or preview_meta.get("preview_kind") == "standalone_page")
         if admin
@@ -935,6 +984,7 @@ def _render_review(
             live_overlay_comparison=live_overlay_comparison,
             preview_meta=preview_meta,
             page_draft=page_draft,
+            draft_page=draft_page,
             is_standalone_page=is_standalone_page,
             synthetic_data=synthetic_data,
             has_sandbox_smoke=has_sandbox_smoke,
@@ -1038,6 +1088,71 @@ def _post_review_extend(site_id: str, plan_id: str):
         result=result.data or {},
         result_obj=result,
         action_name="extend",
+    )
+
+
+def _post_review_push_draft(site_id: str, plan_id: str):
+    if not _SITE_ID.fullmatch(str(site_id or "")) or not _REVIEW_ID.fullmatch(str(plan_id or "")):
+        return Response("Okänd plan", 404)
+    if not (_file_admin() and g.actor.get("is_oscar")):
+        return Response("Saknar behörighet", 403)
+    base, work = _posted_hashes()
+    if not base.strip() or not work.strip():
+        return _render_review(
+            site_id,
+            plan_id,
+            error_class="DigestMismatch",
+            result={"error_class": "DigestMismatch"},
+            action_name="push_draft",
+        )
+    from ecom_ops.wp_ops import WpOpsService
+
+    svc = WpOpsService()
+    raw_result = svc.push_page_draft(
+        site_id,
+        plan_id,
+        actor=g.actor["name"],
+        base_sha256=base,
+        work_sha256=work,
+    )
+    if isinstance(raw_result, dict):
+        ok = bool(raw_result.get("ok"))
+        err_cls = str(raw_result.get("error_class") or "")
+        msg = str(
+            raw_result.get("message")
+            or ("WordPress-utkast skapat (status=draft)." if ok else err_cls or "Kunde inte skicka utkast.")
+        )
+        if err_cls == "AccessDenied":
+            return Response("Saknar behörighet", 403)
+        if err_cls in {"UnknownSite", "UnknownPlan", "StalePlan"}:
+            return Response("Okänd plan", 404)
+        if err_cls == "Expired":
+            return Response("Planen har gått ut", 403)
+
+        class _DictOutcome:
+            def __init__(self, ok_val: bool, message_val: str) -> None:
+                self.ok = ok_val
+                self.message = message_val
+
+        return _render_review(
+            site_id,
+            plan_id,
+            error_class=err_cls if not ok else "",
+            result=raw_result,
+            result_obj=_DictOutcome(ok, msg),
+            action_name="push_draft",
+        )
+    blocked = _review_http(raw_result)
+    if blocked is not None:
+        return blocked
+    data = getattr(raw_result, "data", None) or {}
+    return _render_review(
+        site_id,
+        plan_id,
+        error_class=str(data.get("error_class") or ""),
+        result=data,
+        result_obj=raw_result,
+        action_name="push_draft",
     )
 
 

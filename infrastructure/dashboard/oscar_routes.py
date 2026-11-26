@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from flask import Flask, g, jsonify, redirect, render_template, request, url_for
+from flask import Flask, g, jsonify, redirect, render_template, request, session, url_for
 
 from auth import _oscar_required
 from secret_probes import run_all_probes, run_probe
@@ -704,3 +704,83 @@ def register_oscar_routes(app: Flask) -> None:
             details={"case_count": len(result.get("cases") or [])},
         )
         return jsonify(result)
+
+    @app.route("/ops/runtime", methods=["GET"])
+    @_oscar_required
+    def ops_runtime():
+        snapshot: dict = {}
+        runtime_error = ""
+        try:
+            from ecom_ops.runtime_health import collect_runtime_snapshot
+
+            snapshot = collect_runtime_snapshot(data_dir=_data_dir()) or {}
+        except Exception as exc:
+            runtime_error = f"Kunde inte läsa driftstatus ({type(exc).__name__})"
+        gc_result = session.pop("ops_gc_last", None)
+        if not isinstance(gc_result, dict):
+            gc_result = None
+        return render_template(
+            "oscar_runtime.html",
+            **_dashboard_context(
+                snapshot=snapshot,
+                gc_result=gc_result,
+                runtime_error=runtime_error,
+            ),
+        )
+
+    @app.route("/ops/runtime/gc", methods=["POST"])
+    @_oscar_required
+    def ops_runtime_gc():
+        from ecom_ops.audit import log_action
+
+        mode = (request.form.get("mode") or "dry_run").strip().lower()
+        dry_run = mode != "execute"
+        try:
+            from ecom_ops.ops_gc import run_ops_gc
+
+            summary = run_ops_gc(data_dir=_data_dir(), dry_run=dry_run)
+        except Exception as exc:
+            msg = f"Städning (GC) misslyckades ({type(exc).__name__})"
+            _flash(msg, "error")
+            return redirect(url_for("ops_runtime") + f"?{_flash_q(err=msg)}")
+
+        bytes_reclaimed = int(summary.get("bytes_reclaimed") or 0)
+        reclaimed_mb = bytes_reclaimed / (1024 * 1024)
+        removed_ws = int(summary.get("removed_workspace_dirs") or 0)
+        removed_pv = int(summary.get("removed_pv_dirs") or 0)
+        rotated_raw = summary.get("rotated_logs")
+        rotated_count = (
+            len(rotated_raw)
+            if isinstance(rotated_raw, (list, tuple, set))
+            else int(rotated_raw or 0)
+        )
+        prefix = "GC dry-run" if dry_run else "GC utförd"
+        msg = (
+            f"{prefix}: {reclaimed_mb:.2f} MB, {removed_ws} wr-*, "
+            f"{removed_pv} pv-*, {rotated_count} roterade loggar"
+        )
+        if not dry_run:
+            log_action(
+                actor=g.actor["name"],
+                action="ops_gc",
+                target="runtime",
+                details={
+                    "bytes_reclaimed": bytes_reclaimed,
+                    "removed_workspace_dirs": removed_ws,
+                    "removed_pv_dirs": removed_pv,
+                    "rotated_logs": rotated_count,
+                },
+            )
+        session["ops_gc_last"] = {
+            "dry_run": bool(summary.get("dry_run", dry_run)),
+            "bytes_reclaimed": bytes_reclaimed,
+            "expired_plans": int(summary.get("expired_plans") or 0),
+            "removed_workspace_dirs": removed_ws,
+            "removed_pv_dirs": removed_pv,
+            "removed_media_files": int(summary.get("removed_media_files") or 0),
+            "purged_proposals": int(summary.get("purged_proposals") or 0),
+            "rotated_logs": rotated_count,
+            "errors": list(summary.get("errors") or [])[:5],
+        }
+        _flash(msg, "ok")
+        return redirect(url_for("ops_runtime") + f"?{_flash_q(msg)}")

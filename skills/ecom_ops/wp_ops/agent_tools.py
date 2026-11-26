@@ -7159,6 +7159,7 @@ _DEEP_PHASE_TOOLS = frozenset(
 
 _MAX_MULTI_VARIANT_ATTACHMENTS = 6
 _PRIMARY_SHOT_ORDER = (
+    "compare-desktop.png",
     "focus-desktop.png",
     "change-desktop.png",
     "preview-desktop.png",
@@ -7269,6 +7270,7 @@ def run_bounded_file_tool_loop(
     meta_theme_slug: str | None = None
     meta_changed_files: list[str] = []
     meta_page_draft: dict[str, Any] | None = None
+    plan_variant_groups: dict[str, str] = {}
     steer_count = 0
     in_deep_phase = False
 
@@ -7281,6 +7283,24 @@ def run_bounded_file_tool_loop(
         nonlocal attachments
         if len(plan_attachments) > 1:
             merged: list[str] = []
+            # Build side-by-side comparison composite when >=2 distinct plans share a variant_group
+            if isinstance(site_id, str) and _SITE_ID.fullmatch(site_id):
+                grouped_plans: list[str] = []
+                if meta_variant_group:
+                    grouped_plans = [
+                        pid
+                        for pid in plan_attachments
+                        if plan_variant_groups.get(pid) == meta_variant_group
+                    ]
+                if len(grouped_plans) >= 2:
+                    try:
+                        comp_path = loop_tools._review_plans().build_variant_comparison(
+                            site_id, grouped_plans
+                        )
+                        if comp_path is not None and comp_path.is_file():
+                            merged.append(str(comp_path))
+                    except Exception:
+                        pass
             for shots in plan_attachments.values():
                 primary = _primary_attachment(shots)
                 if primary and primary not in merged and len(merged) < _MAX_MULTI_VARIANT_ATTACHMENTS:
@@ -7353,7 +7373,23 @@ def run_bounded_file_tool_loop(
             meta_latest_plan_id = raw_pid
         raw_vg = data.get("variant_group") or args.get("variant_group")
         if isinstance(raw_vg, str) and _VARIANT_GROUP.fullmatch(raw_vg.strip()):
-            meta_variant_group = raw_vg.strip()
+            clean_vg = raw_vg.strip()
+            meta_variant_group = clean_vg
+            if raw_pid:
+                plan_variant_groups[raw_pid] = clean_vg
+        elif raw_pid and raw_pid not in plan_variant_groups and tool_name == "wp_preview_page":
+            # Look up stored variant_group on plan record if preview response didn't echo it
+            try:
+                if isinstance(site_id, str) and _SITE_ID.fullmatch(site_id):
+                    prow = loop_tools._review_plans().get(raw_pid, site_id=site_id)
+                    if isinstance(prow, dict):
+                        stored_vg = str(prow.get("variant_group") or "").strip()
+                        if stored_vg and _VARIANT_GROUP.fullmatch(stored_vg):
+                            plan_variant_groups[raw_pid] = stored_vg
+                            if not meta_variant_group:
+                                meta_variant_group = stored_vg
+            except Exception:
+                pass
         raw_prod = data.get("product_id") or args.get("product_id")
         if raw_prod is None and isinstance(data.get("product"), dict):
             raw_prod = data["product"].get("id")
@@ -7403,6 +7439,7 @@ def run_bounded_file_tool_loop(
         if isinstance(raw_draft, dict) and raw_draft.get("slug"):
             meta_page_draft = {
                 "slug": str(raw_draft.get("slug") or ""),
+                "title": str(raw_draft.get("title") or ""),
                 "page_type": str(raw_draft.get("page_type") or "custom"),
                 "preview_kind": str(data.get("preview_kind") or "standalone_page"),
             }
@@ -7846,9 +7883,9 @@ def run_bounded_file_tool_loop(
             site_id = output.site_id
         if output.operation_ids:
             operation_ids = list(output.operation_ids[:20])
+        _record_review_meta(name, arguments, output.data)
         if output.attachments:
             _record_attachments(name, arguments, output.data, output.attachments)
-        _record_review_meta(name, arguments, output.data)
         ok = output.data.get("ok") is True
         err_cls = None if ok else (_error_class(output.data.get("error_class")) or "ToolFailed")
         if ok and name in _WORKSPACE_MUTATING_TOOLS and name != "wp_workspace_copy_from_parent":

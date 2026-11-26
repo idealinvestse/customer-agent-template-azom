@@ -11,10 +11,13 @@ from typing import Any
 
 from ecom_ops.bot.dashboard_links import case_detail_url, cases_list_url, link_footer
 
-_WORKSPACE_PNG = re.compile(r"^(?:base|work|live|preview|change|focus)-(?:desktop|mobile)\.png$")
+_WORKSPACE_PNG = re.compile(
+    r"^(?:base|work|live|preview|change|focus|compare)-(?:desktop|mobile)\.png$"
+)
 _SAFE_SITE_DIR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SAFE_REVIEW_DIR_RE = re.compile(r"^(?:wr|pv)-[a-z0-9][a-z0-9_-]{0,31}$")
 _CLARIFY_ID_RE = re.compile(r"^cl-[0-9a-f]{12}$")
+_WP_PLAN_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 _MAX_ATTACHMENTS = 6
@@ -143,6 +146,105 @@ def proposal_confirm_actions(proposal_id: str) -> ActionMarkup:
         yes_data=f"proposal:yes:{pid}",
         no_data=f"proposal:no:{pid}",
     )
+
+
+def _validate_wp_plan_id(plan_id: str) -> str:
+    pid = str(plan_id or "").strip().lower()
+    if _WP_PLAN_TOKEN_RE.fullmatch(pid) is None:
+        raise ValueError(f"Invalid plan_id: {plan_id!r}")
+    if len(f"wpreview:push_draft:{pid}".encode()) > 64:
+        raise ValueError(f"plan_id exceeds callback limit: {plan_id!r}")
+    return pid
+
+
+def wp_push_draft_actions(plan_id: str) -> ActionMarkup:
+    """Build HITL button pair for pushing a verified page draft to WP status=draft."""
+    pid = _validate_wp_plan_id(plan_id)
+    return ActionMarkup(
+        rows=[
+            [
+                ActionButton(
+                    label="📝 Skicka som WP-utkast",
+                    payload=f"wpreview:push_draft:{pid}",
+                ),
+                ActionButton(label="❌ Avbryt", payload=f"wpreview:no:{pid}"),
+            ]
+        ]
+    )
+
+
+def wp_review_actions(
+    plan_id: str,
+    *,
+    review_url: str | None = None,
+    include_stage: bool = True,
+    include_push_draft: bool = False,
+) -> ActionMarkup:
+    """Build channel-neutral WP review actions (staging, optional draft push, dashboard URL)."""
+    pid = _validate_wp_plan_id(plan_id)
+    rows: list[list[ActionButton]] = []
+    if include_stage:
+        rows.append(
+            [
+                ActionButton(
+                    label="Stagea ändringar till staging",
+                    payload=f"wpreview:stage:{pid}",
+                ),
+                ActionButton(label="Avbryt", payload=f"wpreview:no:{pid}"),
+            ]
+        )
+        if include_push_draft:
+            rows.append(
+                [
+                    ActionButton(
+                        label="📝 Skicka som WP-utkast",
+                        payload=f"wpreview:push_draft:{pid}",
+                    )
+                ]
+            )
+    elif include_push_draft:
+        rows.append(
+            [
+                ActionButton(
+                    label="📝 Skicka som WP-utkast",
+                    payload=f"wpreview:push_draft:{pid}",
+                ),
+                ActionButton(label="Avbryt", payload=f"wpreview:no:{pid}"),
+            ]
+        )
+    else:
+        rows.append([ActionButton(label="Avbryt", payload=f"wpreview:no:{pid}")])
+
+    if review_url:
+        rows.append([ActionButton(label="Öppna granskning", url=review_url)])
+    return ActionMarkup(rows=rows)
+
+
+def bound_action_markup(
+    actions: ActionMarkup | None,
+    *,
+    bound_proposal_id: str | None = None,
+) -> ActionMarkup | None:
+    """Optionally bind primary mutating action payloads to ``proposal:yes:<id>``."""
+    pid = str(bound_proposal_id or "").strip()
+    if not actions or not pid:
+        return actions
+    new_rows: list[list[ActionButton]] = []
+    rebound = False
+    for row in actions.rows:
+        new_row: list[ActionButton] = []
+        for btn in row:
+            payload = btn.payload or ""
+            if (
+                not rebound
+                and payload.startswith(("order:set:", "cases:approve:", "product:desc:"))
+            ):
+                new_row.append(ActionButton(label=btn.label, payload=f"proposal:yes:{pid}"))
+                rebound = True
+            else:
+                new_row.append(btn)
+        new_rows.append(new_row)
+    return ActionMarkup(rows=new_rows)
 
 
 def clarification_actions(clarify_id: str, proposal: Any) -> ActionMarkup:

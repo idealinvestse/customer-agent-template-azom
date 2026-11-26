@@ -357,6 +357,26 @@ class WpOpsService:
             actor=actor,
         )
 
+    def push_page_draft(
+        self,
+        site_id: str,
+        plan_id: str,
+        *,
+        actor: str,
+        base_sha256: str,
+        work_sha256: str,
+        client: Any = None,
+    ) -> dict[str, Any]:
+        """Push a verified ``work/page_draft.json`` to WordPress as ``status='draft'`` (Oscar-only HITL)."""
+        return self._review_plans().push_page_draft(
+            site_id,
+            plan_id,
+            actor=actor,
+            base_sha256=base_sha256,
+            work_sha256=work_sha256,
+            client=client,
+        )
+
     def audit_overrides(
         self,
         site_id: str,

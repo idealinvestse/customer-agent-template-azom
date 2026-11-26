@@ -48,7 +48,9 @@ Incoming update
 
 **Invariant:** free-text och NL “godkänn &lt;id&gt;” skickar aldrig mail. Send kräver slash approve, inline-knapp kopplad till samma path, dashboard eller CLI. Vid oklara ändringsförfrågningar, layoutönskemål eller beskrivningar av markerade skärmdumpar (`"ringat in på bilden"`) håller `_SafeTextStream` inne `<clarify>`-block från svarutkastet och botten ställer en fokuserad motfråga med rekommenderade engångsknappar (`clarify:pick`, `clarify:go`, `clarify:other`, `clarify:cancel`, högst 3 rundor). `clarify:*`-callbacks är icke-muterande (`kind="callback"`, inte `_ACTION_CALLBACK`) och ersätter aldrig `proposal:yes:pr-...`, `action:yes`, `wpfile:stage:fe-...`, `wpreview:stage:wr-...` eller RBAC. En sidgranskning anropar inte orderchatten (`extract_page_review_target` hämtar valfri `target_page` för `"granska sidan <slug|id> källkod"`, och för blockteman läses Site Editor-mallar via `WordPressClient.list_templates()`, annars `site_editor: "unavailable"`). En följdfråga medan jobbet körs stannar i sidgranskningen. Fritext “ja” och `action:yes` godkänner inte granskningen. Den redan körande botprocessen har inte startats om, så `page_review` är inte live förrän en begärd omstart.
 
-En filplansnotis kan länka till dashboardens planvy när `AZOM_DASHBOARD_PUBLIC_URL` är en HTTPS-URL. Länken innehåller bara registrerat `site_id` och `plan_id`, kräver dashboardinloggning och RBAC, och utför eller godkänner ingenting. Utan giltig HTTPS-bas visas ingen absolut länk. Efter `wp_workspace_run_checks` skickar Telegram-sändaren (`_send_attachments` → `_send_photo`) högst fyra allowlistade PNG-skärmdumpar (`base|work-desktop|mobile.png` från `wp_workspaces/.../artifacts/`) via `BotReply.attachments` och `safe_workspace_attachments()` när en riktig sandlådekörning skapat dem; absoluta filsökvägar läggs aldrig i LLM-meddelanden.
+En filplansnotis kan länka till dashboardens planvy när `AZOM_DASHBOARD_PUBLIC_URL` är en HTTPS-URL. Länken innehåller bara registrerat `site_id` och `plan_id`, kräver dashboardinloggning och RBAC, och utför eller godkänner ingenting. Utan giltig HTTPS-bas visas ingen absolut länk. Efter `wp_workspace_run_checks` eller `wp_preview_page` skickar Telegram-sändaren (`_send_attachments` → `_send_photo`) tillåtna PNG-skärmdumpar (`base|work|live|preview|change|focus|compare` från `wp_workspaces/.../artifacts/`) via `BotReply.attachments` och `safe_workspace_attachments()` (inklusive sid-vid-sid-jämförelser `compare-desktop.png` för före/efter och `variant_group`-varianter); absoluta filsökvägar läggs aldrig i LLM-meddelanden.
+
+För äldre knappcallbacks (`order:set:*`, `cases:approve:*`, `product:desc:*`) binder `handlers.py` och `job_store.py` knappen hållbart i SQLite (`bot_proposals`) med `(actor, domain/market, target_id, expiry)` så att ett marknadsskifte i chatten eller dubbelklick/utgången länk nekas eller körs mot fastlåst marknad och aktör. Pollerns underhållsvarv (`bot/__main__.py`) loggar sanerade driftfel till `runtime_errors.jsonl` och kör `run_ops_gc` (`skills/ecom_ops/ops_gc.py`) periodiskt.
 
 ### Live-status och strömmande svar
 
@@ -156,6 +158,7 @@ Token byts under `/oscar/secrets`. Allowlist och actor map sätts i processmilj�
 | `/wp plans [site-id]` | Lista öppna `wr-*`-granskningsarbetsytor och stagingstatus |
 | `/wp plan <plan-id>` | Visa `wr-*`-plan, ändrade filer, kontroller och (om stagingredo + `WP_OPS_ADMIN` + `CODE_EDIT`) stagingknapp `wpreview:stage:wr-...` |
 | `/wp clear` | Rensa vald WordPress-sajt (och cachade review-hashar) |
+| `/ops` | Oscar-only (`full_admin`): visar poller-lease, jobbköer, circuit breakers, ChatGPT OAuth TTL, `.azom-data`-diskanvändning och senaste sanerade driftfel (`runtime_health.py`). Viewer/operator nekas |
 | `/oauth [chatgpt\|xai\|test\|status]` | Oscar-only: länka, testa och hantera ChatGPT Plus OAuth och xAI Grok Build direkt i Telegram (knappar + efemär callback-URL utan SQLite-lagring) |
 
 ### `/cases` subcommands
@@ -262,8 +265,11 @@ Fil- och arbetsyteverktyg körs i en egen bunden tur (`run_bounded_file_tool_loo
 | Plugin on/off | `action:yes` / `action:no` | `WP_OPS_ADMIN` (Oscar) |
 | Stagingfil (`fe-*`) | `wpfile:stage:fe-...` / `wpfile:no:fe-...` | `WP_OPS_OPERATE` på registrerad mock-staging. Produktion har ingen knapp |
 | Staging-arbetsyta (`wr-*`) | `wpreview:stage:wr-...` / `wpreview:no:wr-...` | `WP_OPS_ADMIN` + `CODE_EDIT` (Oscar) + snapshot-hashar + `tests_passed`. Bara lokal mock-staging; aldrig tyst produktionsdeploy |
+| WordPress-utkast (`wr-*` `page_draft`) | `wpreview:push_draft:wr-...` | `WP_OPS_ADMIN` + `CODE_EDIT` (Oscar) + fastlåsta `base_sha256`/`work_sha256`. Skapar endast `status="draft"` via `WpOpsService.push_page_draft()` (`edit_url`); publicerar aldrig live |
 | Förtydligande innan arbete | `clarify:pick:cl-<id>:<opt>` · `clarify:go:cl-<id>` · `clarify:other:cl-<id>` · `clarify:cancel:cl-<id>` | **Ingen skrivning.** Låser endast omfattning/val (`flow="change_clarify"`, max 3 rundor); slutlig ändring kräver alltid egen skriv-/stagingknapp och RBAC |
 | Regen draft | `cases:regen:{id8}` | `CASE_REPLY` (Jonatan OK) |
+
+Äldre skrivcallbacks (`order:set:*`, `cases:approve:*`, `product:desc:*`) binds dessutom hållbart i `bot_proposals` med `(actor, domain/market, target_id, expiry)` för engångskonsumtion och skydd mot marknadsdrift i sessionen.
 
 Jonatan kan approve:a cases men **inte** skriva Woo order/product om hen inte är mappad till `agent`/`oscar`.
 

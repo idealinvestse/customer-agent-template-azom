@@ -118,6 +118,7 @@ _PUBLIC = (
     "preview_path",
     "focus_selector",
     "page_draft",
+    "draft_page",
 )
 _VARIANT_GROUP_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 _TERMINAL = frozenset({"rejected", "denied", "expired", "fork_not_approved", "not_resumable"})
@@ -126,7 +127,7 @@ _NON_EDITABLE = _TERMINAL | frozenset(
 )
 _STAGE_OK = frozenset({"tests_passed", "review_requested", "approved_for_staging"})
 _UNREACHABLE = frozenset({"approved_for_production", "deployed", "verified"})
-_ARTIFACT_PNG = re.compile(r"^(?:base|work|live|preview|change|focus)-(?:desktop|mobile)\.png$")
+_ARTIFACT_PNG = re.compile(r"^(?:base|work|live|preview|change|focus|compare)-(?:desktop|mobile)\.png$")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _BASELINE_REUSE_TTL_S = 300.0
 
@@ -1691,7 +1692,7 @@ class ReviewPlans:
                 reused_baseline = False
 
         for stale in list(artifact_dir.iterdir()):
-            if stale.name.startswith(("live-", "preview-", "change-", "focus-")) and stale.suffix.lower() == ".png":
+            if stale.name.startswith(("live-", "preview-", "change-", "focus-", "compare-")) and stale.suffix.lower() == ".png":
                 try:
                     if stale.is_file() or stale.is_symlink():
                         stale.unlink()
@@ -1759,8 +1760,28 @@ class ReviewPlans:
             except (OSError, json.JSONDecodeError, UnicodeError):
                 pass
 
+        if not is_standalone:
+            live_shot = artifact_dir / "live-desktop.png"
+            after_shot: Path | None = None
+            for cand_name in ("preview-desktop.png", "focus-desktop.png", "change-desktop.png"):
+                cand_path = artifact_dir / cand_name
+                if cand_path.is_file() and not cand_path.is_symlink():
+                    after_shot = cand_path
+                    break
+            if live_shot.is_file() and not live_shot.is_symlink() and after_shot is not None:
+                try:
+                    from ecom_ops.integrations.wp_live_preview import build_comparison_composite
+
+                    build_comparison_composite(
+                        [("Före (Live)", live_shot), (f"Efter ({plan_id})", after_shot)],
+                        artifact_dir / "compare-desktop.png",
+                    )
+                except Exception:
+                    pass
+
         preferred_order = (
             (
+                "compare-desktop.png",
                 "preview-desktop.png",
                 "preview-mobile.png",
                 "focus-desktop.png",
@@ -1770,6 +1791,7 @@ class ReviewPlans:
             )
             if is_standalone
             else (
+                "compare-desktop.png",
                 "change-desktop.png",
                 "change-mobile.png",
                 "focus-desktop.png",
@@ -2239,6 +2261,204 @@ class ReviewPlans:
             bytes_copied=False,
             backup_offsite=False,
         )
+
+    def build_variant_comparison(
+        self,
+        site_id: str,
+        plan_ids: list[str] | tuple[str, ...],
+    ) -> Path | None:
+        """Build a side-by-side ``compare-desktop.png`` across 2–4 previewed variants."""
+        from ecom_ops.integrations.wp_live_preview import build_comparison_composite
+
+        unique_ids: list[str] = []
+        for pid in plan_ids:
+            clean_pid = str(pid or "").strip()
+            if clean_pid and PLAN_ID.fullmatch(clean_pid) and clean_pid not in unique_ids:
+                unique_ids.append(clean_pid)
+        if len(unique_ids) < 2:
+            return None
+
+        panels: list[tuple[str, Path]] = []
+        latest_artifact_dir: Path | None = None
+        for idx, pid in enumerate(unique_ids[:4], start=1):
+            try:
+                root = workspace_root(self.data_dir, site_id, pid)
+            except ReviewError:
+                continue
+            art_dir = root / "artifacts"
+            if not art_dir.is_dir():
+                continue
+            chosen: Path | None = None
+            for cand in ("focus-desktop.png", "change-desktop.png", "preview-desktop.png", "work-desktop.png"):
+                p = art_dir / cand
+                if p.is_file() and not p.is_symlink():
+                    chosen = p
+                    break
+            if chosen is not None:
+                panels.append((f"Förslag {idx} ({pid})", chosen))
+                latest_artifact_dir = art_dir
+        if len(panels) < 2 or latest_artifact_dir is None:
+            return None
+        return build_comparison_composite(panels, latest_artifact_dir / "compare-desktop.png")
+
+    def push_page_draft(
+        self,
+        site_id: str,
+        plan_id: str,
+        *,
+        actor: str,
+        base_sha256: str,
+        work_sha256: str,
+        client: Any = None,
+    ) -> dict[str, Any]:
+        """Push ``work/page_draft.json`` to WordPress strictly as ``status='draft'`` (Oscar-only HITL)."""
+        from urllib.parse import urlparse
+
+        from ecom_ops.integrations import wp_client_from_env
+        from ecom_ops.integrations.wp_live_preview import _STATIC_ASSET_HOSTS, _allowed_site_hosts
+        from ecom_ops.wp_ops.agent_tools import WpAgentTools
+        from ecom_ops.wp_ops.file_changes import rest_reads_allowed
+        from ecom_ops.wp_ops.preview_overlay import sanitize_page_draft_html
+
+        def _err(error_class: str, message: str, **extra: Any) -> dict[str, Any]:
+            return {
+                "ok": False,
+                "error_class": error_class,
+                "message": message,
+                "plan_id": plan_id,
+                "site_id": site_id,
+                "executed": False,
+                "live_calls": False,
+                **extra,
+            }
+
+        denied = self._need(actor, Permission.WP_OPS_ADMIN, Permission.CODE_EDIT, action="wp_review_push_draft")
+        if denied is not None:
+            return _err(
+                str((denied.data or {}).get("error_class") or "AccessDenied"),
+                denied.message or "Endast Oscar (full_admin) får skicka WordPress-utkast.",
+            )
+
+        if not isinstance(base_sha256, str) or not base_sha256.strip() or not isinstance(work_sha256, str) or not work_sha256.strip():
+            return _err("DigestMismatch", "Saknar låsta revision-hashar (base_sha256/work_sha256).")
+
+        with self._locks(site_id, plan_id):
+            plan = self._row(site_id, plan_id)
+            if plan is None:
+                return _err("UnknownPlan", "Okänd plan.")
+            blocked = self._gate(plan, base_sha256, work_sha256)
+            if blocked is not None:
+                return _err(
+                    str((blocked.data or {}).get("error_class") or "StalePlan"),
+                    blocked.message,
+                )
+            site, missing = self._site(site_id)
+            if missing is not None or site is None:
+                return _err("UnknownSite", "Okänd webbplats.")
+            try:
+                root = workspace_root(self.data_dir, site_id, plan_id)
+            except ReviewError as exc:
+                return _err(exc.error_class, exc.error_class)
+
+            draft = _load_page_draft(root / "work")
+            if draft is None:
+                return _err("DraftMissing", "Arbetsytan saknar work/page_draft.json.")
+
+            title = " ".join(str(draft.get("title") or "").split()).strip()[:200]
+            slug = str(draft.get("slug") or "").strip().strip("/").lower()
+            raw_body = str(draft.get("body_html") or "")
+            page_css = str(draft.get("page_css") or "")
+            synthetic_ctx = draft.get("synthetic_context") if isinstance(draft.get("synthetic_context"), dict) else {}
+
+            if not title or not raw_body.strip():
+                return _err("InvalidDraft", "page_draft.json saknar titel eller innehåll.")
+            if page_css.strip() and not is_safe_pure_css_file("page-draft.css", page_css):
+                return _err("UnsafeCssRefused", "page_css innehåller otillåten CSS.")
+
+            parsed_site = urlparse(str(site.canonical_url or ""))
+            site_host = (parsed_site.hostname or "").strip().lower().rstrip(".")
+            allowed_hosts = (_allowed_site_hosts(site_host) | _STATIC_ASSET_HOSTS) if site_host else _STATIC_ASSET_HOSTS
+            sanitized_body = sanitize_page_draft_html(raw_body, allowed_hosts=allowed_hosts)
+            if not sanitized_body.strip():
+                return _err("InvalidDraft", "Sanerat sidutkast är tomt.")
+
+            if any(
+                WpAgentTools._contains_real_pii(field)
+                for field in (title, raw_body, sanitized_body, page_css, synthetic_ctx)
+            ):
+                self._audit(actor, plan, "wp_review_push_draft", False, error_class="RealPiiRefused")
+                return _err(
+                    "RealPiiRefused",
+                    "Sidutkastet innehåller riktig kunddata/PII och nekas innan publicering till WordPress.",
+                )
+
+            safe_css = re.sub(r"</style", r"<\/style", page_css.strip(), flags=re.IGNORECASE)
+            style_block = f"<style>\n{safe_css}\n</style>\n" if safe_css else ""
+            gutenberg_html = f"<!-- wp:html -->\n{style_block}{sanitized_body}\n<!-- /wp:html -->"
+
+            use_mock = not rest_reads_allowed()
+            live_calls = False
+            if client is not None:
+                wp_client = client
+            else:
+                try:
+                    wp_client = wp_client_from_env(
+                        base_url=str(site.canonical_url or "https://mock.local"),
+                        use_mock=use_mock,
+                    )
+                    live_calls = not use_mock
+                except Exception as exc:
+                    self._audit(actor, plan, "wp_review_push_draft", False, error_class="WpClientUnavailable")
+                    return _err("WpClientUnavailable", f"WordPress REST-klient kunde inte initieras: {type(exc).__name__}")
+
+            try:
+                created = wp_client.create_page(
+                    title=title,
+                    content=gutenberg_html,
+                    slug=slug,
+                    status="draft",
+                )
+            except ValueError as exc:
+                self._audit(actor, plan, "wp_review_push_draft", False, error_class="DraftPushRejected")
+                return _err("DraftPushRejected", str(exc))
+            except Exception as exc:
+                self._audit(actor, plan, "wp_review_push_draft", False, error_class="DraftPushFailed")
+                return _err("DraftPushFailed", f"Kunde inte skapa utkast i WordPress ({type(exc).__name__}).")
+
+            draft_page = {
+                "id": int(created.get("id") or 0),
+                "slug": str(created.get("slug") or slug),
+                "title": str(created.get("title") or title),
+                "status": "draft",
+                "link": str(created.get("link") or ""),
+                "edit_url": str(created.get("edit_url") or ""),
+                "pushed_at": self._now().isoformat(),
+                "pushed_by": actor,
+            }
+            plan["draft_page"] = draft_page
+            self._replace(plan)
+            write_manifest(root, plan)
+
+        self._audit(
+            actor,
+            plan,
+            "wp_review_push_draft",
+            True,
+            draft_page_id=draft_page["id"],
+            slug=draft_page["slug"],
+            draft_status="draft",
+            live_calls=live_calls,
+        )
+        return {
+            "ok": True,
+            "plan_id": plan_id,
+            "site_id": site_id,
+            "status": "draft_pushed",
+            "message": "Sidutkast skapat i WordPress (status='draft').",
+            "draft_page": draft_page,
+            "executed": True,
+            "live_calls": live_calls,
+        }
 
     def request_production(
         self,

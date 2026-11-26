@@ -398,6 +398,45 @@
           <button class="az-btn-secondary az-btn-sm border-warn/40 text-warn hover:bg-warn/10" type="submit" data-review-action="production" data-busy-label="Kontrollerar...">Begär produktion</button>
         </form>
       </div>
+
+      {% if page_draft or is_standalone_page %}
+      <div class="border-t border-ink-700/80 pt-3 space-y-2.5" data-push-draft-section="true">
+        <p class="az-muted text-xs">Skapar endast ett WordPress-utkast (<code class="az-code font-mono">status="draft"</code>) — publicerar aldrig automatiskt.</p>
+        <form method="post" action="{{ url_for('wp_review_push_draft', site_id=plan.site_id, plan_id=plan.plan_id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
+          <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
+          <button class="az-btn-primary az-btn-sm" type="submit" data-review-action="push-draft" data-busy-label="Skickar utkast...">Skicka som WordPress-utkast (draft)</button>
+        </form>
+      </div>
+      {% endif %}
+
+      {% if draft_page %}
+      <div class="rounded-xl border border-ok/40 bg-ok/10 p-3.5 space-y-2" data-draft-page-card="true">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-ok">
+            {{ icon('check-circle', 'xs') }}
+            <span>WordPress-utkast sparat</span>
+          </span>
+          {{ ui.status_badge('ok', 'status: ' ~ (draft_page.get('status') or 'draft')) }}
+        </div>
+        <div class="text-xs text-mist-200 space-y-0.5">
+          {% if draft_page.get('id') %}<div>Sid-ID: <code class="az-code font-mono">{{ draft_page.get('id') }}</code>{% if draft_page.get('slug') %} · <code class="az-code font-mono">{{ draft_page.get('slug') }}</code>{% endif %}</div>{% endif %}
+          {% if draft_page.get('pushed_at') %}<div class="text-mist-400 tabular-nums">Skickat: {{ fmt_dt(draft_page.get('pushed_at')) or draft_page.get('pushed_at') }}{% if draft_page.get('pushed_by') %} av {{ draft_page.get('pushed_by') }}{% endif %}</div>{% endif %}
+        </div>
+        {% if draft_page.get('edit_url') %}
+        <div>
+          <a
+            class="az-btn-primary az-btn-sm"
+            href="{{ draft_page.get('edit_url') }}"
+            target="_blank"
+            rel="noopener noreferrer"
+            data-draft-edit-link="true"
+          >{{ icon('external-link', 'xs') }}<span>Öppna utkast i WordPress-admin</span></a>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
     </section>
     {% endif %}
   </div>
@@ -445,6 +484,35 @@
       >{{ icon('external-link', 'xs') }}<span>Öppna interaktiv förhandsvisning</span></a>
       {% endif %}
     </div>
+
+    {% if live_overlay_comparison.compare %}
+    <div class="space-y-2.5" data-preview-group="compare">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-steel-300">Jämförelsebild (Före / Efter eller Varianter)</h3>
+      <div class="grid gap-4">
+        {% for shot in live_overlay_comparison.compare %}
+        <figure class="space-y-1.5 rounded-xl border border-steel-500/40 bg-ink-950/70 p-3">
+          <figcaption class="flex items-center justify-between gap-2 text-xs">
+            <span class="font-semibold text-steel-200">{{ shot.label }}</span>
+            <code class="font-mono text-mist-400">{{ shot.name }}</code>
+          </figcaption>
+          <a
+            href="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=shot.name) }}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="block"
+          >
+            <img
+              class="w-full rounded-lg border border-ink-700 bg-ink-950"
+              loading="lazy"
+              src="{{ url_for('wp_review_artifact', site_id=plan.site_id, plan_id=plan.plan_id, name=shot.name) }}"
+              alt="{{ shot.label }} ({{ shot.name }})"
+            />
+          </a>
+        </figure>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
 
     {% if live_overlay_comparison.focus %}
     <div class="space-y-2.5" data-preview-group="focus">

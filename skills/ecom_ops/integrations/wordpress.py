@@ -221,6 +221,12 @@ class InMemoryWpTransport:
                     row["title"] = {"rendered": str(row["title"])}
                 elif "title" not in row:
                     row["title"] = {"rendered": ""}
+                if collection == "pages":
+                    slug_val = str(row.get("slug") or "").strip().lower()
+                    if not slug_val:
+                        slug_val = f"page-{row['id']}"
+                    row["slug"] = slug_val
+                    row.setdefault("link", f"https://mock.local/{slug_val}/")
                 store[row["id"]] = row
                 return row
             raise SecurityError(f"Unhandled WP collection op: {method}")
@@ -480,6 +486,75 @@ class WordPressClient:
             timeout=self.timeout,
         )
         return self._to_post(data)
+
+    def create_page(
+        self,
+        *,
+        title: str,
+        content: str,
+        slug: str = "",
+        status: str = "draft",
+        domain: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a WordPress page strictly as a draft (``status='draft'`` only — never auto-published)."""
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status != "draft":
+            raise ValueError("Only status='draft' is allowed")
+        clean_title = sanitize_text(str(title or ""), max_len=200).strip()
+        if not clean_title:
+            raise ValueError("Page title is required")
+        if not isinstance(content, str) or "\x00" in content:
+            raise ValueError("Invalid page content")
+        if len(content.encode("utf-8")) > 131_072:
+            raise ValueError("Page content exceeds 128 KiB limit")
+        clean_slug = re.sub(r"[^a-z0-9-]+", "-", str(slug or "").strip().lower()).strip("-")[:80]
+
+        target_base = self.base_url
+        if domain and not isinstance(self.transport, InMemoryWpTransport):
+            from ecom_ops.config import woo_base_url_for_domain
+
+            resolved = woo_base_url_for_domain(domain)
+            if resolved:
+                target_base = resolved.rstrip("/")
+
+        payload: dict[str, Any] = {
+            "title": clean_title,
+            "content": content,
+            "status": "draft",
+        }
+        if clean_slug:
+            payload["slug"] = clean_slug
+
+        endpoint = f"{target_base.rstrip('/')}/wp-json/wp/v2/pages"
+        data = self.transport.request(
+            "POST",
+            endpoint,
+            auth=self._auth(),
+            json=payload,
+            timeout=self.timeout,
+        )
+        row = data if isinstance(data, dict) else {}
+        page_id = int(row.get("id") or 0)
+        raw_title = row.get("title")
+        if isinstance(raw_title, dict):
+            rendered_title = str(raw_title.get("rendered") or clean_title)
+        else:
+            rendered_title = str(raw_title or clean_title)
+        res_slug = str(row.get("slug") or clean_slug or (f"page-{page_id}" if page_id else ""))
+        res_link = str(row.get("link") or (f"{target_base.rstrip('/')}/?page_id={page_id}" if page_id else ""))
+        edit_url = (
+            f"{target_base.rstrip('/')}/wp-admin/post.php?post={page_id}&action=edit"
+            if page_id > 0
+            else ""
+        )
+        return {
+            "id": page_id,
+            "slug": res_slug,
+            "title": rendered_title,
+            "status": "draft",
+            "link": res_link,
+            "edit_url": edit_url,
+        }
 
     def update_page(
         self,

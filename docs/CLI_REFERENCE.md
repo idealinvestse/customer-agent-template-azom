@@ -103,6 +103,25 @@ python -m ecom_ops --mock ssh-health
 # optional: --host
 ```
 
+### `ops`
+
+Runtime health snapshot and disk housekeeping (`skills/ecom_ops/runtime_health.py`, `skills/ecom_ops/ops_gc.py`):
+
+```bash
+# cwd: repository root
+# env: AZOM_USE_MOCK=1
+python -m ecom_ops ops status [--json]
+# expect: poller lease status, Telegram/Messenger queue counts, circuit breakers, ChatGPT OAuth TTL (no tokens), disk usage, and recent sanitized errors
+
+python -m ecom_ops ops gc --dry-run [--grace-hours 24] [--json]
+# expect: dry-run counts for expired wr-* workspaces, untracked pv-* dirs, old inbox media, expired proposals, and log rotation; mutates nothing
+
+python -m ecom_ops --actor oscar ops gc [--grace-hours 24] [--json]
+# Oscar ADMIN: executes housekeeping (cleans expired wr-* dirs past grace period, untracked pv-*, old telegram/messenger inbox media, expired bot_proposals/wp_review_pins, and gzip-rotates telemetry.jsonl / audit.jsonl)
+```
+
+Live execution of `ops gc` requires `--actor oscar` (`full_admin`). `--dry-run` and `ops status` are read-only. Active (non-expired) `wr-*` workspaces are never removed.
+
 ### Quality / KPI helpers
 
 | Command | Flags | Purpose |

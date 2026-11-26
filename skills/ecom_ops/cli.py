@@ -366,6 +366,67 @@ def build_parser() -> argparse.ArgumentParser:
     p_wp_apply.add_argument("--plan", required=True, dest="plan_id")
     p_wp_apply.add_argument("--from", required=True, dest="from_file")
 
+    p_ops = sub.add_parser(
+        "ops",
+        help="Runtime housekeeping (GC) and health status",
+    )
+    ops_sub = p_ops.add_subparsers(dest="ops_command", required=True)
+    p_ops_gc = ops_sub.add_parser(
+        "gc",
+        help="Clean expired WP workspaces, old inbox media, expired proposals, and rotate logs",
+    )
+    p_ops_gc.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report cleanup counts without modifying disk or SQLite",
+    )
+    p_ops_gc.add_argument(
+        "--grace-hours",
+        type=int,
+        default=24,
+        help="Grace window in hours before deleting expired wr-* workspace artifacts (default 24)",
+    )
+    p_ops_gc.add_argument(
+        "--pv-max-age-hours",
+        type=int,
+        default=24,
+        help="Max age in hours for untracked pv-* preview workspaces (default 24)",
+    )
+    p_ops_gc.add_argument(
+        "--inbox-max-age-hours",
+        type=int,
+        default=24,
+        help="Max age in hours for inbound Telegram/Messenger media (default 24)",
+    )
+    p_ops_gc.add_argument(
+        "--proposal-max-age-hours",
+        type=int,
+        default=24,
+        help="Max age in hours for open proposals without explicit expires_at (default 24)",
+    )
+    p_ops_gc.add_argument(
+        "--rotate-max-mb",
+        type=float,
+        default=10.0,
+        help="Rotate and gzip telemetry.jsonl/audit.jsonl above this size in MB (default 10.0)",
+    )
+    p_ops_gc.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit machine-readable JSON output",
+    )
+    p_ops_status = ops_sub.add_parser(
+        "status",
+        help="Show runtime health snapshot (poller lease, queues, breakers, OAuth TTL, disk, errors)",
+    )
+    p_ops_status.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit machine-readable JSON output",
+    )
+
     return parser
 
 
@@ -889,6 +950,67 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return _print(wp.apply_file(args.wp_site_id, args.plan_id, text, actor=args.actor))
         parser.error(f"Unknown wp command: {cmd}")
+        return 2
+
+    if args.command == "ops":
+        cmd = args.ops_command
+        if cmd == "status":
+            from ecom_ops.runtime_health import (
+                collect_runtime_snapshot,
+                format_ops_telegram_summary,
+            )
+
+            snap = collect_runtime_snapshot()
+            if args.as_json:
+                print(json.dumps(snap, ensure_ascii=False, indent=2))
+            else:
+                print(format_ops_telegram_summary(snap))
+            return 0
+        if cmd == "gc":
+            from ecom_ops.ops_gc import run_ops_gc
+            from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
+
+            if not args.dry_run:
+                try:
+                    require_permission(resolve_actor(args.actor), Permission.ADMIN)
+                except AccessDenied as exc:
+                    print(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "action": "ops_gc",
+                                "error": "access_denied",
+                                "message": str(exc),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
+                    return 1
+            res = run_ops_gc(
+                dry_run=bool(args.dry_run),
+                artifact_grace_hours=args.grace_hours,
+                pv_max_age_hours=args.pv_max_age_hours,
+                inbox_max_age_hours=args.inbox_max_age_hours,
+                proposal_max_age_hours=args.proposal_max_age_hours,
+                rotate_max_mb=args.rotate_max_mb,
+            )
+            if args.as_json:
+                print(json.dumps(res, ensure_ascii=False, indent=2))
+            else:
+                mode = "DRY-RUN" if res["dry_run"] else "EXECUTED"
+                print(
+                    f"ops gc ({mode}): expired_plans={res['expired_plans']} "
+                    f"workspaces={res['removed_workspace_dirs']} "
+                    f"pv_dirs={res['removed_pv_dirs']} "
+                    f"media={res['removed_media_files']} "
+                    f"proposals={res['purged_proposals']} "
+                    f"rotated={len(res['rotated_logs'])} "
+                    f"reclaimed={res['mb_reclaimed']:.2f} MB "
+                    f"errors={len(res['errors'])}"
+                )
+            return 0 if res.get("ok") else 1
+        parser.error(f"Unknown ops command: {cmd}")
         return 2
 
     parser.error(f"Unknown command: {args.command}")

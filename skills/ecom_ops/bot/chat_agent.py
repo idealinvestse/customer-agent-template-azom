@@ -2695,9 +2695,10 @@ def _is_allowed_chat_image_path(item: Any) -> str | None:
             else Path(".azom-data").resolve()
         )
         in_inbox = resolved.is_relative_to(data_root / "telegram_inbox_media")
+        in_messenger_inbox = resolved.is_relative_to(data_root / "messenger_inbox_media")
         in_workspaces = resolved.is_relative_to(data_root / "wp_workspaces")
         is_direct_test_file = bool(env_data_dir) and resolved.parent == data_root
-        if not (in_inbox or in_workspaces or is_direct_test_file):
+        if not (in_inbox or in_messenger_inbox or in_workspaces or is_direct_test_file):
             return None
         size = resolved.stat().st_size
         if size <= 0 or size > MAX_MULTIMODAL_IMAGE_BYTES:

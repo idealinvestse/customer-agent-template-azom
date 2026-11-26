@@ -105,7 +105,7 @@ def cmd_help(ctx: CommandContext) -> str:
         "/status · /whoami · /new · /reset · /stop\n"
         "Telegram har också /jobs, /cancel [job-id] och Oscars /reconcile.\n"
         "/tools · /tasks · /usage · /model · /context\n"
-        "/order · /cases · /wp · /oauth · /health · /brief · /marketing · /commands"
+        "/order · /cases · /wp · /oauth · /ops · /health · /brief · /marketing · /commands"
     )
 
 
@@ -784,6 +784,25 @@ def cmd_wp(ctx: CommandContext) -> str:
     return "/wp sites · /wp use <site-id> · /wp plans [site-id] · /wp plan <plan-id> · /wp clear"
 
 
+def cmd_ops(ctx: CommandContext) -> str:
+    """Oscar-only runtime health summary (poller, queues, breakers, OAuth TTL, disk, errors)."""
+    from ecom_ops.bot.actors import ChannelActorDenied, resolve_channel_actor
+    from ecom_ops.rbac import Permission, resolve_actor
+    from ecom_ops.runtime_health import (
+        collect_runtime_snapshot,
+        format_ops_telegram_summary,
+    )
+
+    try:
+        actor_name = resolve_channel_actor(ctx.channel, ctx.chat_id)
+    except ChannelActorDenied:
+        return "Åtkomst nekad: /ops är endast tillgängligt för Oscar (admin)."
+    actor = resolve_actor(actor_name)
+    if not actor.has(Permission.ADMIN):
+        return "Åtkomst nekad: /ops är endast tillgängligt för Oscar (admin)."
+    return format_ops_telegram_summary(collect_runtime_snapshot())
+
+
 COMMANDS: list[CommandSpec] = [
     CommandSpec("help", "Kort hjälp", cmd_help),
     CommandSpec("commands", "Full kommandokatalog", cmd_commands),
@@ -807,6 +826,7 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("order", "Orderstatus (read-only)", cmd_order),
     CommandSpec("wp", "WP: sites|use|plans|plan|clear", cmd_wp),
     CommandSpec("oauth", "Oscar: länka ChatGPT Plus & xAI OAuth", cmd_oauth),
+    CommandSpec("ops", "Oscar: drifthälsa, köer & disk", cmd_ops),
 ]
 
 _BY_NAME: dict[str, CommandSpec] = {}
@@ -839,6 +859,7 @@ TELEGRAM_MENU_COMMANDS: list[dict[str, str]] = [
         "skill",
         "wp",
         "oauth",
+        "ops",
     }
 ]
 

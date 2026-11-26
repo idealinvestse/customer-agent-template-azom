@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,28 @@ _woo_webhook_receiver: object | None = None
 _woo_webhook_secret_hash: str | None = None
 _messenger_stores_lock = threading.Lock()
 _messenger_stores: dict[str, Any] = {}
+_messenger_proposal_stores_lock = threading.Lock()
+_messenger_proposal_stores: dict[str, Any] = {}
+_pending_images_lock = threading.Lock()
+_pending_image_urls: dict[str, deque[tuple[str, list[str]]]] = {}
+_MAX_PENDING_PEERS = 256
+_MAX_PENDING_PER_PEER = 32
+
+
+def _messenger_peer_authorized(peer_id: str) -> bool:
+    """Fail-closed check: both Messenger PSID allowlist and actor map must authorize ``peer_id``."""
+    pid = str(peer_id or "").strip()
+    if not pid:
+        return False
+    from ecom_ops.bot.actors import channel_peer_allowed, resolve_channel_actor
+
+    if not channel_peer_allowed("messenger", pid):
+        return False
+    try:
+        actor = resolve_channel_actor("messenger", pid)
+    except Exception:
+        return False
+    return bool(str(actor or "").strip())
 
 
 def _get_messenger_store(data_dir: Path) -> Any:
@@ -27,6 +50,109 @@ def _get_messenger_store(data_dir: Path) -> Any:
             store = ConversationStore(path=store_path)
             _messenger_stores[key] = store
         return store
+
+
+def _get_messenger_proposal_store(data_dir: Path) -> Any:
+    from ecom_ops.bot.job_store import TelegramJobStore
+
+    db_path = (data_dir / "messenger_proposals.sqlite3").resolve()
+    key = str(db_path)
+    with _messenger_proposal_stores_lock:
+        store = _messenger_proposal_stores.get(key)
+        if store is None:
+            store = TelegramJobStore(path=db_path)
+            _messenger_proposal_stores[key] = store
+        return store
+
+
+def _extract_event_image_urls(ev: Any) -> list[str]:
+    raw = ev.get("image_urls") if isinstance(ev, dict) else getattr(ev, "image_urls", None)
+    if not raw or not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    for item in raw:
+        url = str(item or "").strip()
+        if url.startswith("https://"):
+            out.append(url)
+        if len(out) >= 4:
+            break
+    return out
+
+
+def _enqueue_pending_images(peer_id: str, text: str, urls: list[str]) -> None:
+    if not peer_id:
+        return
+    with _pending_images_lock:
+        if peer_id not in _pending_image_urls and len(_pending_image_urls) >= _MAX_PENDING_PEERS:
+            oldest = next(iter(_pending_image_urls))
+            _pending_image_urls.pop(oldest, None)
+        bucket = _pending_image_urls.setdefault(peer_id, deque(maxlen=_MAX_PENDING_PER_PEER))
+        bucket.append((str(text or ""), list(urls[:4])))
+
+
+def _pop_pending_images(peer_id: str, text: str) -> list[str]:
+    if not peer_id:
+        return []
+    expected_text = str(text or "")
+    with _pending_images_lock:
+        bucket = _pending_image_urls.get(peer_id)
+        if not bucket:
+            return []
+        if bucket[0][0] == expected_text:
+            _, urls = bucket.popleft()
+            if not bucket:
+                _pending_image_urls.pop(peer_id, None)
+            return urls
+        for idx, (queued_text, urls) in enumerate(bucket):
+            if queued_text == expected_text:
+                del bucket[idx]
+                if not bucket:
+                    _pending_image_urls.pop(peer_id, None)
+                return urls
+        return []
+
+
+class _MessengerImageHandlerProxy:
+    """Thin proxy forwarding downloaded inbound Messenger images into BotHandler.handle()."""
+
+    def __init__(self, inner: Any, *, data_dir: Path) -> None:
+        self._inner = inner
+        self._data_dir = data_dir
+
+    def handle(
+        self,
+        chat_id: str,
+        text: str,
+        *args: Any,
+        image_paths: list[str] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        urls = _pop_pending_images(str(chat_id), text)
+        resolved_paths = list(image_paths) if image_paths else []
+        if urls and not resolved_paths and _messenger_peer_authorized(str(chat_id)):
+            from ecom_ops.bot import messenger_adapter
+
+            downloader = getattr(messenger_adapter, "download_messenger_image", None)
+            if callable(downloader):
+                for url in urls[:4]:
+                    try:
+                        saved = downloader(url, peer_id=str(chat_id), data_dir=self._data_dir)
+                    except Exception:
+                        saved = None
+                    if saved is not None:
+                        resolved_paths.append(str(saved))
+        if resolved_paths:
+            return self._inner.handle(
+                chat_id,
+                text,
+                *args,
+                image_paths=resolved_paths,
+                **kwargs,
+            )
+        return self._inner.handle(chat_id, text, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 def _get_woo_webhook_receiver(secret: str) -> Any:
@@ -90,9 +216,11 @@ def register_webhook_routes(app: Flask) -> None:
                 "MESSENGER_PAGE_ACCESS_TOKEN missing — outbound Messenger replies suppressed"
             )
 
-        def _make_handler() -> BotHandler:
+        def _make_handler() -> Any:
             store = _get_messenger_store(data_dir)
-            return BotHandler(store=store, channel="messenger")
+            proposal_store = _get_messenger_proposal_store(data_dir)
+            inner = BotHandler(store=store, proposal_store=proposal_store, channel="messenger")
+            return _MessengerImageHandlerProxy(inner, data_dir=data_dir)
 
         queue = get_messenger_queue(data_dir)
         queued = 0
@@ -101,6 +229,9 @@ def register_webhook_routes(app: Flask) -> None:
             enqueued, _ = queue.enqueue(ev)
             if enqueued:
                 queued += 1
+                if not getattr(ev, "postback", None) and _messenger_peer_authorized(str(ev.peer_id)):
+                    img_urls = _extract_event_image_urls(ev)
+                    _enqueue_pending_images(str(ev.peer_id), str(ev.text or ""), img_urls)
             else:
                 skipped += 1
 

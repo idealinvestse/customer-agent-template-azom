@@ -1,0 +1,342 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Oscar · Drift &amp; Hälsa – Azom{% endblock %}
+{% block page_subtitle %}Drift &amp; Hälsa{% endblock %}
+{% block content %}
+{% set poller = snapshot.get('poller') or {} %}
+{% set queues = snapshot.get('queues') or {} %}
+{% set tg_queue = queues.get('telegram') or {} %}
+{% set ms_queue = queues.get('messenger') or {} %}
+{% set router = snapshot.get('model_router') or {} %}
+{% set breakers = router.get('circuit_breakers') or router.get('breakers') or {} %}
+{% set oauth = router.get('chatgpt_oauth') or router.get('oauth') or {} %}
+{% set disk = snapshot.get('disk_usage') or {} %}
+{% set folders = disk.get('folders') or {} %}
+{% set recent_errors = snapshot.get('recent_errors') or [] %}
+{% set waitress = snapshot.get('waitress') or {} %}
+
+<div class="space-y-6" data-ops-runtime="true">
+  {% call ui.page_header(
+    "Oscar · Drift & Hälsa",
+    "Lokal driftöversikt för Telegram-poller, jobbköer, modellrouter, diskanvändning och tidsstämplade fel. Inga tokens eller hemligheter visas.",
+    badge_text="Endast Oscar",
+    badge_tone="oscar"
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('ops_runtime') }}">{{ icon('refresh', 'xs') }}<span>Uppdatera</span></a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('oscar_home') }}">{{ icon('arrow-left', 'xs') }}<span>Tillbaka</span></a>
+  {% endcall %}
+
+  {% if runtime_error %}
+    {{ ui.info_callout('warn', 'Delvis driftdata saknas', runtime_error) }}
+  {% endif %}
+
+  {% if gc_result %}
+  <section class="az-card border-ok/40 bg-ok/5 space-y-3" data-gc-result="true" data-gc-dry-run="{{ 'true' if gc_result.get('dry_run') else 'false' }}">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <span class="text-ok">{{ icon('check-circle', 'sm') }}</span>
+        <h2 class="font-display text-base font-semibold text-mist-100">
+          {% if gc_result.get('dry_run') %}Förhandsgranskning av städning (dry-run){% else %}Städning (GC) slutförd{% endif %}
+        </h2>
+      </div>
+      {{ ui.status_badge('info' if gc_result.get('dry_run') else 'ok', 'Torrkörning' if gc_result.get('dry_run') else 'Utförd') }}
+    </div>
+    <dl class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Frigjort utrymme</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ '%.2f'|format((gc_result.get('bytes_reclaimed') or 0) / (1024 * 1024)) }} MB</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Utgångna planer</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ gc_result.get('expired_plans', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Borttagna wr-*</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ gc_result.get('removed_workspace_dirs', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Borttagna pv-*</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ gc_result.get('removed_pv_dirs', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Media / Förslag</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ gc_result.get('removed_media_files', 0) }} / {{ gc_result.get('purged_proposals', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Roterade loggar</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">
+          {% if gc_result.get('rotated_logs') is iterable and gc_result.get('rotated_logs') is not string %}
+            {{ gc_result.get('rotated_logs') | length }}
+          {% else %}
+            {{ gc_result.get('rotated_logs', 0) }}
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+    {% if gc_result.get('errors') %}
+    <p class="text-xs text-warn">Varningar under städning: {{ gc_result.get('errors') | join(', ') }}</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <div class="grid gap-5 lg:grid-cols-2">
+    <!-- 1. Telegram Poller & Lease -->
+    <section class="az-card-oscar space-y-4" data-runtime-card="poller">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="font-display text-base font-semibold text-oscar-300">Telegram Poller &amp; Lease</h2>
+        {% if poller.get('healthy') %}
+          {{ ui.status_badge('ok', 'Aktiv lease') }}
+        {% else %}
+          {{ ui.status_badge('warn', 'Ingen aktiv lease') }}
+        {% endif %}
+      </div>
+      <dl class="grid gap-3 sm:grid-cols-2 text-xs">
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Lease-ägare</dt>
+          <dd class="mt-1 font-mono text-mist-100 break-all">{{ poller.get('owner') or '—' }}</dd>
+        </div>
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Återstående TTL</dt>
+          <dd class="mt-1 font-mono text-mist-100 tabular-nums">
+            {% if poller.get('ttl_seconds') is not none %}{{ poller.get('ttl_seconds') }} s{% else %}—{% endif %}
+          </dd>
+        </div>
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Går ut</dt>
+          {% set poller_exp = poller.get('expires_at_iso') or poller.get('expires_at') %}
+          <dd class="mt-1 font-mono text-mist-200 tabular-nums">{{ fmt_dt(poller_exp) or poller_exp or '—' }}</dd>
+        </div>
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Waitress-trådar</dt>
+          <dd class="mt-1 font-mono text-mist-100 tabular-nums">{{ waitress.get('configured_threads', 12) }}</dd>
+        </div>
+      </dl>
+      {% if snapshot.get('generated_at') %}
+      <p class="text-xs text-mist-400 tabular-nums">Ögonblicksbild: {{ fmt_dt(snapshot.get('generated_at')) or snapshot.get('generated_at') }}</p>
+      {% endif %}
+    </section>
+
+    <!-- 2. Jobbköer (Telegram & Messenger) -->
+    <section class="az-card space-y-4" data-runtime-card="queues">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="font-display text-base font-semibold text-mist-100">Jobbköer (Telegram &amp; Messenger)</h2>
+        {{ ui.status_badge('info', 'SQLite') }}
+      </div>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Telegram</h3>
+            {% if tg_queue.get('db_present') is sameas false %}
+            <span class="az-badge az-badge-neutral">ej initierad</span>
+            {% endif %}
+          </div>
+          {% if tg_queue %}
+          <dl class="space-y-1 text-xs">
+            {% for status_key, count_val in tg_queue.items() %}
+            {% if status_key != 'db_present' %}
+            <div class="flex items-center justify-between gap-2">
+              <dt class="font-mono text-mist-400">{{ status_key }}</dt>
+              <dd class="font-mono font-semibold text-mist-100 tabular-nums">{{ count_val }}</dd>
+            </div>
+            {% endif %}
+            {% endfor %}
+          </dl>
+          {% else %}
+          <p class="az-muted text-xs">Inga jobb i Telegram-kön.</p>
+          {% endif %}
+        </div>
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Messenger</h3>
+            {% if ms_queue.get('db_present') is sameas false %}
+            <span class="az-badge az-badge-neutral">ej initierad</span>
+            {% endif %}
+          </div>
+          {% if ms_queue %}
+          <dl class="space-y-1 text-xs">
+            {% for status_key, count_val in ms_queue.items() %}
+            {% if status_key != 'db_present' %}
+            <div class="flex items-center justify-between gap-2">
+              <dt class="font-mono text-mist-400">{{ status_key }}</dt>
+              <dd class="font-mono font-semibold text-mist-100 tabular-nums">{{ count_val }}</dd>
+            </div>
+            {% endif %}
+            {% endfor %}
+          </dl>
+          {% else %}
+          <p class="az-muted text-xs">Inga jobb i Messenger-kön.</p>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 3. Model Router & ChatGPT OAuth TTL -->
+  <section class="az-card space-y-4" data-runtime-card="model-router">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="font-display text-base font-semibold text-mist-100">Model Router &amp; ChatGPT OAuth TTL</h2>
+      {% if oauth.get('needs_reauth') %}
+        {{ ui.status_badge('error', 'Kräver återinloggning') }}
+      {% elif oauth.get('connected') %}
+        {{ ui.status_badge('ok', 'ChatGPT OAuth ansluten') }}
+      {% else %}
+        {{ ui.status_badge('neutral', 'ChatGPT OAuth ej ansluten') }}
+      {% endif %}
+    </div>
+
+    <dl class="grid gap-3 sm:grid-cols-3 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">OAuth-status</dt>
+        <dd class="mt-1 font-mono text-mist-100">
+          {% if oauth.get('needs_reauth') %}needs_reauth{% elif oauth.get('connected') %}connected{% else %}disconnected{% endif %}
+        </dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Går ut</dt>
+        {% set oauth_exp = oauth.get('expires_at_iso') or oauth.get('expires_at') %}
+        <dd class="mt-1 font-mono text-mist-200 tabular-nums">{{ fmt_dt(oauth_exp) or oauth_exp or '—' }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Återstående TTL</dt>
+        <dd class="mt-1 font-mono text-mist-100 tabular-nums">
+          {% if oauth.get('ttl_seconds') is not none %}{{ oauth.get('ttl_seconds') }} s{% else %}—{% endif %}
+        </dd>
+      </div>
+    </dl>
+
+    {% if breakers %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Circuit breakers">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Route / Slot</th>
+            <th scope="col">Tillstånd</th>
+            <th scope="col">Fel</th>
+            <th scope="col">Återstår / Öppen till</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for bkey, binfo in breakers.items() %}
+          {% set bstate = (binfo.get('state') if binfo is mapping else binfo) or 'closed' %}
+          {% set bfail = (binfo.get('failure_count') if (binfo is mapping and binfo.get('failure_count') is not none) else (binfo.get('failures', 0) if binfo is mapping else 0)) %}
+          <tr>
+            <td><code class="az-code font-mono">{{ bkey }}</code></td>
+            <td>{{ ui.status_badge('ok' if bstate == 'closed' else 'warn', bstate) }}</td>
+            <td class="font-mono text-xs tabular-nums">{{ bfail }}</td>
+            <td class="font-mono text-xs text-mist-400 tabular-nums">
+              {% if binfo is mapping and binfo.get('remaining_s') %}
+                {{ binfo.get('remaining_s') }} s
+              {% elif binfo is mapping and binfo.get('open_until') %}
+                {{ fmt_dt(binfo.get('open_until')) or binfo.get('open_until') }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Inga aktiva eller öppna circuit breakers registrerade.</p>
+    {% endif %}
+  </section>
+
+  <!-- 4. Diskförbrukning (.azom-data) + Städning (GC) -->
+  <section class="az-card-oscar space-y-4" data-runtime-card="disk-gc">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="font-display text-base font-semibold text-oscar-300">Diskförbrukning (<code class="az-code font-mono">.azom-data</code>) + Städning (GC)</h2>
+      <span class="az-badge az-badge-info font-mono tabular-nums">{{ disk.get('total_mb', 0) }} MB totalt</span>
+    </div>
+
+    <dl class="grid gap-3 sm:grid-cols-3 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Total storlek</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ disk.get('total_mb', 0) }} MB</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Utgångna wr-*-planer</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ disk.get('expired_plans_count', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Ospårade pv-*-mappar</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ disk.get('untracked_pv_count', 0) }}</dd>
+      </div>
+    </dl>
+
+    {% if folders %}
+    <div class="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3 text-xs">
+      {% for fname, fval in folders.items() %}
+      <div class="flex items-center justify-between gap-2 rounded-lg border border-ink-700/70 bg-ink-950/50 px-3 py-2">
+        <span class="font-mono text-mist-300 truncate">{{ fname }}</span>
+        <span class="font-mono font-semibold text-mist-100 tabular-nums shrink-0">
+          {% if fval is mapping %}
+            {{ fval.get('mb', '%.2f'|format((fval.get('bytes') or 0) / (1024 * 1024))) }} MB
+          {% elif fval is number %}
+            {{ '%.2f'|format(fval / (1024 * 1024)) }} MB
+          {% else %}
+            {{ fval }}
+          {% endif %}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="flex flex-wrap items-center gap-3 border-t border-ink-700/80 pt-4">
+      <form method="post" action="{{ url_for('ops_runtime_gc') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="mode" value="dry_run" />
+        <button class="az-btn-secondary az-btn-sm" type="submit" data-gc-action="dry_run" data-busy-label="Analyserar...">
+          {{ icon('eye', 'xs') }}<span>Förhandsgranska städning (dry-run)</span>
+        </button>
+      </form>
+      <form method="post" action="{{ url_for('ops_runtime_gc') }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="mode" value="execute" />
+        <button class="az-btn-oscar az-btn-sm" type="submit" data-gc-action="execute" data-busy-label="Städar...">
+          {{ icon('trash', 'xs') }}<span>Kör städning nu</span>
+        </button>
+      </form>
+      <p class="az-muted text-xs">Rör aldrig aktiva, icke-utgångna arbetsytor. Roterar och gzip-komprimerar stora loggfiler.</p>
+    </div>
+  </section>
+
+  <!-- 5. Senaste driftfel (tidsstämplade, utan hemligheter) -->
+  <section class="az-card space-y-4" data-runtime-card="recent-errors">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="font-display text-base font-semibold text-mist-100">Senaste driftfel (tidsstämplade, utan hemligheter)</h2>
+      <span class="az-badge az-badge-neutral tabular-nums">{{ recent_errors | length }} poster</span>
+    </div>
+    {% if recent_errors %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Senaste driftfel">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Tid</th>
+            <th scope="col">Källa</th>
+            <th scope="col">Felklass</th>
+            <th scope="col">Status</th>
+            <th scope="col">Detalj</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for err in recent_errors %}
+          <tr>
+            <td class="font-mono text-xs text-mist-400 tabular-nums whitespace-nowrap">{{ fmt_dt(err.get('ts') or err.get('timestamp') or err.get('at')) or err.get('ts') or err.get('timestamp') or '—' }}</td>
+            <td><code class="az-code font-mono">{{ err.get('source') or '—' }}</code></td>
+            <td>{{ ui.status_badge('warn', err.get('error_class') or 'Error') }}</td>
+            <td class="font-mono text-xs tabular-nums">{{ err.get('status_code') if err.get('status_code') is not none else '—' }}</td>
+            <td class="text-xs text-mist-200 break-words">{{ err.get('detail') or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Inga registrerade driftfel.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

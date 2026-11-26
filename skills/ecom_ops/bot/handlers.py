@@ -76,6 +76,7 @@ from ecom_ops.bot.reply import (
     product_desc_confirm_actions,
     proposal_confirm_actions,
     safe_workspace_attachments,
+    telegram_markup_to_actions,
     triage_cases_actions,
     yes_no_actions,
 )
@@ -100,6 +101,10 @@ from ecom_ops.wp_ops.agent_tools import WpAgentTools, context_for_storage, conte
 ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
 _FILE_PLAN_ID = re.compile(r"fe-[a-f0-9]{12}")
 _REVIEW_PLAN_ID = re.compile(r"wr-[a-f0-9]{12}")
+_BOUND_LEGACY_CALLBACK_RE = re.compile(
+    r"^(?:order:set:([^:]+):[^:]+|cases:approve:([^:]+)|product:desc:([^:]+):[01])$",
+    re.I,
+)
 _MAX_REVIEW_HASH_CACHE = 24
 _MAX_CLARIFY_SESSION_CACHE = 6
 _PROPOSAL_YES_RE = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
@@ -203,8 +208,19 @@ _PENDING_PROGRESS_LABELS: dict[str, tuple[str, str, str]] = {
 
 
 def _wpreview_stage_actions(
-    plan_id: str, *, review_url: str | None = None
+    plan_id: str,
+    *,
+    review_url: str | None = None,
+    include_push_draft: bool = False,
 ) -> ActionMarkup:
+    from ecom_ops.bot import reply as _reply_mod
+
+    if hasattr(_reply_mod, "wp_review_actions"):
+        return _reply_mod.wp_review_actions(
+            plan_id,
+            review_url=review_url,
+            include_push_draft=include_push_draft,
+        )
     rows: list[list[ActionButton]] = [
         [
             ActionButton(
@@ -214,6 +230,15 @@ def _wpreview_stage_actions(
             ActionButton(label="Avbryt", payload=f"wpreview:no:{plan_id}"),
         ]
     ]
+    if include_push_draft:
+        rows.append(
+            [
+                ActionButton(
+                    label="📝 Skicka som WP-utkast",
+                    payload=f"wpreview:push_draft:{plan_id}",
+                )
+            ]
+        )
     if review_url:
         rows.append([ActionButton(label="Öppna granskning", url=review_url)])
     return ActionMarkup(rows=rows)
@@ -621,6 +646,102 @@ class BotHandler:
                 pop_session_keys=("wp_review_hashes",),
             )
 
+    def _bind_actions_in_reply(
+        self,
+        chat_id: str | int,
+        reply: BotReply,
+        *,
+        actor: str | None = None,
+        domain: str | None = None,
+    ) -> BotReply:
+        """Bind legacy action callbacks in ``proposal_store`` with actor, domain, and expiry."""
+        if self.proposal_store is None or not hasattr(
+            self.proposal_store, "bind_callback_proposal"
+        ):
+            return reply
+        actions = reply.actions
+        if actions is None and reply.reply_markup:
+            actions = telegram_markup_to_actions(reply.reply_markup)
+        if actions is None:
+            return reply
+        resolved_actor = actor
+        if not resolved_actor:
+            try:
+                resolved_actor = self._resolve_actor(chat_id)
+            except (TelegramActorDenied, ChannelActorDenied):
+                return reply
+        pinned_domain = (
+            domain if domain is not None else self._session_market(chat_id)
+        )
+        for row in actions.rows:
+            for btn in row:
+                cb_data = str(btn.payload or "").strip()
+                if not cb_data:
+                    continue
+                match = _BOUND_LEGACY_CALLBACK_RE.fullmatch(cb_data)
+                if not match:
+                    continue
+                target_id = next((g for g in match.groups() if g), "")
+                self.proposal_store.bind_callback_proposal(
+                    chat_id,
+                    cb_data,
+                    actor=resolved_actor,
+                    domain=pinned_domain,
+                    target_id=target_id,
+                    payload={
+                        "callback": cb_data,
+                        "domain": pinned_domain,
+                        "target_id": target_id,
+                    },
+                    ttl_seconds=1800,
+                )
+        return reply
+
+    def _consume_bound_legacy_callback(
+        self,
+        chat_id: str | int,
+        raw: str,
+        *,
+        actor: str,
+    ) -> tuple[BotReply | None, dict[str, Any] | None]:
+        """Verify and atomically consume a bound legacy callback if stored."""
+        if self.proposal_store is None or not hasattr(
+            self.proposal_store, "consume_callback_proposal"
+        ):
+            return None, None
+        status, bound = self.proposal_store.consume_callback_proposal(
+            chat_id, raw, actor=actor
+        )
+        if status == "unbound":
+            return (
+                BotReply(
+                    text="Bekräftelsen saknas eller har löpt ut. Skapa ett nytt förslag vid behov."
+                ),
+                None,
+            )
+        if status == "already_used":
+            return (
+                BotReply(
+                    text="Knappen är redan använd eller förbrukad. Skapa ett nytt förslag vid behov."
+                ),
+                None,
+            )
+        if status == "expired":
+            return (
+                BotReply(
+                    text="Bekräftelsen har gått ut. Skapa ett nytt förslag vid behov."
+                ),
+                None,
+            )
+        if status == "wrong_actor":
+            return (
+                BotReply(
+                    text="Knappen tillhör en annan användare. Ingen ändring utfördes."
+                ),
+                None,
+            )
+        return None, bound
+
     def _pin_review_hashes(
         self,
         chat_id: str | int,
@@ -933,7 +1054,7 @@ class BotHandler:
                         chat_id, oid, on_progress=on_progress
                     )
                 )
-            return as_reply(oc)
+            return self._bind_actions_in_reply(chat_id, as_reply(oc))
 
         # Attach any pending screenshot(s) from the prior photo-only message and clear once consumed.
         state = self.store.get(chat_id)
@@ -1244,7 +1365,17 @@ class BotHandler:
             blocked = self._mutations_blocked_reply()
             if blocked:
                 return blocked
-            id8 = raw.split(":", 2)[2].strip()
+            err_reply, bound = self._consume_bound_legacy_callback(
+                chat_id, raw, actor=actor
+            )
+            if err_reply is not None:
+                return err_reply
+            pinned_target = (
+                str((bound.get("payload") or {}).get("target_id") or "").strip()
+                if isinstance(bound, dict)
+                else ""
+            )
+            id8 = pinned_target or raw.split(":", 2)[2].strip()
             return as_reply(
                 self._dispatch_oc_with_progress(
                     chat_id,
@@ -1267,7 +1398,18 @@ class BotHandler:
             # order:set:{oid}:{status}
             parts = raw.split(":")
             if len(parts) >= 4:
+                err_reply, bound = self._consume_bound_legacy_callback(
+                    chat_id, raw, actor=actor
+                )
+                if err_reply is not None:
+                    return err_reply
                 oid, status = parts[2], parts[3]
+                if isinstance(bound, dict):
+                    domain = bound.get("domain") or (
+                        (bound.get("payload") or {}).get("domain")
+                    )
+                else:
+                    domain = self._session_market(chat_id)
                 return self._exec_pending(
                     chat_id,
                     PendingAction(
@@ -1275,7 +1417,7 @@ class BotHandler:
                         payload={
                             "order_id": oid,
                             "status": status,
-                            "domain": self._session_market(chat_id),
+                            "domain": domain,
                         },
                     ),
                     on_progress=on_progress,
@@ -1290,13 +1432,24 @@ class BotHandler:
             parts = raw.split(":")
             # product:desc:{pid}:{publish_flag}
             if len(parts) >= 4:
+                err_reply, bound = self._consume_bound_legacy_callback(
+                    chat_id, raw, actor=actor
+                )
+                if err_reply is not None:
+                    return err_reply
                 pid, flag = parts[2], parts[3]
+                pinned_target = (
+                    str((bound.get("payload") or {}).get("target_id") or "").strip()
+                    if isinstance(bound, dict)
+                    else ""
+                )
+                resolved_pid = pinned_target or (pid if pid != "0" else "")
                 return self._exec_pending(
                     chat_id,
                     PendingAction(
                         kind="product_desc",
                         payload={
-                            "product_id": pid if pid != "0" else "",
+                            "product_id": resolved_pid if resolved_pid != "0" else "",
                             "publish": flag == "1",
                             "language": "sv",
                         },
@@ -1368,7 +1521,9 @@ class BotHandler:
                 ),
             )
             return BotReply(text=f"Staging skrevs inte ({error}). Ingen fil ändrades.")
-        if raw == "wpreview:no" or raw.startswith(("wpreview:no:", "wpreview:stage:")):
+        if raw == "wpreview:no" or raw.startswith(
+            ("wpreview:no:", "wpreview:stage:", "wpreview:push_draft:")
+        ):
             return self._handle_wpreview_callback(
                 chat_id, actor, raw, on_progress=on_progress
             )
@@ -2076,11 +2231,15 @@ class BotHandler:
             messages=prev.get("messages"),
             tool_digest=prev.get("tool_digest"),
         )
-        return bot_reply(
-            text,
-            actions=self._actions_for_pending(pending, actor=actor),
-            needs_typing=True,
-            **attachment_kwargs,
+        return self._bind_actions_in_reply(
+            chat_id,
+            bot_reply(
+                text,
+                actions=self._actions_for_pending(pending, actor=actor),
+                needs_typing=True,
+                **attachment_kwargs,
+            ),
+            actor=actor.name,
         )
 
     def _confirm_pending_text(
@@ -2841,9 +3000,28 @@ class BotHandler:
                 else ""
             )
             url = review_plan_url(site_id, review_plan_id) if site_id else None
+            has_page_draft = (
+                isinstance(merged_active_review, dict)
+                and isinstance(merged_active_review.get("page_draft"), dict)
+            ) or (
+                isinstance(review_plan_row, dict)
+                and isinstance(review_plan_row.get("page_draft"), dict)
+            )
+            can_push_draft = False
+            try:
+                actor_obj = resolve_actor(actor)
+                can_push_draft = actor_obj.has(Permission.WP_OPS_ADMIN) and actor_obj.has(
+                    Permission.CODE_EDIT
+                )
+            except Exception:
+                can_push_draft = False
             return bot_reply(
                 text,
-                actions=_wpreview_stage_actions(review_plan_id, review_url=url),
+                actions=_wpreview_stage_actions(
+                    review_plan_id,
+                    review_url=url,
+                    include_push_draft=has_page_draft and can_push_draft,
+                ),
                 needs_typing=True,
                 **attachment_kwargs,
             )
@@ -2891,8 +3069,12 @@ class BotHandler:
         elif result.suggest_case_ids:
             actions = triage_cases_actions(result.suggest_case_ids)
 
-        return bot_reply(
-            text, actions=actions, needs_typing=True, attachments=safe_attachments
+        return self._bind_actions_in_reply(
+            chat_id,
+            bot_reply(
+                text, actions=actions, needs_typing=True, attachments=safe_attachments
+            ),
+            actor=actor,
         )
 
     def _handle_wpreview_callback(
@@ -2926,6 +3108,7 @@ class BotHandler:
                 text="Avbrutet. Ingen ändring skrevs till staging eller produktion."
             )
 
+        is_push_draft = raw.startswith("wpreview:push_draft:")
         plan_id = raw.split(":", 2)[2]
         if not _REVIEW_PLAN_ID.fullmatch(plan_id):
             return BotReply(
@@ -2939,8 +3122,9 @@ class BotHandler:
             require_permission(actor_obj, Permission.WP_OPS_ADMIN)
             require_permission(actor_obj, Permission.CODE_EDIT)
         except Exception:
+            action_name = "Skicka WP-utkast" if is_push_draft else "Staging av granskningsplan"
             return BotReply(
-                text="Staging av granskningsplan kräver Oscar (WP_OPS_ADMIN och CODE_EDIT). Ingen ändring utfördes."
+                text=f"{action_name} kräver Oscar (WP_OPS_ADMIN och CODE_EDIT). Ingen ändring utfördes."
             )
 
         from ecom_ops.wp_ops.review_plan import ReviewPlans
@@ -2986,6 +3170,107 @@ class BotHandler:
             )
         base_sha = str(cached["base_sha256"])
         work_sha = str(cached["work_sha256"])
+
+        if is_push_draft:
+            from ecom_ops.wp_ops.service import WpOpsService
+
+            prov = _provenance()
+            step_id = f"wpreview_draft:{plan_id}"
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wpreview_push_draft",
+                    phase="started",
+                    label="WP-sidutkast",
+                    detail="Skapar WordPress-utkast (draft) från verifierad sandlåda",
+                    provenance=prov,
+                    legacy_text="Skapar WordPress-utkast (draft)...",
+                ),
+            )
+            t0 = time.monotonic()
+            try:
+                pushed = WpOpsService().push_page_draft(
+                    site_id,
+                    plan_id,
+                    actor=actor,
+                    base_sha256=base_sha,
+                    work_sha256=work_sha,
+                )
+            except Exception:
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool="wpreview_push_draft",
+                        phase="failed",
+                        label="WP-sidutkast",
+                        outcome="misslyckades",
+                        elapsed_ms=elapsed_ms,
+                        provenance=prov,
+                        legacy_text="WP-sidutkast: misslyckades.",
+                    ),
+                )
+                raise
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            if isinstance(pushed, dict):
+                push_ok = bool(pushed.get("ok"))
+                push_data = dict(pushed)
+                push_msg = str(pushed.get("message") or "")
+            else:
+                push_ok = bool(getattr(pushed, "ok", False))
+                push_data = dict(getattr(pushed, "data", None) or {})
+                push_msg = str(getattr(pushed, "message", "") or "")
+            if push_ok:
+                draft_page = dict(push_data.get("draft_page") or {})
+                status_val = str(draft_page.get("status") or "draft")
+                if status_val != "draft":
+                    status_val = "draft"
+                emit_progress(
+                    on_progress,
+                    ProgressEvent(
+                        step_id=step_id,
+                        tool="wpreview_push_draft",
+                        phase="completed",
+                        label="WP-sidutkast",
+                        outcome=f"utkast skapat (status={status_val})",
+                        elapsed_ms=elapsed_ms,
+                        provenance=prov,
+                        legacy_text="WP-sidutkast: klart.",
+                    ),
+                )
+                lines = [
+                    f"WordPress-utkast skapat för {plan_id} ({site_id}) [status={status_val}] — aldrig autopublicerat."
+                ]
+                if draft_page.get("id"):
+                    lines.append(
+                        f"Sid-ID: {draft_page['id']} · slug: {draft_page.get('slug') or '-'}"
+                    )
+                if draft_page.get("edit_url"):
+                    lines.append(f"Redigera i WP Admin: {draft_page['edit_url']}")
+                if draft_page.get("link"):
+                    lines.append(f"Förhandsvisningslänk (draft): {draft_page['link']}")
+                return BotReply(text="\n".join(lines))
+
+            error = str(push_data.get("error_class") or "OperationUnavailable")
+            emit_progress(
+                on_progress,
+                ProgressEvent(
+                    step_id=step_id,
+                    tool="wpreview_push_draft",
+                    phase="failed",
+                    label="WP-sidutkast",
+                    outcome=f"skapades inte ({error})",
+                    elapsed_ms=elapsed_ms,
+                    provenance=prov,
+                    legacy_text=f"WP-sidutkast: misslyckades ({error}).",
+                ),
+            )
+            msg = f"WP-utkast skapades inte ({error}). Ingen sida skapades i WordPress."
+            if push_msg and push_msg != error:
+                msg = f"{msg}\n{push_msg}"
+            return BotReply(text=msg)
 
         prov = _provenance()
         step_id = f"wpreview:{plan_id}"
@@ -3220,7 +3505,11 @@ class BotHandler:
             self._persist_review_hashes(chat_id, session)
             return bot_reply(
                 "\n".join(lines),
-                actions=_wpreview_stage_actions(plan_id, review_url=url),
+                actions=_wpreview_stage_actions(
+                    plan_id,
+                    review_url=url,
+                    include_push_draft=isinstance(raw_plan.get("page_draft"), dict),
+                ),
             )
         if ready and not can_stage:
             lines.append("Staging kräver Oscar (WP_OPS_ADMIN + CODE_EDIT).")

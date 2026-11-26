@@ -785,3 +785,137 @@ def test_wp_site_review_plans_avoids_n_plus_one_and_hides_preview_from_viewer(tm
     viewer_resp = client.get("/wp/mock-staging", headers=jonatan)
     assert viewer_resp.status_code == 200
     assert f"/wp/mock-staging/reviews/{pids[0]}/preview" not in viewer_resp.get_data(as_text=True)
+
+
+def test_wp_review_compare_composite_and_push_draft_flow(tmp_path, monkeypatch):
+    import json
+
+    from ecom_ops.wp_ops.review_plan import ReviewPlans, VerifiedTheme
+    from ecom_ops.wp_ops.review_workspace import workspace_root
+
+    client = _setup_dashboard_env(tmp_path, monkeypatch)
+    plans = ReviewPlans(data_dir=tmp_path)
+    opened = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    assert opened.ok
+    plan_id = opened.data["plan_id"]
+    ws_dir = workspace_root(tmp_path, "mock-staging", plan_id)
+    applied = plans.workspace_apply_changes(
+        "mock-staging",
+        plan_id,
+        [
+            {
+                "op": "create",
+                "path": "page_draft.json",
+                "content": json.dumps(
+                    {
+                        "slug": "tack-for-din-order",
+                        "title": "Tack för din beställning",
+                        "page_type": "thank_you",
+                        "shell_path": "/",
+                        "body_html": "<section class='azom-ty'><h1>Tack!</h1><p>Exempelorder #0000</p></section>",
+                        "page_css": ".azom-ty { padding: 24px; }",
+                        "synthetic_data": True,
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
+        actor="oscar",
+    )
+    assert applied.ok
+    updated_plan = plans.show("mock-staging", plan_id, actor="oscar").data["plan"]
+    base_sha = updated_plan["base_sha256"]
+    work_sha = updated_plan["work_sha256"]
+
+    # Add compare-desktop.png + focus-desktop.png + preview-desktop.png
+    art_dir = ws_dir / "artifacts"
+    art_dir.mkdir(parents=True, exist_ok=True)
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+    for fname in ("compare-desktop.png", "focus-desktop.png", "preview-desktop.png"):
+        (art_dir / fname).write_bytes(png_bytes)
+
+    oscar = _auth(client, "oscar")
+    jonatan = _auth(client, "jonatan")
+
+    # C2: compare-desktop.png renders prominently above focus & desktop groups for admin
+    rev = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=oscar)
+    assert rev.status_code == 200
+    html = rev.get_data(as_text=True)
+    assert 'data-preview-group="compare"' in html
+    assert "Jämförelsebild (Före / Efter eller Varianter)" in html
+    assert f"/wp/mock-staging/reviews/{plan_id}/artifact/compare-desktop.png" in html
+    assert html.index('data-preview-group="compare"') < html.index('data-preview-group="focus"')
+    assert 'data-push-draft-section="true"' in html
+    assert 'data-review-action="push-draft"' in html
+    assert updated_plan["plan_id"] == plan_id
+
+    # Artifact endpoint serves compare-desktop.png for admin and denies viewer (403)
+    art_ok = client.get(f"/wp/mock-staging/reviews/{plan_id}/artifact/compare-desktop.png", headers=oscar)
+    assert art_ok.status_code == 200
+    assert art_ok.mimetype == "image/png"
+    assert (
+        client.get(
+            f"/wp/mock-staging/reviews/{plan_id}/artifact/compare-desktop.png",
+            headers=jonatan,
+        ).status_code
+        == 403
+    )
+
+    # C1 RBAC: Viewer cannot see push-draft form and gets 403 on POST /push-draft
+    j_rev = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=jonatan)
+    assert j_rev.status_code == 200
+    assert 'data-push-draft-section="true"' not in j_rev.get_data(as_text=True)
+    assert (
+        client.post(
+            f"/wp/mock-staging/reviews/{plan_id}/push-draft",
+            headers=jonatan,
+            data={"_csrf": jonatan["X-CSRF-Token"], "base_sha256": base_sha, "work_sha256": work_sha},
+        ).status_code
+        == 403
+    )
+
+    # C1 CSRF: Missing CSRF fails
+    assert (
+        client.post(
+            f"/wp/mock-staging/reviews/{plan_id}/push-draft",
+            headers={"Authorization": oscar["Authorization"]},
+            data={"base_sha256": base_sha, "work_sha256": work_sha},
+        ).status_code
+        in {400, 403}
+    )
+
+    # C1 Digest check: Missing or wrong hash fails closed with DigestMismatch
+    bad_hash = client.post(
+        f"/wp/mock-staging/reviews/{plan_id}/push-draft",
+        headers=oscar,
+        data={"_csrf": oscar["X-CSRF-Token"], "base_sha256": "deadbeef", "work_sha256": work_sha},
+    )
+    assert bad_hash.status_code == 200
+    assert 'data-review-error="DigestMismatch"' in bad_hash.get_data(as_text=True)
+
+    # C1 Valid Oscar push-draft creates draft (status="draft") and displays green edit_url card
+    pushed = client.post(
+        f"/wp/mock-staging/reviews/{plan_id}/push-draft",
+        headers=oscar,
+        data={"_csrf": oscar["X-CSRF-Token"], "base_sha256": base_sha, "work_sha256": work_sha},
+    )
+    assert pushed.status_code == 200
+    pushed_html = pushed.get_data(as_text=True)
+    assert 'data-draft-page-card="true"' in pushed_html
+    assert "status: draft" in pushed_html
+    assert 'data-draft-edit-link="true"' in pushed_html
+    assert "wp-admin/post.php?post=" in pushed_html
+    assert "action=edit" in pushed_html
+
+    # Subsequent GET still shows the persisted draft_page card for Oscar, not for viewer
+    after = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=oscar)
+    assert after.status_code == 200
+    assert 'data-draft-page-card="true"' in after.get_data(as_text=True)
+    j_after = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=jonatan)
+    assert j_after.status_code == 200
+    assert 'data-draft-page-card="true"' not in j_after.get_data(as_text=True)

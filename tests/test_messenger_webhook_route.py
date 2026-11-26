@@ -167,3 +167,229 @@ def test_metrics_requires_token(messenger_client, monkeypatch):
         environ_base={"REMOTE_ADDR": "8.8.8.8"},
     )
     assert allowed.status_code == 200
+
+
+def test_messenger_webhook_wires_proposal_store_quick_reply_and_inbound_images(
+    messenger_client, tmp_path, monkeypatch
+):
+    import webhooks
+    from ecom_ops.bot import handlers as handlers_mod
+    from ecom_ops.bot import messenger_adapter
+    from ecom_ops.bot.reply import BotReply
+
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("AZOM_DATA_DIR", str(data_dir))
+
+    # Shared SQLite proposal_store is cached per resolved path
+    ps1 = webhooks._get_messenger_proposal_store(data_dir)
+    ps2 = webhooks._get_messenger_proposal_store(data_dir)
+    assert ps1 is ps2
+    assert (data_dir / "messenger_proposals.sqlite3").is_file()
+
+    # Spy on BotHandler construction + handle() + handle_callback()
+    seen_proposal_stores: list[object] = []
+    seen_handles: list[tuple[str, str, list[str] | None]] = []
+    seen_callbacks: list[tuple[str, str]] = []
+
+    class _SpyHandler:
+        def __init__(self, *, store, proposal_store=None, channel="messenger", **kwargs):
+            self.store = store
+            self.proposal_store = proposal_store
+            self.channel = channel
+            seen_proposal_stores.append(proposal_store)
+
+        def handle(self, chat_id: str, text: str, *args, image_paths=None, **kwargs):
+            seen_handles.append((chat_id, text, image_paths))
+            return BotReply(text="ok")
+
+        def handle_callback(self, chat_id: str, data: str):
+            seen_callbacks.append((chat_id, data))
+            return BotReply(text="cb-ok")
+
+    monkeypatch.setattr(handlers_mod, "BotHandler", _SpyHandler)
+
+    # 1. Quick Reply payload routes to handle_callback with durable proposal_store attached
+    qr_payload = {
+        "object": "page",
+        "entry": [
+            {
+                "messaging": [
+                    {
+                        "sender": {"id": "PSID1"},
+                        "message": {
+                            "mid": "qr-mid-1",
+                            "text": "Alternativ 1",
+                            "quick_reply": {"payload": "clarify:pick:0"},
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+    qr_body = json.dumps(qr_payload).encode("utf-8")
+    qr_resp = messenger_client.post(
+        "/webhooks/messenger",
+        data=qr_body,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(qr_body)},
+    )
+    assert qr_resp.status_code == 200
+    assert qr_resp.get_json()["handled"] == 1
+    assert seen_callbacks == [("PSID1", "clarify:pick:0")]
+    assert seen_proposal_stores and seen_proposal_stores[-1] is ps1
+
+    # 2. Inbound image attachment downloads via download_messenger_image and forwards image_paths
+    fake_img = data_dir / "messenger_inbox_media" / "PSID1" / "abc123.png"
+    fake_img.parent.mkdir(parents=True, exist_ok=True)
+    fake_img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    downloaded_urls: list[str] = []
+
+    def _fake_download(url: str, *, peer_id: str, data_dir: Path | None = None, **kwargs):
+        downloaded_urls.append(url)
+        return fake_img
+
+    monkeypatch.setattr(messenger_adapter, "download_messenger_image", _fake_download)
+
+    img_payload = {
+        "object": "page",
+        "entry": [
+            {
+                "messaging": [
+                    {
+                        "sender": {"id": "PSID1"},
+                        "message": {
+                            "mid": "img-mid-1",
+                            "text": "Ändra denna knapp",
+                            "attachments": [
+                                {
+                                    "type": "image",
+                                    "payload": {"url": "https://cdn.example.com/button.png"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+    img_body = json.dumps(img_payload).encode("utf-8")
+    img_resp = messenger_client.post(
+        "/webhooks/messenger",
+        data=img_body,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(img_body)},
+    )
+    assert img_resp.status_code == 200
+    assert img_resp.get_json()["handled"] == 1
+    assert downloaded_urls == ["https://cdn.example.com/button.png"]
+    assert seen_handles == [("PSID1", "Ändra denna knapp", [str(fake_img)])]
+
+    # 3. Pre-auth guard: unallowlisted or unmapped PSID NEVER triggers image download or disk write
+    downloaded_urls.clear()
+    seen_handles.clear()
+    unauth_payload = {
+        "object": "page",
+        "entry": [
+            {
+                "messaging": [
+                    {
+                        "sender": {"id": "999999_UNALLOWLISTED"},
+                        "message": {
+                            "mid": "unauth-img-1",
+                            "text": "Hämta min bild",
+                            "attachments": [
+                                {
+                                    "type": "image",
+                                    "payload": {"url": "https://cdn.example.com/evil.png"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+    unauth_body = json.dumps(unauth_payload).encode("utf-8")
+    unauth_resp = messenger_client.post(
+        "/webhooks/messenger",
+        data=unauth_body,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(unauth_body)},
+    )
+    assert unauth_resp.status_code == 200
+    assert downloaded_urls == []
+    assert not (data_dir / "messenger_inbox_media" / "999999_UNALLOWLISTED").exists()
+
+    # Unmapped PSID (allowlisted but missing from MESSENGER_ACTOR_MAP) also blocked from downloading
+    monkeypatch.setenv("MESSENGER_ALLOWED_PSIDS", "PSID1,PSID_UNMAPPED")
+    unmapped_payload = {
+        "object": "page",
+        "entry": [
+            {
+                "messaging": [
+                    {
+                        "sender": {"id": "PSID_UNMAPPED"},
+                        "message": {
+                            "mid": "unmapped-img-1",
+                            "text": "Bild",
+                            "attachments": [
+                                {
+                                    "type": "image",
+                                    "payload": {"url": "https://cdn.example.com/unmapped.png"},
+                                }
+                            ],
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+    unmapped_body = json.dumps(unmapped_payload).encode("utf-8")
+    assert (
+        messenger_client.post(
+            "/webhooks/messenger",
+            data=unmapped_body,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(unmapped_body)},
+        ).status_code
+        == 200
+    )
+    assert downloaded_urls == []
+
+    # 4. Text-only turn queued ahead of image turn does NOT steal the image turn's URLs
+    downloaded_urls.clear()
+    seen_handles.clear()
+    two_turn_payload = {
+        "object": "page",
+        "entry": [
+            {
+                "messaging": [
+                    {
+                        "sender": {"id": "PSID1"},
+                        "message": {"mid": "text-first-1", "text": "Hej utan bild"},
+                    },
+                    {
+                        "sender": {"id": "PSID1"},
+                        "message": {
+                            "mid": "img-second-2",
+                            "text": "Här är bilden",
+                            "attachments": [
+                                {
+                                    "type": "image",
+                                    "payload": {"url": "https://cdn.example.com/turn2.png"},
+                                }
+                            ],
+                        },
+                    },
+                ]
+            }
+        ],
+    }
+    two_turn_body = json.dumps(two_turn_payload).encode("utf-8")
+    two_turn_resp = messenger_client.post(
+        "/webhooks/messenger",
+        data=two_turn_body,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(two_turn_body)},
+    )
+    assert two_turn_resp.status_code == 200
+    assert downloaded_urls == ["https://cdn.example.com/turn2.png"]
+    assert seen_handles == [
+        ("PSID1", "Hej utan bild", None),
+        ("PSID1", "Här är bilden", [str(fake_img)]),
+    ]

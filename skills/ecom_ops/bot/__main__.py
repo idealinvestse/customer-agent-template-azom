@@ -59,6 +59,7 @@ _ACTION_CALLBACK = re.compile(
     r"order:set:\d{1,12}:[a-z][a-z-]{0,31}|"
     r"product:desc:(?:0|[1-9]\d{0,11}):[01]|action:yes|escalate:yes|"
     r"wpfile:stage:fe-[a-f0-9]{12}|wpreview:stage:wr-[a-f0-9]{12}|"
+    r"wpreview:push_draft:wr-[a-f0-9]{12}|"
     r"proposal:yes:pr-[0-9a-f]{12})$",
     re.I,
 )
@@ -1171,7 +1172,7 @@ def _preflight_action_job(
             proposal_id = prop_match.group(1).lower()
         else:
             requires_snapshot = data in {"action:yes", "escalate:yes"} or data.startswith(
-                ("wpfile:stage:", "wpreview:stage:")
+                ("wpfile:stage:", "wpreview:stage:", "wpreview:push_draft:")
             )
     elif payload_type == "message":
         if not _ACTION_MESSAGE.match(str(payload.get("text") or "").strip()):
@@ -1473,6 +1474,7 @@ def _worker(token: str, handler: BotHandler, store: TelegramJobStore, stopped: t
             _process_job(token, handler, store, job, stopped=stopped)
         except Exception as exc:
             print(f"Telegram worker loop error ({type(exc).__name__})", file=sys.stderr)
+            _record_poller_error("telegram_worker", exc, label="worker_loop")
             stopped.wait(1)
 
 
@@ -1633,6 +1635,7 @@ def _delivery_worker(token: str, store: TelegramJobStore, stopped: threading.Eve
 
 
 _LEASE_HEARTBEAT_INTERVAL_S = 25.0
+_OPS_GC_INTERVAL_S = 1800.0
 
 
 def _utc_now_iso() -> str:
@@ -1651,6 +1654,64 @@ def _format_poll_error(label: str, exc: BaseException) -> str:
     return f"{_utc_now_iso()} {label} ({' '.join(details)})"
 
 
+def _record_poller_error(source: str, exc: BaseException, *, label: str = "") -> None:
+    """Record a sanitized poller/worker error in ``runtime_errors.jsonl`` (never raises)."""
+    try:
+        from ecom_ops.runtime_health import record_runtime_error
+
+        parts: list[str] = []
+        if label:
+            parts.append(label)
+        status_code: int | None = None
+        if isinstance(exc, TelegramApiError):
+            status_code = exc.status_code
+            if exc.method:
+                parts.append(f"method={exc.method}")
+            if exc.retry_after is not None:
+                parts.append(f"retry_after={exc.retry_after:g}")
+        record_runtime_error(
+            source,
+            type(exc).__name__,
+            detail=" ".join(parts),
+            status_code=status_code,
+        )
+    except Exception:
+        pass
+
+
+def _maybe_run_periodic_gc(
+    last_gc_at: float,
+    *,
+    now: float | None = None,
+    interval_seconds: float | None = None,
+) -> float:
+    """Run ``run_ops_gc(dry_run=False)`` if ``interval_seconds`` has elapsed since ``last_gc_at``."""
+    now_val = time.monotonic() if now is None else float(now)
+    interval = _OPS_GC_INTERVAL_S if interval_seconds is None else max(1.0, float(interval_seconds))
+    if (now_val - float(last_gc_at)) < interval:
+        return last_gc_at
+    try:
+        from ecom_ops.ops_gc import run_ops_gc
+
+        res = run_ops_gc(dry_run=False)
+        errs = res.get("errors") or []
+        if errs:
+            try:
+                from ecom_ops.runtime_health import record_runtime_error
+
+                record_runtime_error(
+                    "ops_gc",
+                    "PartialGcError",
+                    detail=f"errors={len(errs)}",
+                )
+            except Exception:
+                pass
+    except Exception as exc:
+        print(_format_poll_error("Periodic ops GC error", exc), file=sys.stderr)
+        _record_poller_error("ops_gc", exc, label="periodic_gc")
+    return now_val
+
+
 def _run_poller_maintenance(
     store: TelegramJobStore,
     lease_lost: threading.Event,
@@ -1665,6 +1726,12 @@ def _run_poller_maintenance(
             f"{_utc_now_iso()} Telegram poller lease lost; stopping intake.",
             file=sys.stderr,
         )
+        try:
+            from ecom_ops.runtime_health import record_runtime_error
+
+            record_runtime_error("telegram_poller", "LeaseLost", detail="poller_lease_lost")
+        except Exception:
+            pass
         return False
     store.renew_leases(lease_seconds=lease_seconds)
     if run_cleanup:
@@ -1707,6 +1774,7 @@ def _lease_heartbeat_loop(
                 return
         except Exception as exc:
             print(_format_poll_error("Telegram lease heartbeat error", exc), file=sys.stderr)
+            _record_poller_error("telegram_poller", exc, label="lease_heartbeat")
 
 
 def main() -> int:
@@ -1766,6 +1834,7 @@ def main() -> int:
     print(f"Telegram poller started with {worker_count} background workers")
     _service_pending_controls(token, handler, store)
     last_maintenance = 0.0
+    last_ops_gc = time.monotonic()
 
     def request_shutdown(_signum, _frame) -> None:
         shutdown_requested.set()
@@ -1855,6 +1924,7 @@ def main() -> int:
                 _service_pending_controls(token, handler, store)
             except urllib.error.URLError as exc:
                 print(_format_poll_error("Telegram network error", exc), file=sys.stderr)
+                _record_poller_error("telegram_poller", exc, label="network_error")
                 stopped.wait(3)
             except KeyboardInterrupt:
                 shutdown_requested.set()
@@ -1862,6 +1932,7 @@ def main() -> int:
                 return 0
             except Exception as exc:
                 print(_format_poll_error("Telegram poll loop error", exc), file=sys.stderr)
+                _record_poller_error("telegram_poller", exc, label="poll_loop")
                 stopped.wait(2)
             finally:
                 if not stopped.is_set() and not lease_lost.is_set():
@@ -1877,11 +1948,13 @@ def main() -> int:
                                 stopped.set()
                             else:
                                 last_maintenance = now
+                                last_ops_gc = _maybe_run_periodic_gc(last_ops_gc, now=now)
                         except Exception as maint_exc:
                             print(
                                 _format_poll_error("Telegram maintenance error", maint_exc),
                                 file=sys.stderr,
                             )
+                            _record_poller_error("telegram_poller", maint_exc, label="maintenance")
     finally:
         stopped.set()
         heartbeat.join(timeout=1.0)

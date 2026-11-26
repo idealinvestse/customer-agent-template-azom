@@ -31,7 +31,7 @@ _ACTION_COMMAND = re.compile(
 _ACTION_CALLBACK = re.compile(
     r"^(?:cases:approve:|cases:regen:|order:set:|product:desc:|action:yes$|"
     r"escalate:yes$|wpfile:stage:fe-[a-f0-9]{12}$|"
-    r"wpreview:stage:wr-[a-f0-9]{12}$|proposal:yes:pr-[0-9a-f]{12}$)",
+    r"wpreview:(?:stage|push_draft):wr-[a-f0-9]{12}$|proposal:yes:pr-[0-9a-f]{12}$)",
     re.I,
 )
 _PROPOSAL_YES_CALLBACK = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
@@ -176,10 +176,13 @@ class TelegramJobStore:
                     state TEXT NOT NULL DEFAULT 'open',
                     created_at REAL NOT NULL,
                     consumed_at REAL,
-                    expires_at REAL
+                    expires_at REAL,
+                    callback_key TEXT
                 );
                 CREATE INDEX IF NOT EXISTS bot_proposals_chat_state
                     ON bot_proposals(chat_id, state);
+                CREATE INDEX IF NOT EXISTS bot_proposals_chat_cb
+                    ON bot_proposals(chat_id, callback_key, state);
                 CREATE TABLE IF NOT EXISTS wp_review_pins (
                     chat_id TEXT NOT NULL,
                     plan_id TEXT NOT NULL,
@@ -243,6 +246,12 @@ class TelegramJobStore:
             }
             if "expires_at" not in prop_columns:
                 conn.execute("ALTER TABLE bot_proposals ADD COLUMN expires_at REAL")
+            if "callback_key" not in prop_columns:
+                conn.execute("ALTER TABLE bot_proposals ADD COLUMN callback_key TEXT")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS bot_proposals_chat_cb "
+                "ON bot_proposals(chat_id, callback_key, state)"
+            )
         self._chmod_db_files()
 
     def _begin(self, conn: sqlite3.Connection) -> None:
@@ -629,7 +638,7 @@ class TelegramJobStore:
                 if proposal_match:
                     payload["proposal_id"] = proposal_match.group(1).lower()
                 elif data in {"action:yes", "escalate:yes"} or data.startswith(
-                    ("wpfile:stage:", "wpreview:stage:")
+                    ("wpfile:stage:", "wpreview:stage:", "wpreview:push_draft:")
                 ):
                     state_row = conn.execute(
                         "SELECT state_json FROM telegram_conversations WHERE chat_id=?",
@@ -1399,6 +1408,106 @@ class TelegramJobStore:
                 (str(chat_id), str(plan_id).strip().lower()),
             )
             conn.commit()
+
+    def bind_callback_proposal(
+        self,
+        chat_id: str | int,
+        callback_key: str,
+        *,
+        actor: str,
+        domain: str | None = None,
+        target_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        ttl_seconds: int = 1800,
+    ) -> dict[str, Any]:
+        """Bind a legacy callback key to pinned ``(actor, domain, target_id, expiry)``."""
+        key = str(callback_key or "").strip()
+        proposal_id = f"cb-{uuid.uuid4().hex[:12]}"
+        now = _now()
+        expires_at = now + max(60, int(ttl_seconds))
+        bound_payload: dict[str, Any] = dict(payload or {})
+        bound_payload["actor"] = str(actor)
+        if domain:
+            bound_payload["domain"] = str(domain)
+        if target_id:
+            bound_payload["target_id"] = str(target_id)
+        with self._connection() as conn:
+            self._begin(conn)
+            conn.execute(
+                "UPDATE bot_proposals SET state='superseded', consumed_at=? "
+                "WHERE chat_id=? AND callback_key=? AND state='open'",
+                (now, str(chat_id), key),
+            )
+            conn.execute(
+                "INSERT INTO bot_proposals("
+                "proposal_id,chat_id,task_id,kind,payload_json,domain,site_id,state,created_at,expires_at,callback_key"
+                ") VALUES(?,?,?,?,?,?,?,'open',?,?,?)",
+                (
+                    proposal_id,
+                    str(chat_id),
+                    None,
+                    "callback_bind",
+                    _json(bound_payload),
+                    domain,
+                    None,
+                    now,
+                    expires_at,
+                    key,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM bot_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+            conn.commit()
+        return self._proposal(row) or {}
+
+    def consume_callback_proposal(
+        self,
+        chat_id: str | int,
+        callback_key: str,
+        *,
+        actor: str,
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Atomically verify and consume a bound callback proposal if present."""
+        key = str(callback_key or "").strip()
+        now = _now()
+        with self._connection() as conn:
+            self._begin(conn)
+            row = conn.execute(
+                "SELECT * FROM bot_proposals "
+                "WHERE chat_id=? AND callback_key=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (str(chat_id), key),
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return "unbound", None
+            if str(row["state"]) != "open":
+                conn.commit()
+                return "already_used", None
+            exp = row["expires_at"]
+            if exp is not None and float(exp) <= now:
+                conn.execute(
+                    "UPDATE bot_proposals SET state='expired', consumed_at=? WHERE proposal_id=? AND state='open'",
+                    (now, row["proposal_id"]),
+                )
+                conn.commit()
+                return "expired", None
+            payload_dict = _decode_json(row["payload_json"], {})
+            bound_actor = str(payload_dict.get("actor") or "").strip().lower()
+            if bound_actor and bound_actor != actor.strip().lower():
+                conn.commit()
+                return "wrong_actor", None
+            cur = conn.execute(
+                "UPDATE bot_proposals SET state='consumed', consumed_at=? "
+                "WHERE proposal_id=? AND state='open'",
+                (now, row["proposal_id"]),
+            )
+            conn.commit()
+            if cur.rowcount != 1:
+                return "already_used", None
+        return "ok", self._proposal(row)
 
     def get_proposal(
         self, proposal_id: str, *, chat_id: str | int | None = None
