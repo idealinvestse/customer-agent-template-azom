@@ -138,20 +138,40 @@ def accepts_kwarg(fn: Any, kwarg: str) -> bool:
     )
 
 
-def build_system_prompt(*, mode: str = "chat_core") -> tuple[str, str]:
+def web_search_available() -> bool:
+    """Return True when web search is usable (enabled or mock mode, and not killed)."""
+    from ecom_ops.research import config as _research_config
+
+    custom = getattr(_research_config, "web_search_available", None)
+    if callable(custom):
+        return bool(custom())
+    if _research_config.kill_switch_active("search"):
+        return False
+    return bool(_research_config.web_search_enabled() or _research_config.is_mock_mode())
+
+
+def build_system_prompt(
+    *,
+    mode: str = "chat_core",
+    include_web_research: bool = False,
+) -> tuple[str, str]:
     """Compose the editable prompt with fixed runtime policy and optional WP tool guide."""
     if mode == "chat_wp_file":
         try:
             configured_prompt, version = get_prompt("wp_coder")
         except KeyError:
             configured_prompt, version = get_prompt("chat")
-        sections = (configured_prompt.strip(), CHAT_RUNTIME_POLICY, WP_TOOL_GUIDE)
+        sections = [configured_prompt.strip(), CHAT_RUNTIME_POLICY, WP_TOOL_GUIDE]
     elif mode == "chat_wp_drift":
         configured_prompt, version = get_prompt("chat")
-        sections = (configured_prompt.strip(), CHAT_RUNTIME_POLICY, WP_DRIFT_TOOL_GUIDE)
+        sections = [configured_prompt.strip(), CHAT_RUNTIME_POLICY, WP_DRIFT_TOOL_GUIDE]
     else:
         configured_prompt, version = get_prompt("chat")
-        sections = (configured_prompt.strip(), CHAT_CORE_POLICY)
+        sections = [configured_prompt.strip(), CHAT_CORE_POLICY]
+    if include_web_research and web_search_available():
+        from ecom_ops.research.tools import WEB_RESEARCH_TOOL_GUIDE
+
+        sections.append(WEB_RESEARCH_TOOL_GUIDE)
     return "\n\n".join(section for section in sections if section), version
 
 
@@ -161,12 +181,15 @@ def format_wp_capabilities_lines() -> str:
     workspace_tools = ", ".join(TOOL_CAPABILITIES.get("workspace", ()))
     fe_tools = ", ".join(TOOL_CAPABILITIES.get("fe_plan", ()))
     preview_tools = ", ".join(TOOL_CAPABILITIES.get("preview_catalog", ()))
+    web_research_tools = ", ".join(TOOL_CAPABILITIES.get("web_research", ()))
     lines = [
         f"• WordPress-drift & kodanalys (/wp use <site-id>): {drift_tools}",
         f"• Isolerade wr-*-arbetsytor: {workspace_tools}",
         f"• Enfils diffplan (fe-*): {fe_tools}",
         f"• Förhandsvisning, katalog & exempeldata: {preview_tools}",
     ]
+    if web_research_tools:
+        lines.append(f"• Webbsök & research (/search, /research): {web_research_tools}")
     return "\n".join(lines)
 
 
@@ -259,6 +282,8 @@ def format_active_wp_review_block(review: dict[str, Any] | None) -> str:
         bits.append(f"theme_slug={review['theme_slug']}")
     if review.get("changed_files"):
         bits.append("changed_files=" + ",".join(review["changed_files"]))
+    if review.get("research_ids"):
+        bits.append("research_ids=" + ",".join(review["research_ids"]))
     page_draft = review.get("page_draft")
     if isinstance(page_draft, dict):
         if page_draft.get("slug"):
@@ -643,8 +668,34 @@ def dispatch_wp_tool_loop(
     review_stage_plan_id: str | None = None
     attachments: tuple[str, ...] = ()
 
+    called_tool = tool_name_from(content)
+    wp_turn_active = (
+        state.prompt_mode in {"chat_wp_file", "chat_wp_drift"}
+        or state.has_wp_site_context
+        or state.active_wp_review_out is not None
+    )
+    if (
+        called_tool
+        in {
+            "web_search",
+            "web_fetch_extract",
+            "web_research_start",
+            "web_research_status",
+            "web_research_get",
+        }
+        and not wp_turn_active
+    ):
+        return WpLoopOutcome(
+            handled=False,
+            calls=0,
+            content=content,
+            added_cost_usd=0.0,
+            wp_ops_context=state.wp_ops_context,
+            active_wp_review_out=state.active_wp_review_out,
+        )
+
     use_file_loop = use_file_tool_loop(content) or (
-        state.prompt_mode == "chat_wp_file" and tool_name_from(content) in WP_TOOL_NAMES
+        state.prompt_mode == "chat_wp_file" and called_tool in WP_TOOL_NAMES
     )
     if use_file_loop:
         file_loop_kwargs: dict[str, Any] = {
@@ -812,4 +863,5 @@ __all__ = [
     "prepare_wp_turn",
     "report_wp_tool_status",
     "use_file_tool_loop",
+    "web_search_available",
 ]

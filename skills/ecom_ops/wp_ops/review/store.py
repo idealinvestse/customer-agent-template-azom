@@ -44,6 +44,8 @@ _TEMPLATE_HEADER = re.compile(
     r"^\s*Template:\s*([a-z0-9][a-z0-9_-]{0,60})\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+RESEARCH_ID_RE = re.compile(r"^res-[0-9a-f]{12}$")
+_MAX_RESEARCH_IDS = 10
 _PUBLIC = (
     "plan_id",
     "site_id",
@@ -75,6 +77,7 @@ _PUBLIC = (
     "focus_selector",
     "page_draft",
     "draft_page",
+    "research_ids",
 )
 _VARIANT_GROUP_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 _TERMINAL = frozenset({"rejected", "denied", "expired", "fork_not_approved", "not_resumable"})
@@ -230,9 +233,29 @@ def _prepared(
     }
 
 
+def normalize_research_ids(raw: Any) -> list[str]:
+    """Return a deduplicated, bounded list of valid ``res-<12hex>`` identifiers."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        rid = item.strip()
+        if RESEARCH_ID_RE.fullmatch(rid) is None or rid in seen:
+            continue
+        seen.add(rid)
+        out.append(rid)
+        if len(out) >= _MAX_RESEARCH_IDS:
+            break
+    return out
+
+
 def public_plan(plan: dict[str, Any]) -> dict[str, Any]:
     """Project one review plan into its canonical secret-free public dictionary."""
     clean = {key: plan.get(key) for key in _PUBLIC}
+    clean["research_ids"] = normalize_research_ids(plan.get("research_ids"))
     checks = []
     for row in plan.get("checks") or []:
         if not isinstance(row, dict):
@@ -377,7 +400,14 @@ class PlanStore:
         plans = raw.get("plans") if isinstance(raw, dict) else None
         if not isinstance(plans, list):
             return []
-        return [row for row in plans if isinstance(row, dict)]
+        rows: list[dict[str, Any]] = []
+        for row in plans:
+            if not isinstance(row, dict):
+                continue
+            item = dict(row)
+            item["research_ids"] = normalize_research_ids(item.get("research_ids"))
+            rows.append(item)
+        return rows
 
     def save(self, plans: list[dict[str, Any]]) -> None:
         payload = json.dumps(
@@ -563,10 +593,12 @@ class PlanStore:
 
 __all__ = [
     "PlanStore",
+    "RESEARCH_ID_RE",
     "_ARTIFACT_PNG",
     "_BASELINE_REUSE_TTL_S",
     "_FORK_BLOCKED_STATUSES",
     "_LockBoth",
+    "_MAX_RESEARCH_IDS",
     "_NON_EDITABLE",
     "_PLAN_GUARD",
     "_PLAN_LOCKS",
@@ -593,6 +625,7 @@ __all__ = [
     "_sha",
     "_text_files",
     "_unified",
+    "normalize_research_ids",
     "public_plan",
     "same_target",
 ]

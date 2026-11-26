@@ -1,4 +1,4 @@
-"""Declarative WordPress agent tool registry (single source of truth for all 54 tools).
+"""Declarative WordPress agent tool registry (single source of truth for all 60 tools).
 
 Every WordPress tool registers a frozen :class:`ToolSpec` via :func:`register_tool`.
 Schemas, tool-name sets, labels, capability groups, and outcome formatters are all
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from ecom_ops.wp_ops.tools.types import FILE_LOOP_MAX_READS, ToolOutput
@@ -40,9 +40,13 @@ class ToolSpec:
     mutates_workspace: bool = False
     read_budget: bool = False
     search_budget: bool = False
+    web_search_budget: bool = False
+    web_fetch_budget: bool = False
     deep_phase: bool = False
     untrusted_output: bool = False
-    capability_group: Literal["drift_analysis", "workspace", "fe_plan", "preview_catalog", "other"] = "other"
+    capability_group: Literal[
+        "drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research", "other"
+    ] = "other"
 
 
 TOOL_REGISTRY: dict[str, ToolSpec] = {}
@@ -139,9 +143,13 @@ def register_tool(
     mutates_workspace: bool = False,
     read_budget: bool = False,
     search_budget: bool = False,
+    web_search_budget: bool = False,
+    web_fetch_budget: bool = False,
     deep_phase: bool = False,
     untrusted_output: bool = False,
-    capability_group: Literal["drift_analysis", "workspace", "fe_plan", "preview_catalog", "other"] = "other",
+    capability_group: Literal[
+        "drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research", "other"
+    ] = "other",
 ) -> Callable[[Callable[..., ToolOutput]], Callable[..., ToolOutput]]:
     """Register a WordPress tool handler in ``TOOL_REGISTRY``."""
 
@@ -166,6 +174,8 @@ def register_tool(
             mutates_workspace=mutates_workspace,
             read_budget=read_budget,
             search_budget=search_budget,
+            web_search_budget=web_search_budget,
+            web_fetch_budget=web_fetch_budget,
             deep_phase=deep_phase,
             untrusted_output=untrusted_output,
             capability_group=capability_group,
@@ -183,6 +193,7 @@ _DOMAIN_MODULES = (
     "ecom_ops.wp_ops.tools.catalog",
     "ecom_ops.wp_ops.tools.pages",
     "ecom_ops.wp_ops.tools.sandbox_edits",
+    "ecom_ops.wp_ops.tools.research",
 )
 
 
@@ -192,6 +203,12 @@ def _load_domain_modules() -> None:
 
 
 _load_domain_modules()
+
+if "wp_component_intel" in TOOL_REGISTRY and not TOOL_REGISTRY["wp_component_intel"].untrusted_output:
+    TOOL_REGISTRY["wp_component_intel"] = replace(
+        TOOL_REGISTRY["wp_component_intel"],
+        untrusted_output=True,
+    )
 
 WP_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     spec.name: spec.schema for spec in TOOL_REGISTRY.values() if spec.in_wp_schemas
@@ -224,6 +241,15 @@ READ_BUDGET_TOOLS: frozenset[str] = frozenset(
 SEARCH_BUDGET_TOOLS: frozenset[str] = frozenset(
     spec.name for spec in TOOL_REGISTRY.values() if spec.search_budget
 )
+WEB_SEARCH_BUDGET_TOOLS: frozenset[str] = frozenset(
+    spec.name for spec in TOOL_REGISTRY.values() if spec.web_search_budget
+)
+WEB_FETCH_BUDGET_TOOLS: frozenset[str] = frozenset(
+    spec.name for spec in TOOL_REGISTRY.values() if spec.web_fetch_budget
+)
+UNTRUSTED_OUTPUT_TOOLS: frozenset[str] = frozenset(
+    spec.name for spec in TOOL_REGISTRY.values() if spec.untrusted_output
+)
 DEEP_PHASE_TOOLS: frozenset[str] = frozenset(
     spec.name for spec in TOOL_REGISTRY.values() if spec.deep_phase
 )
@@ -232,7 +258,7 @@ WP_TOOL_SHORT_LABELS: dict[str, str] = {spec.name: spec.short_label for spec in 
 
 TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
     group: tuple(spec.name for spec in TOOL_REGISTRY.values() if spec.capability_group == group)
-    for group in ("drift_analysis", "workspace", "fe_plan", "preview_catalog")
+    for group in ("drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research")
 }
 
 __all__ = [
@@ -248,6 +274,9 @@ __all__ = [
     "TOOL_CAPABILITIES",
     "TOOL_REGISTRY",
     "ToolSpec",
+    "UNTRUSTED_OUTPUT_TOOLS",
+    "WEB_FETCH_BUDGET_TOOLS",
+    "WEB_SEARCH_BUDGET_TOOLS",
     "WORKSPACE_MUTATING_TOOLS",
     "WORKSPACE_TOOLS",
     "WP_TOOL_LABELS",

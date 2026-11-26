@@ -11,19 +11,31 @@ from ecom_ops.wp_ops.tools.progress import stage_plan_id, with_review_notice
 from ecom_ops.wp_ops.tools.registry import (
     READ_BUDGET_TOOLS,
     SEARCH_BUDGET_TOOLS,
+    WEB_FETCH_BUDGET_TOOLS,
+    WEB_SEARCH_BUDGET_TOOLS,
     WORKSPACE_MUTATING_TOOLS,
 )
 from ecom_ops.wp_ops.tools.types import (
     INTEL_SLUG_RE,
     PRODUCT_ID_RE,
     RECOVERY_ERROR_CLASSES,
+    RESEARCH_ID_RE,
     REVIEW_PLAN_RE,
     SITE_ID_RE,
     VARIANT_GROUP_RE,
+    WEB_FETCH_MAX_RESULT_BYTES,
+    WEB_RESEARCH_GET_MAX_RESULT_BYTES,
+    WEB_SEARCH_MAX_RESULT_BYTES,
     ToolLoopResult,
     ToolOutput,
 )
 from ecom_ops.wp_ops.tools.validation import error_payload
+
+TOOL_RESULT_BYTE_CAPS: dict[str, int] = {
+    "web_search": WEB_SEARCH_MAX_RESULT_BYTES,
+    "web_fetch_extract": WEB_FETCH_MAX_RESULT_BYTES,
+    "web_research_get": WEB_RESEARCH_GET_MAX_RESULT_BYTES,
+}
 
 MAX_STEERS = 3
 MAX_MULTI_VARIANT_ATTACHMENTS = 6
@@ -70,8 +82,50 @@ def read_cache_key(
     return None
 
 
+def web_cache_key(
+    name: str,
+    arguments: dict[str, Any],
+) -> tuple[Any, ...] | None:
+    """Build a hashable cache key for identical within-turn web search/fetch calls."""
+    if name == "web_search":
+        hints = arguments.get("domain_hints")
+        if isinstance(hints, list):
+            norm_hints: Any = tuple(str(d).strip().lower() for d in hints)
+        elif isinstance(hints, str):
+            norm_hints = hints.strip().lower()
+        elif hints is None:
+            norm_hints = None
+        else:
+            return None
+        parts: tuple[Any, ...] = (
+            "web_search",
+            str(arguments.get("query") or "").strip().lower(),
+            arguments.get("profile") or "deep_general",
+            arguments.get("locale"),
+            arguments.get("freshness_days"),
+            arguments.get("max_results", 5),
+            norm_hints,
+        )
+    elif name == "web_fetch_extract":
+        parts = (
+            "web_fetch_extract",
+            str(arguments.get("url") or "").strip(),
+            arguments.get("profile") or "deep_general",
+            arguments.get("focus_question"),
+            arguments.get("max_chars", 5000),
+        )
+    else:
+        return None
+    if all(
+        part is None or isinstance(part, (str, int, tuple)) and not isinstance(part, bool)
+        for part in parts
+    ):
+        return parts
+    return None
+
+
 def compact_older_file_messages(messages: list[dict[str, str]]) -> None:
-    """Trim older consumed file-tool payloads after step 10 while keeping the last 4 tool results intact."""
+    """Trim older consumed file-tool and web/research payloads after step 10 while keeping the last 4 tool results intact."""
     if len(messages) <= 10:
         return
     cutoff = len(messages) - 8
@@ -83,6 +137,10 @@ def compact_older_file_messages(messages: list[dict[str, str]]) -> None:
         if content.startswith("Untrusted file-tool data."):
             head, _, tail = content.partition("{")
             msg["content"] = f"{head.strip()} [komprimerad tidigare läsning: {{{tail[:450]}...]"
+        elif content.startswith("Untrusted tool data for "):
+            first_line, _, rest = content.partition("\n")
+            snippet = rest.strip()[:450]
+            msg["content"] = f"{first_line.strip()} [komprimerad tidigare data: {snippet}...]"
         elif msg.get("role") == "assistant":
             msg["content"] = content[:800] + "\n...[kortad historik]"
 
@@ -97,6 +155,10 @@ class LoopPolicy:
     max_total_bytes: int
     max_reads: int | None = None
     max_searches: int | None = None
+    max_web_searches: int | None = None
+    max_web_fetches: int | None = None
+    max_web_seconds: float | None = None
+    min_web_remaining_seconds: float = 0.0
     max_recovery_retries: int = 0
     step_prefix: str = "wp"
 
@@ -109,6 +171,9 @@ class LoopBudget:
     calls: int = 0
     reads: int = 0
     searches: int = 0
+    web_searches: int = 0
+    web_fetches: int = 0
+    web_seconds: float = 0.0
     recovery_retries: int = 0
     total_attempts: int = 0
     total_bytes: int = 0
@@ -163,6 +228,51 @@ class LoopBudget:
             )
         return None
 
+    def check_web_pre_call(self, name: str) -> dict[str, Any] | None:
+        """Guard web search/fetch sub-budgets and remaining wall-time before executing."""
+        is_web_search = name in WEB_SEARCH_BUDGET_TOOLS
+        is_web_fetch = name in WEB_FETCH_BUDGET_TOOLS
+        if not (is_web_search or is_web_fetch):
+            return None
+        remaining = self.policy.max_seconds - self.tool_seconds
+        if self.policy.min_web_remaining_seconds > 0 and remaining < self.policy.min_web_remaining_seconds:
+            err = error_payload("WebTimeBudgetInsufficient")
+            err["hint"] = (
+                "Mindre än 8 sekunder kvar i denna verktygsvända. "
+                "Starta asynkron research med web_research_start eller fortsätt direkt med insamlad data."
+            )
+            return err
+        if self.policy.max_web_seconds is not None and self.web_seconds >= self.policy.max_web_seconds:
+            err = error_payload("WebTimeBudgetExceeded")
+            err["hint"] = (
+                f"Webbsökningens tidsbudget ({int(self.policy.max_web_seconds)}s) är förbrukad. "
+                "Fortsätt med insamlad data eller starta web_research_start."
+            )
+            return err
+        if (
+            is_web_search
+            and self.policy.max_web_searches is not None
+            and self.web_searches >= self.policy.max_web_searches
+        ):
+            err = error_payload("WebSearchBudgetExceeded")
+            err["hint"] = (
+                f"Max antal webbsökningar i denna vända ({self.policy.max_web_searches}) är nått. "
+                "Fortsätt med insamlad data eller starta web_research_start."
+            )
+            return err
+        if (
+            is_web_fetch
+            and self.policy.max_web_fetches is not None
+            and self.web_fetches >= self.policy.max_web_fetches
+        ):
+            err = error_payload("WebFetchBudgetExceeded")
+            err["hint"] = (
+                f"Max antal webbsidhämtningar i denna vända ({self.policy.max_web_fetches}) är nått. "
+                "Fortsätt med insamlad data eller starta web_research_start."
+            )
+            return err
+        return None
+
     def record_file_call(
         self,
         name: str,
@@ -188,6 +298,12 @@ class LoopBudget:
                 self.reads += 1
             if name in SEARCH_BUDGET_TOOLS:
                 self.searches += 1
+            if name in WEB_SEARCH_BUDGET_TOOLS:
+                self.web_searches += 1
+                self.web_seconds += elapsed
+            if name in WEB_FETCH_BUDGET_TOOLS:
+                self.web_fetches += 1
+                self.web_seconds += elapsed
         return is_recovery
 
     def enforce_result_size(
@@ -195,11 +311,15 @@ class LoopBudget:
         output: ToolOutput,
         *,
         fallback_site_id: str | None,
+        tool_name: str | None = None,
     ) -> tuple[ToolOutput, str]:
-        """Enforce per-result and cumulative UTF-8 byte caps, returning (output, encoded_json)."""
+        """Enforce per-result, per-tool, and cumulative UTF-8 byte caps, returning (output, encoded_json)."""
         encoded = json.dumps(output.data, ensure_ascii=False, separators=(",", ":"))
         size = len(encoded.encode("utf-8"))
-        if size > self.policy.max_result_bytes:
+        max_allowed = self.policy.max_result_bytes
+        if tool_name in TOOL_RESULT_BYTE_CAPS:
+            max_allowed = min(max_allowed, TOOL_RESULT_BYTE_CAPS[tool_name])
+        if size > max_allowed:
             output = ToolOutput(error_payload("ToolResultTooLarge"), site_id=output.site_id)
             encoded = json.dumps(output.data, separators=(",", ":"))
             size = len(encoded.encode("utf-8"))
@@ -209,6 +329,17 @@ class LoopBudget:
             size = len(encoded.encode("utf-8"))
         self.total_bytes += size
         return output, encoded
+
+
+@dataclass
+class FileLoopState:
+    """Mutable per-turn caches and preview/workspace state for ``run_bounded_file_tool_loop``."""
+
+    read_cache: dict[tuple[str | int | None, ...], ToolOutput] = field(default_factory=dict)
+    web_cache: dict[tuple[Any, ...], ToolOutput] = field(default_factory=dict)
+    patched_plan_id: str | None = None
+    preview_ran: bool = False
+    preview_bonus_used: bool = False
 
 
 @dataclass
@@ -223,6 +354,7 @@ class ReviewMetaTracker:
     focus_selector: str | None = None
     theme_slug: str | None = None
     changed_files: list[str] = field(default_factory=list)
+    research_ids: list[str] = field(default_factory=list)
     page_draft: dict[str, Any] | None = None
     plan_variant_groups: dict[str, str] = field(default_factory=dict)
 
@@ -237,6 +369,7 @@ class ReviewMetaTracker:
     ) -> None:
         if data.get("ok") is not True:
             return
+        self._record_research_ids(args, data)
         raw_pid = self._extract_plan_id(args, data)
         if raw_pid:
             if raw_pid not in self.plan_ids:
@@ -369,6 +502,20 @@ class ReviewMetaTracker:
             if isinstance(mut_file, str) and mut_file and mut_file not in self.changed_files:
                 self.changed_files.append(mut_file)
 
+    def _record_research_ids(self, args: dict[str, Any], data: dict[str, Any]) -> None:
+        candidates: list[Any] = [data.get("research_id"), args.get("research_id")]
+        raw_list = data.get("research_ids")
+        if isinstance(raw_list, list):
+            candidates.extend(raw_list)
+        plan_obj = data.get("plan")
+        if isinstance(plan_obj, dict) and isinstance(plan_obj.get("research_ids"), list):
+            candidates.extend(plan_obj["research_ids"])
+        for item in candidates:
+            if isinstance(item, str):
+                rid = item.strip().lower()
+                if RESEARCH_ID_RE.fullmatch(rid) and rid not in self.research_ids:
+                    self.research_ids.append(rid)
+
     def _record_page_draft(self, data: dict[str, Any]) -> None:
         raw_draft = data.get("page_draft")
         if isinstance(raw_draft, dict) and raw_draft.get("slug"):
@@ -394,6 +541,8 @@ class ReviewMetaTracker:
             "changed_files": list(self.changed_files[-20:]),
             "preview_images": list(attachments),
         }
+        if self.research_ids:
+            meta_out["research_ids"] = list(self.research_ids[-10:])
         if self.page_draft is not None:
             meta_out["page_draft"] = dict(self.page_draft)
         return meta_out
@@ -616,6 +765,7 @@ class LoopResultBuilder:
 
 __all__ = [
     "AttachmentTracker",
+    "FileLoopState",
     "LoopBudget",
     "LoopPolicy",
     "LoopResultBuilder",
@@ -623,7 +773,9 @@ __all__ = [
     "MAX_STEERS",
     "PRIMARY_SHOT_ORDER",
     "ReviewMetaTracker",
+    "TOOL_RESULT_BYTE_CAPS",
     "compact_older_file_messages",
     "primary_attachment",
     "read_cache_key",
+    "web_cache_key",
 ]

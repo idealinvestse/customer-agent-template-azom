@@ -28,6 +28,7 @@ from ecom_ops.wp_ops.review.runner import SandboxGate
 from ecom_ops.wp_ops.review.scaffolds import child_skeleton, plugin_skeleton, scaffold_work
 from ecom_ops.wp_ops.review.store import (
     _FORK_BLOCKED_STATUSES,
+    _MAX_RESEARCH_IDS,
     _NON_EDITABLE,
     _PREVIEW_TTL,
     _TERMINAL,
@@ -41,15 +42,18 @@ from ecom_ops.wp_ops.review.store import (
     _prepared,
     _resolve_parent_theme,
     _unified,
+    normalize_research_ids,
     public_plan,
     same_target,
 )
 from ecom_ops.wp_ops.review.workspace_io import (
     PLAN_ID,
+    RESEARCH_ID,
     SLUG,
     ReviewError,
     VerifiedPlugin,
     VerifiedTheme,
+    copy_research_dir,
     iter_files,
     new_plan_id,
     place_work_file,
@@ -59,6 +63,7 @@ from ecom_ops.wp_ops.review.workspace_io import (
     workspace_root,
     write_diff,
     write_manifest,
+    write_research_snapshot,
     write_tree,
 )
 from ecom_ops.wp_ops.review.workspace_ops import (
@@ -117,6 +122,7 @@ class ReviewPlans:
         preview_path: str = "",
         focus_selector: str = "",
         page_draft: dict[str, Any] | None = None,
+        research_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         now = self._now()
         record: dict[str, Any] = {
@@ -150,6 +156,7 @@ class ReviewPlans:
             "forked_from": forked_from,
             "preview_path": preview_path,
             "focus_selector": focus_selector,
+            "research_ids": normalize_research_ids(research_ids),
         }
         if page_draft is not None:
             record["page_draft"] = dict(page_draft)
@@ -250,6 +257,7 @@ class ReviewPlans:
             theme_relationship=plan["theme_relationship"],
             variant_group=clean_vg,
             forked_from="",
+            research_ids=plan["research_ids"],
             review_path=plan["review_path"],
             login_required=True,
             environment=site.environment,
@@ -314,8 +322,13 @@ class ReviewPlans:
             write_tree(root / "work", work_files)
         if origin_files:
             write_tree(root / "origin", origin_files)
+        try:
+            copy_research_dir(src_root, root)
+        except ReviewError as exc:
+            return _fail(exc.error_class, exc.error_class)
 
         slug = str(source.get("slug") or "")
+        source_research_ids = normalize_research_ids(source.get("research_ids"))
         source_page_draft = source.get("page_draft")
         if not isinstance(source_page_draft, dict):
             source_page_draft = preview_coordinator._load_page_draft(root / "work")
@@ -335,6 +348,7 @@ class ReviewPlans:
             preview_path=str(source.get("preview_path") or ""),
             focus_selector=str(source.get("focus_selector") or ""),
             page_draft=source_page_draft if isinstance(source_page_draft, dict) else None,
+            research_ids=source_research_ids,
         )
         write_diff(root, _unified(root))
         write_manifest(root, plan)
@@ -353,6 +367,7 @@ class ReviewPlans:
             forked_from=source_plan_id,
             variant_group=clean_vg,
             changed_files=len(changed),
+            research_count=len(plan["research_ids"]),
         )
         return _ok(
             "Ny arbetsyta klonades från tidigare förslag. Sajten skrevs inte.",
@@ -362,6 +377,7 @@ class ReviewPlans:
             variant_group=clean_vg,
             preview_path=plan["preview_path"],
             focus_selector=plan["focus_selector"],
+            research_ids=plan["research_ids"],
             status=plan["status"],
             risk=plan["risk"],
             theme_relationship=plan["theme_relationship"],
@@ -816,6 +832,7 @@ class ReviewPlans:
             base_sha256=plan.get("base_sha256"),
             work_sha256=plan.get("work_sha256"),
             changed_files=changed,
+            research_ids=pub["research_ids"],
             check_run=pub["check_run"],
             checks=[
                 {
@@ -1267,6 +1284,112 @@ class ReviewPlans:
             if plan.get("site_id") == site.id
         ]
         return _ok("Lista.", site_id=site.id, plans=rows)
+
+    def attach_research(
+        self,
+        site_id: str,
+        plan_id: str,
+        research_id: str,
+        *,
+        actor: str,
+        summary_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach a scrubbed ``res-*`` research brief snapshot to a ``wr-*`` plan without altering ``work/``."""
+
+        def _err(error_class: str, message: str, **extra: Any) -> dict[str, Any]:
+            return {
+                "ok": False,
+                "error_class": error_class,
+                "message": message,
+                "site_id": site_id,
+                "plan_id": plan_id,
+                "executed": False,
+                "live_calls": False,
+                **extra,
+            }
+
+        if not (
+            self._holds(actor, Permission.WP_OPS_OPERATE)
+            or self._holds(actor, Permission.WP_OPS_ADMIN)
+        ):
+            self._audit_bare(
+                actor,
+                "wp_review_attach_research",
+                False,
+                site_id=site_id,
+                plan_id=plan_id,
+                error_class="AccessDenied",
+            )
+            return _err("AccessDenied", "Saknar behörighet.")
+
+        site, missing = self._site(site_id)
+        if missing is not None or site is None:
+            return _err("UnknownSite", "Okänd webbplats.")
+        clean_pid = str(plan_id or "").strip()
+        if PLAN_ID.fullmatch(clean_pid) is None:
+            return _err("UnknownPlan", "Okänd plan.")
+        clean_rid = str(research_id or "").strip()
+        if RESEARCH_ID.fullmatch(clean_rid) is None:
+            return _err("InvalidToolArguments", "Ogiltigt research-id.")
+        if not isinstance(summary_snapshot, dict):
+            return _err("InvalidToolArguments", "Ogiltig research-sammanfattning.")
+
+        with self._locks(site.id, clean_pid):
+            plan = self._row(site.id, clean_pid)
+            if plan is None:
+                return _err("UnknownPlan", "Okänd plan.")
+            blocked = self._fresh(plan, allow_superseded_read=False)
+            if blocked is not None:
+                return _err(
+                    str((blocked.data or {}).get("error_class") or "StalePlan"),
+                    blocked.message,
+                )
+            if str(plan.get("status") or "") in _TERMINAL:
+                return _err("PlanNotEditable", "Planen kan inte uppdateras.")
+            try:
+                root = workspace_root(self.data_dir, site.id, clean_pid)
+            except ReviewError as exc:
+                return _err(exc.error_class, exc.error_class)
+
+            existing_ids = normalize_research_ids(plan.get("research_ids"))
+            if clean_rid not in existing_ids:
+                if len(existing_ids) >= _MAX_RESEARCH_IDS:
+                    return _err(
+                        "ResearchLimitReached",
+                        f"Max {_MAX_RESEARCH_IDS} research-rapporter kan kopplas till en plan.",
+                    )
+                updated_ids = [*existing_ids, clean_rid]
+            else:
+                updated_ids = existing_ids
+
+            try:
+                write_research_snapshot(root, clean_rid, summary_snapshot)
+            except ReviewError as exc:
+                return _err(exc.error_class, exc.error_class)
+
+            plan["research_ids"] = updated_ids
+            self._replace(plan)
+            write_manifest(root, plan)
+            work_sha256 = str(plan.get("work_sha256") or "")
+
+        self._audit(
+            actor,
+            plan,
+            "wp_review_attach_research",
+            True,
+            research_id=clean_rid,
+            research_count=len(updated_ids),
+        )
+        return {
+            "ok": True,
+            "site_id": site.id,
+            "plan_id": clean_pid,
+            "research_id": clean_rid,
+            "research_ids": updated_ids,
+            "work_sha256": work_sha256,
+            "executed": False,
+            "live_calls": False,
+        }
 
     def comment(self, site_id: str, plan_id: str, text: str, *, actor: str) -> WpOpsResult:
         denied = self._need(

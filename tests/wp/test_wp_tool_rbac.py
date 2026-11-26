@@ -29,7 +29,7 @@ def test_tool_schema_registration_and_wp_playbook_rbac(
     monkeypatch: pytest.MonkeyPatch, wp_service_tools, no_openrouter
 ) -> None:
     del no_openrouter
-    assert len(EXTRA_FILE_TOOLS) == 26
+    assert len(EXTRA_FILE_TOOLS) == 32
     assert ALL_FILE_TOOLS == FILE_TOOL_NAMES | EXTRA_FILE_TOOLS
     for name in ALL_FILE_TOOLS:
         if name == "wp_read_theme_plugin_file":

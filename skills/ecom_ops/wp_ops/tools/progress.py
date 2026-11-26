@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from ecom_ops.wp_ops.playbooks import PLAYBOOK_TOPICS
 from ecom_ops.wp_ops.review_knowledge import TEMPLATE_CONTEXTS
@@ -19,11 +20,21 @@ from ecom_ops.wp_ops.tools.types import (
     INTEL_SLUG_RE,
     PREVIEW_FOCUS_SECTIONS,
     PRODUCT_ID_RE,
+    RESEARCH_ID_RE,
     REVIEW_PLAN_RE,
     SITE_ID_RE,
 )
-from ecom_ops.wp_ops.tools.validation import error_class_token
+from ecom_ops.wp_ops.tools.validation import error_class_token, short_text
 from ecom_ops.wp_ops.tools.workspace_io import safe_sandbox_preview_url
+
+_RESEARCH_OUTCOME_FALLBACKS: dict[str, str] = {
+    "web_search": "webbsök klar",
+    "web_fetch_extract": "webbsida hämtad",
+    "web_research_start": "research startad",
+    "web_research_status": "research-status hämtad",
+    "web_research_get": "research-brief hämtad",
+    "wp_workspace_attach_research": "research kopplad till arbetsyta",
+}
 
 
 def safe_tool_detail(
@@ -72,7 +83,36 @@ def safe_tool_detail(
         focus_sec = arguments.get("focus_section")
         if isinstance(focus_sec, str) and focus_sec.strip().lower() in PREVIEW_FOCUS_SECTIONS:
             parts.append(focus_sec.strip().lower())
+        raw_rid = arguments.get("research_id")
+        if isinstance(raw_rid, str) and RESEARCH_ID_RE.fullmatch(raw_rid.strip()):
+            parts.append(raw_rid.strip())
+        if name in {"web_search", "web_fetch_extract", "web_research_start"}:
+            prof = arguments.get("profile")
+            if isinstance(prof, str) and INTEL_SLUG_RE.fullmatch(prof.strip()):
+                parts.append(prof.strip())
+        if name == "web_fetch_extract":
+            raw_url = arguments.get("url")
+            if isinstance(raw_url, str) and raw_url.strip():
+                host = (urlsplit(raw_url.strip()).hostname or "").strip().lower()
+                if host:
+                    parts.append(host[:64])
     return " · ".join(parts) if parts else None
+
+
+def _safe_tool_outcome(
+    name: str,
+    data: dict[str, Any],
+    *,
+    reads: int | None = None,
+) -> str:
+    """Table-driven outcome formatter for registered and research tools."""
+    spec = TOOL_REGISTRY.get(name)
+    if spec is not None:
+        return spec.outcome(data, reads)
+    if name in _RESEARCH_OUTCOME_FALLBACKS:
+        st = short_text(data.get("status"), 24)
+        return f"{_RESEARCH_OUTCOME_FALLBACKS[name]} ({st})" if st else _RESEARCH_OUTCOME_FALLBACKS[name]
+    return default_outcome(data, reads)
 
 
 def safe_tool_outcome(
@@ -86,15 +126,12 @@ def safe_tool_outcome(
         return "resultat mottaget"
     if data.get("ok") is not True:
         return error_class_token(data.get("error_class")) or "ToolFailed"
-    spec = TOOL_REGISTRY.get(name)
-    if spec is not None:
-        return spec.outcome(data, reads)
-    return default_outcome(data, reads)
+    return _safe_tool_outcome(name, data, reads=reads)
 
 
 def provenance_for(name: str, data: dict[str, Any] | None) -> str:
     payload = data if isinstance(data, dict) else {}
-    if bool(payload.get("live_calls")):
+    if bool(payload.get("live_calls")) or payload.get("provenance") == "live":
         return "live"
     if payload.get("ssh") is True or payload.get("source") == "sftp":
         return "live·sftp"

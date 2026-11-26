@@ -8,10 +8,12 @@ only, with no shell, PHP, update, or restore execution path.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time  # noqa: F401 — preserved monkeypatch target (agent_tools.time.monotonic)
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ecom_ops.audit import log_action
 from ecom_ops.wp_ops.file_changes import (
@@ -172,6 +174,15 @@ from ecom_ops.wp_ops.tools.registry import (
     TOOL_REGISTRY,
 )
 from ecom_ops.wp_ops.tools.registry import (
+    UNTRUSTED_OUTPUT_TOOLS as _UNTRUSTED_OUTPUT_TOOLS,  # noqa: F401
+)
+from ecom_ops.wp_ops.tools.registry import (
+    WEB_FETCH_BUDGET_TOOLS as _WEB_FETCH_BUDGET_TOOLS,  # noqa: F401
+)
+from ecom_ops.wp_ops.tools.registry import (
+    WEB_SEARCH_BUDGET_TOOLS as _WEB_SEARCH_BUDGET_TOOLS,  # noqa: F401
+)
+from ecom_ops.wp_ops.tools.registry import (
     WORKSPACE_MUTATING_TOOLS as _WORKSPACE_MUTATING_TOOLS,  # noqa: F401
 )
 from ecom_ops.wp_ops.tools.registry import (
@@ -212,6 +223,18 @@ from ecom_ops.wp_ops.tools.types import (
     FILE_LOOP_MAX_TOTAL_BYTES as FILE_LOOP_MAX_TOTAL_BYTES,
 )
 from ecom_ops.wp_ops.tools.types import (
+    FILE_LOOP_MAX_WEB_FETCHES as FILE_LOOP_MAX_WEB_FETCHES,
+)
+from ecom_ops.wp_ops.tools.types import (
+    FILE_LOOP_MAX_WEB_SEARCHES as FILE_LOOP_MAX_WEB_SEARCHES,
+)
+from ecom_ops.wp_ops.tools.types import (
+    FILE_LOOP_MAX_WEB_SECONDS as FILE_LOOP_MAX_WEB_SECONDS,
+)
+from ecom_ops.wp_ops.tools.types import (
+    FILE_LOOP_MIN_WEB_REMAINING_SECONDS as FILE_LOOP_MIN_WEB_REMAINING_SECONDS,
+)
+from ecom_ops.wp_ops.tools.types import (
     FILE_PLAN_RE as _FILE_PLAN,
 )
 from ecom_ops.wp_ops.tools.types import (
@@ -228,6 +251,9 @@ from ecom_ops.wp_ops.tools.types import (
 )
 from ecom_ops.wp_ops.tools.types import (
     RECOVERY_ERROR_CLASSES as _RECOVERY_ERROR_CLASSES,  # noqa: F401
+)
+from ecom_ops.wp_ops.tools.types import (
+    RESEARCH_ID_RE as _RESEARCH_ID_RE,
 )
 from ecom_ops.wp_ops.tools.types import (
     REVIEW_PLAN_RE as _REVIEW_PLAN,
@@ -279,6 +305,77 @@ from ecom_ops.wp_ops.tools.workspace import (
     workspace_parent_slug,
 )
 
+_WEB_RESEARCH_AUDIT_TOOLS = frozenset(
+    {
+        "web_search",
+        "web_fetch_extract",
+        "web_research_start",
+        "web_research_status",
+        "web_research_get",
+        "wp_workspace_attach_research",
+    }
+)
+
+
+def _audit_details(
+    name: str,
+    known: bool,
+    args: dict[str, Any],
+    data: dict[str, Any],
+    plan_id: str | None,
+) -> dict[str, Any]:
+    """Build metadata-only audit details (never raw queries, full URLs, or excerpts)."""
+    live_calls = data.get("live_calls") is True or data.get("provenance") == "live"
+    details: dict[str, Any] = {
+        "tool": name if known else "unknown",
+        "result_class": data.get("error_class") or data.get("status"),
+        "plan_id": plan_id,
+        "live_calls": live_calls,
+    }
+    if name not in _WEB_RESEARCH_AUDIT_TOOLS:
+        return details
+
+    raw_profile = data.get("profile_id") or args.get("profile")
+    profile_id = str(raw_profile).strip()[:64] if isinstance(raw_profile, str) and raw_profile.strip() else None
+
+    raw_query = args.get("query")
+    query_hash = (
+        hashlib.sha256(raw_query.strip().encode("utf-8")).hexdigest()[:16]
+        if name == "web_search" and isinstance(raw_query, str) and raw_query.strip()
+        else None
+    )
+
+    domain = data.get("domain") if isinstance(data.get("domain"), str) else None
+    if not domain and name == "web_fetch_extract" and isinstance(args.get("url"), str):
+        host = (urlsplit(args["url"].strip()).hostname or "").strip().lower()
+        domain = host[:120] if host else None
+
+    result_count = data.get("hits_count")
+    if not isinstance(result_count, int):
+        result_count = data.get("citations_count") if isinstance(data.get("citations_count"), int) else None
+
+    ev_status = data.get("evidence_status")
+    evidence_status = str(ev_status)[:32] if isinstance(ev_status, str) and ev_status else None
+
+    raw_rid = data.get("research_id") or args.get("research_id")
+    research_id = (
+        raw_rid.strip()
+        if isinstance(raw_rid, str) and _RESEARCH_ID_RE.fullmatch(raw_rid.strip())
+        else None
+    )
+
+    details.update(
+        {
+            "profile_id": profile_id,
+            "query_hash": query_hash,
+            "domain": domain,
+            "result_count": result_count,
+            "evidence_status": evidence_status,
+            "research_id": research_id,
+        }
+    )
+    return details
+
 
 class WpAgentTools:
     """Server-side WordPress tool dispatcher with strict argument checks."""
@@ -312,19 +409,19 @@ class WpAgentTools:
         plan_id = plan.get("plan_id") if isinstance(plan, dict) else None
         if plan_id is None and isinstance(output.data.get("plan_id"), str):
             plan_id = output.data.get("plan_id")
+        data = output.data if isinstance(output.data, dict) else {}
+        if target_id is None:
+            raw_rid = data.get("research_id") or args.get("research_id")
+            if isinstance(raw_rid, str) and _RESEARCH_ID_RE.fullmatch(raw_rid.strip()):
+                target_id = raw_rid.strip()
         try:
             log_action(
                 actor=actor,
                 action=f"wp_agent_tool_{name}" if known else "wp_agent_tool_rejected",
                 target="wp_sites",
                 target_id=target_id,
-                success=output.data.get("ok") is True,
-                details={
-                    "tool": name if known else "unknown",
-                    "result_class": output.data.get("error_class") or output.data.get("status"),
-                    "plan_id": plan_id,
-                    "live_calls": output.data.get("live_calls") is True,
-                },
+                success=data.get("ok") is True,
+                details=_audit_details(name, known, args, data, plan_id),
             )
         except Exception:
             return ToolOutput(_error("AuditUnavailable"), output.site_id)

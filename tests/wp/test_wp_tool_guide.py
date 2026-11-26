@@ -67,7 +67,22 @@ def test_telegram_menu_includes_wp_and_cmd_tools_lists_new_tools(tmp_path):
         assert expected in output
 
 
-def test_prompt_and_wp_tool_guide_budgets() -> None:
+def test_prompt_and_wp_tool_guide_budgets(monkeypatch) -> None:
+    from ecom_ops.bot.wp_turn import web_search_available
+
     assert len(WP_TOOL_GUIDE) <= 7000
     full_prompt, _version = _build_system_prompt()
     assert len(full_prompt) < 12986
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.delenv("AZOM_WEB_SEARCH_KILL", raising=False)
+    assert web_search_available() is True
+    wp_prompt_with_web, _ = _build_system_prompt(mode="chat_wp_file", include_web_research=True)
+    assert "web_search(" in wp_prompt_with_web
+    assert len(wp_prompt_with_web) < 12986
+
+    monkeypatch.setenv("AZOM_WEB_SEARCH_KILL", "1")
+    assert web_search_available() is False
+    wp_prompt_no_web, _ = _build_system_prompt(mode="chat_wp_file", include_web_research=True)
+    assert "web_search(" not in wp_prompt_no_web
+    assert len(wp_prompt_no_web) < 12986

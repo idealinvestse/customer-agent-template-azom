@@ -20,6 +20,9 @@ from ecom_ops.wp_ops.tools.registry import (
     SEARCH_BUDGET_TOOLS,
     TOOL_CAPABILITIES,
     TOOL_REGISTRY,
+    UNTRUSTED_OUTPUT_TOOLS,
+    WEB_FETCH_BUDGET_TOOLS,
+    WEB_SEARCH_BUDGET_TOOLS,
     WORKSPACE_MUTATING_TOOLS,
     WORKSPACE_TOOLS,
     WP_TOOL_LABELS,
@@ -30,32 +33,49 @@ from ecom_ops.wp_ops.tools.registry import (
 
 
 def test_registry_completeness_and_derived_sets() -> None:
-    assert len(TOOL_REGISTRY) == 54
+    assert len(TOOL_REGISTRY) == 60
     assert len(WP_TOOL_SCHEMAS) == 8
     assert len(WP_TOOL_NAMES) == 8
     assert FILE_TOOL_NAMES == LEGACY_FILE_TOOL_NAMES
     assert len(FILE_TOOL_NAMES) == 21
-    assert len(EXTRA_FILE_TOOLS) == 26
-    assert len(ALL_FILE_TOOLS) == 47
-    assert len(FILE_TOOL_SCHEMAS) == 46
+    assert len(EXTRA_FILE_TOOLS) == 32
+    assert len(ALL_FILE_TOOLS) == 53
+    assert len(FILE_TOOL_SCHEMAS) == 52
     assert WP_TOOL_NAMES | ALL_FILE_TOOLS == frozenset(TOOL_REGISTRY)
     assert ALL_FILE_TOOLS - set(FILE_TOOL_SCHEMAS) == {"wp_read_theme_plugin_file"}
     assert len(FE_PLAN_TOOLS) == 6
-    assert len(WORKSPACE_TOOLS) == 17
+    assert len(WORKSPACE_TOOLS) == 18
     assert len(WORKSPACE_MUTATING_TOOLS) == 10
     assert len(READ_BUDGET_TOOLS) == 5
     assert len(SEARCH_BUDGET_TOOLS) == 2
+    assert WEB_SEARCH_BUDGET_TOOLS == frozenset({"web_search"})
+    assert WEB_FETCH_BUDGET_TOOLS == frozenset({"web_fetch_extract"})
+    assert {
+        "wp_component_intel",
+        "web_search",
+        "web_fetch_extract",
+        "web_research_get",
+    }.issubset(UNTRUSTED_OUTPUT_TOOLS)
     assert len(DEEP_PHASE_TOOLS) == 21
     assert set(WP_TOOL_LABELS) == set(TOOL_REGISTRY)
     assert set(WP_TOOL_SHORT_LABELS) == set(TOOL_REGISTRY)
     assert all(WP_TOOL_LABELS[name].strip() for name in TOOL_REGISTRY)
     assert all(WP_TOOL_SHORT_LABELS[name].strip() for name in TOOL_REGISTRY)
 
-    # Capability groups cover all 54 tools without duplicates
+    assert set(TOOL_CAPABILITIES["web_research"]) == {
+        "web_search",
+        "web_fetch_extract",
+        "web_research_start",
+        "web_research_status",
+        "web_research_get",
+        "wp_workspace_attach_research",
+    }
+
+    # Capability groups cover all 60 tools without duplicates
     cap_union: list[str] = []
     for tools_in_group in TOOL_CAPABILITIES.values():
         cap_union.extend(tools_in_group)
-    assert len(cap_union) == len(set(cap_union)) == 54
+    assert len(cap_union) == len(set(cap_union)) == 60
 
     # Facade re-exports match registry objects identically
     assert agent_tools.WP_TOOL_SCHEMAS is WP_TOOL_SCHEMAS
@@ -73,7 +93,7 @@ def test_registry_completeness_and_derived_sets() -> None:
     assert agent_tools._DEEP_PHASE_TOOLS is DEEP_PHASE_TOOLS
 
 
-def test_registry_outcome_formatters_cover_all_54_tools() -> None:
+def test_registry_outcome_formatters_cover_all_60_tools() -> None:
     for name in sorted(TOOL_REGISTRY):
         ok_msg = safe_tool_outcome(name, {"ok": True, "status": "ok"}, reads=1)
         assert isinstance(ok_msg, str) and ok_msg.strip(), f"empty ok outcome for {name}"

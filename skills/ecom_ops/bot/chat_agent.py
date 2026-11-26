@@ -1511,7 +1511,7 @@ def tool_capabilities() -> str:
         f"{format_wp_capabilities_lines()}\n"
         "• Staging endast via knapp (/wp plans, /wp plan <id>); produktion/restore körs aldrig\n"
         "• Status, budget, brief, eskalera till Oscar\n"
-        "Slash: /help /commands /order /cases /wp /status /tools …"
+        "Slash: /help /commands /order /cases /wp /search /research /status /tools …"
     )
 
 
