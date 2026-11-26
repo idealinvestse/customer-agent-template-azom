@@ -8,7 +8,6 @@ that file. Live SSH stays off unless mock mode is off and the owner sets
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 import uuid
@@ -22,6 +21,7 @@ from typing import Any
 from ecom_ops.audit import log_action
 from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
 from ecom_ops.wp_ops.backup import BackupProvider, MockBackup, new_manifest, valid_backup_id
+from ecom_ops.wp_ops.config import data_dir_path
 from ecom_ops.wp_ops.connectors import (
     MockRest,
     MockUptime,
@@ -79,7 +79,7 @@ class WpOpsService:
         files_factory: Callable[[Site], Any] | None = None,
     ) -> None:
         self.registry_path = registry_path
-        base = data_dir or Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+        base = data_dir_path(data_dir)
         self.data_dir = base
         self.files_factory = files_factory
         self.store = WpOpsStore(base / "wp_ops_state.json")

@@ -24,7 +24,7 @@ from paramiko.hostkeys import HostKeyEntry
 from paramiko.sftp_client import SFTPClient
 from paramiko.transport import Transport
 
-from ecom_ops.runtime_env import env_flag
+from ecom_ops.wp_ops.config import ssh_files_enabled
 from ecom_ops.wp_ops.files import LocalTree, PathRejected, TransportError
 from ecom_ops.wp_ops.models import Site, files_root_narrow
 from ecom_ops.wp_ops.ssh_settings import host_key_ok, stored_key_path, user_ok
@@ -415,7 +415,7 @@ def build_file_transport(
     data_dir: Path,
 ) -> LocalTree | SshFileTransport:
     """Mock stays local; live mode uses read-only SFTP and never a shell."""
-    if env_flag("AZOM_WP_FILES_SSH") and not env_flag("AZOM_USE_MOCK"):
+    if ssh_files_enabled():
         return SshFileTransport(site, data_dir)
     root = site.files_root or "/var/www/unconfigured"
     return LocalTree(root, Path(data_dir) / "wp_files_mock" / site.id)

@@ -23,6 +23,7 @@ from typing import Any
 
 from ecom_ops.audit import log_action
 from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
+from ecom_ops.wp_ops.config import data_dir_path, rest_reads_allowed
 from ecom_ops.wp_ops.file_changes import (
     _normalize_css_for_check,
     is_safe_pure_css_file,
@@ -31,6 +32,7 @@ from ecom_ops.wp_ops.file_changes import (
 )
 from ecom_ops.wp_ops.files import LocalTree, PathRejected, TransportError, resolve_file
 from ecom_ops.wp_ops.models import Site
+from ecom_ops.wp_ops.pii import contains_real_pii
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.review_checks import (
     PROFILE,
@@ -236,7 +238,7 @@ class ReviewPlans:
         clock: Callable[[], datetime] | None = None,
         transport_factory: Callable[[Site], object] | None = None,
     ) -> None:
-        self.data_dir = Path(data_dir or os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+        self.data_dir = data_dir_path(data_dir)
         self.registry_path = registry_path
         self.clock = clock or (lambda: datetime.now(UTC))
         self.transport_factory = transport_factory
@@ -2315,8 +2317,6 @@ class ReviewPlans:
 
         from ecom_ops.integrations import wp_client_from_env
         from ecom_ops.integrations.wp_live_preview import _STATIC_ASSET_HOSTS, _allowed_site_hosts
-        from ecom_ops.wp_ops.agent_tools import WpAgentTools
-        from ecom_ops.wp_ops.file_changes import rest_reads_allowed
         from ecom_ops.wp_ops.preview_overlay import sanitize_page_draft_html
 
         def _err(error_class: str, message: str, **extra: Any) -> dict[str, Any]:
@@ -2382,7 +2382,7 @@ class ReviewPlans:
                 return _err("InvalidDraft", "Sanerat sidutkast är tomt.")
 
             if any(
-                WpAgentTools._contains_real_pii(field)
+                contains_real_pii(field)
                 for field in (title, raw_body, sanitized_body, page_css, synthetic_ctx)
             ):
                 self._audit(actor, plan, "wp_review_push_draft", False, error_class="RealPiiRefused")

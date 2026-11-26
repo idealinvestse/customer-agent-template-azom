@@ -31,7 +31,7 @@ from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_
 if TYPE_CHECKING:
     from ecom_ops.bot.progress_events import ProgressCallback
 from ecom_ops.wp_ops.code_index import index_sources
-from ecom_ops.wp_ops.credentials import bind_credential
+from ecom_ops.wp_ops.credentials import bind_credential, redact_secret_text
 from ecom_ops.wp_ops.file_changes import (
     _MAX_BYTES,
     _SKIP_DIRS,
@@ -51,6 +51,7 @@ from ecom_ops.wp_ops.files import (
     resolve_file,
 )
 from ecom_ops.wp_ops.models import Site
+from ecom_ops.wp_ops.pii import contains_real_pii, normalize_pii_text
 from ecom_ops.wp_ops.playbooks import PLAYBOOK_TOPICS, get_playbook
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.review_knowledge import TEMPLATE_CONTEXTS, template_candidates
@@ -79,38 +80,6 @@ _OPERATION_ID = re.compile(
 )
 _PLAN_LOCK = threading.RLock()
 _COMPONENTS = frozenset({"core", "plugins", "themes"})
-_SECRET_KEY_NAME = (
-    r"(?:[A-Za-z0-9_]*(?:"
-    r"secret|password|passwd|passphrase|api[_-]?key|private[_-]?key|"
-    r"consumer[_-]?(?:key|secret)|client[_-]?(?:secret|key)|"
-    r"access[_-]?(?:key|token)|signing[_-]?key|webhook[_-]?(?:secret|token)|"
-    r"auth[_-]?(?:key|token|secret|salt)|logged_in_(?:key|salt)|"
-    r"secure_auth_(?:key|salt)|nonce_(?:key|salt)|"
-    r"db_pass(?:word)?|dsn|database_url|bearer[_-]?token|refresh[_-]?token|bot[_-]?token"
-    r")|token|authorization)"
-)
-_REDACT_SECRET_LINES = re.compile(
-    r"(?im)^.*(?:"
-    r"[a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s]+:[^@/\s]+@|"
-    r"\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}|"
-    r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}\b|"
-    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b|"
-    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{8,}\b|"
-    r"\bxai-[A-Za-z0-9_-]{8,}\b|"
-    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|"
-    r"\bAIza[0-9A-Za-z_-]{16,}\b|"
-    r"\bAKIA[0-9A-Z]{16}\b|"
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----|"
-    r"define\s*\(\s*['\"]"
-    + _SECRET_KEY_NAME
-    + r"['\"]\s*,\s*['\"][^'\"\r\n]{1,}['\"]|"
-    r"(?:^|[\s$'\"(,{\[])"
-    + _SECRET_KEY_NAME
-    + r"['\"]?\s*(?:=|=>|:)\s*"
-    r"(?!true\b|false\b|null\b|none\b|undefined\b|''|\"\")"
-    r"(?:['\"][^'\"\r\n]{3,}['\"]|[^\s'\",;}\]]{6,})"
-    r").*$"
-)
 
 _FILE_READ_DEFAULT = 8192
 _FILE_READ_MAX = 20480
@@ -297,8 +266,6 @@ _PAGE_DRAFT_FILE = "page_draft.json"
 _PAGE_DRAFT_TYPES = frozenset({"thankyou", "landing", "campaign", "comparison", "upsell", "faq", "custom"})
 _SAMPLE_SCENARIOS = frozenset({"thankyou", "landing", "campaign", "comparison", "upsell", "custom"})
 _PAGE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
-_EMAIL_IN_TEXT_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,24}")
-_ALLOWED_SYNTHETIC_EMAIL_SUFFIXES = (".invalid", ".example", "@example.com", "@example.org", "@example.net")
 _PAGE_DRAFT_MAX_HTML_BYTES = 48 * 1024
 _PAGE_DRAFT_MAX_CSS_BYTES = 24 * 1024
 _RECOVERY_ERROR_CLASSES = frozenset(
@@ -1174,7 +1141,7 @@ class WpAgentTools:
             body = data.get("content")
             if not isinstance(body, str):
                 return ToolOutput(_error("FileUnavailable"), site_id)
-            body = _REDACT_SECRET_LINES.sub("[credential-bearing source line redacted]", body)
+            body = redact_secret_text(body, redact_whole_lines=True)
             lines = body.splitlines()
             total_lines = len(lines)
             live = data.get("live_calls") is True
@@ -1596,7 +1563,7 @@ class WpAgentTools:
             except Exception:
                 extra = []
         cleaned = _scrub_search_text(raw, extra)
-        cleaned = _REDACT_SECRET_LINES.sub("[credential-bearing source line redacted]", cleaned)
+        cleaned = redact_secret_text(cleaned, redact_whole_lines=True)
         collapsed = " ".join(cleaned.splitlines()).strip()
         if len(collapsed) > max_len:
             return collapsed[: max_len - 3] + "..."
@@ -1898,7 +1865,7 @@ class WpAgentTools:
         body = data.get("content")
         if isinstance(body, str):
             scrubbed = editor._scrub(site_obj, body)
-            scrubbed = _REDACT_SECRET_LINES.sub("[credential-bearing source line redacted]", scrubbed)
+            scrubbed = redact_secret_text(scrubbed, redact_whole_lines=True)
             data["content"] = scrubbed
         data.setdefault("status", "read")
         return self._file_result(WpOpsResult(True, res.message, data), site_id)
@@ -1939,7 +1906,7 @@ class WpAgentTools:
         raw_diff = data.pop("diff", "")
         if isinstance(raw_diff, str):
             scrubbed = editor._scrub(site_obj, raw_diff)
-            scrubbed = _REDACT_SECRET_LINES.sub("[credential-bearing source line redacted]", scrubbed)
+            scrubbed = redact_secret_text(scrubbed, redact_whole_lines=True)
         else:
             scrubbed = ""
         data["unified_diff"] = scrubbed
@@ -2684,7 +2651,7 @@ class WpAgentTools:
             except Exception:
                 extra = []
         cleaned = _scrub_search_text(raw, extra)
-        cleaned = _REDACT_SECRET_LINES.sub("[credential-bearing source line redacted]", cleaned)
+        cleaned = redact_secret_text(cleaned, redact_whole_lines=True)
         encoded = cleaned.encode("utf-8", errors="replace")
         if len(encoded) <= max_bytes:
             return cleaned, False
@@ -4982,54 +4949,12 @@ class WpAgentTools:
 
     @staticmethod
     def _normalize_pii_text(raw: str) -> str:
-        import html as _html_mod
-
-        text = str(raw or "")
-        for _ in range(4):
-            nxt = _html_mod.unescape(urllib.parse.unquote(text))
-            if nxt == text:
-                break
-            text = nxt
-        return re.sub(r"[\u200b-\u200f\ufeff]", "", text)
+        return normalize_pii_text(raw)
 
     @staticmethod
     def _contains_real_pii(value: Any) -> bool:
         """Detect real customer PII (non-synthetic emails, Nordic phones, national IDs) in keys & values."""
-        if isinstance(value, str):
-            candidates = (value, WpAgentTools._normalize_pii_text(value))
-            for cand in candidates:
-                for match in _EMAIL_IN_TEXT_RE.finditer(cand):
-                    addr = match.group(0).strip().lower()
-                    if not any(addr.endswith(suffix) for suffix in _ALLOWED_SYNTHETIC_EMAIL_SUFFIXES):
-                        return True
-                # Nordic international phone (+46 / +47 / +45 / 0046 / 0047 / 0045) or Swedish 07x mobile
-                if re.search(
-                    r"(?:(?<!\d)(?:\+|00)(?:46|47|45)[\s.-]?(?:\(0\)[\s.-]?)?(?:\d[\s.-]?){7,10}\b|"
-                    r"(?<!\d)07[02369][\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?!\d))",
-                    cand,
-                ):
-                    return True
-                # Swedish personnummer (YYYYMMDD-XXXX / YYMMDD-XXXX)
-                if re.search(
-                    r"(?<!\d)(?:19|20)?\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[-+]\d{4}(?!\d)",
-                    cand,
-                ):
-                    return True
-                # Norwegian fødselsnummer (11 contiguous or space-separated digits DDMMYY XXXXX)
-                if re.search(
-                    r"(?<!\d)(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])\d{2}\s?\d{5}(?!\d)",
-                    cand,
-                ):
-                    return True
-            return False
-        if isinstance(value, dict):
-            return any(
-                WpAgentTools._contains_real_pii(k) or WpAgentTools._contains_real_pii(v)
-                for k, v in value.items()
-            )
-        if isinstance(value, (list, tuple)):
-            return any(WpAgentTools._contains_real_pii(v) for v in value)
-        return False
+        return contains_real_pii(value)
 
     def _workspace_page_draft(
         self,
@@ -5627,7 +5552,7 @@ class WpAgentTools:
                 main_body = fallback_body
         scrubbed_body = editor._scrub(site_obj, main_body) if main_body else ""
         if scrubbed_body:
-            scrubbed_body = _REDACT_SECRET_LINES.sub("[credential-bearing source line redacted]", scrubbed_body)
+            scrubbed_body = redact_secret_text(scrubbed_body, redact_whole_lines=True)
         has_hpos = bool(
             scrubbed_body
             and "declare_compatibility" in scrubbed_body

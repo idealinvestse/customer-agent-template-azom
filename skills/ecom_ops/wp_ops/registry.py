@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from urllib.parse import urlparse
 
 import yaml
 
+from ecom_ops.wp_ops.config import config_dir_path, data_dir_path, is_mock_mode
 from ecom_ops.wp_ops.models import Site, parse_site
 
 
 def config_dir() -> Path:
-    override = os.environ.get("AZOM_CONFIG_DIR")
-    if override:
-        return Path(override)
-    return Path(__file__).resolve().parents[3] / "config"
+    return config_dir_path()
 
 
 def load_sites(
@@ -29,13 +26,11 @@ def load_sites(
         file_path = Path(path)
     else:
         config_root = config_dir()
-        raw_mock = os.environ.get("AZOM_USE_MOCK")
-        mock_mode = raw_mock is None or raw_mock.strip().lower() not in {"0", "false", "no", "off"}
-        if mock_mode:
+        if is_mock_mode():
             mock_registry = config_root / "wp_sites.mock.yaml"
             file_path = mock_registry if mock_registry.is_file() else config_root / "wp_sites.yaml"
         else:
-            data_root = Path(data_dir or os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+            data_root = data_dir_path(data_dir)
             runtime_registry = data_root / "wp_sites.yaml"
             file_path = runtime_registry if runtime_registry.is_file() else config_root / "wp_sites.yaml"
     if not file_path.is_file():

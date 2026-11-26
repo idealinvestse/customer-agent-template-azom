@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.rbac import Permission
-from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
+from ecom_ops.wp_ops.config import rest_reads_allowed as _config_rest_reads_allowed
+from ecom_ops.wp_ops.credentials import bind_credential, redact_secret_text
 from ecom_ops.wp_ops.files import (
     _MAX_BYTES,
     FileEditor,
@@ -70,27 +71,6 @@ _SEARCH_BYTES = 512 * 1024
 _SEARCH_HITS = 20
 _TREE_CAP = 256
 _SEARCH_MODES = frozenset({"literal", "regex"})
-_URI_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s]+:)[^@/\s]+(@)")
-_AUTH_HEADER_RE = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}")
-_TOKEN_LITERAL_RE = re.compile(
-    r"(?:"
-    r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}\b|"
-    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b|"
-    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{8,}\b|"
-    r"\bxai-[A-Za-z0-9_-]{8,}\b|"
-    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|"
-    r"\bAIza[0-9A-Za-z_-]{16,}\b|"
-    r"\bAKIA[0-9A-Z]{16}\b|"
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r")"
-)
-_CRED_LINE_RE = re.compile(
-    r"(?im)^([^\r\n]*?(?:db_password|db_pass|db_user|secret|password|passwd|passphrase|"
-    r"token|api[_-]?key|private[_-]?key|auth(?:orization)?[_-]?(?:key|token|secret|salt)?|"
-    r"logged_in_(?:key|salt)|nonce_(?:key|salt)|secure_auth_(?:key|salt)|"
-    r"consumer[_-]?(?:key|secret)|access[_-]?key|signing[_-]?key|client[_-]?secret|"
-    r"webhook[_-]?secret|encryption[_-]?key)[^\r\n]*?(?:=>|=|:|,))(.+)$"
-)
 
 FILE_TOOL_NAMES = frozenset(
     {
@@ -121,10 +101,7 @@ FILE_TOOL_NAMES = frozenset(
 
 def rest_reads_allowed() -> bool:
     """Live content reads only when mock mode is explicitly off."""
-    raw = os.environ.get("AZOM_USE_MOCK")
-    if raw is None or str(raw).strip() == "":
-        return False
-    return str(raw).strip().lower() in {"0", "false", "no", "off"}
+    return _config_rest_reads_allowed()
 
 
 def _normalize_css_for_check(text: str) -> str:
@@ -289,13 +266,7 @@ def _directory(root: str, kind: str, slug: str, relative: str) -> str:
 
 
 def _scrub_search_text(text: str, extra_secrets: list[str] | None = None) -> str:
-    cleaned = scrub_secrets(text, extra_secrets or [])
-    out = cleaned if isinstance(cleaned, str) else str(text or "")
-    out = _URI_CRED_RE.sub(r"\1***\2", out)
-    out = _AUTH_HEADER_RE.sub(r"\1 [REDACTED]", out)
-    out = _TOKEN_LITERAL_RE.sub("[REDACTED]", out)
-    out = _CRED_LINE_RE.sub(r"\1 [REDACTED]", out)
-    return out
+    return redact_secret_text(text, extra_secrets)
 
 
 _QUANT_BRACE_RE = re.compile(r"\{(\d+)(?:,(\d*))?\}")

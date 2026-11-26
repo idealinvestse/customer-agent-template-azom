@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ecom_ops.rbac import Permission
-from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
+from ecom_ops.wp_ops.credentials import bind_credential, redact_secret_text, scrub_secrets
 from ecom_ops.wp_ops.models import Site, files_root_narrow
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.service import WpOpsResult
@@ -31,35 +31,10 @@ _EXTENSIONS = frozenset(
 _MAX_BYTES = 65536
 _KINDS = frozenset({"theme", "plugin"})
 _PLAN_TTL = timedelta(hours=12)
-_FILE_URI_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s]+:)[^@/\s]+(@)")
-_FILE_AUTH_HEADER_RE = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}")
-_FILE_TOKEN_LITERAL_RE = re.compile(
-    r"(?:"
-    r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}\b|"
-    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b|"
-    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{8,}\b|"
-    r"\bxai-[A-Za-z0-9_-]{8,}\b|"
-    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|"
-    r"\bAIza[0-9A-Za-z_-]{16,}\b|"
-    r"\bAKIA[0-9A-Z]{16}\b|"
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r")"
-)
-_FILE_CRED_LINE_RE = re.compile(
-    r"(?im)^([^\r\n]*?(?:db_password|db_pass|db_user|secret|password|passwd|passphrase|"
-    r"api[_-]?key|private[_-]?key|auth(?:orization)?[_-]?(?:key|token|secret|salt)|"
-    r"logged_in_(?:key|salt)|nonce_(?:key|salt)|secure_auth_(?:key|salt)|"
-    r"consumer[_-]?(?:key|secret)|access[_-]?key|signing[_-]?key|client[_-]?secret|"
-    r"webhook[_-]?secret|encryption[_-]?key)[^\r\n]*?(?:=>|=|:|,))(.+)$"
-)
 
 
 def _redact_secret_lines(text: str) -> str:
-    out = _FILE_URI_CRED_RE.sub(r"\1***\2", str(text or ""))
-    out = _FILE_AUTH_HEADER_RE.sub(r"\1 [REDACTED]", out)
-    out = _FILE_TOKEN_LITERAL_RE.sub("[REDACTED]", out)
-    out = _FILE_CRED_LINE_RE.sub(r"\1 [REDACTED]", out)
-    return out
+    return redact_secret_text(text)
 
 
 class FileTransport(Protocol):

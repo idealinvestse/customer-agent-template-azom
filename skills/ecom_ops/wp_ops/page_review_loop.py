@@ -6,13 +6,13 @@ arbitrary URLs, shell, PHP, and WP-CLI are refused and not executed.
 
 from __future__ import annotations
 
-import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ecom_ops.wp_ops.config import data_dir_path
 from ecom_ops.wp_ops.page_review import (
     ReviewContext,
     prepare_context,
@@ -137,7 +137,7 @@ def run_bounded_page_review_loop(
 
     now = clock or time.monotonic
     started = now()
-    root = data_dir if data_dir is not None else Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    root = data_dir_path(data_dir)
     ctx = prepare_context(
         site_id=site_id,
         actor=actor,

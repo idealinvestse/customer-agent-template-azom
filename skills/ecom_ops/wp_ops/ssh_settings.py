@@ -21,7 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ecom_ops.runtime_env import env_flag
+from ecom_ops.wp_ops.config import data_dir_path, is_mock_mode, ssh_files_enabled
 from ecom_ops.wp_ops.models import Site, _files_root, _ssh_host, files_root_narrow
 
 _SITE_ID = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
@@ -62,12 +62,6 @@ _PROCESS_LOCK = threading.Lock()
 
 class SettingsRejected(ValueError):
     """The SSH settings were refused. The message is a fixed sentence."""
-
-
-def data_dir_path(data_dir: Path | None) -> Path:
-    if data_dir is not None:
-        return Path(data_dir)
-    return Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
 
 
 def overlay_file(data_dir: Path | None) -> Path:
@@ -161,8 +155,8 @@ def describe_ssh(
         "identity_present": stored,
         "host_key_present": bool(host_key),
         "overlay_error": errors.get(site.id, ""),
-        "mock": env_flag("AZOM_USE_MOCK"),
-        "ssh_enabled": env_flag("AZOM_WP_FILES_SSH") and not env_flag("AZOM_USE_MOCK"),
+        "mock": is_mock_mode(),
+        "ssh_enabled": ssh_files_enabled(),
         "live_calls": False,
     }
     if include_paths:

@@ -7,12 +7,11 @@ Strict fail-closed gates: only executes when ``AZOM_WPORG_INTEL=1`` and
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from typing import Any
 
-from ecom_ops.runtime_env import env_flag
+from ecom_ops.wp_ops.config import wporg_intel_live_enabled
 
 _DEFAULT_TIMEOUT_SECONDS = 5.0
 _MAX_TIMEOUT_SECONDS = 10.0
@@ -32,7 +31,7 @@ def fetch_wporg_json(
     max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> dict[str, Any]:
     """Fetch a bounded JSON payload from ``https://api.wordpress.org/``."""
-    if env_flag("AZOM_USE_MOCK") or os.environ.get("AZOM_WPORG_INTEL", "").strip() != "1":
+    if not wporg_intel_live_enabled():
         raise WpOrgClientError("WordPress.org live intel is disabled")
     if not isinstance(url, str) or not url.startswith(_WPORG_PREFIX):
         raise ValueError("Refused non-wordpress.org intel endpoint")

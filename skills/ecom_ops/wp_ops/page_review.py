@@ -6,7 +6,6 @@ Permission checks stay here, not in the review skill.
 
 from __future__ import annotations
 
-import os
 import re
 import secrets
 from dataclasses import dataclass, field
@@ -15,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ecom_ops.rbac import AccessDenied, Permission, resolve_actor
+from ecom_ops.wp_ops.config import data_dir_path
 from ecom_ops.wp_ops.file_changes import sensitive_relative
 from ecom_ops.wp_ops.files import PathRejected, component_dir
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
@@ -835,7 +835,7 @@ def step_preview(ctx: ReviewContext) -> dict[str, Any]:
         ]
         return row
 
-    data_root = ctx.data_dir or Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    data_root = data_dir_path(ctx.data_dir)
     artifact_dir = data_root / "wp_workspaces" / ctx.site_id / f"pv-{secrets.token_hex(6)}" / "artifacts"
     try:
         preview_path = validate_preview_path(_preview_target_path(ctx))

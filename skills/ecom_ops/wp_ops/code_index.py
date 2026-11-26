@@ -11,6 +11,8 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
+from ecom_ops.wp_ops.credentials import scrub_compact
+
 _PHP_EXTENSIONS = frozenset({".php", ".phtml", ".inc"})
 _JS_EXTENSIONS = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
 
@@ -31,23 +33,6 @@ _SECRET_NAME_RE = re.compile(
     r"consumer[_-]?(?:key|secret)|client[_-]?secret|access[_-]?key|signing[_-]?key|"
     r"webhook[_-]?secret|auth[_-]?(?:key|salt|token)|logged_in_(?:key|salt)|"
     r"secure_auth_(?:key|salt)|nonce_(?:key|salt)|db_password)"
-)
-_SECRET_ASSIGN_RE = re.compile(
-    r"(?i)(\b(?:[A-Za-z0-9_]*(?:secret|password|passwd|passphrase|token|api[_-]?key|"
-    r"private[_-]?key|consumer[_-]?(?:key|secret)|client[_-]?secret|access[_-]?key|"
-    r"signing[_-]?key|webhook[_-]?secret|auth[_-]?(?:key|salt|token))[A-Za-z0-9_]*)"
-    r"\s*(?:=|=>|:)\s*)(['\"])(?:\\.|(?!\2).)*\2"
-)
-_SECRET_TOKENS_RE = re.compile(
-    r"(?:"
-    r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{8,}\b|"
-    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{12,}\b|"
-    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|"
-    r"\bAIza[0-9A-Za-z_-]{20,}\b|"
-    r"\bAKIA[0-9A-Z]{16}\b|"
-    r"(?i:\bBearer\s+[A-Za-z0-9._~+/=-]{8,})|"
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r")"
 )
 
 _PHP_TYPE_RE = re.compile(
@@ -124,12 +109,7 @@ def _iter_files(
 
 
 def _scrub_signature(text: str, *, max_len: int = 160) -> str:
-    collapsed = " ".join(str(text or "").split())
-    cleaned = _SECRET_ASSIGN_RE.sub(r"\1'***'", collapsed)
-    cleaned = _SECRET_TOKENS_RE.sub("***", cleaned)
-    if len(cleaned) > max_len:
-        return cleaned[: max_len - 3] + "..."
-    return cleaned
+    return scrub_compact(text, max_len=max_len)
 
 
 def _strip_comments_and_find_strings(

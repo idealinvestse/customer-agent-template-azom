@@ -8,7 +8,6 @@ mode, no live network request is ever performed.
 from __future__ import annotations
 
 import json
-import os
 import re
 import urllib.error
 import urllib.parse
@@ -16,8 +15,8 @@ from collections.abc import Callable
 from typing import Any
 
 from ecom_ops.integrations.wp_org_client import WpOrgClientError, fetch_wporg_json
-from ecom_ops.runtime_env import env_flag
-from ecom_ops.wp_ops.code_index import _scrub_signature
+from ecom_ops.wp_ops.config import is_mock_mode, wporg_intel_live_enabled
+from ecom_ops.wp_ops.credentials import scrub_compact
 
 _VALID_KINDS = frozenset({"theme", "plugin"})
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
@@ -128,7 +127,7 @@ def _clean_str(value: object, *, max_len: int = 80) -> str | None:
     text = _CONTROL_CHARS_RE.sub(" ", str(value)).strip()
     if not text:
         return None
-    return _scrub_signature(text, max_len=max_len)
+    return scrub_compact(text, max_len=max_len)
 
 
 def _clean_int(value: object) -> int | None:
@@ -185,7 +184,7 @@ def _result_payload(
         "tested_wp": _clean_str(tested_wp, max_len=32),
         "active_installs": active_installs,
         "security_advisories": list(security_advisories or []),
-        "note": _scrub_signature(note, max_len=200),
+        "note": scrub_compact(note, max_len=200),
     }
     if error_class:
         payload["error_class"] = error_class
@@ -207,8 +206,8 @@ def fetch_component_intel(
     if not isinstance(slug, str) or not _SLUG_RE.fullmatch(slug):
         raise ValueError(f"Invalid component slug: {slug!r}")
 
-    is_mock = env_flag("AZOM_USE_MOCK")
-    live_env_enabled = os.environ.get("AZOM_WPORG_INTEL", "").strip() == "1" and not is_mock
+    is_mock = is_mock_mode()
+    live_env_enabled = wporg_intel_live_enabled()
 
     if allow_live is False or (fetcher is None and not live_env_enabled):
         if is_mock:

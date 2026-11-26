@@ -13,9 +13,9 @@ from ecom_ops.wp_ops.code_index import (
     _iter_files,
     _line_number,
     _read_call_args,
-    _scrub_signature,
     _strip_comments_and_find_strings,
 )
+from ecom_ops.wp_ops.credentials import scrub_compact
 
 _PHP_EXTENSIONS = frozenset({".php", ".phtml", ".inc"})
 _TEMPLATE_PREFIXES = ("templates/", "woocommerce/", "template-parts/", "parts/")
@@ -108,7 +108,7 @@ _SECRET_LINE_HINT_RE = re.compile(
 
 
 def _scrub_excerpt(text: str) -> str:
-    cleaned = _scrub_signature(text, max_len=120)
+    cleaned = scrub_compact(text, max_len=120)
     if _SECRET_LINE_HINT_RE.search(cleaned) and ("=" in cleaned or ":" in cleaned):
         cleaned = re.sub(r"(['\"])(?:\\.|(?!\1).){4,}\1", r"\1***\1", cleaned)
     if len(cleaned) > 120:
