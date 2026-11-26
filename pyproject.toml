@@ -40,6 +40,9 @@ ecom-ops = "ecom_ops.cli:main"
 where = ["skills"]
 include = ["ecom_ops*"]
 
+[tool.setuptools.package-data]
+"ecom_ops.integrations.wp" = ["templates/*.php", "templates/*.tmpl", "templates/synthetic_theme/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["skills"]
