@@ -37,9 +37,7 @@ from ecom_ops.bot.chat_agent import (
     _accepts_kwarg,
     _inspect_tool_outcome,
     _is_allowed_chat_image_path,
-    _merge_active_wp_review,
     _provenance,
-    _valid_active_wp_review,
     run_chat,
     tool_lookup_order,
     wants_escalate,
@@ -65,8 +63,6 @@ from ecom_ops.bot.recovery import (
     with_recovery,
 )
 from ecom_ops.bot.reply import (
-    ActionButton,
-    ActionMarkup,
     BotReply,
     approve_case_actions,
     as_reply,
@@ -93,10 +89,43 @@ from ecom_ops.bot.telegram_oauth import (
     is_ephemeral_oauth_message,
     match_natural_oauth_intent,
 )
+from ecom_ops.bot.wp_handlers import (
+    format_changed_files as _format_changed_files,  # noqa: F401  # compatibility re-export
+)
+from ecom_ops.bot.wp_handlers import (
+    format_check_rows as _format_check_rows,  # noqa: F401  # compatibility re-export
+)
+from ecom_ops.bot.wp_handlers import (
+    handle_wp_context_command,
+    handle_wp_plan_command,
+    handle_wp_plans_command,
+    handle_wpfile_callback,
+    handle_wpreview_callback,
+)
+from ecom_ops.bot.wp_handlers import (
+    review_plan_ready as _review_plan_ready,  # noqa: F401  # compatibility re-export
+)
+from ecom_ops.bot.wp_handlers import (
+    wpreview_stage_actions as _wpreview_stage_actions,
+)
+from ecom_ops.bot.wp_session import (
+    drop_review_hash as _drop_review_hash,
+)
+from ecom_ops.bot.wp_session import (
+    merge_active_wp_review as _merge_active_wp_review,
+)
+from ecom_ops.bot.wp_session import (
+    prune_mismatched_wp_session,
+)
+from ecom_ops.bot.wp_session import (
+    prune_review_hashes as _prune_review_hashes,  # noqa: F401  # compatibility re-export
+)
+from ecom_ops.bot.wp_session import (
+    with_review_hashes as _with_review_hashes,
+)
 from ecom_ops.escalation import EscalationService, default_escalation
-from ecom_ops.rbac import Actor, Permission, require_permission, resolve_actor
+from ecom_ops.rbac import Actor, Permission, resolve_actor
 from ecom_ops.security import validate_order_id
-from ecom_ops.wp_ops.agent_tools import WpAgentTools, context_for_storage, context_matches
 
 ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
 _FILE_PLAN_ID = re.compile(r"fe-[a-f0-9]{12}")
@@ -105,7 +134,6 @@ _BOUND_LEGACY_CALLBACK_RE = re.compile(
     r"^(?:order:set:([^:]+):[^:]+|cases:approve:([^:]+)|product:desc:([^:]+):[01])$",
     re.I,
 )
-_MAX_REVIEW_HASH_CACHE = 24
 _MAX_CLARIFY_SESSION_CACHE = 6
 _PROPOSAL_YES_RE = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
 _PROPOSAL_NO_RE = re.compile(r"^proposal:no:(pr-[0-9a-f]{12})$", re.I)
@@ -205,168 +233,6 @@ _PENDING_PROGRESS_LABELS: dict[str, tuple[str, str, str]] = {
     "plugin_status": ("WordPress-plugin", "Ändrar plugin-status", "Plugin-status uppdaterad"),
     "case_regenerate": ("Ärendeutkast", "Skapar nytt svarsutkast", "Nytt utkast sparat"),
 }
-
-
-def _wpreview_stage_actions(
-    plan_id: str,
-    *,
-    review_url: str | None = None,
-    include_push_draft: bool = False,
-) -> ActionMarkup:
-    from ecom_ops.bot import reply as _reply_mod
-
-    if hasattr(_reply_mod, "wp_review_actions"):
-        return _reply_mod.wp_review_actions(
-            plan_id,
-            review_url=review_url,
-            include_push_draft=include_push_draft,
-        )
-    rows: list[list[ActionButton]] = [
-        [
-            ActionButton(
-                label="Stagea ändringar till staging",
-                payload=f"wpreview:stage:{plan_id}",
-            ),
-            ActionButton(label="Avbryt", payload=f"wpreview:no:{plan_id}"),
-        ]
-    ]
-    if include_push_draft:
-        rows.append(
-            [
-                ActionButton(
-                    label="📝 Skicka som WP-utkast",
-                    payload=f"wpreview:push_draft:{plan_id}",
-                )
-            ]
-        )
-    if review_url:
-        rows.append([ActionButton(label="Öppna granskning", url=review_url)])
-    return ActionMarkup(rows=rows)
-
-
-def _review_plan_ready(
-    plans: Any,
-    plan: dict[str, Any],
-    *,
-    changed_count: int | None = None,
-) -> tuple[bool, str]:
-    status = str(plan.get("status") or "")
-    if status == "staged":
-        return False, "redan i staging"
-    if status in {
-        "expired",
-        "rejected",
-        "denied",
-        "fork_not_approved",
-        "not_resumable",
-    }:
-        return False, status
-    if plan.get("superseded_by"):
-        return False, "ersatt av nyare plan"
-    if plan.get("risk") == "high":
-        return False, "hög risk blockerad"
-    if plan.get("environment") != "staging":
-        return False, "endast staging kan stageas"
-    if status != "tests_passed":
-        return False, f"kontroller ej godkända ({status})"
-    evidence = plans._require_current_evidence(plan)
-    if evidence is not None:
-        reason = str((evidence.data or {}).get("error_class") or "EvidenceMissing")
-        return False, f"bevis saknas ({reason})"
-    if changed_count is not None and changed_count == 0:
-        return False, "inga ändringar"
-    return True, "redo för staging"
-
-
-def _format_changed_files(
-    changed_files: list[dict[str, Any]], *, limit: int = 15
-) -> list[str]:
-    lines: list[str] = []
-    for item in changed_files[:limit]:
-        if not isinstance(item, dict):
-            continue
-        path = str(item.get("path") or "").strip()
-        if not path:
-            continue
-        op = str(item.get("status") or item.get("op") or "changed").strip()
-        lines.append(f"- [{op}] {path}")
-    extra = len(changed_files) - limit
-    if extra > 0:
-        lines.append(f"- ... och {extra} fler")
-    return lines
-
-
-def _format_check_rows(checks: list[dict[str, Any]]) -> list[str]:
-    lines: list[str] = []
-    for row in checks[:12]:
-        if not isinstance(row, dict):
-            continue
-        job = str(row.get("job") or "").strip()
-        status = str(row.get("status") or "unknown").strip()
-        if not job:
-            continue
-        reason = str(row.get("reason") or "").strip()
-        suffix = f" ({reason})" if reason and status != "passed" else ""
-        lines.append(f"- {job}: {status}{suffix}")
-    return lines
-
-
-def _with_review_hashes(
-    session: dict[str, Any], *, actor: str, plan: dict[str, Any]
-) -> dict[str, Any]:
-    plan_id = str(plan.get("plan_id") or "")
-    site_id = str(plan.get("site_id") or "")
-    base_sha = str(plan.get("base_sha256") or "")
-    work_sha = str(plan.get("work_sha256") or "")
-    if not (_REVIEW_PLAN_ID.fullmatch(plan_id) and site_id and base_sha and work_sha):
-        return session
-    existing = dict(session.get("wp_review_hashes") or {})
-    existing.pop(plan_id, None)
-    existing[plan_id] = {
-        "actor": actor,
-        "site_id": site_id,
-        "base_sha256": base_sha,
-        "work_sha256": work_sha,
-    }
-    while len(existing) > _MAX_REVIEW_HASH_CACHE:
-        oldest = next(iter(existing))
-        existing.pop(oldest, None)
-    session["wp_review_hashes"] = existing
-    return session
-
-
-def _drop_review_hash(session: dict[str, Any], plan_id: str) -> bool:
-    cached = session.get("wp_review_hashes")
-    if not isinstance(cached, dict) or plan_id not in cached:
-        return False
-    updated = dict(cached)
-    updated.pop(plan_id, None)
-    if updated:
-        session["wp_review_hashes"] = updated
-    else:
-        session.pop("wp_review_hashes", None)
-    return True
-
-
-def _prune_review_hashes(
-    session: dict[str, Any], *, actor: str
-) -> tuple[dict[str, Any], bool]:
-    """Drop wp_review_hashes entries belonging to another actor; return (kept, changed)."""
-    hashes = session.get("wp_review_hashes")
-    if not isinstance(hashes, dict):
-        return {}, False
-    kept = {
-        pid: row
-        for pid, row in hashes.items()
-        if isinstance(row, dict) and row.get("actor") == actor
-    }
-    if len(kept) == len(hashes):
-        return kept, False
-    if kept:
-        session["wp_review_hashes"] = kept
-    else:
-        session.pop("wp_review_hashes", None)
-    return kept, True
 
 
 def _slash_command_meta(raw: str) -> tuple[str, str, str, str] | None:
@@ -1459,68 +1325,8 @@ class BotHandler:
         if raw == "product:cancel":
             self._clear_pending(chat_id)
             return BotReply(text="Avbrutet — ingen produktbeskrivning genererad.")
-        if raw == "wpfile:no" or raw.startswith("wpfile:no:"):
-            plan_id = raw.split(":", 2)[2] if raw.startswith("wpfile:no:") else ""
-            if plan_id:
-                if not _FILE_PLAN_ID.fullmatch(plan_id):
-                    return BotReply(text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK))
-                from ecom_ops.wp_ops import WpOpsService
-
-                WpOpsService().deny_file_plan(plan_id, actor=actor)
-            return BotReply(text="Avbrutet. Ingen fil ändrades.")
-        if raw.startswith("wpfile:stage:"):
-            plan_id = raw.split(":", 2)[2]
-            if not _FILE_PLAN_ID.fullmatch(plan_id):
-                return BotReply(text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK))
-            from ecom_ops.wp_ops import WpOpsService
-
-            prov = _provenance()
-            step_id = f"wpfile:{plan_id}"
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wpfile_stage",
-                    phase="started",
-                    label="Staging-filändring",
-                    detail="Skriver godkänd filändring i staging",
-                    provenance=prov,
-                    legacy_text="Skriver godkänd filändring i staging...",
-                ),
-            )
-            t0 = time.monotonic()
-            staged = WpOpsService().stage_file_plan(plan_id, actor=actor)
-            elapsed_ms = int((time.monotonic() - t0) * 1000)
-            if staged.ok and (staged.data or {}).get("executed") is True:
-                emit_progress(
-                    on_progress,
-                    ProgressEvent(
-                        step_id=step_id,
-                        tool="wpfile_stage",
-                        phase="completed",
-                        label="Staging-filändring",
-                        outcome="fil skriven i staging",
-                        elapsed_ms=elapsed_ms,
-                        provenance=prov,
-                        legacy_text="Staging-filändring: klar.",
-                    ),
-                )
-                return BotReply(text="Filen är skriven i staging. Produktionen är oförändrad.")
-            error = str((staged.data or {}).get("error_class") or "OperationUnavailable")
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wpfile_stage",
-                    phase="failed",
-                    label="Staging-filändring",
-                    outcome=f"skrevs inte ({error})",
-                    elapsed_ms=elapsed_ms,
-                    provenance=prov,
-                    legacy_text=f"Staging-filändring: misslyckades ({error}).",
-                ),
-            )
-            return BotReply(text=f"Staging skrevs inte ({error}). Ingen fil ändrades.")
+        if raw == "wpfile:no" or raw.startswith(("wpfile:no:", "wpfile:stage:")):
+            return handle_wpfile_callback(actor, raw, on_progress=on_progress)
         if raw == "wpreview:no" or raw.startswith(
             ("wpreview:no:", "wpreview:stage:", "wpreview:push_draft:")
         ):
@@ -1566,36 +1372,12 @@ class BotHandler:
     def _clear_mismatched_wp_context(self, chat_id: str | int, actor: str) -> None:
         state = self.store.get(chat_id) or {}
         session = dict(state.get("session") or {})
-        context = session.get("wp_ops_context")
-        pop_keys: list[str] = []
-        updates: dict[str, Any] = {}
-        if context is not None and not context_matches(
-            context,
+        updates, pop_keys = prune_mismatched_wp_session(
+            session,
             actor=actor,
             channel=self.channel,
             conversation_id=f"{self.channel}:{chat_id}",
-        ):
-            session.pop("wp_ops_context", None)
-            pop_keys.append("wp_ops_context")
-        kept, hashes_changed = _prune_review_hashes(session, actor=actor)
-        if hashes_changed:
-            if kept:
-                updates["wp_review_hashes"] = kept
-            else:
-                pop_keys.append("wp_review_hashes")
-        active_review = session.get("active_wp_review")
-        if (
-            active_review is not None
-            and _valid_active_wp_review(
-                active_review,
-                actor=actor,
-                channel=self.channel,
-                conversation_id=f"{self.channel}:{chat_id}",
-            )
-            is None
-        ):
-            session.pop("active_wp_review", None)
-            pop_keys.append("active_wp_review")
+        )
         if not updates and not pop_keys:
             return
         self._update_session_atomic(
@@ -2791,36 +2573,15 @@ class BotHandler:
         session = dict(prev.get("session") or {})
         actor = self._resolve_actor(chat_id)
         conversation_id = f"{self.channel}:{chat_id}"
-        wp_context = session.get("wp_ops_context")
-        pop_session_keys: list[str] = []
-        session_updates: dict[str, Any] = {}
+        session_updates, pop_session_keys = prune_mismatched_wp_session(
+            session,
+            actor=actor,
+            channel=self.channel,
+            conversation_id=conversation_id,
+        )
         if "pending_image_paths" in session:
             session.pop("pending_image_paths", None)
             pop_session_keys.append("pending_image_paths")
-        if wp_context is not None and not context_matches(
-            wp_context, actor=actor, channel=self.channel, conversation_id=conversation_id
-        ):
-            session.pop("wp_ops_context", None)
-            pop_session_keys.append("wp_ops_context")
-        prior_active_review = session.get("active_wp_review")
-        if (
-            prior_active_review is not None
-            and _valid_active_wp_review(
-                prior_active_review,
-                actor=actor,
-                channel=self.channel,
-                conversation_id=conversation_id,
-            )
-            is None
-        ):
-            session.pop("active_wp_review", None)
-            pop_session_keys.append("active_wp_review")
-        kept_hashes, hashes_changed = _prune_review_hashes(session, actor=actor)
-        if hashes_changed:
-            if kept_hashes:
-                session_updates["wp_review_hashes"] = kept_hashes
-            else:
-                pop_session_keys.append("wp_review_hashes")
         history = list(prev.get("messages") or [])
         prior_digest = str(prev.get("tool_digest") or "")
         chat_kwargs: dict[str, Any] = {
@@ -3085,435 +2846,17 @@ class BotHandler:
         *,
         on_progress: ProgressCallback | None = None,
     ) -> BotReply:
-        if raw == "wpreview:no" or raw.startswith("wpreview:no:"):
-            plan_id = raw.split(":", 2)[2] if raw.startswith("wpreview:no:") else ""
-            if plan_id:
-                if not _REVIEW_PLAN_ID.fullmatch(plan_id):
-                    return BotReply(
-                        text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK)
-                    )
-                prev = self.store.get(chat_id) or {}
-                session = dict(prev.get("session") or {})
-                self._clear_review_tracking(chat_id, session, plan_id)
-                return BotReply(
-                    text=f"Avbrutet ({plan_id}). Ingen ändring skrevs till staging eller produktion."
-                )
-            prev = self.store.get(chat_id) or {}
-            if isinstance(prev.get("session"), dict) and "active_wp_review" in prev["session"]:
-                self._update_session_atomic(
-                    chat_id,
-                    pop_session_keys=("active_wp_review",),
-                )
-            return BotReply(
-                text="Avbrutet. Ingen ändring skrevs till staging eller produktion."
-            )
-
-        is_push_draft = raw.startswith("wpreview:push_draft:")
-        plan_id = raw.split(":", 2)[2]
-        if not _REVIEW_PLAN_ID.fullmatch(plan_id):
-            return BotReply(
-                text=with_recovery("Okänd knapp.", footer=FOOTER_UNKNOWN_CALLBACK)
-            )
-        blocked = self._mutations_blocked_reply()
-        if blocked:
-            return blocked
-        try:
-            actor_obj = resolve_actor(actor)
-            require_permission(actor_obj, Permission.WP_OPS_ADMIN)
-            require_permission(actor_obj, Permission.CODE_EDIT)
-        except Exception:
-            action_name = "Skicka WP-utkast" if is_push_draft else "Staging av granskningsplan"
-            return BotReply(
-                text=f"{action_name} kräver Oscar (WP_OPS_ADMIN och CODE_EDIT). Ingen ändring utfördes."
-            )
-
-        from ecom_ops.wp_ops.review_plan import ReviewPlans
-
-        plans = ReviewPlans()
-        plan = plans.get(plan_id)
-        if plan is None:
-            return BotReply(
-                text=f"Staging skrevs inte (UnknownPlan). Granskningsplanen {plan_id} hittades inte."
-            )
-        site_id = str(plan.get("site_id") or "")
-        prev = self.store.get(chat_id) or {}
-        session = dict(prev.get("session") or {})
-        cached = (session.get("wp_review_hashes") or {}).get(plan_id)
-        valid_pin = (
-            isinstance(cached, dict)
-            and cached.get("actor") == actor
-            and cached.get("site_id") == site_id
-            and bool(str(cached.get("base_sha256") or "").strip())
-            and bool(str(cached.get("work_sha256") or "").strip())
+        return handle_wpreview_callback(
+            self, chat_id, actor, raw, on_progress=on_progress
         )
-        if (
-            not valid_pin
-            and self.proposal_store is not None
-            and hasattr(self.proposal_store, "get_pinned_review_hashes")
-        ):
-            db_pin = self.proposal_store.get_pinned_review_hashes(chat_id, plan_id)
-            if (
-                isinstance(db_pin, dict)
-                and db_pin.get("actor") == actor
-                and db_pin.get("site_id") == site_id
-                and bool(str(db_pin.get("base_sha256") or "").strip())
-                and bool(str(db_pin.get("work_sha256") or "").strip())
-            ):
-                cached = db_pin
-                valid_pin = True
-        if not valid_pin:
-            return BotReply(
-                text=(
-                    f"Staging skrevs inte (MissingApprovalHash). Låst godkännandehash för {plan_id} "
-                    "saknas eller har gått ut — kör en ny förhandsvisning i chatten eller godkänn via dashboarden."
-                )
-            )
-        base_sha = str(cached["base_sha256"])
-        work_sha = str(cached["work_sha256"])
-
-        if is_push_draft:
-            from ecom_ops.wp_ops.service import WpOpsService
-
-            prov = _provenance()
-            step_id = f"wpreview_draft:{plan_id}"
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wpreview_push_draft",
-                    phase="started",
-                    label="WP-sidutkast",
-                    detail="Skapar WordPress-utkast (draft) från verifierad sandlåda",
-                    provenance=prov,
-                    legacy_text="Skapar WordPress-utkast (draft)...",
-                ),
-            )
-            t0 = time.monotonic()
-            try:
-                pushed = WpOpsService().push_page_draft(
-                    site_id,
-                    plan_id,
-                    actor=actor,
-                    base_sha256=base_sha,
-                    work_sha256=work_sha,
-                )
-            except Exception:
-                elapsed_ms = int((time.monotonic() - t0) * 1000)
-                emit_progress(
-                    on_progress,
-                    ProgressEvent(
-                        step_id=step_id,
-                        tool="wpreview_push_draft",
-                        phase="failed",
-                        label="WP-sidutkast",
-                        outcome="misslyckades",
-                        elapsed_ms=elapsed_ms,
-                        provenance=prov,
-                        legacy_text="WP-sidutkast: misslyckades.",
-                    ),
-                )
-                raise
-            elapsed_ms = int((time.monotonic() - t0) * 1000)
-            if isinstance(pushed, dict):
-                push_ok = bool(pushed.get("ok"))
-                push_data = dict(pushed)
-                push_msg = str(pushed.get("message") or "")
-            else:
-                push_ok = bool(getattr(pushed, "ok", False))
-                push_data = dict(getattr(pushed, "data", None) or {})
-                push_msg = str(getattr(pushed, "message", "") or "")
-            if push_ok:
-                draft_page = dict(push_data.get("draft_page") or {})
-                status_val = str(draft_page.get("status") or "draft")
-                if status_val != "draft":
-                    status_val = "draft"
-                emit_progress(
-                    on_progress,
-                    ProgressEvent(
-                        step_id=step_id,
-                        tool="wpreview_push_draft",
-                        phase="completed",
-                        label="WP-sidutkast",
-                        outcome=f"utkast skapat (status={status_val})",
-                        elapsed_ms=elapsed_ms,
-                        provenance=prov,
-                        legacy_text="WP-sidutkast: klart.",
-                    ),
-                )
-                lines = [
-                    f"WordPress-utkast skapat för {plan_id} ({site_id}) [status={status_val}] — aldrig autopublicerat."
-                ]
-                if draft_page.get("id"):
-                    lines.append(
-                        f"Sid-ID: {draft_page['id']} · slug: {draft_page.get('slug') or '-'}"
-                    )
-                if draft_page.get("edit_url"):
-                    lines.append(f"Redigera i WP Admin: {draft_page['edit_url']}")
-                if draft_page.get("link"):
-                    lines.append(f"Förhandsvisningslänk (draft): {draft_page['link']}")
-                return BotReply(text="\n".join(lines))
-
-            error = str(push_data.get("error_class") or "OperationUnavailable")
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wpreview_push_draft",
-                    phase="failed",
-                    label="WP-sidutkast",
-                    outcome=f"skapades inte ({error})",
-                    elapsed_ms=elapsed_ms,
-                    provenance=prov,
-                    legacy_text=f"WP-sidutkast: misslyckades ({error}).",
-                ),
-            )
-            msg = f"WP-utkast skapades inte ({error}). Ingen sida skapades i WordPress."
-            if push_msg and push_msg != error:
-                msg = f"{msg}\n{push_msg}"
-            return BotReply(text=msg)
-
-        prov = _provenance()
-        step_id = f"wpreview:{plan_id}"
-        emit_progress(
-            on_progress,
-            ProgressEvent(
-                step_id=step_id,
-                tool="wpreview_stage",
-                phase="started",
-                label="Staging-granskningsplan",
-                detail="Skriver godkänd granskningsplan i staging",
-                provenance=prov,
-                legacy_text="Skriver godkänd granskningsplan i staging...",
-            ),
-        )
-        t0 = time.monotonic()
-        try:
-            ws_status = plans.workspace_status(site_id, plan_id, actor=actor)
-            changed_files = (
-                list((ws_status.data or {}).get("changed_files") or [])
-                if ws_status.ok
-                else []
-            )
-            staged = plans.approve_staging(
-                site_id,
-                plan_id,
-                actor=actor,
-                base_sha256=base_sha,
-                work_sha256=work_sha,
-            )
-        except Exception:
-            elapsed_ms = int((time.monotonic() - t0) * 1000)
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wpreview_stage",
-                    phase="failed",
-                    label="Staging-granskningsplan",
-                    outcome="misslyckades",
-                    elapsed_ms=elapsed_ms,
-                    provenance=prov,
-                    legacy_text="Staging-granskningsplan: misslyckades.",
-                ),
-            )
-            raise
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
-        if staged.ok and (staged.data or {}).get("executed") is True:
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wpreview_stage",
-                    phase="completed",
-                    label="Staging-granskningsplan",
-                    outcome="ändringar skrivna i staging",
-                    elapsed_ms=elapsed_ms,
-                    provenance=prov,
-                    legacy_text="Staging-granskningsplan: klar.",
-                ),
-            )
-            self._clear_review_tracking(chat_id, session, plan_id)
-            lines = [
-                f"Ändringarna för {plan_id} är skrivna i staging ({site_id}, mock). Produktionen är oförändrad."
-            ]
-            file_lines = _format_changed_files(changed_files)
-            if file_lines:
-                lines.append("Ändrade filer:")
-                lines.extend(file_lines)
-            url = review_plan_url(site_id, plan_id)
-            if url:
-                lines.append(f"Granskning: {url} (kräver inloggning)")
-            else:
-                lines.append(f"Granskningssida: /wp/{site_id}/reviews/{plan_id} (kräver inloggning)")
-            return BotReply(text="\n".join(lines))
-
-        error = str((staged.data or {}).get("error_class") or "OperationUnavailable")
-        emit_progress(
-            on_progress,
-            ProgressEvent(
-                step_id=step_id,
-                tool="wpreview_stage",
-                phase="failed",
-                label="Staging-granskningsplan",
-                outcome=f"skrevs inte ({error})",
-                elapsed_ms=elapsed_ms,
-                provenance=prov,
-                legacy_text=f"Staging-granskningsplan: misslyckades ({error}).",
-            ),
-        )
-        detail = str(staged.message or "").strip()
-        msg = f"Staging skrevs inte ({error}). Ingen ändring utfördes."
-        if detail and detail != error:
-            msg = f"{msg}\n{detail}"
-        return BotReply(text=msg)
 
     def _wp_plans_command(self, actor: str, parts: list[str]) -> BotReply:
-        from ecom_ops.wp_ops.review_plan import ReviewPlans
-
-        site_id = parts[1] if len(parts) == 2 else None
-        plans = ReviewPlans()
-        res = plans.list_plans(site_id, actor=actor)
-        if not res.ok:
-            err = str((res.data or {}).get("error_class") or "")
-            if err == "AccessDenied":
-                return BotReply(text="Du saknar rättighet att läsa granskningsplaner.")
-            if err == "UnknownSite":
-                return BotReply(text=f"Okänd WordPress-sajt: {site_id}.")
-            return BotReply(text=f"Kunde inte lista granskningsplaner ({err or 'okänt fel'}).")
-
-        rows = list((res.data or {}).get("plans") or [])
-        if not rows:
-            scope = f" för {site_id}" if site_id else ""
-            return BotReply(text=f"Inga öppna granskningsarbetsytor (wr-*){scope}.")
-
-        can_see_summary = False
-        try:
-            actor_obj = resolve_actor(actor)
-            can_see_summary = actor_obj.has(Permission.WP_OPS_ADMIN) and actor_obj.has(
-                Permission.CODE_EDIT
-            )
-        except Exception:
-            can_see_summary = False
-
-        header = f"Granskningsarbetsytor ({site_id}):" if site_id else "Granskningsarbetsytor (senaste):"
-        lines = [header]
-        for item in rows[:10]:
-            pid = str(item.get("plan_id") or "")
-            psite = str(item.get("site_id") or "")
-            target = f"{item.get('kind')}:{item.get('slug')}"
-            status = str(item.get("status") or "unknown")
-            _ready, ready_label = _review_plan_ready(plans, item)
-            title = ""
-            if can_see_summary:
-                raw_row = plans.get(pid, site_id=psite)
-                raw_summary = str((raw_row or {}).get("summary") or "").strip()
-                if raw_summary:
-                    title = f" · {raw_summary[:40]}"
-            lines.append(f"- {pid} | {psite} | {target} | {status} | {ready_label}{title}")
-        if len(rows) > 10:
-            lines.append(f"... och {len(rows) - 10} fler.")
-        lines.append("Detaljer: /wp plan <plan-id>")
-        return BotReply(text="\n".join(lines))
+        return handle_wp_plans_command(actor, parts)
 
     def _wp_plan_command(
         self, chat_id: str | int, actor: str, parts: list[str]
     ) -> BotReply:
-        plan_id = parts[1].strip()
-        if not _REVIEW_PLAN_ID.fullmatch(plan_id):
-            return BotReply(text="Ange ett giltigt plan-id (wr-xxxxxxxxxxxx).")
-        try:
-            actor_obj = resolve_actor(actor)
-            require_permission(actor_obj, Permission.WP_OPS_READ)
-        except Exception:
-            return BotReply(text="Du saknar rättighet att läsa granskningsplaner.")
-
-        from ecom_ops.wp_ops.review_plan import ReviewPlans
-
-        plans = ReviewPlans()
-        raw_plan = plans.get(plan_id)
-        if raw_plan is None:
-            return BotReply(text=f"Okänd granskningsplan: {plan_id}.")
-        site_id = str(raw_plan.get("site_id") or "")
-        shown = plans.show(site_id, plan_id, actor=actor, include_diff=True)
-        if not shown.ok:
-            err = str((shown.data or {}).get("error_class") or "")
-            if err == "AccessDenied":
-                return BotReply(text="Du saknar rättighet att läsa granskningsplanen.")
-            if err == "Expired":
-                return BotReply(text=f"Granskningsplan {plan_id} har gått ut.")
-            return BotReply(text=f"Kunde inte visa plan {plan_id} ({err or 'okänt fel'}).")
-
-        view = dict((shown.data or {}).get("plan") or {})
-        ws_status = plans.workspace_status(site_id, plan_id, actor=actor)
-        changed_files = (
-            list((ws_status.data or {}).get("changed_files") or [])
-            if ws_status.ok
-            else []
-        )
-        ready, ready_label = _review_plan_ready(
-            plans, raw_plan, changed_count=len(changed_files)
-        )
-        can_stage = actor_obj.has(Permission.WP_OPS_ADMIN) and actor_obj.has(
-            Permission.CODE_EDIT
-        )
-        artifacts = (
-            plans.list_artifacts(site_id, plan_id, actor=actor) if can_stage else []
-        )
-        url = review_plan_url(site_id, plan_id)
-
-        lines = [
-            f"Granskningsplan {plan_id}",
-            f"Sajt: {site_id} ({view.get('environment')}) · {view.get('kind')}: {view.get('slug')}",
-            f"Status: {view.get('status')} · Risk: {view.get('risk')} · Staging: {ready_label}",
-        ]
-        summary = str(view.get("summary") or "").strip()
-        if summary:
-            lines.append(f"Sammanfattning: {summary[:200]}")
-
-        if changed_files:
-            lines.append(f"Ändrade filer ({len(changed_files)}):")
-            lines.extend(_format_changed_files(changed_files))
-        else:
-            lines.append("Ändrade filer: inga ännu.")
-
-        check_lines = _format_check_rows(list(view.get("checks") or []))
-        if check_lines:
-            lines.append("Kontroller:")
-            lines.extend(check_lines)
-        check_run = view.get("check_run")
-        if isinstance(check_run, dict) and check_run.get("run_id"):
-            pub = "ja" if check_run.get("published") is True else "nej"
-            lines.append(f"Check-run: {check_run.get('run_id')} (publicerad: {pub})")
-
-        sandbox = view.get("sandbox") if isinstance(view.get("sandbox"), dict) else {}
-        if sandbox:
-            lines.append(
-                f"Sandbox: {sandbox.get('state', 'stopped')} ({sandbox.get('engine', 'unavailable')})"
-            )
-        if artifacts:
-            lines.append(f"Artifakter: {', '.join(artifacts[:6])}")
-        if url:
-            lines.append(f"Granskningslänk: {url} (kräver inloggning)")
-        else:
-            lines.append(f"Granskningssida: /wp/{site_id}/reviews/{plan_id} (kräver inloggning)")
-        lines.append("Produktion deployas aldrig från chatten.")
-
-        if ready and can_stage:
-            prev = self.store.get(chat_id) or {}
-            session = dict(prev.get("session") or {})
-            self._pin_review_hashes(chat_id, session, actor=actor, plan=raw_plan)
-            self._persist_review_hashes(chat_id, session)
-            return bot_reply(
-                "\n".join(lines),
-                actions=_wpreview_stage_actions(
-                    plan_id,
-                    review_url=url,
-                    include_push_draft=isinstance(raw_plan.get("page_draft"), dict),
-                ),
-            )
-        if ready and not can_stage:
-            lines.append("Staging kräver Oscar (WP_OPS_ADMIN + CODE_EDIT).")
-        return BotReply(text="\n".join(lines))
+        return handle_wp_plan_command(self, chat_id, actor, parts)
 
     def _wp_context_command(
         self,
@@ -3522,172 +2865,4 @@ class BotHandler:
         *,
         on_progress: ProgressCallback | None = None,
     ) -> BotReply | None:
-        """Minimal user controls for the sticky, actor-scoped WordPress site."""
-        match = re.fullmatch(r"/wp(?:@\w+)?(?:\s+(.*))?", text.strip(), re.I)
-        if not match:
-            return None
-        parts = (match.group(1) or "").strip().split()
-        action = parts[0].lower() if parts else "help"
-        if action == "clear" and len(parts) == 1:
-            self._update_session_atomic(
-                chat_id,
-                pop_session_keys=("wp_ops_context", "wp_review_hashes", "active_wp_review"),
-            )
-            return BotReply(text="WordPress-sajtkontexten är rensad.")
-        if action == "help" and len(parts) == 1:
-            return BotReply(
-                text="/wp sites · /wp use <site-id> · /wp plans [site-id] · /wp plan <plan-id> · /wp clear"
-            )
-        try:
-            actor = self._resolve_actor(chat_id)
-        except (TelegramActorDenied, ChannelActorDenied):
-            return self._deny_actor()
-        if action == "plans" and len(parts) in {1, 2}:
-            return self._wp_plans_command(actor, parts)
-        if action == "plan" and len(parts) == 2:
-            return self._wp_plan_command(chat_id, actor, parts)
-        tools = WpAgentTools()
-        prov = _provenance()
-        if action == "sites" and len(parts) == 1:
-            step_id = "cmd:wp:sites"
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wp_list_sites",
-                    phase="started",
-                    label="WordPress-sajter",
-                    detail="Hämtar registrerade sajter",
-                    provenance=prov,
-                    legacy_text="Hämtar WordPress-sajter...",
-                ),
-            )
-            t0 = time.monotonic()
-            output = tools.execute(
-                "wp_list_sites",
-                {},
-                actor=actor,
-                channel=self.channel,
-                conversation_id=f"{self.channel}:{chat_id}",
-            )
-            elapsed_ms = int((time.monotonic() - t0) * 1000)
-            if output.data.get("ok") is not True:
-                emit_progress(
-                    on_progress,
-                    ProgressEvent(
-                        step_id=step_id,
-                        tool="wp_list_sites",
-                        phase="failed",
-                        label="WordPress-sajter",
-                        outcome="saknar behörighet",
-                        elapsed_ms=elapsed_ms,
-                        provenance=prov,
-                        legacy_text="WordPress-sajter: saknar behörighet.",
-                    ),
-                )
-                return BotReply(text="Du saknar rättighet att läsa WordPress-sajter.")
-            sites = output.data.get("sites", [])
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wp_list_sites",
-                    phase="completed",
-                    label="WordPress-sajter",
-                    outcome=f"{len(sites)} sajter",
-                    elapsed_ms=elapsed_ms,
-                    provenance=prov,
-                    legacy_text=f"WordPress-sajter: {len(sites)} sajter.",
-                ),
-            )
-            if not sites:
-                return BotReply(text="Inga registrerade WordPress-sajter.")
-            lines = ["Registrerade WordPress-sajter:"]
-            for row in sites[:20]:
-                lines.append(
-                    f"- {row.get('site_id')} · {row.get('name')} · "
-                    f"{row.get('environment')} · status {row.get('status')}"
-                )
-            return BotReply(text="\n".join(lines))
-        if action == "use" and len(parts) == 2:
-            site_id = parts[1]
-            step_id = f"cmd:wp:use:{site_id}"
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wp_site_status",
-                    phase="started",
-                    label="WordPress-sajt",
-                    detail=f"Kontrollerar {site_id}",
-                    provenance=prov,
-                    legacy_text=f"Kontrollerar WordPress-sajt {site_id}...",
-                ),
-            )
-            t0 = time.monotonic()
-            output = tools.execute(
-                "wp_site_status",
-                {"site_id": site_id},
-                actor=actor,
-                channel=self.channel,
-                conversation_id=f"{self.channel}:{chat_id}",
-            )
-            elapsed_ms = int((time.monotonic() - t0) * 1000)
-            if output.data.get("ok") is not True:
-                emit_progress(
-                    on_progress,
-                    ProgressEvent(
-                        step_id=step_id,
-                        tool="wp_site_status",
-                        phase="failed",
-                        label="WordPress-sajt",
-                        outcome="okänd sajt eller saknar behörighet",
-                        elapsed_ms=elapsed_ms,
-                        provenance=prov,
-                        legacy_text="WordPress-sajt: okänd eller saknar behörighet.",
-                    ),
-                )
-                return BotReply(text="Sajten är okänd eller du saknar rättighet att läsa den.")
-            context = context_for_storage(
-                actor=actor,
-                channel=self.channel,
-                conversation_id=f"{self.channel}:{chat_id}",
-                site_id=output.site_id,
-                operation_ids=output.operation_ids,
-            )
-            if context is None:
-                emit_progress(
-                    on_progress,
-                    ProgressEvent(
-                        step_id=step_id,
-                        tool="wp_site_status",
-                        phase="failed",
-                        label="WordPress-sajt",
-                        outcome="kunde inte väljas",
-                        elapsed_ms=elapsed_ms,
-                        provenance=prov,
-                        legacy_text="WordPress-sajt: kunde inte väljas.",
-                    ),
-                )
-                return BotReply(text="WordPress-sajten kunde inte väljas.")
-            self._update_session_atomic(
-                chat_id,
-                session_updates={"wp_ops_context": context},
-            )
-            emit_progress(
-                on_progress,
-                ProgressEvent(
-                    step_id=step_id,
-                    tool="wp_site_status",
-                    phase="completed",
-                    label="WordPress-sajt",
-                    outcome=f"aktiv sajt: {site_id}",
-                    elapsed_ms=elapsed_ms,
-                    provenance=prov,
-                    legacy_text=f"Aktiv WordPress-sajt: {site_id}.",
-                ),
-            )
-            return BotReply(text=f"Aktiv WordPress-sajt: {site_id}. Fråga om status, backup eller uppdateringar.")
-        return BotReply(
-            text="Använd /wp sites, /wp use <site-id>, /wp plans [site-id], /wp plan <plan-id> eller /wp clear."
-        )
+        return handle_wp_context_command(self, chat_id, text, on_progress=on_progress)
