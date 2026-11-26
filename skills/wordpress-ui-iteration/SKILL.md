@@ -12,7 +12,7 @@ version: "3.0.0"
 
 **Purpose:** Guide visual and iterative WordPress/WooCommerce UI edits inside isolated `wr-*` workspaces so changes are grounded in real rendered DOM/CSS, build cleanly on top of prior sandbox revisions, support multiple coexisting variants, and pass visual health verification without weakening HITL or RBAC gates.  
 **Audience:** Coding agents and the OpenClaw chat agent (`Messenger` and `Telegram`) operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
 > **Net-new pages & templates:** If the user asks to design or build a brand-new page or WooCommerce template (for example a thank-you / `order-received` page, landing page, campaign page, or guide page) rather than tweaking an existing public page, follow `skills/wordpress-page-builder/SKILL.md` (`wp_list_pages`, `wp_build_sample_data`, `wp_workspace_page_draft`, and standalone live-shell `wp_preview_page`).
 
@@ -22,7 +22,7 @@ version: "3.0.0"
 2. **Ground in real rendered DOM and computed styles before patching:**
    - Call `wp_inspect_element(site_id=..., path=..., selector=..., text=..., plan_id=...)` to capture bounded `outer_html` (≤ 3 KB), `bounding_box`, `computed_styles` (`display`, `padding`, `margin`, `width`, `height`, `backgroundImage`, `backgroundPosition`, `backgroundSize`, `backgroundRepeat`, `fontSize`, `color`, `border`, `borderRadius`), `pseudo_before` / `pseudo_after`, bounded `matched_rules`, and `health_checks` (`background_icon_overlap_risk`, `broken_images`, `horizontal_overflow`, `small_tap_target`, `warnings`).
    - Call `wp_fetch_page_html(site_id=..., path=..., selector=..., include_styles=...)` when you need targeted rendered HTML/styles from a **public** page.
-2. **Public-page URL boundary:** `wp_fetch_page_html` and live-overlay `wp_preview_page` only fetch **public** existing site paths (checkout, cart, and account paths such as `/cart`, `/checkout`, `/my-account`, `/handlekurv`, `/kasse`, `/min-konto` are blocked). **Never** pass a local dashboard review URL (`/wp/<site_id>/reviews/wr-.../preview`) to `wp_fetch_page_html` — use `wp_inspect_element(plan_id=...)` or `wp_workspace_read_file(plan_id=...)` to inspect a sandbox preview or workspace file. For net-new pages (`work/page_draft.json`), `wp_preview_page` and `wp_inspect_element` automatically run in standalone live-shell mode (`preview_kind="standalone_page"`).
+3. **Public-page URL boundary:** `wp_fetch_page_html` and live-overlay `wp_preview_page` only fetch **public** existing site paths (checkout, cart, and account paths such as `/cart`, `/checkout`, `/my-account`, `/handlekurv`, `/kasse`, `/min-konto` are blocked). **Never** pass a local dashboard review URL (`/wp/<site_id>/reviews/wr-.../preview`) to `wp_fetch_page_html` — use `wp_inspect_element(plan_id=...)` or `wp_workspace_read_file(plan_id=...)` to inspect a sandbox preview or workspace file. For net-new pages (`work/page_draft.json`), `wp_preview_page` and `wp_inspect_element` automatically run in standalone live-shell mode (`preview_kind="standalone_page"`).
 
 ## 2. Iterative continuation and multi-variant proposals
 
@@ -52,6 +52,8 @@ version: "3.0.0"
 - Emit `<clarify>` only if the follow-up switches to a new ambiguous target or contains genuinely conflicting instructions (see `skills/change-verification/SKILL.md`).
 
 ## 6. Hard HITL and RBAC guardrails
+
+See `docs/WP_SKILL_GUARDRAILS.md` for full shared budgets, untrusted-bytes rules, and approval boundaries.
 
 - Clarification (`clarify:*`), `wp_inspect_element`, `wp_workspace_fork`, and `wp_preview_page` are strictly non-mutating and never write live files or approve staging.
 - Staging a multi-file `wr-*` workspace still requires `wp_workspace_static_checks`, passing `wp_workspace_run_checks`, and the explicit server button `wpreview:stage:wr-...` (Oscar `WP_OPS_ADMIN` + `CODE_EDIT`, matching snapshot hashes, non-high risk). Single-file plans still use `wpfile:stage:fe-...` (`WP_OPS_OPERATE` on local mock tree).

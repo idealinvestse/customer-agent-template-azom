@@ -12,7 +12,7 @@ version: "3.0.0"
 
 **Purpose:** Ensure AzomOps double-checks ambiguous change requests, visual/annotated screenshot descriptions, and multi-path edits with focused counter-questions and recommended choices before opening workspaces, proposing patches, or mutating store data.  
 **Audience:** Coding agents, prompt maintainers, and the OpenClaw chat agent (`Messenger` and `Telegram`).  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `docs/CURRENT_STATE.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `docs/CURRENT_STATE.md`.
 
 ## When clarification triggers
 
@@ -86,7 +86,7 @@ When clarifying, emit a single `<clarify>{...}</clarify>` JSON block. The runtim
 
 **Do:**
 
-- Run read-only inspection tools (`wp_theme_overview`, `wp_template_hierarchy`, `wp_page_review`, `list_pages`, `show_product`, etc.) before or while clarifying so options reflect actual site state.
+- Run read-only inspection tools (`wp_theme_overview`, `wp_template_hierarchy`, `wp_page_review_home`, `list_pages`, `show_product`, etc.) before or while clarifying so options reflect actual site state. See `docs/WP_SKILL_GUARDRAILS.md` for shared WordPress budgets and HITL gates.
 - Keep counter-questions short, concrete, and focused on resolving the ambiguity.
 
 **Do not:**

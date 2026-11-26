@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Tell an agent how to review the homepage source without treating a page lookup, a file, and the rendered page as the same evidence.  
 **Audience:** Coding agents running a homepage source review.  
-**Read this first:** `skills/ecom-ops/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `skills/wordpress-plugin-dev/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, then `ecom_ops.wp_ops.review_knowledge`.
+**Read this first:** `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `skills/wordpress-plugin-dev/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, then `ecom_ops.wp_ops.review_knowledge`.
 
 ## Task
 
@@ -41,13 +41,15 @@ Use only those tools. Do not pass a URL, host, or path. Do not write shell, PHP,
 
 Each finding should include a source file and line or a DOM selector, severity, confidence, reproduction steps, and the checks actually run. Separate confirmed defect from hypothesis. Mark unavailable and not-run checks explicitly.
 
-The current review check runner performs `php -l` only when the PHP binary is present. A timeout is not a pass. WPCS, Plugin Check, PHPUnit, asset lint, egress checks, WordPress runtime, and browser rendering still require isolated runtimes that are not wired in. A static WooCommerce declaration check is `static_precheck` with `runtime_proof` false. A suite is publishable only when `check_run.published` is true for the current base and work hashes. Never describe the review workspace UI or a saved mock record as a rendered preview. The authenticated review link does not approve anything.
+The current review check runner performs fixed `php -l` when a PHP binary is present (a timeout is not a pass). Local loopback WordPress + SQLite + headless browser sandbox rendering is opt-in and off by default (`AZOM_WP_SANDBOX=1` with a verified runtime), and read-only live page preview is opt-in and off by default (`AZOM_WP_LIVE_PREVIEW=1` with mock mode off); when disabled or unconfigured, those checks stay `not_run` / `unavailable`. WPCS, Plugin Check, PHPUnit, and asset lint remain `unavailable`. A static WooCommerce declaration check is `static_precheck` with `runtime_proof` false. A suite is publishable only when `check_run.published` is true for the current base and work hashes. Never describe the review workspace UI or a saved mock record as a rendered preview. The authenticated review link does not approve anything.
 
 This skill is review guidance. It grants no site permission and does not change the approval gates.
 
 ## Isolated `wr-*` workspaces and file-loop caps
 
-- **File/workspace turn caps:** When moving from read-only homepage review (4 calls / 45s) into component inspection or isolated `wr-*` workspace engineering, the file loop is capped at **16** tool calls, **10** file reads, **5** searches, and **60s** (`60` seconds) per turn.
+See `docs/WP_SKILL_GUARDRAILS.md` for full shared budgets, untrusted-data rules, and approval boundaries.
+
+- **File/workspace turn caps:** When moving from read-only homepage review (4 calls / 45s) into component inspection or isolated `wr-*` workspace engineering, the file loop is capped at **16** tool calls, **10** file reads, **5** searches, and **60s** (`60` seconds) per turn (max 28 KiB per result / 80 KiB total).
 - **Discovery and playbook tools:** Use `wp_playbook`, `wp_list_components`, `wp_theme_overview`, `wp_plugin_overview`, `wp_template_hierarchy`, `wp_code_index`, `wp_fetch_page_html`, `wp_inspect_element`, and `wc_template_overrides_audit` (plus optional `wp_component_intel` only when `AZOM_WPORG_INTEL=1`) to inspect hierarchy, rendered DOM/computed styles on public pages, hooks, and `@version` override drift before editing.
 - **Multi-file `wr-*` workspace tools:** `wp_open_review_workspace` (with optional `base_plan_id` and `variant_group`) opens an isolated `wr-...` workspace, and `wp_workspace_fork` branches an existing `wr-*` without clobbering sibling variants. Edits use `wp_workspace_patch_file`, `wp_workspace_create_file`, `wp_workspace_apply_changes`, `wp_workspace_bulk_replace` (`dry_run=True` first), `wp_workspace_theme_json`, `wp_workspace_copy_from_parent`, `wp_workspace_copy_woo_template`, `wp_workspace_scaffold`, `wp_workspace_product_edit`, `wp_workspace_diff`, `wp_workspace_status`, `wp_workspace_static_checks` (fast security/syntax/JSON lint), `wp_preview_page` (read-only live overlay with `visual_health` checks), and `wp_workspace_run_checks`. See `skills/wordpress-ui-iteration/SKILL.md` for iterative UI/CSS workflows.
 - **Staging buttons:** Single-file `fe-*` plans use `wpfile:stage:fe-...`, whereas multi-file `wr-*` workspaces require `wp_workspace_static_checks` + `wp_workspace_run_checks` and stage only via the explicit server button `wpreview:stage:wr-...`. Free-text approval never writes, and production deploy remains closed/Oscar-escalated.

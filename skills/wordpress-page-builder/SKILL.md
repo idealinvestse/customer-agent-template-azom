@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Enable AzomOps to design, build, populate with real catalog products plus strictly synthetic zero-PII example data, and visually verify any net-new WordPress page or WooCommerce template inside an isolated `wr-*` workspace wrapped in the live site's real header, navigation, footer, and theme CSS.  
 **Audience:** Coding agents and the OpenClaw chat agent (`Messenger` and `Telegram`) operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
 ## Supported page archetypes
 
@@ -61,6 +61,8 @@ Follow this same four-stage workflow uniformly for any net-new page or template 
 - Once the initial new-page `wr-*` preview exists (`has_active_wp_review=True`), skip `<clarify>` on follow-up refinements or render commands (e.g., `"byt produktkort"`, `"gör den kompaktare på mobil"`, `"rendera och visa screenshots"`) and continue via `wp_workspace_fork` / `wp_workspace_page_draft` + `wp_preview_page`.
 
 ## Hard HITL, risk, and RBAC boundaries
+
+See `docs/WP_SKILL_GUARDRAILS.md` for full shared budgets, untrusted-bytes rules, and URL/zero-PII guardrails.
 
 - Neither free text nor `clarify:*` ever creates a published WordPress page, activates a template, or writes live files.
 - **HITL WordPress draft-page push (Oscar-only):** For a `wr-*` workspace containing `work/page_draft.json`, Oscar (`WP_OPS_ADMIN` + `CODE_EDIT`) can explicitly push a draft via Telegram button `wpreview:push_draft:wr-...` or Dashboard `POST /wp/<site_id>/reviews/<plan_id>/push-draft` (`WpOpsService.push_page_draft()` / `ReviewPlans.push_page_draft()` -> `WordPressClient.create_page(..., status="draft")`). Pinned `base_sha256` and `work_sha256` digests are verified fail-closed, HTML/zero-PII checks re-run, `status != "draft"` is refused (never auto-published), and the response returns `edit_url` (`/wp-admin/post.php?post=<id>&action=edit`).

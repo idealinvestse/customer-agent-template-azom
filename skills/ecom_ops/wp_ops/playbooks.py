@@ -91,13 +91,14 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         ),
         "steps": [
             "Kör wp_template_hierarchy för att få serverns verifierade kandidatordning för aktivt tema.",
-            "Kör wp_page_review(target_page=..., list_templates=True) för att se databastilldelning och Site Editor-mallar.",
+            "Starta sidgranskning ('granska startsidans källkod' eller 'granska sidan <slug|id> källkod', som kör wp_page_review_home, wp_page_review_content, wp_page_review_sources och wp_page_review_preview) för att se databastilldelning och Site Editor-mallar.",
             "Kontrollera hooked styrning med wp_code_index (t.ex. template_include, template_redirect, pre_get_posts).",
             "Skilj strikt på databaslager (content.raw), källfilslager (source_file) och renderad DOM.",
         ],
         "tools": [
             "wp_template_hierarchy",
-            "wp_page_review",
+            "wp_page_review_home",
+            "wp_page_review_sources",
             "wp_theme_overview",
             "wp_code_index",
             "wp_read_theme_plugin_file",
@@ -236,7 +237,10 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
             "wp_workspace_diff",
             "wp_workspace_static_checks",
             "wp_workspace_run_checks",
-            "wp_page_review",
+            "wp_page_review_home",
+            "wp_page_review_content",
+            "wp_page_review_sources",
+            "wp_page_review_preview",
         ],
         "anti_patterns": [
             "Påstå aldrig att en check med status unavailable, not_run eller simulated har passerat.",
@@ -365,7 +369,7 @@ _TOPIC_RULES: dict[str, tuple[tuple[re.Pattern[str], int], ...]] = {
     "template_hierarchy_debug": (
         (re.compile(r"\b(?:template[\s_-]?hierarchy|mallhierarki|wp_template_hierarchy)\b", re.I), 5),
         (re.compile(r"\b(?:list_templates|site[\s_-]?editor|block\s+template|sidmall)\b", re.I), 4),
-        (re.compile(r"\b(?:vilken\s+mall|which\s+template|front-page\.php|template_include|wp_page_review)\b", re.I), 4),
+        (re.compile(r"\b(?:vilken\s+mall|which\s+template|front-page\.php|template_include|wp_page_review_home|wp_page_review_content|wp_page_review_sources|wp_page_review_preview)\b", re.I), 4),
         (re.compile(r"\b(?:templates/[\w.-]+\.html|startsidan(?:s)?\s+mall)\b", re.I), 3),
     ),
     "woo_template_overrides": (
