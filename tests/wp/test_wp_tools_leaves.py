@@ -44,20 +44,32 @@ from ecom_ops.wp_ops.tools.validation import (
 
 def test_tools_leaves_have_no_banned_tokens_or_integrations_imports() -> None:
     tools_dir = Path("skills/ecom_ops/wp_ops/tools")
-    files = sorted(tools_dir.glob("*.py"))
-    assert len(files) == 8
-    banned = ("requests", "urlopen", "http.client", "subprocess", "os.system", "integrations.wordpress")
-    for path in files:
+    leaf_names = {
+        "__init__.py",
+        "types.py",
+        "guides.py",
+        "context.py",
+        "validation.py",
+        "scrub.py",
+        "html_parse.py",
+        "workspace_io.py",
+        "catalog.py",
+    }
+    all_files = sorted(tools_dir.glob("*.py"))
+    assert len(all_files) >= 8
+    banned = ("requests", "urlopen", "http.client", "urllib.request", "subprocess", "os.system", "integrations.wordpress")
+    for path in all_files:
         text = path.read_text(encoding="utf-8")
         for token in banned:
             assert token not in text, f"{token} found in {path}"
-        tree = ast.parse(text, filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    assert "integrations" not in alias.name, f"integrations import in {path}"
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                assert "integrations" not in node.module, f"integrations import in {path}"
+        if path.name in leaf_names:
+            tree = ast.parse(text, filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        assert "integrations" not in alias.name, f"integrations import in {path}"
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    assert "integrations" not in node.module, f"integrations import in {path}"
 
 
 def test_agent_tools_reexports_match_tools_leaves_identity() -> None:

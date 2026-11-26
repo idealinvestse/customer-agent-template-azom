@@ -93,8 +93,56 @@ def upsert_workspace_json(
     return ops.create_file(site_id, plan_id, filename, new_json, actor=actor)
 
 
+def safe_sandbox_preview_url(site_id: str, plan_id: str) -> str | None:
+    try:
+        from ecom_ops.bot import dashboard_links
+
+        fn = getattr(dashboard_links, "sandbox_preview_url", None)
+        if callable(fn):
+            val = fn(site_id, plan_id)
+            return str(val) if isinstance(val, str) and val else None
+    except Exception:
+        return None
+    return None
+
+
+def resolve_sandbox_preview_meta(
+    data_dir: Path,
+    site_id: str,
+    plan_id: str,
+    pdata: dict[str, Any],
+) -> tuple[str | None, str | None, bool]:
+    preview_html_ready = bool(pdata.get("preview_html_ready"))
+    if not preview_html_ready:
+        try:
+            phtml = workspace_root(data_dir, site_id, plan_id) / "artifacts" / "preview.html"
+            if phtml.is_file() and not phtml.is_symlink():
+                preview_html_ready = True
+        except ReviewError:
+            pass
+    raw_preview_path = pdata.get("preview_path")
+    preview_path = (
+        raw_preview_path
+        if isinstance(raw_preview_path, str) and raw_preview_path.startswith("/wp/")
+        else (f"/wp/{site_id}/reviews/{plan_id}/preview" if preview_html_ready else None)
+    )
+    raw_preview_url = pdata.get("preview_url")
+    preview_url = (
+        raw_preview_url
+        if isinstance(raw_preview_url, str) and raw_preview_url
+        else (
+            safe_sandbox_preview_url(site_id, plan_id)
+            if (preview_html_ready or preview_path is not None)
+            else None
+        )
+    )
+    return preview_path, preview_url, preview_html_ready
+
+
 __all__ = [
     "authorize_editor_site",
     "read_workspace_json",
+    "resolve_sandbox_preview_meta",
+    "safe_sandbox_preview_url",
     "upsert_workspace_json",
 ]
