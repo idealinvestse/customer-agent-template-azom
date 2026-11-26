@@ -440,9 +440,9 @@ _EXPLICIT_CHANGE_VERB_RE = re.compile(
 
 _SOFT_CHANGE_INTENT_RE = re.compile(
     r"\b(?:"
-    r"g[öo]r\s+(?:den|det|knappen|rubriken|texten|sidan|headern|footern|menyn|layouten)\s+\w+|"
-    r"vill\s+(?:ha|att)\s+.{1,60}\b(?:st[öo]rre|mindre|r[öo]d|bl[åa]|gr[öo]n|svart|vit|centrerad|bort|dold|snyggare|b[äa]ttre|tydligare)|"
-    r"ska\s+(?:bort|d[öo]ljas|flyttas|[äa]ndras|uppdateras|vara\s+(?:st[öo]rre|mindre|centrerad))|"
+    r"g[öo]r\s+(?:den|det|knappen|rubriken|texten|br[öo]dtexten|sektionen|hj[äa]lpsektionen|sidan|headern|footern|menyn|layouten)\s+\w+|"
+    r"vill\s+(?:ha|att)\s+.{1,60}\b(?:st[öo]rre|mindre|r[öo]d|bl[åa]|gr[öo]n|svart|vit|centrerad|bort|dold|snyggare|b[äa]ttre|tydligare|kortare)|"
+    r"ska\s+(?:bort|d[öo]ljas|flyttas|[äa]ndras|uppdateras|vara\s+(?:st[öo]rre|mindre|centrerad|kortare))|"
     r"beh[öo]ver\s+(?:[äa]ndras|fixas|uppdateras|justeras|f[öo]rb[äa]ttras)"
     r")\b",
     re.I,
@@ -511,6 +511,17 @@ _SWITCH_TARGET_RE = re.compile(
     r")\b",
     re.I,
 )
+
+_NEW_PAGE_CREATION_RE = re.compile(
+    r"\b(?:"
+    r"(?:skapa|bygg(?:a)?|designa|create|build)\s+(?:en\s+|ett\s+|ny\s+|nytt\s+)*"
+    r"(?:ny\s+)?(?:sida|tacksida|thank[- ]?you(?:\s*sida)?|landningssida|kampanjsida|undersida|page)|"
+    r"ny\s+(?:sida|tacksida|thank[- ]?you(?:\s*sida)?|landningssida|kampanjsida|undersida)"
+    r")\b",
+    re.I,
+)
+
+_POST_ONLY_RE = re.compile(r"\b(?:inl[äa]gg(?:et|en)?|blogginl[äa]gg(?:et)?)\b", re.I)
 
 _ANCHORED_UI_CUE_RE = re.compile(
     r"\b(?:"
@@ -582,7 +593,8 @@ _PAGE_CONTENT_WORD_RE = re.compile(
     r"\b(?:sid(?:an|a|or|orna)|page|startsida(?:n)?|hemsida(?:n)?|landningssid(?:a|an)|"
     r"kampanjsid(?:a|an)|tacksid(?:a|an)|thank[- ]?you|orderbekr[äa]ftelse|"
     r"kassasida(?:n)?|kontaktsida(?:n)?|inl[äa]gg(?:et|en)?|blogginl[äa]gg(?:et)?|post|"
-    r"rubrik(?:en)?|titel|br[öo]dtext|inneh[åa]ll(?:et)?|text(?:en)?)\b",
+    r"rubrik(?:en)?|underrubrik(?:en)?|titel(?:n)?|br[öo]dtext(?:en)?|inneh[åa]ll(?:et)?|text(?:en)?|"
+    r"hj[äa]lpsektion(?:en)?)\b",
     re.I,
 )
 
@@ -654,9 +666,15 @@ def detect_change_ambiguity(
     category = _classify_category(raw, mentions_screenshot=mentions_screenshot)
     if (
         has_active_wp_review
-        and category in {"wp_visual", "wp_code", "general_change"}
         and not _SWITCH_TARGET_RE.search(raw)
-        and bool(_ANCHORED_UI_CUE_RE.search(raw))
+        and not _NEW_PAGE_CREATION_RE.search(raw)
+        and (
+            (
+                category in {"wp_visual", "wp_code", "general_change"}
+                and bool(_ANCHORED_UI_CUE_RE.search(raw))
+            )
+            or (category == "page_content" and not _POST_ONLY_RE.search(raw))
+        )
     ):
         return ChangeAssessment(
             is_change_request=True,

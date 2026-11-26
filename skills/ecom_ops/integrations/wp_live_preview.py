@@ -12,6 +12,7 @@ import base64
 import html as html_lib
 import ipaddress
 import json
+import os
 import re
 import shutil
 import socket
@@ -34,7 +35,7 @@ from ecom_ops.integrations.wp_browser_smoke import (
     _wait_cdp_page_ws,
     find_browser_binary,
 )
-from ecom_ops.integrations.wp_local_runtime import build_php_child_env
+from ecom_ops.integrations.wp_local_runtime import build_php_child_env, terminate_process_tree
 from ecom_ops.runtime_env import env_flag
 from ecom_ops.wp_ops.credentials import bind_credential, scrub_secrets
 from ecom_ops.wp_ops.file_changes import rest_reads_allowed
@@ -62,6 +63,12 @@ _REFUSED_PATH_TOKENS = (
     "/handlekurv",
     "/kasse",
     "/min-konto",
+    "/varukorg",
+    "/kassa",
+    "/kassan",
+    "/mitt-konto",
+    "/betalning",
+    "/kurv",
 )
 _SITE_BLOCKED_SUBSTRINGS = (
     "wp-admin",
@@ -79,6 +86,12 @@ _SITE_BLOCKED_SUBSTRINGS = (
     "/handlekurv",
     "/kasse",
     "/min-konto",
+    "/varukorg",
+    "/kassa",
+    "/kassan",
+    "/mitt-konto",
+    "/betalning",
+    "/kurv",
 )
 _STATIC_ASSET_HOSTS = frozenset(
     {
@@ -144,6 +157,19 @@ _SANDBOX_TRACKER_TOKENS: tuple[str, ...] = (
     "wiserreview",
 )
 _SCRIPT_TAG_RE = re.compile(r"<script\b[^>]*>[\s\S]*?</script\s*>", re.IGNORECASE)
+_SCRIPT_STRAY_RE = re.compile(r"</?script\b[^>]*>", re.IGNORECASE)
+_SANDBOX_OPEN_TAG_RE = re.compile(
+    r"""<([A-Za-z][A-Za-z0-9:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>""",
+    re.DOTALL,
+)
+_SANDBOX_TAG_ATTR_SCAN_RE = re.compile(
+    r"""(?P<ev>(?:[\s/]+|(?<=["']))on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s/>]+))|(?P<q>"[^"]*"|'[^']*')""",
+    re.IGNORECASE,
+)
+_INLINE_JS_PROTO_RE = re.compile(
+    r"""(\b(?:href|src|action|formaction)\s*=\s*["']?\s*)(?:javascript|vbscript)\s*:""",
+    re.IGNORECASE,
+)
 _NOSCRIPT_TAG_RE = re.compile(r"<noscript\b[^>]*>[\s\S]*?</noscript\s*>", re.IGNORECASE)
 _BASE_TAG_RE = re.compile(r"<base\b[^>]*>", re.IGNORECASE)
 _HEAD_OPEN_RE = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
@@ -210,9 +236,18 @@ def validate_focus_options(
     return clean_section, clean_selector, clean_text, full_page
 
 
+def _unquote_iteratively(value: str, *, max_rounds: int = 6) -> str:
+    current = str(value or "")
+    for _ in range(max_rounds):
+        nxt = urllib.parse.unquote(current)
+        if nxt == current:
+            break
+        current = nxt
+    return current
+
+
 def _unquote_twice(value: str) -> str:
-    once = urllib.parse.unquote(value)
-    return urllib.parse.unquote(once)
+    return _unquote_iteratively(value)
 
 
 def validate_preview_path(path: str | None) -> str:
@@ -298,13 +333,19 @@ def _host_resolves_public(host: str) -> bool:
     return True
 
 
-def _blocked_site_path_reason(parsed: urllib.parse.ParseResult) -> str | None:
+def _blocked_site_path_reason(
+    parsed: urllib.parse.ParseResult,
+    *,
+    allow_wp_json: bool = False,
+) -> str | None:
     path_and_query = parsed.path or "/"
     if parsed.query:
         path_and_query = f"{path_and_query}?{parsed.query}"
-    decoded_pq = _unquote_twice(path_and_query)
+    decoded_pq = _unquote_iteratively(path_and_query)
     for candidate in (path_and_query.lower(), decoded_pq.lower()):
         for blocked in _SITE_BLOCKED_SUBSTRINGS:
+            if allow_wp_json and blocked == "/wp-json":
+                continue
             if blocked in candidate:
                 return f"site_path_blocked:{blocked.strip('/')}"
     return None
@@ -343,14 +384,15 @@ def classify_request(method: str, url: str, *, site_host: str) -> tuple[bool, st
 class _AllowlistedSiteRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Refuse HTTP redirects that leave the registered site's allowlisted hosts."""
 
-    def __init__(self, allowed_hosts: frozenset[str]) -> None:
+    def __init__(self, allowed_hosts: frozenset[str], *, allow_wp_json: bool = False) -> None:
         super().__init__()
         self._allowed_hosts = allowed_hosts
+        self._allow_wp_json = allow_wp_json
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
         parsed = urllib.parse.urlparse(str(newurl or ""))
         ok_url, host, err_reason = _safe_https_parsed(parsed)
-        if not ok_url or host not in self._allowed_hosts:
+        if not ok_url or host not in self._allowed_hosts or not _host_resolves_public(host):
             raise urllib.error.HTTPError(
                 newurl,
                 code,
@@ -358,7 +400,7 @@ class _AllowlistedSiteRedirectHandler(urllib.request.HTTPRedirectHandler):
                 headers,
                 fp,
             )
-        blocked_reason = _blocked_site_path_reason(parsed)
+        blocked_reason = _blocked_site_path_reason(parsed, allow_wp_json=self._allow_wp_json)
         if blocked_reason:
             raise urllib.error.HTTPError(
                 newurl,
@@ -1042,16 +1084,33 @@ def _safe_js_json(value: Any) -> str:
     )
 
 
-def _strip_sandbox_trackers(html: str) -> str:
+def _strip_sandbox_scripts_and_trackers(html: str) -> str:
+    """Strip all untrusted ``<script>`` tags, inline ``on*=`` handlers, and tracker ``<noscript>`` tags."""
     def _drop_if_tracker(match: re.Match[str]) -> str:
         low = match.group(0).lower()
         if any(tok in low for tok in _SANDBOX_TRACKER_TOKENS):
             return ""
         return match.group(0)
 
-    cleaned = _SCRIPT_TAG_RE.sub(_drop_if_tracker, html)
+    def _clean_tag(match: re.Match[str]) -> str:
+        tag_name = match.group(1)
+        attrs_part = match.group(2)
+        cleaned_attrs = _SANDBOX_TAG_ATTR_SCAN_RE.sub(
+            lambda m: "" if m.group("ev") is not None else m.group(0),
+            attrs_part,
+        )
+        cleaned_attrs = _INLINE_JS_PROTO_RE.sub(r"\1#", cleaned_attrs)
+        return f"<{tag_name}{cleaned_attrs}>"
+
+    cleaned = _SCRIPT_TAG_RE.sub("", html)
+    cleaned = _SCRIPT_STRAY_RE.sub("", cleaned)
+    cleaned = _SANDBOX_OPEN_TAG_RE.sub(_clean_tag, cleaned)
     cleaned = _NOSCRIPT_TAG_RE.sub(_drop_if_tracker, cleaned)
     return cleaned
+
+
+def _strip_sandbox_trackers(html: str) -> str:
+    return _strip_sandbox_scripts_and_trackers(html)
 
 
 def _sandbox_base_href(site_canonical_url: str) -> str:
@@ -1167,14 +1226,15 @@ def build_interactive_sandbox_html(
     focus_js = _safe_js_json(focus_text or "")
     sel_js = _safe_js_json(focus_selector or "")
     guard_script = (
-        '<script data-azom-sandbox="guard">\n'
+        '<script data-azom-sandbox="guard" data-azom-guard="1">\n'
         "(function(){\n"
         f"  var highlightToken = {hi_js};\n"
         f"  var focusText = {focus_js};\n"
         f"  var focusSelector = {sel_js};\n"
         "  var BLOCKED_MSG = 'Blockerad i sandbox-läget — inga ändringar skickas till live';\n"
         "  var BLOCKED_PATHS = ['wp-admin','wp-login','admin-ajax','wc-ajax','/wp-json','rest_route',"
-        "'xmlrpc','wp-cron','add-to-cart','/cart','/checkout','/my-account','/handlekurv','/kasse','/min-konto'];\n"
+        "'xmlrpc','wp-cron','add-to-cart','/cart','/checkout','/my-account','/handlekurv','/kasse',"
+        "'/min-konto','/varukorg','/kassa','/kassan','/mitt-konto','/betalning','/kurv'];\n"
         "  var toastTimer = null;\n"
         "  function showToast(msg){\n"
         "    var el = document.getElementById('azom-sandbox-toast');\n"
@@ -1447,12 +1507,16 @@ def capture_preview(
     visual_health: dict[str, Any] = {}
 
     try:
+        popen_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(
             command,
             shell=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
+            **popen_kwargs,
         )
         ws_url = _wait_cdp_page_ws(cdp_port, proc, timeout_s=min(15.0, timeout_s))
         cdp = _LoopbackCdpClient(ws_url, timeout_s=min(20.0, timeout_s))
@@ -1790,17 +1854,14 @@ def capture_preview(
                 }
             revisions_meta[label] = viewports_out
     finally:
-        if cdp is not None:
-            cdp.close()
-        if proc is not None:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5.0)
-        shutil.rmtree(user_data_dir, ignore_errors=True)
+        try:
+            if cdp is not None:
+                cdp.close()
+        finally:
+            try:
+                terminate_process_tree(proc, timeout_s=5.0)
+            finally:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
 
     ordered_screenshots = _order_screenshots(screenshots)
     agg_warnings: list[str] = []
@@ -1938,12 +1999,16 @@ def inspect_element(
     viewports_out: dict[str, Any] = {}
 
     try:
+        popen_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(
             command,
             shell=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
+            **popen_kwargs,
         )
         ws_url = _wait_cdp_page_ws(cdp_port, proc, timeout_s=min(15.0, timeout_s))
         cdp = _LoopbackCdpClient(ws_url, timeout_s=min(20.0, timeout_s))
@@ -2031,17 +2096,14 @@ def inspect_element(
                 parsed = {}
             viewports_out[vp_name] = parsed if isinstance(parsed, dict) else {}
     finally:
-        if cdp is not None:
-            cdp.close()
-        if proc is not None:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5.0)
-        shutil.rmtree(user_data_dir, ignore_errors=True)
+        try:
+            if cdp is not None:
+                cdp.close()
+        finally:
+            try:
+                terminate_process_tree(proc, timeout_s=5.0)
+            finally:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
 
     desktop = viewports_out.get("desktop") or {}
     mobile = viewports_out.get("mobile") or {}

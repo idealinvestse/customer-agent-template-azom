@@ -51,21 +51,29 @@ class CommandContext:
         return session
 
     def save_session(self, **updates: Any) -> None:
-        state = self.store.get(self.chat_id) or {
-            "flow": None,
-            "step": None,
-            "slots": {},
-            "messages": [],
-            "tool_digest": "",
-            "updated_at": 0,
-        }
-        session = dict(state.get("session") or {})
-        session.update(updates)
-        state["session"] = session
-        state["messages"] = clamp_messages(state.get("messages"))
-        state["tool_digest"] = str(state.get("tool_digest") or "")
-        # preserve flow if mid-dialog
-        self.store.set(self.chat_id, state)
+        def _mutate(prev: dict[str, Any]) -> dict[str, Any]:
+            state = dict(prev) if prev else {
+                "flow": None,
+                "step": None,
+                "slots": {},
+                "messages": [],
+                "tool_digest": "",
+                "updated_at": 0,
+            }
+            session = dict(state.get("session") or {})
+            session.update(updates)
+            state["session"] = session
+            state["messages"] = clamp_messages(state.get("messages"))
+            state["tool_digest"] = str(state.get("tool_digest") or "")
+            # preserve flow if mid-dialog
+            return state
+
+        update_atomic = getattr(self.store, "update_atomic", None)
+        if callable(update_atomic):
+            update_atomic(self.chat_id, _mutate)
+            return
+        prev = self.store.get(self.chat_id) or {}
+        self.store.set(self.chat_id, _mutate(prev))
 
 
 @dataclass(frozen=True)
@@ -230,23 +238,30 @@ def cmd_reset(ctx: CommandContext) -> str:
 
 
 def cmd_stop(ctx: CommandContext) -> str:
-    state = ctx.store.get(ctx.chat_id)
-    session = (state or {}).get("session") or {}
-    messages = clamp_messages((state or {}).get("messages"))
-    digest = str((state or {}).get("tool_digest") or "")
-    ctx.store.clear(ctx.chat_id)
-    if session or messages or digest:
-        ctx.store.set(
-            ctx.chat_id,
-            {
-                "flow": None,
-                "step": None,
-                "slots": {},
-                "messages": messages,
-                "tool_digest": digest,
-                "session": session,
-            },
-        )
+    def _clear_flow(state: dict[str, Any]) -> dict[str, Any] | None:
+        session = (state or {}).get("session") or {}
+        messages = clamp_messages((state or {}).get("messages"))
+        digest = str((state or {}).get("tool_digest") or "")
+        if not (session or messages or digest):
+            return None
+        return {
+            "flow": None,
+            "step": None,
+            "slots": {},
+            "messages": messages,
+            "tool_digest": digest,
+            "session": session,
+        }
+
+    update_atomic = getattr(ctx.store, "update_atomic", None)
+    if callable(update_atomic):
+        update_atomic(ctx.chat_id, _clear_flow)
+    else:
+        state = ctx.store.get(ctx.chat_id) or {}
+        updated = _clear_flow(state)
+        ctx.store.clear(ctx.chat_id)
+        if updated is not None:
+            ctx.store.set(ctx.chat_id, updated)
     return "Stop — pågående flöde avbrutet."
 
 

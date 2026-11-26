@@ -7,7 +7,9 @@ No secrets, tokens, or API key hashes ever enter this file.
 
 from __future__ import annotations
 
+import copy
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ from ecom_ops.model_router.store import atomic_write_text, data_dir, file_lock
 _BACKOFF_STEPS_S = (30, 60, 180, 300)
 _READ_CACHE_TTL_S = 2.0
 
+_CACHE_LOCK = threading.Lock()
 _cache_dir: str = ""
 _cache_mtime_ns: int | None = None
 _cache_loaded_at: float = 0.0
@@ -56,13 +59,14 @@ def _read_raw(*, use_cache: bool = True) -> dict[str, Any]:
         mtime = path.stat().st_mtime_ns if path.is_file() else None
     except OSError:
         mtime = None
-    if (
-        use_cache
-        and _cache_dir == ddir
-        and _cache_mtime_ns == mtime
-        and (now - _cache_loaded_at) < _READ_CACHE_TTL_S
-    ):
-        return _cache_data
+    with _CACHE_LOCK:
+        if (
+            use_cache
+            and _cache_dir == ddir
+            and _cache_mtime_ns == mtime
+            and (now - _cache_loaded_at) < _READ_CACHE_TTL_S
+        ):
+            return copy.deepcopy(_cache_data)
     if not path.is_file():
         data: dict[str, Any] = {"entries": {}}
     else:
@@ -73,10 +77,11 @@ def _read_raw(*, use_cache: bool = True) -> dict[str, Any]:
             data = {"entries": {}}
     if not isinstance(data.get("entries"), dict):
         data["entries"] = {}
-    _cache_dir = ddir
-    _cache_mtime_ns = mtime
-    _cache_loaded_at = now
-    _cache_data = data
+    with _CACHE_LOCK:
+        _cache_dir = ddir
+        _cache_mtime_ns = mtime
+        _cache_loaded_at = now
+        _cache_data = copy.deepcopy(data)
     return data
 
 
@@ -88,10 +93,11 @@ def _write_raw(data: dict[str, Any]) -> None:
         mtime = path.stat().st_mtime_ns
     except OSError:
         mtime = None
-    _cache_dir = str(data_dir())
-    _cache_mtime_ns = mtime
-    _cache_loaded_at = time.monotonic()
-    _cache_data = data
+    with _CACHE_LOCK:
+        _cache_dir = str(data_dir())
+        _cache_mtime_ns = mtime
+        _cache_loaded_at = time.monotonic()
+        _cache_data = copy.deepcopy(data)
 
 
 def _mutate(fn: Any) -> Any:
@@ -292,7 +298,11 @@ def status_snapshot() -> dict[str, dict[str, Any]]:
 
 def reset_breaker(key: str | None = None) -> None:
     if key is None:
-        _write_raw({"entries": {}})
+
+        def _clear_all(locked_data: dict[str, Any]) -> None:
+            locked_data["entries"] = {}
+
+        _mutate(_clear_all)
         return
 
     def _drop(locked_data: dict[str, Any]) -> None:
@@ -311,7 +321,8 @@ def reset_breaker(key: str | None = None) -> None:
 
 def reset_breaker_cache_for_tests() -> None:
     global _cache_dir, _cache_mtime_ns, _cache_loaded_at, _cache_data
-    _cache_dir = ""
-    _cache_mtime_ns = None
-    _cache_loaded_at = 0.0
-    _cache_data = {}
+    with _CACHE_LOCK:
+        _cache_dir = ""
+        _cache_mtime_ns = None
+        _cache_loaded_at = 0.0
+        _cache_data = {}

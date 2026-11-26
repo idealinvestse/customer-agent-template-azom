@@ -202,8 +202,10 @@ def test_dashboard_sandbox_preview_route_auth_headers_scrub_and_symlink_refusal(
     jonatan = _auth(client, "jonatan")
     oscar = _auth(client, "oscar")
 
-    # 404 before artifacts/preview.html is generated, and review page has no link yet
-    assert client.get(preview_url, headers=jonatan).status_code == 404
+    # Viewer (jonatan) is strictly denied (403) before and after preview.html exists
+    assert client.get(preview_url, headers=jonatan).status_code == 403
+    # Admin gets 404 before artifacts/preview.html is generated, and review page has no link yet
+    assert client.get(preview_url, headers=oscar).status_code == 404
     rev_before = client.get(review_url, headers=oscar)
     assert rev_before.status_code == 200
     assert "Öppna interaktiv sandbox-förhandsvisning" not in rev_before.get_data(as_text=True)
@@ -212,17 +214,36 @@ def test_dashboard_sandbox_preview_route_auth_headers_scrub_and_symlink_refusal(
     assert client.get(f"/wp/{site_id}/reviews/bad-id/preview", headers=oscar).status_code == 404
     assert client.get(f"/wp/..%2Fetc/reviews/{plan_id}/preview", headers=oscar).status_code == 404
 
-    # Write preview.html containing an accidental secret to verify defensive scrubbing
+    # Write preview.html containing an accidental secret, untrusted scripts, spoofed guard tag,
+    # slash/quoted-'>' inline event handlers, and the sandbox toolbar
     preview_file = ws_dir / "artifacts" / "preview.html"
     preview_file.write_text(
-        f"<!doctype html><html><body><div id='azom-sandbox-toolbar'>AZOM SANDBOX</div>"
-        f"<h1>Testprodukt 123</h1><p>{SECRET}</p></body></html>",
+        f"<!doctype html><html><body>"
+        f"<script src='https://evil.example/pwn.js'></script>"
+        f"<script>window.__xss = 1;</script>"
+        f"<script data-azom-guard=\"1\">window.__spoof=1;</script>"
+        f"<div id='azom-sandbox-toolbar' onclick='alert(1)'>AZOM SANDBOX</div>"
+        f"<svg/onload=\"void(1)\"></svg>"
+        f"<img src=\"x\"/onerror=\"void(2)\">"
+        f"<img alt=\">\" onerror=\"void(3)\">"
+        f"<img src='https://example.com/a.png' onerror=\"alert(2)\" onload=bad()>"
+        f"<h1>Testprodukt 123</h1><p>{SECRET}</p>"
+        f"</body></html>",
         encoding="utf-8",
     )
 
-    # Both viewer (jonatan with WP_OPS_READ) and admin (oscar) can view interactive sandbox preview
-    for headers in (jonatan, oscar):
-        resp = client.get(preview_url, headers=headers)
+    # Viewer (jonatan) remains strictly forbidden (403) and sees no preview link on review page
+    assert client.get(preview_url, headers=jonatan).status_code == 403
+    viewer_rev = client.get(review_url, headers=jonatan)
+    assert viewer_rev.status_code == 200
+    assert preview_url not in viewer_rev.get_data(as_text=True)
+
+    # Admin (oscar) receives hardened preview HTML under an opaque-origin sandbox CSP with per-request nonce
+    import re
+
+    nonces: list[str] = []
+    for _ in range(2):
+        resp = client.get(preview_url, headers=oscar)
         assert resp.status_code == 200
         assert resp.content_type.startswith("text/html")
         assert "charset=utf-8" in resp.content_type.lower()
@@ -231,15 +252,73 @@ def test_dashboard_sandbox_preview_route_auth_headers_scrub_and_symlink_refusal(
         assert resp.headers.get("Referrer-Policy") == "no-referrer"
         assert resp.headers.get("X-Frame-Options") == "SAMEORIGIN"
         csp = resp.headers.get("Content-Security-Policy") or ""
+        assert "sandbox allow-scripts" in csp
+        assert "allow-same-origin" not in csp
         assert "connect-src 'none'" in csp
         assert "form-action 'none'" in csp
         assert "frame-ancestors 'self'" in csp
+        m_script_src = re.search(r"script-src\s+([^;]+)", csp)
+        assert m_script_src is not None
+        script_src = m_script_src.group(1)
+        assert "'unsafe-inline'" not in script_src
+        assert "https://" not in script_src
+        m_nonce = re.fullmatch(r"'nonce-([A-Za-z0-9_-]+)'", script_src.strip())
+        assert m_nonce is not None
+        nonce = m_nonce.group(1)
+        nonces.append(nonce)
         body = resp.get_data(as_text=True)
         assert "Testprodukt 123" in body
         assert SECRET not in body
         assert "***" in body
+        assert "evil.example/pwn.js" not in body
+        assert "window.__xss" not in body
+        assert "window.__spoof" not in body
+        assert "onclick=" not in body.lower()
+        assert "onerror=" not in body.lower()
+        assert "onload=" not in body.lower()
+        assert f'<script nonce="{nonce}" data-azom-sandbox="guard" data-azom-guard="1">' in body
+        assert "Blockerad i sandbox-läget" in body
+    assert nonces[0] != nonces[1]
 
-    # Review page now shows the interactive sandbox preview button/link
+    # Spoofed legacy guard script without toolbar or canonical guard signature is completely stripped
+    preview_file.write_text(
+        "<!doctype html><html><body><script>evil();</script>"
+        "<script data-azom-guard=\"1\">window.__spoof=2;</script>"
+        "<script data-azom-sandbox=\"guard\">window.__spoof=3;</script>"
+        "<button onclick='steal()'>Köp</button></body></html>",
+        encoding="utf-8",
+    )
+    spoof_resp = client.get(preview_url, headers=oscar)
+    assert spoof_resp.status_code == 200
+    spoof_body = spoof_resp.get_data(as_text=True)
+    assert "<script" not in spoof_body.lower()
+    assert "window.__spoof" not in spoof_body
+    assert "evil()" not in spoof_body
+    assert "onclick=" not in spoof_body.lower()
+
+    # Real build_interactive_sandbox_html() output preserves highlight/focus params under canonical nonce
+    from ecom_ops.integrations.wp_live_preview import build_interactive_sandbox_html
+
+    built = build_interactive_sandbox_html(
+        "<html><body><main><h1>Köpknapp</h1></main></body></html>",
+        site_canonical_url="https://mock-staging.example",
+        site_id=site_id,
+        plan_id=plan_id,
+        path="/produkt/test/",
+        highlight_token="Köpknapp",
+        focus_selector=".buy-btn",
+    )
+    preview_file.write_text(built, encoding="utf-8")
+    built_resp = client.get(preview_url, headers=oscar)
+    assert built_resp.status_code == 200
+    built_csp = built_resp.headers.get("Content-Security-Policy") or ""
+    m_built_nonce = re.search(r"script-src\s+'nonce-([A-Za-z0-9_-]+)'", built_csp)
+    assert m_built_nonce is not None
+    built_body = built_resp.get_data(as_text=True)
+    assert f'<script nonce="{m_built_nonce.group(1)}" data-azom-sandbox="guard" data-azom-guard="1">' in built_body
+    assert 'var focusSelector = ".buy-btn";' in built_body
+
+    # Review page now shows the interactive sandbox preview button/link for admin
     rev_after = client.get(review_url, headers=oscar)
     assert rev_after.status_code == 200
     rev_html = rev_after.get_data(as_text=True)

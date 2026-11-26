@@ -425,3 +425,144 @@ def test_marketing_suggests_build_and_deny(dash_client):
         follow_redirects=False,
     )
     assert resp.status_code in (302, 303)
+
+
+def test_metrics_probe_last_ts_is_valid_prometheus_numeric(tmp_path, monkeypatch):
+    import json
+    import re
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AZOM_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.setenv("METRICS_SCRAPE_TOKEN", "scrape-tok-123")
+    monkeypatch.chdir(DASH_DIR)
+    app = _load_dashboard_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    (data_dir / "probe_last.json").write_text(
+        json.dumps({"checked_at": "2026-11-25T20:00:00Z", "ok": True}),
+        encoding="utf-8",
+    )
+    resp = client.get("/metrics", headers={"Authorization": "Bearer scrape-tok-123"})
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "# TYPE azom_probe_last_ts gauge" in body
+    m = re.search(r"^azom_probe_last_ts\s+(.+)$", body, re.MULTILINE)
+    assert m is not None
+    raw_val = m.group(1).strip()
+    assert "'" not in raw_val and '"' not in raw_val
+    parsed = float(raw_val)
+    assert parsed > 1_700_000_000
+
+    # Invalid/missing timestamp falls back cleanly to numeric 0
+    (data_dir / "probe_last.json").write_text(
+        json.dumps({"checked_at": "not-a-timestamp"}),
+        encoding="utf-8",
+    )
+    resp_bad = client.get("/metrics", headers={"Authorization": "Bearer scrape-tok-123"})
+    assert resp_bad.status_code == 200
+    assert "azom_probe_last_ts 0\n" in resp_bad.get_data(as_text=True)
+
+
+def test_tail_jsonl_chunked_reverse_seek_and_utf8_safety(tmp_path):
+    if str(DASH_DIR) not in sys.path:
+        sys.path.insert(0, str(DASH_DIR))
+    import json
+
+    from support import _tail_jsonl
+
+    log = tmp_path / "telemetry.jsonl"
+    rows = [
+        json.dumps({"i": i, "text": f"ÅÄÖ-rad-{i}-🚀"}, ensure_ascii=False)
+        for i in range(40)
+    ]
+    rows.append("not-json-line-åäö")
+    rows.append("")
+    rows.append(json.dumps({"i": 999, "text": "sista-raden-ö"}, ensure_ascii=False))
+    log.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    # Tiny chunk_size forces multi-byte UTF-8 characters and JSON lines to split across chunk boundaries
+    tailed = _tail_jsonl(log, limit=5, chunk_size=17)
+    assert len(tailed) == 5
+    assert tailed[0] == {"i": 999, "text": "sista-raden-ö"}
+    assert tailed[1] == {"raw": "not-json-line-åäö"}
+    assert tailed[2] == {"i": 39, "text": "ÅÄÖ-rad-39-🚀"}
+    assert tailed[3] == {"i": 38, "text": "ÅÄÖ-rad-38-🚀"}
+    assert tailed[4] == {"i": 37, "text": "ÅÄÖ-rad-37-🚀"}
+    assert _tail_jsonl(log, limit=0) == []
+
+    # max_bytes cap bounds total bytes scanned on huge files
+    capped = _tail_jsonl(log, limit=100, chunk_size=32, max_bytes=128)
+    assert 1 <= len(capped) < 10
+    assert capped[0] == {"i": 999, "text": "sista-raden-ö"}
+
+
+def test_resolve_dashboard_threads_clamping_and_default(monkeypatch):
+    _load_dashboard_app()
+    import azom_dashboard
+
+    monkeypatch.delenv("DASHBOARD_THREADS", raising=False)
+    assert azom_dashboard._resolve_dashboard_threads() == 12
+    assert azom_dashboard._resolve_dashboard_threads("") == 12
+    assert azom_dashboard._resolve_dashboard_threads("not-a-number") == 12
+    assert azom_dashboard._resolve_dashboard_threads("1") == 4
+    assert azom_dashboard._resolve_dashboard_threads("4") == 4
+    assert azom_dashboard._resolve_dashboard_threads("16") == 16
+    assert azom_dashboard._resolve_dashboard_threads("999") == 32
+
+
+def test_messenger_webhook_reuses_shared_conversation_store(tmp_path):
+    if str(ROOT / "skills") not in sys.path:
+        sys.path.insert(0, str(ROOT / "skills"))
+    if str(DASH_DIR) not in sys.path:
+        sys.path.insert(0, str(DASH_DIR))
+    import webhooks
+
+    dir_a = tmp_path / "a"
+    dir_b = tmp_path / "b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    s1 = webhooks._get_messenger_store(dir_a)
+    s2 = webhooks._get_messenger_store(dir_a)
+    s3 = webhooks._get_messenger_store(dir_b)
+    assert s1 is s2
+    assert s1 is not s3
+
+
+def test_index_reuses_single_telemetry_instance(tmp_path, monkeypatch):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.chdir(DASH_DIR)
+    app = _load_dashboard_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    import ecom_ops.budget as budget_mod
+    import ecom_ops.kpis as kpis_mod
+
+    seen: list[object] = []
+    orig_budget = budget_mod.budget_status
+    orig_kpis = kpis_mod.support_kpis_last_days
+
+    def _spy_budget(*args, **kwargs):
+        seen.append(kwargs.get("telemetry"))
+        return orig_budget(*args, **kwargs)
+
+    def _spy_kpis(*args, **kwargs):
+        seen.append(kwargs.get("telemetry"))
+        return orig_kpis(*args, **kwargs)
+
+    monkeypatch.setattr(budget_mod, "budget_status", _spy_budget)
+    monkeypatch.setattr(kpis_mod, "support_kpis_last_days", _spy_kpis)
+
+    resp = client.get("/", headers=_auth_headers())
+    assert resp.status_code == 200
+    assert len(seen) == 2
+    assert seen[0] is not None
+    assert seen[0] is seen[1]

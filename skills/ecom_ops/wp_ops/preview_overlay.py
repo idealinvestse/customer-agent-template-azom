@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import difflib
 import html as html_lib
+import ipaddress
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -35,6 +36,39 @@ _CONTENT_CONTAINER_RES: tuple[re.Pattern[str], ...] = (
 )
 _HEADER_OPEN_RE = re.compile(r"<header\b[^>]*>", re.IGNORECASE)
 _FOOTER_OPEN_RE = re.compile(r"<footer\b[^>]*>", re.IGNORECASE)
+_HEADER_OPEN_RES: tuple[re.Pattern[str], ...] = (
+    _HEADER_OPEN_RE,
+    re.compile(r"<(?:div|nav|section)\b[^>]*\brole\s*=\s*[\"']banner[\"'][^>]*>", re.IGNORECASE),
+    re.compile(
+        r"<(?:div|nav|section)\b[^>]*\bclass\s*=\s*[\"'](?:[^\"']*\s)?(?:w-nav|site-header|navbar|main-header|top-nav)(?:\s[^\"']*)?[\"'][^>]*>",
+        re.IGNORECASE,
+    ),
+    re.compile(r"<(?:div|nav|section)\b[^>]*\bid\s*=\s*[\"'](?:masthead|site-header|header)[\"'][^>]*>", re.IGNORECASE),
+)
+_FOOTER_OPEN_RES: tuple[re.Pattern[str], ...] = (
+    _FOOTER_OPEN_RE,
+    re.compile(r"<(?:div|section)\b[^>]*\brole\s*=\s*[\"']contentinfo[\"'][^>]*>", re.IGNORECASE),
+)
+_CONTAINER_TAG_SCAN_RE = re.compile(r"<(/?)(div|section|article|main|aside)\b([^>]*)>", re.IGNORECASE)
+_CSS_COMMENT_RE = re.compile(r"/\*[\s\S]*?(?:\*/|$)")
+_CSS_HEX_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\r\n\f]?")
+_CSS_CHAR_ESCAPE_RE = re.compile(r"\\([^\r\n\f0-9a-fA-F])")
+_OVERLAY_SCRIPT_BLOCK_RE = re.compile(r"<script\b[^>]*>[\s\S]*?</script\s*>", re.IGNORECASE)
+_OVERLAY_SCRIPT_STRAY_RE = re.compile(r"</?script\b[^>]*>", re.IGNORECASE)
+_OVERLAY_OPEN_TAG_RE = re.compile(
+    r"""<([A-Za-z][A-Za-z0-9:-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>""",
+    re.DOTALL,
+)
+_OVERLAY_TAG_ATTR_SCAN_RE = re.compile(
+    r"""(?P<ev>(?:[\s/]+|(?<=["']))on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s/>]+))|(?P<q>"[^"]*"|'[^']*')""",
+    re.IGNORECASE,
+)
+_OVERLAY_JS_PROTO_ATTR_RE = re.compile(
+    r"""(\b(?:href|src|action|formaction)\s*=\s*["']?\s*)(?:javascript|vbscript)\s*:""",
+    re.IGNORECASE,
+)
+_VALID_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_VALID_TLD_LABEL_RE = re.compile(r"^(?:[a-z]{2,63}|xn--[a-z0-9]{2,59})$")
 _PAGE_DRAFT_ALLOWED_TAGS = frozenset(
     {
         "section",
@@ -102,7 +136,10 @@ _PAGE_DRAFT_TAG_ATTRS: dict[str, frozenset[str]] = {
     "button": frozenset({"type", "disabled"}),
 }
 _SAFE_DATA_ATTR_RE = re.compile(r"^data-[a-z0-9_-]{1,40}$")
-_UNSAFE_INLINE_STYLE_RE = re.compile(r"(?:javascript:|vbscript:|expression\s*\(|url\s*\(|@import|behavior\s*:)", re.IGNORECASE)
+_UNSAFE_INLINE_STYLE_RE = re.compile(
+    r"(?:javascript:|vbscript:|expression\s*\(|url\s*\(|image-set\s*\(|@import|behavior\s*:|-moz-binding\s*:|</|position\s*:\s*fixed)",
+    re.IGNORECASE,
+)
 _PHP_I18N_TAG_RE = re.compile(
     r"<\?(?:php|=)?\s*(?:echo\s+)?(?P<fn>__|esc_html__|esc_attr__|_e|esc_html_e|esc_attr_e)\s*\(\s*"
     r"(?P<q>['\"])(?P<msg>(?:\\.|(?!(?P=q))[^\\])*?)(?P=q)"
@@ -164,6 +201,48 @@ def _unescape_php_literal(text: str, quote: str) -> str:
     return text.replace(f"\\{quote}", quote).replace("\\\\", "\\")
 
 
+def _normalize_css_for_security(css: str) -> str:
+    """Strip CSS comments and decode CSS backslash/hex escapes before security regex checks."""
+    text = _CSS_COMMENT_RE.sub("", str(css or ""))
+
+    def _decode_hex(match: re.Match[str]) -> str:
+        try:
+            cp = int(match.group(1), 16)
+        except ValueError:
+            return ""
+        if cp == 0 or cp > 0x10FFFF:
+            return "\ufffd"
+        return chr(cp)
+
+    text = _CSS_HEX_ESCAPE_RE.sub(_decode_hex, text)
+    text = _CSS_CHAR_ESCAPE_RE.sub(lambda m: m.group(1), text)
+    return text
+
+
+def _strip_tag_event_handlers(html: str) -> str:
+    """Strip inline ``on*=`` handlers across open HTML tags, including ``/``-separated and quoted-``>`` forms."""
+
+    def _clean_tag(match: re.Match[str]) -> str:
+        tag_name = match.group(1)
+        attrs_part = match.group(2)
+        cleaned_attrs = _OVERLAY_TAG_ATTR_SCAN_RE.sub(
+            lambda m: "" if m.group("ev") is not None else m.group(0),
+            attrs_part,
+        )
+        cleaned_attrs = _OVERLAY_JS_PROTO_ATTR_RE.sub(r"\1#", cleaned_attrs)
+        return f"<{tag_name}{cleaned_attrs}>"
+
+    return _OVERLAY_OPEN_TAG_RE.sub(_clean_tag, html)
+
+
+def _neutralize_overlay_fragment(fragment: str) -> str:
+    """Strip ``<script>`` tags, ``on*=`` event handlers, and ``javascript:`` attrs from overlay hunks."""
+    cleaned = _OVERLAY_SCRIPT_BLOCK_RE.sub("", str(fragment or ""))
+    cleaned = _OVERLAY_SCRIPT_STRAY_RE.sub("", cleaned)
+    cleaned = _strip_tag_event_handlers(cleaned)
+    return cleaned
+
+
 def _expand_php_i18n_literals(text: str) -> str:
     """Render static WordPress i18n string-literal tags into plain HTML text without executing PHP."""
     if "<?" not in text:
@@ -174,7 +253,7 @@ def _expand_php_i18n_literals(text: str) -> str:
         raw = _unescape_php_literal(match.group("msg"), match.group("q"))
         if fn.startswith("esc_"):
             return html_lib.escape(raw, quote=True)
-        return raw
+        return _neutralize_overlay_fragment(raw)
 
     expanded = _PHP_I18N_TAG_RE.sub(_repl, text)
     if "<?" in expanded:
@@ -357,6 +436,37 @@ class SiteShell:
     original_title: str = ""
 
 
+def _unclosed_wrapper_open_tags(middle_html: str) -> str:
+    """Return opening tags in ``middle_html`` that remain unclosed at the end of the slice.
+
+    Webflow/Udesly themes (e.g. ``azom.no``) often open ``<div class="main">`` right after the
+    top navbar and close it AFTER ``<footer>``. Preserving unclosed wrapper opening tags keeps
+    the composed DOM balanced when replacing the body sections between header and footer.
+    """
+    stack: list[tuple[str, str]] = []
+    for match in _CONTAINER_TAG_SCAN_RE.finditer(middle_html):
+        is_close = bool(match.group(1))
+        tag = match.group(2).lower()
+        rest = match.group(3)
+        if is_close:
+            for idx in range(len(stack) - 1, -1, -1):
+                if stack[idx][0] == tag:
+                    del stack[idx:]
+                    break
+        elif not rest.rstrip().endswith("/"):
+            stack.append((tag, match.group(0)))
+    return "".join(raw for _tag, raw in stack)
+
+
+def _find_last_footer_start(live_html: str, *, min_pos: int = 0) -> int | None:
+    best: int | None = None
+    for pat in _FOOTER_OPEN_RES:
+        for match in pat.finditer(live_html, min_pos):
+            if best is None or match.start() > best:
+                best = match.start()
+    return best
+
+
 def extract_site_shell(live_html: str) -> SiteShell:
     """Extract real site ``<head>``, ``<header>``, and ``<footer>`` chrome for standalone page preview."""
     _check_html_size(live_html)
@@ -385,23 +495,47 @@ def extract_site_shell(live_html: str) -> SiteShell:
             original_title=orig_title,
         )
 
-    # 3. Between </header> and <footer ...> (works well on Webflow / Udesly classic themes)
-    header_span = _find_element_span(live_html, _HEADER_OPEN_RE)
-    footer_matches = list(_FOOTER_OPEN_RE.finditer(live_html))
-    if header_span is not None and footer_matches:
-        header_end = header_span[3]
-        footer_start = footer_matches[-1].start()
-        if footer_start >= header_end:
-            return SiteShell(
-                before_main=live_html[:header_end],
-                after_main=live_html[footer_start:],
-                strategy="header_footer",
-                original_title=orig_title,
-            )
-
-    # 4. Fallback inside <body>...</body>
+    # 3. Header/navbar + footer chrome (Classic, Block, and Webflow/Udesly themes)
     body_open = _BODY_OPEN_RE.search(live_html)
     body_close = _BODY_CLOSE_RE.search(live_html)
+    body_start = body_open.end() if body_open is not None else 0
+
+    header_span = _find_first_element_span(live_html, _HEADER_OPEN_RES)
+    if header_span is not None and header_span[0] < body_start:
+        header_span = None
+    footer_start = _find_last_footer_start(
+        live_html,
+        min_pos=header_span[3] if header_span is not None else body_start,
+    )
+
+    if header_span is not None and footer_start is not None and footer_start >= header_span[3]:
+        header_end = header_span[3]
+        enclosing = _unclosed_wrapper_open_tags(live_html[header_end:footer_start])
+        return SiteShell(
+            before_main=live_html[:header_end] + enclosing,
+            after_main=live_html[footer_start:],
+            strategy="header_footer",
+            original_title=orig_title,
+        )
+
+    if footer_start is not None and body_open is not None and footer_start >= body_open.end():
+        enclosing = _unclosed_wrapper_open_tags(live_html[body_open.end() : footer_start])
+        return SiteShell(
+            before_main=live_html[: body_open.end()] + enclosing,
+            after_main=live_html[footer_start:],
+            strategy="footer_only",
+            original_title=orig_title,
+        )
+
+    if header_span is not None and body_close is not None and body_close.start() >= header_span[3]:
+        return SiteShell(
+            before_main=live_html[: header_span[3]],
+            after_main=live_html[body_close.start() :],
+            strategy="header_only",
+            original_title=orig_title,
+        )
+
+    # 4. Fallback inside <body>...</body>
     if body_open is not None and body_close is not None and body_close.start() >= body_open.end():
         return SiteShell(
             before_main=live_html[: body_open.end()],
@@ -421,7 +555,7 @@ def _is_safe_url(url: str, *, allowed_hosts: frozenset[str], is_image: bool) -> 
     from urllib.parse import urlparse
 
     raw = str(url or "").strip()
-    if not raw or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+    if not raw or "\\" in raw or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
         return False
     low = raw.lower()
     if low.startswith(("javascript:", "vbscript:", "data:", "blob:")):
@@ -431,9 +565,26 @@ def _is_safe_url(url: str, *, allowed_hosts: frozenset[str], is_image: bool) -> 
     parsed = urlparse(raw)
     if parsed.scheme != "https":
         return False
-    host = (parsed.hostname or "").strip().lower().rstrip(".")
-    if not host or host in {"localhost", "127.0.0.1", "::1"}:
+    if parsed.username or parsed.password:
         return False
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host or host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if not ip.is_global:
+            return False
+    else:
+        labels = host.split(".")
+        if (
+            len(labels) < 2
+            or not all(_VALID_HOST_LABEL_RE.fullmatch(lbl) for lbl in labels)
+            or _VALID_TLD_LABEL_RE.fullmatch(labels[-1]) is None
+        ):
+            return False
     if is_image and allowed_hosts:
         return host in allowed_hosts
     return True
@@ -453,13 +604,19 @@ class _PageDraftHtmlSanitizer(HTMLParser):
         allowed_for_tag = _PAGE_DRAFT_TAG_ATTRS.get(tag, frozenset())
         out: list[str] = []
         seen: set[str] = set()
+        target_blank = False
+        rel_idx: int | None = None
+        rel_val = ""
         for raw_key, raw_val in attrs:
             key = str(raw_key or "").strip().lower()
             if not key or key.startswith("on") or key in seen:
                 continue
             val = "" if raw_val is None else str(raw_val).strip()
             if key == "style":
-                if not val or len(val) > 500 or _UNSAFE_INLINE_STYLE_RE.search(val):
+                if not val or len(val) > 500:
+                    continue
+                normalized_style = _normalize_css_for_security(val)
+                if _UNSAFE_INLINE_STYLE_RE.search(val) or _UNSAFE_INLINE_STYLE_RE.search(normalized_style):
                     continue
                 seen.add(key)
                 out.append(f'style="{html_lib.escape(val, quote=True)}"')
@@ -480,12 +637,30 @@ class _PageDraftHtmlSanitizer(HTMLParser):
             elif key == "target":
                 if val not in {"_blank", "_self"}:
                     continue
+                if val == "_blank":
+                    target_blank = True
+            elif key == "rel":
+                if len(val) > 200:
+                    val = val[:200]
+                rel_idx = len(out)
+                rel_val = val
             elif key == "type" and tag == "button":
                 val = "button"
             elif len(val) > 500:
                 val = val[:500]
             seen.add(key)
             out.append(f'{key}="{html_lib.escape(val, quote=True)}"')
+        if tag == "a" and target_blank:
+            tokens = [tok for tok in rel_val.split() if tok]
+            low_tokens = {tok.lower() for tok in tokens}
+            for req_tok in ("noopener", "noreferrer"):
+                if req_tok not in low_tokens:
+                    tokens.append(req_tok)
+            enforced_rel = f'rel="{html_lib.escape(" ".join(tokens), quote=True)}"'
+            if rel_idx is not None:
+                out[rel_idx] = enforced_rel
+            else:
+                out.append(enforced_rel)
         if tag == "button" and "type" not in seen:
             out.append('type="button"')
         return (" " + " ".join(out)) if out else ""
@@ -574,7 +749,7 @@ def compose_standalone_page(
     if clean_title:
         escaped_title = html_lib.escape(clean_title, quote=False)
         if _TITLE_TAG_RE.search(before):
-            before = _TITLE_TAG_RE.sub(f"<title>{escaped_title}</title>", before, count=1)
+            before = _TITLE_TAG_RE.sub(lambda _m, t=escaped_title: f"<title>{t}</title>", before, count=1)
 
     sanitized_body = sanitize_page_draft_html(body_html, allowed_hosts=allowed_hosts)
     banner_html = ""
@@ -930,7 +1105,7 @@ def apply_product_edits_overlay(live_html: str, edits: dict[str, Any]) -> Overla
             if inp_match is not None:
                 tag_raw = inp_match.group(0)
                 if _VALUE_ATTR_RE.search(tag_raw):
-                    new_tag = _VALUE_ATTR_RE.sub(rf'\1"{btn_esc}"', tag_raw, count=1)
+                    new_tag = _VALUE_ATTR_RE.sub(lambda m, b=btn_esc: f'{m.group(1)}"{b}"', tag_raw, count=1)
                 else:
                     new_tag = tag_raw[:-1] + f' value="{btn_esc}">'
                 html = html[: inp_match.start()] + new_tag + html[inp_match.end() :]
@@ -1057,7 +1232,7 @@ def apply_overlay(
                 if match is None:
                     hunks.append(OverlayHunk(rel_path, "insert_unanchored", old_ex, new_ex))
                     continue
-                new_block = "\n".join(rendered_new_lines)
+                new_block = _neutralize_overlay_fragment("\n".join(rendered_new_lines))
                 insertion = f"\n{new_block}" if rendered_new_lines else ""
                 html = html[: match.end()] + insertion + html[match.end() :]
                 _check_html_size(html)
@@ -1067,7 +1242,7 @@ def apply_overlay(
                 continue
 
             old_block = "\n".join(rendered_old_lines)
-            new_block = "\n".join(rendered_new_lines)
+            new_block = _neutralize_overlay_fragment("\n".join(rendered_new_lines))
             pattern = _build_ws_regex(old_block)
             match = pattern.search(html) if pattern is not None else None
             if match is None:

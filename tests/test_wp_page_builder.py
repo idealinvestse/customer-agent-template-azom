@@ -540,3 +540,142 @@ def test_wc_template_overrides_audit_on_udesly_theme_without_woocommerce_dir_and
     assert read_loop.handled is True
     assert read_loop.results[0]["ok"] is True
     assert len(read_loop.results[0]["content"]) >= 17000
+
+
+def test_extract_site_shell_webflow_udesly_navbar_and_enclosing_main_div() -> None:
+    from ecom_ops.wp_ops.preview_overlay import compose_standalone_page, extract_site_shell
+
+    webflow_html = (
+        "<!doctype html><html><head><title>Azom NO</title>"
+        '<link rel="stylesheet" href="/assets/webflow.css"></head><body>'
+        '<div data-collapse="medium" role="banner" class="nav02 w-nav">'
+        '<div class="nav_inner"><a href="/">AZOM</a></div></div>'
+        '<div class="main">'
+        '<section class="hero"><h1>Old Homepage Hero</h1></section>'
+        '<section class="products"><div>Featured</div></section>'
+        '<footer class="f01"><div class="f_wrap">Azom Footer 2026</div></footer>'
+        "</div>"
+        '<script src="/assets/azom-no-woocommerce.js"></script>'
+        "</body></html>"
+    )
+    shell = extract_site_shell(webflow_html)
+    assert shell.strategy == "header_footer"
+    assert 'class="nav02 w-nav"' in shell.before_main
+    assert '<div class="main">' in shell.before_main
+    assert "Old Homepage Hero" not in shell.before_main
+    assert '<footer class="f01">' in shell.after_main
+    assert "Azom Footer 2026" in shell.after_main
+
+    composed = compose_standalone_page(
+        webflow_html,
+        title="Takk for bestillingen",
+        body_html="<section><h1>Takk for bestillingen!</h1></section>",
+    )
+    assert "Old Homepage Hero" not in composed.html
+    assert 'class="nav02 w-nav"' in composed.html
+    assert "Takk for bestillingen!" in composed.html
+    assert "Azom Footer 2026" in composed.html
+    # Balanced <div class="main"> ... </div>
+    assert composed.html.count("<div") == composed.html.count("</div")
+
+
+def test_extract_site_shell_footer_only_and_classic_block_variants() -> None:
+    from ecom_ops.wp_ops.preview_overlay import extract_site_shell
+
+    # Classic theme with #masthead + role="contentinfo"
+    classic_html = (
+        "<!doctype html><html><head><title>Classic</title></head><body>"
+        '<div id="masthead"><nav>Menu</nav></div>'
+        '<div class="hero">Old</div>'
+        '<div role="contentinfo">Copyright</div>'
+        "</body></html>"
+    )
+    c_shell = extract_site_shell(classic_html)
+    assert c_shell.strategy == "header_footer"
+    assert 'id="masthead"' in c_shell.before_main
+    assert 'role="contentinfo"' in c_shell.after_main
+    assert "Old" not in c_shell.before_main
+
+    # Footer-only fallback preserves footer chrome
+    footer_only_html = (
+        "<!doctype html><html><head><title>FooterOnly</title></head><body>"
+        '<div class="wrap"><section>Old Hero</section>'
+        "<footer>Footer Chrome</footer></div></body></html>"
+    )
+    f_shell = extract_site_shell(footer_only_html)
+    assert f_shell.strategy == "footer_only"
+    assert '<div class="wrap">' in f_shell.before_main
+    assert "<footer>Footer Chrome</footer>" in f_shell.after_main
+    assert "Old Hero" not in f_shell.before_main
+
+
+def test_parse_numeric_price_nordic_thousands_and_negative_rejection() -> None:
+    assert WpAgentTools._parse_numeric_price("1.490 NOK") == 1490.0
+    assert WpAgentTools._parse_numeric_price("12.500 kr") == 12500.0
+    assert WpAgentTools._parse_numeric_price("1.490,50 kr") == 1490.5
+    assert WpAgentTools._parse_numeric_price("49,90 SEK") == 49.9
+    assert WpAgentTools._parse_numeric_price("1490") == 1490.0
+    assert WpAgentTools._parse_numeric_price("-100 SEK") is None
+    assert WpAgentTools._parse_numeric_price("−49.00 NOK") is None
+
+
+def test_fork_preserves_page_draft_and_inspect_element_defaults_selector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _service, tools = _setup_mock_wp(tmp_path, monkeypatch)
+    opened = tools.execute(
+        "wp_open_review_workspace",
+        {
+            "site_id": "mock-staging",
+            "kind": "theme",
+            "slug": "azom-child",
+            "summary": "Thank you draft",
+            "variant_group": "ty-iter",
+        },
+        actor="oscar",
+    )
+    assert opened.data["ok"] is True
+    plan_a = opened.data["plan_id"]
+
+    drafted = tools.execute(
+        "wp_workspace_page_draft",
+        {
+            "site_id": "mock-staging",
+            "plan_id": plan_a,
+            "slug": "tack",
+            "title": "Tack för din beställning",
+            "page_type": "thankyou",
+            "focus_selector": ".ty-hero",
+            "body_html": '<section class="ty-hero"><h1>Tack!</h1></section>',
+            "page_css": ".ty-hero { padding: 24px; }",
+        },
+        actor="oscar",
+    )
+    assert drafted.data["ok"] is True
+
+    forked = tools.execute(
+        "wp_workspace_fork",
+        {
+            "site_id": "mock-staging",
+            "plan_id": plan_a,
+            "summary": "Thank you variant B",
+            "variant_group": "ty-iter",
+        },
+        actor="oscar",
+    )
+    assert forked.data["ok"] is True
+    plan_b = forked.data["plan_id"]
+    row_b = tools._review_plans().get(plan_b, site_id="mock-staging")
+    assert row_b is not None
+    assert isinstance(row_b.get("page_draft"), dict)
+    assert row_b["page_draft"]["slug"] == "tack"
+
+    # Passing a refused checkout path to wp_preview_page on a page_draft returns an actionable hint
+    refused = tools.execute(
+        "wp_preview_page",
+        {"site_id": "mock-staging", "plan_id": plan_b, "path": "/checkout/order-received/"},
+        actor="oscar",
+    )
+    assert refused.data["ok"] is False
+    assert refused.data["error_class"] == "PreviewPathRefused"
+    assert "page_draft.json" in str(refused.data.get("hint") or "")

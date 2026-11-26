@@ -1049,8 +1049,16 @@ def test_active_wp_review_persistence_followup_images_and_clearing(
     assert "Avbrutet" in r_no.text
     assert "active_wp_review" not in (cstore.get(100)["session"] or {})
 
-    # Re-persist then clear via wpreview:stage: success
+    # Re-persist (with pinned hash) then clear via wpreview:stage: success
     cstore.append_turn_atomic(100, session_updates={"active_wp_review": review1})
+    jstore.pin_review_hashes(
+        100,
+        actor="oscar",
+        site_id="mock-shop",
+        plan_id="wr-def678901234",
+        base_sha256="a" * 64,
+        work_sha256="b" * 64,
+    )
     monkeypatch.setattr(
         ReviewPlans,
         "workspace_status",
@@ -1399,6 +1407,265 @@ def test_active_wp_review_page_draft_metadata_and_render_followup(
     assert "page_draft_slug=thank-you-v1" in sys_r2
     assert "page_type=thankyou" in sys_r2
     assert "preview_kind=standalone_page" in sys_r2
+
+
+def test_wpreview_stage_fails_closed_without_pinned_hash_and_uses_durable_pin(
+    env_setup, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    monkeypatch.setattr(
+        ReviewPlans,
+        "get",
+        lambda self, plan_id, site_id=None: {
+            "plan_id": plan_id,
+            "site_id": "mock-staging",
+            "base_sha256": "a" * 64,
+            "work_sha256": "b" * 64,
+        },
+    )
+    staged_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        ReviewPlans,
+        "workspace_status",
+        lambda self, site_id, plan_id, actor=None: SimpleNamespace(ok=True, data={"changed_files": []}),
+    )
+    monkeypatch.setattr(
+        ReviewPlans,
+        "approve_staging",
+        lambda self, site_id, plan_id, actor=None, base_sha256="", work_sha256="": (
+            staged_calls.append((base_sha256, work_sha256))
+            or SimpleNamespace(ok=True, data={"executed": True}, message="")
+        ),
+    )
+
+    # 1. No pinned hash in session or proposal_store -> MUST fail closed (never use live on-disk plan hashes!)
+    denied = bot.handle_callback(100, "wpreview:stage:wr-deadbeef1234")
+    assert "MissingApprovalHash" in denied.text
+    assert staged_calls == []
+
+    # 2. Durable pin in proposal_store works even if session cache misses, and fails closed for wrong actor
+    jstore.pin_review_hashes(
+        100,
+        actor="oscar",
+        site_id="mock-staging",
+        plan_id="wr-deadbeef1234",
+        base_sha256="1" * 64,
+        work_sha256="2" * 64,
+    )
+    ok_reply = bot.handle_callback(100, "wpreview:stage:wr-deadbeef1234")
+    assert "skrivna i staging" in ok_reply.text
+    assert staged_calls == [("1" * 64, "2" * 64)]
+    assert jstore.get_pinned_review_hashes(100, "wr-deadbeef1234") is None
+
+
+def test_cross_site_switch_and_new_page_reset_prevent_stale_review_or_png_bleed(
+    env_setup, monkeypatch
+):
+    from datetime import UTC, datetime
+
+    old_shot = _make_tiny_png(env_setup / "old_cta.png")
+    old_focus = _make_tiny_png(env_setup / "focus-desktop.png")
+
+    seen_calls: list[list[dict[str, Any]]] = []
+
+    def fake_completion(messages, **kwargs):
+        seen_calls.append(list(messages))
+        return "Hanterar begäran.", 0.0
+
+    monkeypatch.setattr(chat_agent, "chat_completion", fake_completion)
+    monkeypatch.setattr(chat_agent, "_run_fast_read_loop", lambda *a, **k: pytest.fail("read loop off"))
+
+    prior_session = {
+        "wp_ops_context": context_for_storage(
+            actor="oscar",
+            channel="telegram",
+            conversation_id="telegram:100",
+            site_id="mock-staging",
+            operation_ids=(),
+        ),
+        "active_wp_review": {
+            "actor_id": "oscar",
+            "channel": "telegram",
+            "conversation_id": "telegram:100",
+            "site_id": "mock-staging",
+            "plan_ids": ["wr-123412341234"],
+            "latest_plan_id": "wr-123412341234",
+            "preview_path": "/product/old/",
+            "last_image_paths": [old_shot],
+            "preview_images": [old_focus],
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+    }
+
+    # 1. Cross-site switch (mock-staging -> mock-shop): explicit site wins, old review & PNGs suppressed
+    res_switch = run_chat(
+        "ändra knappen på mock-shop.example.test",
+        session=prior_session,
+        actor="oscar",
+        conversation_id="telegram:100",
+        clarification_confirmed=True,
+    )
+    sys_switch = "\n".join(str(m.get("content") or "") for m in seen_calls[-1] if m.get("role") == "system")
+    assert "site_id=mock-shop" in sys_switch
+    assert "Active WP review" not in sys_switch
+    assert "images" not in seen_calls[-1][-1]
+    assert res_switch.clear_active_wp_review is True
+
+    # 2. Net-new page request: must not inject old CTA review or attach old CTA PNGs
+    res_new_page = run_chat(
+        "bygg en ny kampanjsida med exempelprodukter",
+        session=prior_session,
+        actor="oscar",
+        conversation_id="telegram:100",
+        clarification_confirmed=True,
+    )
+    sys_new = "\n".join(str(m.get("content") or "") for m in seen_calls[-1] if m.get("role") == "system")
+    assert "Active WP review" not in sys_new
+    assert "images" not in seen_calls[-1][-1]
+    assert res_new_page.clear_active_wp_review is True
+
+
+def test_await_other_text_lookup_breakout_and_non_wp_escapes_drift(env_setup, monkeypatch):
+    cstore = ConversationStore(env_setup / "state.json")
+    jstore = TelegramJobStore(env_setup / "jobs.sqlite3")
+    bot = BotHandler(store=cstore, proposal_store=jstore)
+
+    monkeypatch.setattr(
+        chat_agent,
+        "chat_completion",
+        lambda messages, **kwargs: (_sample_clarify_json(mode="options"), 0.0),
+    )
+    monkeypatch.setattr(chat_agent, "_use_read_tool_loop", lambda *a, **k: False)
+
+    r1 = bot.handle(100, "Ändra knappen där")
+    other_cb = next(
+        btn.payload
+        for row in r1.actions.rows
+        for btn in row
+        if str(btn.payload).startswith("clarify:other:")
+    )
+    bot.handle_callback(100, other_cb)
+
+    monkeypatch.setattr(
+        bot,
+        "_lookup_order_with_progress",
+        lambda chat_id, oid, **k: f"Order #{oid} mock-ok",
+    )
+    r_order = bot.handle(100, "order 1001")
+    assert "Order #1001 mock-ok" in r_order.text
+    assert (cstore.get(100) or {}).get("flow") is None
+
+    # Non-WP question mid-WP-session must route to chat_core / chat_general instead of chat_wp_drift
+    seen_profiles: list[str | None] = []
+    monkeypatch.setattr(
+        chat_agent,
+        "chat_completion",
+        lambda messages, **kwargs: (seen_profiles.append(kwargs.get("profile_id")) or "Budgeten är 100 USD.", 0.0),
+    )
+    wp_ctx = context_for_storage(
+        actor="oscar",
+        channel="telegram",
+        conversation_id="telegram:100",
+        site_id="mock-shop",
+        operation_ids=(),
+    )
+    res_non_wp = run_chat(
+        "vad är vår OpenRouter-budget?",
+        session={"wp_ops_context": wp_ctx},
+        actor="oscar",
+        conversation_id="telegram:100",
+    )
+    assert "100 USD" in res_non_wp.text
+    assert seen_profiles == ["chat_general"]
+
+
+def test_image_path_jailing_unexpected_error_guard_and_job_store_hygiene(
+    env_setup, monkeypatch, tmp_path_factory
+):
+    from ecom_ops.bot.progress_events import ProgressEvent
+
+    outside_dir = tmp_path_factory.mktemp("outside_data")
+    outside_png = _make_tiny_png(outside_dir / "outside.png")
+    oauth_subdir = env_setup / "model_oauth"
+    oauth_subdir.mkdir(exist_ok=True)
+    subdir_png = _make_tiny_png(oauth_subdir / "secret.png")
+    inbox_dir = env_setup / "telegram_inbox_media" / "100"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    inbox_png = _make_tiny_png(inbox_dir / "valid_inbox.png")
+    ws_dir = env_setup / "wp_workspaces" / "mock-shop" / "wr-1234567890ab" / "artifacts"
+    ws_dir.mkdir(parents=True, exist_ok=True)
+    ws_png = _make_tiny_png(ws_dir / "preview-desktop.png")
+
+    normalized = handlers._normalize_inbound_image_paths(
+        [outside_png, subdir_png, inbox_png, ws_png]
+    )
+    assert normalized == [inbox_png, ws_png]
+    validated = chat_agent._validate_chat_image_paths(
+        [outside_png, subdir_png, inbox_png, ws_png]
+    )
+    assert validated == [inbox_png, ws_png]
+
+    # Non-ModelRouteError crash during initial completion degrades gracefully + emits failed ProgressEvent
+    events: list[ProgressEvent] = []
+
+    def _capture_progress(ev: ProgressEvent) -> None:
+        events.append(ev)
+
+    _capture_progress.accepts_progress_event = True
+    monkeypatch.setattr(chat_agent, "_use_read_tool_loop", lambda *a, **k: False)
+
+    def boom(*a, **k):
+        raise RuntimeError("socket hung up")
+
+    monkeypatch.setattr(chat_agent, "chat_completion", boom)
+    res_err = run_chat("hej", on_progress=_capture_progress)
+    assert "kunde inte nå llm" in res_err.text.lower()
+    assert any(ev.tool == "model_router" and ev.phase == "failed" for ev in events)
+
+    # Job store: chmod not spammed on every query, and purge cleans expired open proposals + pins
+    chmod_calls = 0
+    real_chmod = handlers.os.chmod if hasattr(handlers, "os") else __import__("os").chmod
+    import os as _os
+
+    def counting_chmod(p, mode):
+        nonlocal chmod_calls
+        chmod_calls += 1
+        return real_chmod(p, mode)
+
+    monkeypatch.setattr("ecom_ops.bot.job_store.os.chmod", counting_chmod)
+    jstore = TelegramJobStore(env_setup / "hygiene.sqlite3")
+    init_chmods = chmod_calls
+    assert init_chmods >= 1
+    jstore.pin_review_hashes(
+        100,
+        actor="oscar",
+        site_id="mock-shop",
+        plan_id="wr-abcdefabcdef",
+        base_sha256="a" * 64,
+        work_sha256="b" * 64,
+        ttl_seconds=60,
+    )
+    _ = jstore.get_pinned_review_hashes(100, "wr-abcdefabcdef")
+    _ = jstore.create_proposal(100, kind="case_reply", payload={"k": "v"}, ttl_seconds=60)
+    assert chmod_calls == init_chmods
+
+    import time as _time
+    with jstore._connection() as conn:
+        conn.execute("UPDATE bot_proposals SET expires_at=?", (_time.time() - 5,))
+        conn.execute("UPDATE wp_review_pins SET expires_at=?", (_time.time() - 5,))
+    jstore.purge(retention_seconds=60)
+    assert jstore.get_pinned_review_hashes(100, "wr-abcdefabcdef") is None
+    with jstore._connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM bot_proposals").fetchone()[0] == 0
+    _ = _os
+
 
 
 

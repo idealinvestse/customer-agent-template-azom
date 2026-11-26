@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
+import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+_REPLACE_RETRY_DELAYS = (0.02, 0.04, 0.06, 0.08)
 
 
 def empty_state() -> dict[str, Any]:
@@ -48,7 +53,23 @@ class WpOpsStore:
             state = self.load()
             mutate(state)
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(self.path)
+            tmp = self.path.with_name(
+                f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
+            )
+            try:
+                tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+                for attempt in range(5):
+                    try:
+                        os.replace(tmp, self.path)
+                        break
+                    except PermissionError:
+                        if attempt >= 4:
+                            raise
+                        time.sleep(_REPLACE_RETRY_DELAYS[min(attempt, len(_REPLACE_RETRY_DELAYS) - 1)])
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
             return state

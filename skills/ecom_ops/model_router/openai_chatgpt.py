@@ -617,19 +617,26 @@ class OpenAIChatGPTOAuthRoute:
             }
         )
         state_store.clear()
-        existing = self.store.load()
-        next_gen = (existing.generation + 1) if existing and existing.generation >= 1 else 1
-        session = self._session_from_token_response(
-            data,
-            generation=next_gen,
-            previous=existing,
-            client_id=client_id,
-            host_id=pending.ext_agent_host_id or _siwc("OPENAI_SIWC_HOST_ID"),
-            redirect_uri=effective_redirect,
-        )
-        if not session.access_token or not session.refresh_token:
-            raise ModelAuthError("ChatGPT OAuth response missing required tokens")
-        self.store.save(session)
+        try:
+            with self.store.lock():
+                existing = self.store.load()
+                next_gen = (existing.generation + 1) if existing and existing.generation >= 1 else 1
+                session = self._session_from_token_response(
+                    data,
+                    generation=next_gen,
+                    previous=existing,
+                    client_id=client_id,
+                    host_id=pending.ext_agent_host_id or _siwc("OPENAI_SIWC_HOST_ID"),
+                    redirect_uri=effective_redirect,
+                )
+                if not session.access_token or not session.refresh_token:
+                    raise ModelAuthError("ChatGPT OAuth response missing required tokens")
+                self.store.save(session)
+        except TimeoutError as exc:
+            raise ModelUnavailableError(
+                "ChatGPT OAuth session lock timed out",
+                code="lock_timeout",
+            ) from exc
         circuit_breaker.reset_breaker("route:chatgpt_oauth")
         bump_config_epoch()
         return session
@@ -815,6 +822,13 @@ class OpenAIChatGPTOAuthRoute:
                     raise ModelAuthError("ChatGPT OAuth refresh response missing access token")
                 try:
                     self.store.save(refreshed)
+                except PermissionError as exc:
+                    # Transient Windows file-lock contention during os.replace:
+                    # never discard the rotated token by marking needs_reauth.
+                    raise ModelUnavailableError(
+                        "ChatGPT OAuth session temporarily locked during save",
+                        code="persist_locked",
+                    ) from exc
                 except OSError as exc:
                     self._mark_needs_reauth(current)
                     raise ModelAuthError(
@@ -828,29 +842,32 @@ class OpenAIChatGPTOAuthRoute:
                 code="lock_timeout",
             ) from exc
 
-    def _ensure_access_token(self) -> str:
+    def _ensure_access_token_with_generation(self) -> tuple[str, int]:
         session = self.store.load()
         if not session:
             raise ModelAuthError("ChatGPT OAuth is not connected")
         if session.needs_reauth:
             raise ModelAuthError("ChatGPT OAuth needs reconnect", code="needs_reauth")
         if self.store.is_access_token_fresh(session):
-            return session.access_token
+            return session.access_token, session.generation
         if (
             session.access_token
             and time.time() < session.expires_at
             and not self.store.can_refresh_now(session)
         ):
-            return session.access_token
-        return self._refresh_session().access_token
+            return session.access_token, session.generation
+        refreshed = self._refresh_session()
+        return refreshed.access_token, refreshed.generation
+
+    def _ensure_access_token(self) -> str:
+        token, _generation = self._ensure_access_token_with_generation()
+        return token
 
     def list_models(self) -> list[dict[str, str]]:
         """List models visible to the connected ChatGPT account."""
         if not self.siwc_endpoints_ready():
             raise ModelConfigError("ChatGPT OAuth configuration is incomplete")
-        token = self._ensure_access_token()
-        used = self.store.load()
-        rejected_gen = used.generation if used else -1
+        token, rejected_gen = self._ensure_access_token_with_generation()
 
         def _fetch(tok: str) -> requests.Response:
             try:
@@ -1034,9 +1051,7 @@ class OpenAIChatGPTOAuthRoute:
             if request.hard_timeout and request.hard_timeout > 0
             else None
         )
-        access_token = self._ensure_access_token()
-        used = self.store.load()
-        rejected_generation = used.generation if used else -1
+        access_token, rejected_generation = self._ensure_access_token_with_generation()
         response = self._post_responses(access_token, payload, request.timeout)
         if response.status_code == 401:
             response.close()

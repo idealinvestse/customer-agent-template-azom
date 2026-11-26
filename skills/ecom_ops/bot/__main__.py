@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -1631,6 +1632,83 @@ def _delivery_worker(token: str, store: TelegramJobStore, stopped: threading.Eve
         stopped.wait(2)
 
 
+_LEASE_HEARTBEAT_INTERVAL_S = 25.0
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _format_poll_error(label: str, exc: BaseException) -> str:
+    """Format a timestamped, token-safe error line (never includes tokens, URLs, or raw bodies)."""
+    details = [type(exc).__name__]
+    if isinstance(exc, TelegramApiError):
+        details.append(f"status={exc.status_code}")
+        if exc.method:
+            details.append(f"method={exc.method}")
+        if exc.retry_after is not None:
+            details.append(f"retry_after={exc.retry_after:g}")
+    return f"{_utc_now_iso()} {label} ({' '.join(details)})"
+
+
+def _run_poller_maintenance(
+    store: TelegramJobStore,
+    lease_lost: threading.Event,
+    *,
+    lease_seconds: int = JOB_LEASE_SECONDS,
+    run_cleanup: bool = True,
+) -> bool:
+    """Renew poller + active worker leases; optionally recover expired jobs and purge."""
+    if not store.renew_poller_lease():
+        lease_lost.set()
+        print(
+            f"{_utc_now_iso()} Telegram poller lease lost; stopping intake.",
+            file=sys.stderr,
+        )
+        return False
+    store.renew_leases(lease_seconds=lease_seconds)
+    if run_cleanup:
+        store.recover_expired_jobs()
+        store.purge()
+        try:
+            cleanup_old_inbox_media()
+        except Exception:
+            pass
+    return True
+
+
+def _lease_heartbeat_loop(
+    store: TelegramJobStore,
+    stopped: threading.Event,
+    lease_lost: threading.Event,
+    *,
+    interval_seconds: float | None = None,
+    lease_seconds: int = JOB_LEASE_SECONDS,
+) -> None:
+    """Keep poller and active worker leases fresh even while getUpdates blocks or fails."""
+    wait_s = max(
+        0.05,
+        float(
+            interval_seconds
+            if interval_seconds is not None
+            else _LEASE_HEARTBEAT_INTERVAL_S
+        ),
+    )
+    while not stopped.wait(wait_s):
+        try:
+            ok = _run_poller_maintenance(
+                store,
+                lease_lost,
+                lease_seconds=lease_seconds,
+                run_cleanup=False,
+            )
+            if not ok:
+                stopped.set()
+                return
+        except Exception as exc:
+            print(_format_poll_error("Telegram lease heartbeat error", exc), file=sys.stderr)
+
+
 def main() -> int:
     from ecom_ops.runtime_env import bootstrap_runtime
 
@@ -1642,7 +1720,7 @@ def main() -> int:
 
     store = TelegramJobStore()
     if not store.acquire_poller_lease():
-        print("Another Telegram poller owns the database lease.", file=sys.stderr)
+        print(f"{_utc_now_iso()} Another Telegram poller owns the database lease.", file=sys.stderr)
         return 2
     try:
         recovered = store.recover_after_restart()
@@ -1667,6 +1745,8 @@ def main() -> int:
         raise
     worker_count = max(1, min(worker_count, 4))
     stopped = threading.Event()
+    shutdown_requested = threading.Event()
+    lease_lost = threading.Event()
     workers = [
         threading.Thread(target=_worker, args=(token, handler, store, stopped), daemon=True)
         for _ in range(worker_count)
@@ -1677,11 +1757,18 @@ def main() -> int:
         target=_delivery_worker, args=(token, store, stopped), daemon=True
     )
     delivery.start()
+    heartbeat = threading.Thread(
+        target=_lease_heartbeat_loop,
+        args=(store, stopped, lease_lost),
+        daemon=True,
+    )
+    heartbeat.start()
     print(f"Telegram poller started with {worker_count} background workers")
     _service_pending_controls(token, handler, store)
     last_maintenance = 0.0
 
     def request_shutdown(_signum, _frame) -> None:
+        shutdown_requested.set()
         stopped.set()
 
     signal.signal(signal.SIGTERM, request_shutdown)
@@ -1766,28 +1853,44 @@ def main() -> int:
                                 BotReply(text="Jobbkön är full för den här chatten. Försök igen när ett jobb är klart."),
                             )
                 _service_pending_controls(token, handler, store)
-                now = time.monotonic()
-                if now - last_maintenance >= 30:
-                    if not store.renew_poller_lease():
-                        print("Telegram poller lease lost; stopping intake.", file=sys.stderr)
-                        break
-                    store.renew_leases(lease_seconds=JOB_LEASE_SECONDS)
-                    store.recover_expired_jobs()
-                    store.purge()
-                    last_maintenance = now
             except urllib.error.URLError as exc:
-                print(f"Telegram network error ({type(exc).__name__})", file=sys.stderr)
-                time.sleep(3)
+                print(_format_poll_error("Telegram network error", exc), file=sys.stderr)
+                stopped.wait(3)
             except KeyboardInterrupt:
+                shutdown_requested.set()
                 print("Telegram bot stopped")
                 return 0
             except Exception as exc:
-                print(f"Telegram poll loop error ({type(exc).__name__})", file=sys.stderr)
-                time.sleep(2)
+                print(_format_poll_error("Telegram poll loop error", exc), file=sys.stderr)
+                stopped.wait(2)
+            finally:
+                if not stopped.is_set() and not lease_lost.is_set():
+                    now = time.monotonic()
+                    if now - last_maintenance >= 30:
+                        try:
+                            if not _run_poller_maintenance(
+                                store,
+                                lease_lost,
+                                lease_seconds=JOB_LEASE_SECONDS,
+                                run_cleanup=True,
+                            ):
+                                stopped.set()
+                            else:
+                                last_maintenance = now
+                        except Exception as maint_exc:
+                            print(
+                                _format_poll_error("Telegram maintenance error", maint_exc),
+                                file=sys.stderr,
+                            )
     finally:
         stopped.set()
+        heartbeat.join(timeout=1.0)
         store.release_poller_lease()
-    return 2
+    if lease_lost.is_set():
+        return 2
+    if shutdown_requested.is_set():
+        return 0
+    return 0
 
 
 if __name__ == "__main__":

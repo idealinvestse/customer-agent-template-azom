@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
+from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
 
 _woo_webhook_receiver: object | None = None
 _woo_webhook_secret_hash: str | None = None
+_messenger_stores_lock = threading.Lock()
+_messenger_stores: dict[str, Any] = {}
+
+
+def _get_messenger_store(data_dir: Path) -> Any:
+    from ecom_ops.bot.store import ConversationStore
+
+    store_path = (data_dir / "messenger_state.json").resolve()
+    key = str(store_path)
+    with _messenger_stores_lock:
+        store = _messenger_stores.get(key)
+        if store is None:
+            store = ConversationStore(path=store_path)
+            _messenger_stores[key] = store
+        return store
 
 
 def _get_woo_webhook_receiver(secret: str) -> Any:
@@ -38,8 +55,6 @@ def register_webhook_routes(app: Flask) -> None:
 
     @app.route("/webhooks/messenger", methods=["GET", "POST"])
     def messenger_webhook():
-        from pathlib import Path
-
         from ecom_ops.bot.handlers import BotHandler
         from ecom_ops.bot.messenger_adapter import (
             parse_webhook_payload,
@@ -47,7 +62,6 @@ def register_webhook_routes(app: Flask) -> None:
             verify_webhook_challenge,
         )
         from ecom_ops.bot.messenger_queue import get_messenger_queue
-        from ecom_ops.bot.store import ConversationStore
 
         if request.method == "GET":
             challenge = verify_webhook_challenge(
@@ -77,7 +91,7 @@ def register_webhook_routes(app: Flask) -> None:
             )
 
         def _make_handler() -> BotHandler:
-            store = ConversationStore(path=data_dir / "messenger_state.json")
+            store = _get_messenger_store(data_dir)
             return BotHandler(store=store, channel="messenger")
 
         queue = get_messenger_queue(data_dir)

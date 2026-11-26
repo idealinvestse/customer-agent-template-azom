@@ -12,6 +12,8 @@ from typing import Any
 from ecom_ops.bot.dashboard_links import case_detail_url, cases_list_url, link_footer
 
 _WORKSPACE_PNG = re.compile(r"^(?:base|work|live|preview|change|focus)-(?:desktop|mobile)\.png$")
+_SAFE_SITE_DIR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_SAFE_REVIEW_DIR_RE = re.compile(r"^(?:wr|pv)-[a-z0-9][a-z0-9_-]{0,31}$")
 _CLARIFY_ID_RE = re.compile(r"^cl-[0-9a-f]{12}$")
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
@@ -353,7 +355,7 @@ def safe_workspace_attachments(
     *,
     data_dir: Path | None = None,
 ) -> tuple[str, ...]:
-    """Validate and deduplicate sandbox screenshot PNGs inside wp_workspaces/*/artifacts."""
+    """Validate and deduplicate sandbox screenshot PNGs inside wp_workspaces/<site>/<wr|pv>/artifacts."""
     root_raw = data_dir or os.environ.get("AZOM_DATA_DIR", ".azom-data") or ".azom-data"
     base_root = (Path(root_raw) / "wp_workspaces").resolve()
     accepted: list[str] = []
@@ -366,11 +368,20 @@ def safe_workspace_attachments(
             if p.is_symlink():
                 continue
             resolved = p.resolve()
-            if base_root not in resolved.parents:
+            try:
+                rel = resolved.relative_to(base_root)
+            except ValueError:
                 continue
-            if resolved.parent.name != "artifacts":
+            if len(rel.parts) != 4:
                 continue
-            if _WORKSPACE_PNG.fullmatch(resolved.name) is None:
+            site_part, review_part, art_part, file_part = rel.parts
+            if _SAFE_SITE_DIR_RE.fullmatch(site_part) is None:
+                continue
+            if _SAFE_REVIEW_DIR_RE.fullmatch(review_part) is None:
+                continue
+            if art_part != "artifacts":
+                continue
+            if _WORKSPACE_PNG.fullmatch(file_part) is None:
                 continue
             if not resolved.is_file():
                 continue

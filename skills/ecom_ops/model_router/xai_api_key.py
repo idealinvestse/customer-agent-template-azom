@@ -197,6 +197,10 @@ class XaiApiKeyRoute:
                 content, usage = read_chat_completion_sse(
                     response.iter_lines(decode_unicode=True),
                     on_text_delta=delta_cb,
+                    hard_deadline=hard_deadline,
+                    timeout_error_factory=lambda: ModelUnavailableError(
+                        "xAI API stream hard timeout", code="hard_timeout"
+                    ),
                 )
             else:
                 data = response.json()

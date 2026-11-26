@@ -21,6 +21,8 @@ PLAYBOOK_TOPICS: tuple[str, ...] = (
     "static_and_sandbox_qa",
     "staging_and_hitl",
     "component_intel_and_audit",
+    "new_page_and_sample_data",
+    "live_overlay_ui_iteration",
 )
 
 PLAYBOOKS: dict[str, dict[str, Any]] = {
@@ -293,6 +295,55 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Börja aldrig läsa godtyckliga filer innan wp_list_components eller overview visat exakt slug.",
         ],
     },
+    "new_page_and_sample_data": {
+        "topic": "new_page_and_sample_data",
+        "title": "Ny sida med syntetisk exempeldata (page_draft)",
+        "summary": (
+            "Bygg helt nya sidor (t.ex. tacksida, landningssida eller kampanjsida) som "
+            "work/page_draft.json med syntetisk exempeldata i sajtens riktiga header/footer-skal."
+        ),
+        "steps": [
+            "Hämta befintliga guider och syntetisk order-/produktdata via wp_list_pages och wp_build_sample_data (noll kund-PII).",
+            "Öppna en wr-*-arbetsyta med wp_open_review_workspace och spara sidutkastet via wp_workspace_page_draft.",
+            "Rendera fristående förhandsvisning genom att anropa wp_preview_page(plan_id=...) och utelämna path (eller använd publik shell_path som '/').",
+            "Presentera skärmbilder och interaktiv sandbox-länk innan några temafiler föreslås för staging.",
+        ],
+        "tools": [
+            "wp_list_pages",
+            "wp_build_sample_data",
+            "wp_open_review_workspace",
+            "wp_workspace_page_draft",
+            "wp_preview_page",
+        ],
+        "anti_patterns": [
+            "Lägg aldrig in riktiga kundmejl, telefonnummer eller personnummer i page_draft.json — använd alltid syntetiska adresser (test@example.invalid).",
+            "Försök aldrig hämta /checkout, /checkout/order-received/, /cart eller /varukorg som preview-path; utelämna path för fristående page_draft-preview.",
+        ],
+    },
+    "live_overlay_ui_iteration": {
+        "topic": "live_overlay_ui_iteration",
+        "title": "Iterativ UI/CSS-justering på befintlig wr-*-arbetsyta",
+        "summary": (
+            "Fortsätt på en aktiv wr-*-arbetsyta vid visuella finjusteringar (knappar, färg, "
+            "marginaler, typografi) istället för att börja om från live."
+        ),
+        "steps": [
+            "Inspektera målsektionen eller knappen med wp_inspect_element(plan_id=..., selector=...) för att se exakt DOM och beräknad CSS.",
+            "Justera direkt i den aktiva wr-*-arbetsytan eller skapa en A/B-variant med wp_workspace_fork och samma variant_group.",
+            "Verifiera snabbt med wp_preview_page(plan_id=..., reuse_live_baseline=True, focus_selector=...) och granska visual_health-varningar.",
+            "Bekräfta att inga CSS-kollisioner, avklippta texter eller nollkontrast uppstår på både desktop och mobil.",
+        ],
+        "tools": [
+            "wp_inspect_element",
+            "wp_workspace_fork",
+            "wp_workspace_patch_file",
+            "wp_preview_page",
+        ],
+        "anti_patterns": [
+            "Öppna inte en ny ogrupperad wr-*-arbetsyta från live när användaren ber om en följdjustering eller A/B-variant.",
+            "Gissa aldrig CSS-selektorer blint utan att först kontrollera verklig DOM/CSS med wp_inspect_element eller wp_search_component.",
+        ],
+    },
 }
 
 _MIN_MATCH_SCORE = 2
@@ -358,6 +409,18 @@ _TOPIC_RULES: dict[str, tuple[tuple[re.Pattern[str], int], ...]] = {
         (re.compile(r"wp_component_intel|wp_list_components|wp_plugin_overview|AZOM_WPORG_INTEL", re.I), 5),
         (re.compile(r"\b(?:component[\s_-]?intel|wordpress\.org|wp\.org|lista\s+(?:teman|plugins)|vilka\s+(?:teman|plugins))\b", re.I), 4),
         (re.compile(r"\b(?:inventer(?:a|ing)|komponent[öo]versikt|component\s+audit)\b", re.I), 3),
+    ),
+    "new_page_and_sample_data": (
+        (re.compile(r"wp_workspace_page_draft|wp_build_sample_data|page_draft\.json", re.I), 5),
+        (re.compile(r"\b(?:tacksida|tack-?sida|thank[\s_-]?you[\s_-]?page|order[\s_-]?confirmation|orderbekr[äa]ftelse)\b", re.I), 5),
+        (re.compile(r"\b(?:ny\s+(?:sida|landningssida|kampanjsida)|skapa\s+en\s+ny\s+sida|designa\s+en\s+ny\s+sida|landing[\s_-]?page)\b", re.I), 4),
+        (re.compile(r"\b(?:exempeldata|syntetisk\s+data|sample[\s_-]?data|standalone[\s_-]?page)\b", re.I), 3),
+    ),
+    "live_overlay_ui_iteration": (
+        (re.compile(r"wp_inspect_element|wp_workspace_fork|variant_group|reuse_live_baseline", re.I), 5),
+        (re.compile(r"\b(?:a/b-?variant|tv[åa]\s+varianter|f[öo]rslag\s+b|f[öo]ljdjustering|finjustera\s+(?:knapp|knappen|färg|marginal))\b", re.I), 4),
+        (re.compile(r"\b(?:k[öo]pknapp(?:en)?|l[äa]gg\s+i\s+varukorg|add[\s_-]?to[\s_-]?cart|cta-?knapp(?:en)?)\b", re.I), 3),
+        (re.compile(r"\b(?:f[öo]rhandsvisning|live[\s_-]?overlay|computed[\s_-]?styles?|visual_health)\b", re.I), 3),
     ),
 }
 

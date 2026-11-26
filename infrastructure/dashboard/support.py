@@ -73,21 +73,52 @@ def _flash(message: str, category: str = "ok") -> None:
     _flask_flash(str(message), level)
 
 
-def _tail_jsonl(path: Path, limit: int = 50) -> list[dict]:
-    if not path.is_file():
+def _tail_jsonl(
+    path: Path,
+    limit: int = 50,
+    *,
+    chunk_size: int = 65536,
+    max_bytes: int = 2 * 1024 * 1024,
+) -> list[dict]:
+    if limit <= 0 or not path.is_file():
         return []
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     out: list[dict] = []
-    for line in reversed(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            out.append({"raw": line[:500]})
-        if len(out) >= limit:
-            break
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            pos = fh.tell()
+            bytes_read = 0
+            carry = b""
+            while pos > 0 and len(out) < limit and bytes_read < max_bytes:
+                step = min(chunk_size, pos, max_bytes - bytes_read)
+                pos -= step
+                fh.seek(pos)
+                chunk = fh.read(step)
+                if not chunk:
+                    break
+                bytes_read += len(chunk)
+                buf = chunk + carry
+                parts = buf.splitlines()
+                if pos > 0:
+                    if buf.startswith((b"\n", b"\r")):
+                        carry = b""
+                    else:
+                        carry = parts[0] if parts else b""
+                        parts = parts[1:]
+                else:
+                    carry = b""
+                for raw_line in reversed(parts):
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        out.append({"raw": line[:500]})
+                    if len(out) >= limit:
+                        break
+    except OSError:
+        return []
     return out
 
 

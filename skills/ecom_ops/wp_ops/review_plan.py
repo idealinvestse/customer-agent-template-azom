@@ -6,6 +6,7 @@ Production deploy stays closed. ``restore()`` is never called.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import hashlib
 import inspect
@@ -14,14 +15,20 @@ import os
 import re
 import secrets
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from ecom_ops.audit import log_action
 from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
-from ecom_ops.wp_ops.file_changes import is_safe_pure_css_file, production_deploy_block, risk_for
+from ecom_ops.wp_ops.file_changes import (
+    _normalize_css_for_check,
+    is_safe_pure_css_file,
+    production_deploy_block,
+    risk_for,
+)
 from ecom_ops.wp_ops.files import LocalTree, PathRejected, TransportError, resolve_file
 from ecom_ops.wp_ops.models import Site
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
@@ -133,8 +140,22 @@ def _clean_variant_group(raw: str | None) -> str:
     return val
 
 
+_SANDBOX_ONLY_FILES = frozenset({"page_draft.json", "product_edits.json"})
+_FORK_BLOCKED_STATUSES = frozenset(
+    {
+        "draft",
+        "denied",
+        "rejected",
+        "fork_not_approved",
+        "rolled_back",
+        "expired",
+        "not_resumable",
+    }
+)
 _PAGE_DRAFT_UNSAFE_RE = re.compile(
-    r"<\?|<script\b|<iframe\b|javascript:|vbscript:|expression\s*\(|@import\b",
+    r"<\?|<script\b|<iframe\b|<svg\b|<object\b|<embed\b|</style|"
+    r"javascript:|vbscript:|expression\s*\(|url\s*\(|image-set\s*\(|"
+    r"@import\b|behavior\s*:|-moz-binding\s*:|\bon[a-z0-9_-]+\s*=",
     re.I,
 )
 
@@ -143,7 +164,13 @@ def review_risk(relative: str, text: str) -> str:
     """High-risk classifier for the review chain. ``risk_for`` stays unchanged."""
     clean = str(relative or "").strip().replace("\\", "/")
     if clean == "page_draft.json":
-        return "high" if _PAGE_DRAFT_UNSAFE_RE.search(text or "") else "low"
+        raw_text = text or ""
+        norm_text = _normalize_css_for_check(raw_text)
+        return (
+            "high"
+            if (_PAGE_DRAFT_UNSAFE_RE.search(raw_text) or _PAGE_DRAFT_UNSAFE_RE.search(norm_text))
+            else "low"
+        )
     if risk_for(relative, text) == "high":
         return "high"
     parts = [part.lower() for part in clean.split("/")]
@@ -368,9 +395,17 @@ class ReviewPlans:
         source = self._row(site.id, source_plan_id)
         if source is None:
             return _fail("UnknownPlan", "Okänd plan.")
-        blocked = self._fresh(source, allow_superseded_read=True)
+        blocked = self._fresh(source, allow_superseded_read=False)
         if blocked is not None:
             return blocked
+        source_status = str(source.get("status") or "")
+        if source_status in _FORK_BLOCKED_STATUSES or not source_status:
+            return _fail(
+                "ForkRefused",
+                "Endast en aktiv, validerad plan kan förgrenas.",
+                plan_id=source_plan_id,
+                status=source_status,
+            )
         try:
             src_root = workspace_root(self.data_dir, site.id, source_plan_id)
         except ReviewError as exc:
@@ -399,6 +434,9 @@ class ReviewPlans:
         now = self._now()
         slug = str(source.get("slug") or "")
         risk = _tree_risk(slug, work_files, clean_summary)
+        source_page_draft = source.get("page_draft")
+        if not isinstance(source_page_draft, dict):
+            source_page_draft = _load_page_draft(root / "work")
         plan = {
             "plan_id": plan_id,
             "site_id": site.id,
@@ -430,10 +468,11 @@ class ReviewPlans:
             "forked_from": source_plan_id,
             "preview_path": str(source.get("preview_path") or ""),
             "focus_selector": str(source.get("focus_selector") or ""),
+            "page_draft": dict(source_page_draft) if isinstance(source_page_draft, dict) else None,
         }
         write_diff(root, _unified(root))
         write_manifest(root, plan)
-        with _STORE:
+        with _STORE, self._store_file_lock():
             plans = self._load()
             for older in plans:
                 if not self._same_target(older, plan) or older.get("status") in _TERMINAL:
@@ -2123,9 +2162,16 @@ class ReviewPlans:
             if evidence is not None:
                 return evidence
             root = workspace_root(self.data_dir, site_id, plan_id)
-            diff_ops = _diff_ops(root)
-            if not diff_ops:
+            all_diff_ops = _diff_ops(root)
+            if not all_diff_ops:
                 return _fail("NoChange", "Arbetsytan matchar basen.", plan_id=plan_id)
+            diff_ops = [entry for entry in all_diff_ops if entry[1] not in _SANDBOX_ONLY_FILES]
+            if not diff_ops:
+                return _fail(
+                    "SandboxBlueprintOnly",
+                    "Planen innehåller endast sandbox-utkast (page_draft.json / product_edits.json) och inga deployerbara tema-/plugin-filer.",
+                    plan_id=plan_id,
+                )
             new_component = plan.get("theme_relationship") in {"no_child", "site_plugin"}
             actions: list[tuple[str, str, str, bytes | None]] = []
             notes: list[dict[str, Any]] = []
@@ -2445,6 +2491,53 @@ class ReviewPlans:
     def _locks(self, site_id: str, plan_id: str):
         return _LockBoth(_site_lock(site_id), _plan_lock(plan_id))
 
+    @contextlib.contextmanager
+    def _store_file_lock(self) -> Iterator[None]:
+        """Advisory cross-process lock around ``wp_review_plans.json`` mutations."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_suffix(".json.lock")
+        fh = lock_path.open("a+b")
+        locked = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                deadline = time.monotonic() + 5.0
+                while True:
+                    try:
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                        locked = True
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            break
+                        time.sleep(0.02)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                locked = True
+            yield
+        finally:
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        fh.seek(0)
+                        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            try:
+                fh.close()
+            except OSError:
+                pass
+
     def _load(self) -> list[dict[str, Any]]:
         if not self.path.is_file():
             return []
@@ -2459,24 +2552,39 @@ class ReviewPlans:
 
     def _save(self, plans: list[dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".json.tmp")
-        temporary.write_text(
-            json.dumps({"plans": [self._public(row) for row in plans]}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        temporary = self.path.with_name(
+            f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
         )
-        temporary.replace(self.path)
+        payload = json.dumps({"plans": [self._public(row) for row in plans]}, ensure_ascii=False, indent=2)
+        try:
+            temporary.write_text(payload, encoding="utf-8")
+            for attempt in range(5):
+                try:
+                    temporary.replace(self.path)
+                    return
+                except PermissionError:
+                    if attempt >= 4:
+                        raise
+                    time.sleep(0.02 * (attempt + 1))
+        finally:
+            if temporary.exists():
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
 
     def _replace(self, plan: dict[str, Any]) -> None:
-        plans = self._load()
-        replaced = False
-        for index, row in enumerate(plans):
-            if row.get("plan_id") == plan.get("plan_id"):
-                plans[index] = self._public(plan)
-                replaced = True
-                break
-        if not replaced:
-            plans.append(self._public(plan))
-        self._save(plans)
+        with _STORE, self._store_file_lock():
+            plans = self._load()
+            replaced = False
+            for index, row in enumerate(plans):
+                if row.get("plan_id") == plan.get("plan_id"):
+                    plans[index] = self._public(plan)
+                    replaced = True
+                    break
+            if not replaced:
+                plans.append(self._public(plan))
+            self._save(plans)
 
     def _row(self, site_id: str, plan_id: str) -> dict[str, Any] | None:
         if not PLAN_ID.fullmatch(plan_id):

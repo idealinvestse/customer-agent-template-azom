@@ -75,6 +75,9 @@ class MessengerJobQueue:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messenger_jobs_status ON messenger_jobs(status, id)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messenger_jobs_peer_status ON messenger_jobs(peer_id, status)"
+            )
 
     def reconcile_running(self) -> int:
         """Reset interrupted ``running`` jobs back to ``pending`` after restart."""
@@ -115,10 +118,16 @@ class MessengerJobQueue:
             try:
                 row = conn.execute(
                     """
-                    SELECT id, mid, peer_id, text, postback, attempts
-                    FROM messenger_jobs
-                    WHERE status = 'pending'
-                    ORDER BY id ASC
+                    SELECT m.id, m.mid, m.peer_id, m.text, m.postback, m.attempts
+                    FROM messenger_jobs m
+                    WHERE m.status = 'pending'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM messenger_jobs r
+                          WHERE r.peer_id = m.peer_id
+                            AND r.status = 'running'
+                      )
+                    ORDER BY m.id ASC
                     LIMIT 1
                     """
                 ).fetchone()
@@ -231,7 +240,7 @@ class MessengerJobQueue:
             self._dry_run = dry_run
             alive = [t for t in self._threads if t.is_alive()]
             self._threads = alive
-            if len(self._threads) < self.max_workers:
+            if len(self._threads) == 0:
                 self.reconcile_running()
             while len(self._threads) < self.max_workers:
                 t = threading.Thread(target=self._worker_loop, daemon=True)
@@ -255,6 +264,7 @@ class MessengerJobQueue:
                 page_token=self._page_token,
                 dry_run=self._dry_run,
             )
+            self._wakeup.set()
 
     def stats(self) -> dict[str, int]:
         with self._connect() as conn:

@@ -592,7 +592,7 @@ def test_theme_json_operations_v3_and_rejections() -> None:
 
 
 def test_playbooks_topics_selection_and_formatting() -> None:
-    assert len(PLAYBOOK_TOPICS) == 10
+    assert len(PLAYBOOK_TOPICS) == 12
     for topic in PLAYBOOK_TOPICS:
         pb = get_playbook(topic)
         assert pb["ok"] is True
@@ -614,6 +614,14 @@ def test_playbooks_topics_selection_and_formatting() -> None:
     assert (
         select_playbooks("Granska woocommerce overrides och @version")[0]["topic"]
         == "woo_template_overrides"
+    )
+    assert (
+        select_playbooks("Designa en ny tacksida med syntetisk exempeldata")[0]["topic"]
+        == "new_page_and_sample_data"
+    )
+    assert (
+        select_playbooks("Finjustera köpknappen med wp_inspect_element och A/B-variant")[0]["topic"]
+        == "live_overlay_ui_iteration"
     )
     assert select_playbooks("Hur många öppna ärenden har vi i supporten?") == []
     assert select_playbooks("Kolla order 1001") == []
@@ -2338,7 +2346,14 @@ def test_merge_compat_attachments_roundtrip_send_photo_delivery_and_token_redact
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _setup_mock_env(tmp_path, monkeypatch)
-    png_path = tmp_path / "wp_workspaces" / "wr-abcdef012345" / "artifacts" / "work-desktop.png"
+    png_path = (
+        tmp_path
+        / "wp_workspaces"
+        / "mock-staging"
+        / "wr-abcdef012345"
+        / "artifacts"
+        / "work-desktop.png"
+    )
     png_path.parent.mkdir(parents=True, exist_ok=True)
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00\x01\x02\x03" * 4
     png_path.write_bytes(png_bytes)

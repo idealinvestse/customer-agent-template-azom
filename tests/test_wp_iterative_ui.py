@@ -148,15 +148,21 @@ def test_workspace_fork_and_base_plan_id_clone_work_and_metadata(
     )
     assert patched.data["ok"] is True
 
-    # Supersede plan_a with an ungrouped open to ensure forking even works from a superseded workspace
+    # Open a sibling variant in the same variant_group so plan_a stays active and forkable
     other = tools.execute(
         "wp_open_review_workspace",
-        {"site_id": "mock-staging", "kind": "theme", "slug": "azom-child", "summary": "Unrelated"},
+        {
+            "site_id": "mock-staging",
+            "kind": "theme",
+            "slug": "azom-child",
+            "summary": "Sibling variant",
+            "variant_group": "cta-iter",
+        },
         actor="oscar",
     )
     assert other.data["ok"] is True
 
-    # Fork via wp_workspace_fork
+    # Fork via wp_workspace_fork from active validated plan_a
     forked = tools.execute(
         "wp_workspace_fork",
         {

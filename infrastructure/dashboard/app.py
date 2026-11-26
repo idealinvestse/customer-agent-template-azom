@@ -245,16 +245,25 @@ def create_app() -> Flask:
     return application
 
 
+def _resolve_dashboard_threads(raw: str | None = None) -> int:
+    text = (os.environ.get("DASHBOARD_THREADS") if raw is None else raw) or ""
+    try:
+        parsed = int(str(text).strip())
+    except (TypeError, ValueError):
+        return 12
+    return max(4, min(32, parsed))
+
+
 app = create_app()
 
 
 if __name__ == "__main__":
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
     port = int(os.environ.get("DASHBOARD_PORT", "8080"))
-    threads = int(os.environ.get("DASHBOARD_THREADS", "4"))
+    threads = _resolve_dashboard_threads()
     try:
         from waitress import serve
 
-        serve(app, host=host, port=port, threads=max(2, threads))
+        serve(app, host=host, port=port, threads=threads)
     except ImportError:
         app.run(host=host, port=port, debug=False)

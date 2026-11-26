@@ -8,7 +8,8 @@ import os
 import sqlite3
 import threading
 import time
-from collections.abc import Iterable
+import uuid
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,20 @@ from typing import Any
 DEFAULT_TTL_SECONDS = 24 * 3600
 # Keep last N role/content turns (user+assistant ≈ 15–20 exchanges).
 MAX_MESSAGES = 40
+_REPLACE_RETRY_DELAYS = (0.02, 0.04, 0.06, 0.08)
+
+
+def _replace_with_retry(src: Path, dst: Path, *, attempts: int = 5) -> None:
+    """Replace ``dst`` with ``src``, retrying transient Windows ``PermissionError``."""
+    total = max(1, int(attempts))
+    for attempt in range(total):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt >= total - 1:
+                raise
+            time.sleep(_REPLACE_RETRY_DELAYS[min(attempt, len(_REPLACE_RETRY_DELAYS) - 1)])
 
 
 def clamp_messages(
@@ -116,9 +131,18 @@ class ConversationStore:
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             payload = json.dumps(self._data, indent=2, ensure_ascii=False)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, self.path)
+            tmp = self.path.with_name(
+                f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
+            )
+            try:
+                tmp.write_text(payload, encoding="utf-8")
+                _replace_with_retry(tmp, self.path)
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
 
     def get(self, chat_id: str | int) -> dict[str, Any] | None:
         with self._lock:
@@ -164,6 +188,35 @@ class ConversationStore:
             if removed:
                 self._save()
             return removed
+
+    def update_atomic(
+        self,
+        chat_id: str | int,
+        mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> dict[str, Any] | None:
+        """Atomically read-modify-write one chat's state under ``self._lock``."""
+        with self._lock:
+            now = time.time()
+            key = str(chat_id)
+            existing = self._data.get(key)
+            if existing and now - float(existing.get("updated_at", 0)) > self.ttl_seconds:
+                existing = None
+            current = copy.deepcopy(existing) if isinstance(existing, dict) else {}
+            if "messages" in current:
+                current["messages"] = clamp_messages(current.get("messages"))
+            result = mutator(current)
+            if result is None:
+                if key in self._data:
+                    del self._data[key]
+                    self._save()
+                return None
+            updated = copy.deepcopy(dict(result))
+            if "messages" in updated:
+                updated["messages"] = clamp_messages(updated.get("messages"))
+            updated["updated_at"] = now
+            self._data[key] = updated
+            self._save()
+            return copy.deepcopy(updated)
 
     def append_turn_atomic(
         self,
@@ -213,6 +266,15 @@ class TelegramConversationStore:
         self.ttl_seconds = ttl_seconds
         self._migrate_legacy_once()
         self.cleanup_expired()
+        self._apply_db_permissions()
+
+    def _apply_db_permissions(self) -> None:
+        for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+            try:
+                if candidate.exists():
+                    os.chmod(candidate, 0o600)
+            except OSError:
+                pass
 
     @contextmanager
     def _connection(self):
@@ -223,12 +285,6 @@ class TelegramConversationStore:
             yield conn
         finally:
             conn.close()
-            for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
-                try:
-                    if candidate.exists():
-                        os.chmod(candidate, 0o600)
-                except OSError:
-                    pass
 
     def _migrate_legacy_once(self) -> None:
         with self._connection() as conn:
@@ -323,6 +379,49 @@ class TelegramConversationStore:
                 "DELETE FROM telegram_conversations WHERE updated_at<?", (cutoff,)
             )
             return int(result.rowcount)
+
+    def update_atomic(
+        self,
+        chat_id: str | int,
+        mutator: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ) -> dict[str, Any] | None:
+        """Atomically read-modify-write one chat's state inside ``BEGIN IMMEDIATE``."""
+        key = str(chat_id)
+        now = time.time()
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT state_json,updated_at FROM telegram_conversations WHERE chat_id=?",
+                (key,),
+            ).fetchone()
+            existing: dict[str, Any] = {}
+            if row is not None and now - float(row["updated_at"] or 0) <= self.ttl_seconds:
+                try:
+                    parsed = json.loads(row["state_json"])
+                    if isinstance(parsed, dict):
+                        existing = dict(parsed)
+                        existing["updated_at"] = float(row["updated_at"])
+                        if "messages" in existing:
+                            existing["messages"] = clamp_messages(existing.get("messages"))
+                except (TypeError, json.JSONDecodeError):
+                    existing = {}
+            result = mutator(copy.deepcopy(existing))
+            if result is None:
+                conn.execute("DELETE FROM telegram_conversations WHERE chat_id=?", (key,))
+                conn.commit()
+                return None
+            updated = copy.deepcopy(dict(result))
+            if "messages" in updated:
+                updated["messages"] = clamp_messages(updated.get("messages"))
+            updated["updated_at"] = now
+            conn.execute(
+                "INSERT INTO telegram_conversations(chat_id,state_json,updated_at) "
+                "VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET "
+                "state_json=excluded.state_json,updated_at=excluded.updated_at",
+                (key, json.dumps(updated, ensure_ascii=False), now),
+            )
+            conn.commit()
+        return copy.deepcopy(updated)
 
     def append_turn_atomic(
         self,

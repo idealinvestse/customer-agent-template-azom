@@ -33,6 +33,7 @@ from ecom_ops.integrations.wp_local_runtime import (
     make_local_sandbox_gate,
     resolve_local_runtime,
     runtime_dir_from_env,
+    terminate_process_tree,
 )
 from ecom_ops.integrations.wp_review_process import run_php_lint
 from ecom_ops.integrations.wp_runtime_fetch import RuntimeFetchError
@@ -349,12 +350,16 @@ def run_browser_render(
     viewports_out: dict[str, Any] = {}
     egress_attempts: list[dict[str, str]] = []
     try:
+        popen_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(
             command,
             shell=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
+            **popen_kwargs,
         )
         ws_url = _wait_cdp_page_ws(cdp_port, proc, timeout_s=min(15.0, timeout_s))
         cdp = _LoopbackCdpClient(ws_url, timeout_s=timeout_s)
@@ -505,17 +510,14 @@ def run_browser_render(
                 "fatal_markers": fatal_markers,
             }
     finally:
-        if cdp is not None:
-            cdp.close()
-        if proc is not None:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5.0)
-        shutil.rmtree(user_data_dir, ignore_errors=True)
+        try:
+            if cdp is not None:
+                cdp.close()
+        finally:
+            try:
+                terminate_process_tree(proc, timeout_s=5.0)
+            finally:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
 
     finished = _now()
     all_ok = bool(viewports_out) and all(item.get("ok") is True for item in viewports_out.values())

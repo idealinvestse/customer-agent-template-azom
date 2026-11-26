@@ -3036,6 +3036,10 @@ class WpAgentTools:
             plan_row = built.get("plan") if isinstance(built.get("plan"), dict) else {}
             if not clean_selector and not clean_text:
                 stored_sel = str(plan_row.get("focus_selector") or "").strip()
+                if not stored_sel and isinstance(plan_row.get("page_draft"), dict):
+                    stored_sel = str(plan_row["page_draft"].get("focus_selector") or "").strip()
+                if not stored_sel and isinstance(plan_row.get("page_draft"), dict):
+                    stored_sel = ".azom-page-draft-root"
                 if stored_sel:
                     clean_selector = stored_sel
             overlay_meta = {
@@ -3229,6 +3233,7 @@ class WpAgentTools:
         if type(raw_reuse) is not bool:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
         validator = getattr(wp_live_preview_mod, "validate_focus_options", None)
+        plan_id = arguments.get("plan_id")
         try:
             clean_path = validate_preview_path(raw_path)
             if callable(validator):
@@ -3246,7 +3251,21 @@ class WpAgentTools:
                     full_page=raw_full,
                 )
         except ReviewError as exc:
-            return ToolOutput(_error(exc.error_class), site_id)
+            err_payload = _error(exc.error_class)
+            if exc.error_class == "PreviewPathRefused" and isinstance(plan_id, str) and plan_id.strip():
+                try:
+                    ops_hint = self._review_plans()
+                    plan_hint = ops_hint.get(str(plan_id), site_id=site_id)
+                except Exception:
+                    plan_hint = None
+                if isinstance(plan_hint, dict) and isinstance(plan_hint.get("page_draft"), dict):
+                    shell_p = str(plan_hint["page_draft"].get("shell_path") or "/")
+                    err_payload["hint"] = (
+                        f"Kassasökvägar (/checkout, /cart, /varukorg m.fl.) är blockerade för live-hämtning. "
+                        f"Utelämna 'path' (eller ange publik shell_path '{shell_p}') så renderas "
+                        f"work/page_draft.json som fristående förhandsvisning i sajtens skal."
+                    )
+            return ToolOutput(err_payload, site_id)
 
         focus_kwargs = {
             "focus_section": focus_section,
@@ -3255,7 +3274,6 @@ class WpAgentTools:
             "full_page": full_page,
         }
 
-        plan_id = arguments.get("plan_id")
         if plan_id is not None:
             ops = self._review_plans()
             plan_row = ops.get(str(plan_id), site_id=site_id)
@@ -3508,11 +3526,16 @@ class WpAgentTools:
         allowed_hosts = _allowed_site_hosts(site_host)
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}),
-            _AllowlistedSiteRedirectHandler(allowed_hosts),
+            _AllowlistedSiteRedirectHandler(allowed_hosts, allow_wp_json=True),
         )
         req = urllib.request.Request(target_url, method="GET", headers=headers)
         try:
             with opener.open(req, timeout=float(timeout)) as resp:
+                final_url = str(resp.geturl() or "")
+                parsed_final = urllib.parse.urlparse(final_url)
+                ok_final, final_host, _ferr = _safe_https_parsed(parsed_final)
+                if not ok_final or final_host not in allowed_hosts or not _host_resolves_public(final_host):
+                    return None
                 raw = resp.read(1_048_576 + 1)
                 if len(raw) > 1_048_576:
                     return None
@@ -4810,6 +4833,9 @@ class WpAgentTools:
         text = str(raw_price or "").strip()
         if not text:
             return None
+        # Reject negative prices (leading minus or unicode minus before digits)
+        if re.search(r"(?:^|[\s(])[-−]\s*\d", text):
+            return None
         cleaned = re.sub(r"[^0-9.,]", "", text)
         if not cleaned:
             return None
@@ -4824,6 +4850,10 @@ class WpAgentTools:
                 cleaned = cleaned.replace(",", ".")
             else:
                 cleaned = cleaned.replace(",", "")
+        elif "." in cleaned:
+            # Nordic/European thousands separator e.g. "1.490" or "12.500"
+            if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", cleaned):
+                cleaned = cleaned.replace(".", "")
         try:
             val = float(cleaned)
             return val if val >= 0 else None
@@ -5004,17 +5034,58 @@ class WpAgentTools:
         )
 
     @staticmethod
+    def _normalize_pii_text(raw: str) -> str:
+        import html as _html_mod
+
+        text = str(raw or "")
+        for _ in range(4):
+            nxt = _html_mod.unescape(urllib.parse.unquote(text))
+            if nxt == text:
+                break
+            text = nxt
+        return re.sub(r"[\u200b-\u200f\ufeff]", "", text)
+
+    @staticmethod
     def _contains_non_synthetic_email(value: Any) -> bool:
+        return WpAgentTools._contains_real_pii(value)
+
+    @staticmethod
+    def _contains_real_pii(value: Any) -> bool:
+        """Detect real customer PII (non-synthetic emails, Nordic phones, national IDs) in keys & values."""
         if isinstance(value, str):
-            for match in _EMAIL_IN_TEXT_RE.finditer(value):
-                addr = match.group(0).strip().lower()
-                if not any(addr.endswith(suffix) for suffix in _ALLOWED_SYNTHETIC_EMAIL_SUFFIXES):
+            candidates = (value, WpAgentTools._normalize_pii_text(value))
+            for cand in candidates:
+                for match in _EMAIL_IN_TEXT_RE.finditer(cand):
+                    addr = match.group(0).strip().lower()
+                    if not any(addr.endswith(suffix) for suffix in _ALLOWED_SYNTHETIC_EMAIL_SUFFIXES):
+                        return True
+                # Nordic international phone (+46 / +47 / +45 / 0046 / 0047 / 0045) or Swedish 07x mobile
+                if re.search(
+                    r"(?:(?<!\d)(?:\+|00)(?:46|47|45)[\s.-]?(?:\(0\)[\s.-]?)?(?:\d[\s.-]?){7,10}\b|"
+                    r"(?<!\d)07[02369][\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?!\d))",
+                    cand,
+                ):
+                    return True
+                # Swedish personnummer (YYYYMMDD-XXXX / YYMMDD-XXXX)
+                if re.search(
+                    r"(?<!\d)(?:19|20)?\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[-+]\d{4}(?!\d)",
+                    cand,
+                ):
+                    return True
+                # Norwegian fødselsnummer (11 contiguous or space-separated digits DDMMYY XXXXX)
+                if re.search(
+                    r"(?<!\d)(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])\d{2}\s?\d{5}(?!\d)",
+                    cand,
+                ):
                     return True
             return False
         if isinstance(value, dict):
-            return any(WpAgentTools._contains_non_synthetic_email(v) for v in value.values())
-        if isinstance(value, list):
-            return any(WpAgentTools._contains_non_synthetic_email(v) for v in value)
+            return any(
+                WpAgentTools._contains_real_pii(k) or WpAgentTools._contains_real_pii(v)
+                for k, v in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(WpAgentTools._contains_real_pii(v) for v in value)
         return False
 
     def _workspace_page_draft(
@@ -5027,6 +5098,8 @@ class WpAgentTools:
         ops: Any,
     ) -> ToolOutput:
         from ecom_ops.integrations.wp_live_preview import (
+            _STATIC_ASSET_HOSTS,
+            _allowed_site_hosts,
             validate_focus_options,
             validate_preview_path,
         )
@@ -5116,25 +5189,36 @@ class WpAgentTools:
         if raw_ctx is not None:
             if not isinstance(raw_ctx, dict):
                 return ToolOutput(_error("InvalidToolArguments"), site_id)
-            if self._contains_non_synthetic_email(raw_ctx):
+            if self._contains_real_pii(raw_ctx):
                 err = _error("RealPiiRefused")
                 err["hint"] = (
-                    "synthetic_context får aldrig innehålla riktiga kundmejl/PII. "
+                    "synthetic_context får aldrig innehålla riktiga kundmejl, telefonnummer eller personnummer. "
                     "Använd syntetiska adresser som 'test@example.invalid' (eller hämta via wp_build_sample_data)."
                 )
                 return ToolOutput(err, site_id)
             synthetic_ctx = dict(raw_ctx)
-        if self._contains_non_synthetic_email(raw_body):
+
+        site_model = self._site_model(site_id)
+        allowed_img_hosts: frozenset[str] = _STATIC_ASSET_HOSTS
+        if site_model is not None and site_model.canonical_url:
+            parsed_site = urllib.parse.urlparse(str(site_model.canonical_url))
+            site_host = (parsed_site.hostname or "").strip().lower().rstrip(".")
+            if site_host:
+                allowed_img_hosts = _allowed_site_hosts(site_host) | _STATIC_ASSET_HOSTS
+
+        sanitized_html = sanitize_page_draft_html(raw_body, allowed_hosts=allowed_img_hosts)
+        if any(
+            self._contains_real_pii(field)
+            for field in (title, raw_body, sanitized_html, page_css, synthetic_ctx)
+        ):
             err = _error("RealPiiRefused")
             err["hint"] = (
-                "body_html får inte innehålla riktiga e-postadresser/PII. "
+                "Sidutkast får inte innehålla riktiga e-postadresser, telefonnummer eller personnummer/PII. "
                 "Använd syntetisk exempeldata (t.ex. 'test@example.invalid')."
             )
             return ToolOutput(err, site_id)
         synthetic_ctx["contains_real_pii"] = False
         synthetic_ctx["synthetic_data"] = True
-
-        sanitized_html = sanitize_page_draft_html(raw_body)
         draft_obj: dict[str, Any] = {
             "schema_version": 1,
             "slug": slug,
@@ -7052,7 +7136,6 @@ _DEEP_PHASE_TOOLS = frozenset(
         "wp_workspace_fork",
         "wp_inspect_element",
         "wp_build_sample_data",
-        "wp_list_workspaces",
         "wp_workspace_read_file",
         "wp_workspace_diff",
         "wp_workspace_patch_file",

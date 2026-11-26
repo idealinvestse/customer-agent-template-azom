@@ -879,8 +879,11 @@ def test_build_interactive_sandbox_html_base_tracker_strip_toolbar_and_guard() -
         "wiserreview",
     ):
         assert tracker not in rendered
-    # Site's own non-tracker script is preserved
-    assert "https://azom.no/wp-content/themes/azom/app.js" in rendered
+    # All untrusted scripts (including site theme scripts) are stripped; only the Azom guard remains
+    assert "https://azom.no/wp-content/themes/azom/app.js" not in rendered
+    guard_marker = '<script data-azom-sandbox="guard" data-azom-guard="1">'
+    assert guard_marker in rendered
+    assert "<script" not in rendered[: rendered.index(guard_marker)].lower()
     # Toolbar + jump button + mutation guard
     assert "AZOM SANDBOX · wr-abcdef012345 · /produkt/carplay-pro/" in rendered
     assert "Skrivskyddad förhandsvisning — inga ändringar på live" in rendered

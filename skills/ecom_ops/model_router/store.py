@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -121,12 +122,41 @@ def _release_lock(fh: Any) -> None:
         return
 
 
+_WIN_RETRY_DELAYS = (0.02, 0.04, 0.06, 0.08)
+
+
+def _replace_with_retry(src: str | Path, dst: Path, *, attempts: int = 5) -> None:
+    """Replace ``dst`` with ``src``, retrying transient Windows ``PermissionError``."""
+    total = max(1, int(attempts))
+    for attempt in range(total):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt >= total - 1:
+                raise
+            time.sleep(_WIN_RETRY_DELAYS[min(attempt, len(_WIN_RETRY_DELAYS) - 1)])
+
+
+def _read_text_with_retry(path: Path, *, attempts: int = 5) -> str:
+    """Read UTF-8 text, retrying transient Windows ``PermissionError``."""
+    total = max(1, int(attempts))
+    for attempt in range(total):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt >= total - 1:
+                raise
+            time.sleep(_WIN_RETRY_DELAYS[min(attempt, len(_WIN_RETRY_DELAYS) - 1)])
+    return ""
+
+
 def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
     """Write ``text`` atomically via temp file + fsync + os.replace."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         dir=str(path.parent),
-        prefix=f".{path.name}.",
+        prefix=f".{path.name}.{os.getpid()}.{threading.get_ident()}.",
         suffix=".tmp",
     )
     try:
@@ -138,7 +168,7 @@ def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
             os.chmod(tmp_name, mode)
         except OSError:
             pass
-        os.replace(tmp_name, path)
+        _replace_with_retry(tmp_name, path)
         try:
             os.chmod(path, mode)
         except OSError:
@@ -186,7 +216,7 @@ class ModelSessionStore:
         if not self.session_path.is_file():
             return None
         try:
-            raw = json.loads(self.session_path.read_text(encoding="utf-8"))
+            raw = json.loads(_read_text_with_retry(self.session_path))
         except (OSError, json.JSONDecodeError):
             return None
         if not isinstance(raw, dict):
@@ -238,23 +268,35 @@ class ModelSessionStore:
             "updated_at": session.updated_at,
         }
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(self.session_path.parent),
-            prefix=f".{self.session_path.name}.",
-            suffix=".tmp",
+        tmp_path = self.session_path.parent / (
+            f"{self.session_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
         )
         try:
+            fd = os.open(
+                str(tmp_path),
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                0o600,
+            )
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2, sort_keys=True)
                 fh.write("\n")
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.chmod(tmp_name, 0o600)
-            os.replace(tmp_name, self.session_path)
-            os.chmod(self.session_path, 0o600)
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+            _replace_with_retry(tmp_path, self.session_path)
+            try:
+                os.chmod(self.session_path, 0o600)
+            except OSError:
+                pass
         finally:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     def clear(self) -> None:
         if self.session_path.is_file():

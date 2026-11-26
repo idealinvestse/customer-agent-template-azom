@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -845,6 +846,46 @@ require_once ABSPATH . WPINC . '/template-loader.php';
 """
 
 
+def terminate_process_tree(proc: subprocess.Popen[Any] | None, *, timeout_s: float = 5.0) -> None:
+    """Terminate a child process and its descendants without raising on cleanup."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout_s)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    shell=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=timeout_s,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                pass
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+        try:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=timeout_s)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 class LocalWordPressSandbox:
     """One opt-in, loopback-only WordPress + PHP process."""
 
@@ -1019,6 +1060,9 @@ class LocalWordPressSandbox:
         stderr_path = self.sandbox_dir / "php-server.err.log"
         self._stdout_handle = stdout_path.open("wb")
         self._stderr_handle = stderr_path.open("wb")
+        popen_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         try:
             self._proc = subprocess.Popen(
                 command,
@@ -1027,6 +1071,7 @@ class LocalWordPressSandbox:
                 stderr=self._stderr_handle,
                 cwd=str(self.sandbox_dir),
                 env=env,
+                **popen_kwargs,
             )
             self._wait_ready()
         except Exception as exc:
@@ -1113,22 +1158,17 @@ class LocalWordPressSandbox:
     def stop(self) -> None:
         proc = self._proc
         self._proc = None
-        if proc is not None:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5.0)
-        for attr in ("_stdout_handle", "_stderr_handle"):
-            handle = getattr(self, attr, None)
-            setattr(self, attr, None)
-            if handle is not None:
-                try:
-                    handle.close()
-                except OSError:
-                    pass
+        try:
+            terminate_process_tree(proc, timeout_s=5.0)
+        finally:
+            for attr in ("_stdout_handle", "_stderr_handle"):
+                handle = getattr(self, attr, None)
+                setattr(self, attr, None)
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except OSError:
+                        pass
 
     def __enter__(self) -> LocalWordPressSandbox:
         self.start()

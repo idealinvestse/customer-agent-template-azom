@@ -6,7 +6,6 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from pathlib import Path
 from typing import Any
 
 from ecom_ops.bot.actors import (
@@ -37,6 +36,7 @@ from ecom_ops.bot.chat_agent import (
     ChatResult,
     _accepts_kwarg,
     _inspect_tool_outcome,
+    _is_allowed_chat_image_path,
     _merge_active_wp_review,
     _provenance,
     _valid_active_wp_review,
@@ -93,7 +93,6 @@ from ecom_ops.bot.telegram_oauth import (
     match_natural_oauth_intent,
 )
 from ecom_ops.escalation import EscalationService, default_escalation
-from ecom_ops.model_router.base import MAX_MULTIMODAL_IMAGE_BYTES, detect_image_format
 from ecom_ops.rbac import Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import validate_order_id
 from ecom_ops.wp_ops.agent_tools import WpAgentTools, context_for_storage, context_matches
@@ -101,7 +100,7 @@ from ecom_ops.wp_ops.agent_tools import WpAgentTools, context_for_storage, conte
 ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
 _FILE_PLAN_ID = re.compile(r"fe-[a-f0-9]{12}")
 _REVIEW_PLAN_ID = re.compile(r"wr-[a-f0-9]{12}")
-_MAX_REVIEW_HASH_CACHE = 8
+_MAX_REVIEW_HASH_CACHE = 24
 _MAX_CLARIFY_SESSION_CACHE = 6
 _PROPOSAL_YES_RE = re.compile(r"^proposal:yes:(pr-[0-9a-f]{12})$", re.I)
 _PROPOSAL_NO_RE = re.compile(r"^proposal:no:(pr-[0-9a-f]{12})$", re.I)
@@ -177,29 +176,12 @@ def _normalize_inbound_image_paths(
     *,
     limit: int = _MAX_TURN_IMAGES,
 ) -> list[str]:
-    """Keep unique, existing, non-symlink PNG/JPEG/WEBP files within size limit."""
+    """Keep unique, existing, non-symlink PNG/JPEG/WEBP files inside AZOM_DATA_DIR."""
     out: list[str] = []
     seen: set[str] = set()
     for item in paths or ():
-        if not isinstance(item, (str, Path)):
-            continue
-        raw = str(item).strip()
-        if not raw or "\x00" in raw:
-            continue
-        path = Path(raw)
-        try:
-            if path.is_symlink() or not path.is_file():
-                continue
-            size = path.stat().st_size
-            if size <= 0 or size > MAX_MULTIMODAL_IMAGE_BYTES:
-                continue
-            head = path.read_bytes()[:16]
-        except OSError:
-            continue
-        if detect_image_format(head) is None:
-            continue
-        resolved = str(path.resolve())
-        if resolved in seen:
+        resolved = _is_allowed_chat_image_path(item)
+        if not resolved or resolved in seen:
             continue
         seen.add(resolved)
         out.append(resolved)
@@ -533,6 +515,40 @@ class BotHandler:
         return "Du saknar behörighet för den här åtgärden."
 
     def _merge_state(self, chat_id: str | int, **updates: Any) -> None:
+        update_atomic = getattr(self.store, "update_atomic", None)
+        if callable(update_atomic):
+            def _mutator(existing: dict[str, Any] | None) -> dict[str, Any] | None:
+                prev = existing or {}
+                session = dict(updates.get("session", prev.get("session") or {}))
+                messages = clamp_messages(
+                    updates.get("messages") if "messages" in updates else prev.get("messages")
+                )
+                tool_digest = str(
+                    updates.get("tool_digest")
+                    if "tool_digest" in updates
+                    else (prev.get("tool_digest") or "")
+                )
+                slots = updates.get("slots", prev.get("slots") or {})
+                state = {
+                    "flow": updates.get("flow", prev.get("flow")),
+                    "step": updates.get("step", prev.get("step")),
+                    "slots": slots,
+                    "session": session,
+                    "messages": messages,
+                    "tool_digest": tool_digest,
+                }
+                if (
+                    not state.get("flow")
+                    and not state.get("session")
+                    and not state.get("messages")
+                    and not state.get("tool_digest")
+                    and not state.get("slots")
+                ):
+                    return None
+                return state
+
+            update_atomic(chat_id, _mutator)
+            return
         prev = self.store.get(chat_id) or {}
         session = dict(updates.get("session", prev.get("session") or {}))
         if "messages" in updates:
@@ -604,6 +620,103 @@ class BotHandler:
                 chat_id,
                 pop_session_keys=("wp_review_hashes",),
             )
+
+    def _pin_review_hashes(
+        self,
+        chat_id: str | int,
+        session: dict[str, Any],
+        *,
+        actor: str,
+        plan: dict[str, Any],
+    ) -> None:
+        _with_review_hashes(session, actor=actor, plan=plan)
+        plan_id = str(plan.get("plan_id") or "")
+        site_id = str(plan.get("site_id") or "")
+        base_sha = str(plan.get("base_sha256") or "")
+        work_sha = str(plan.get("work_sha256") or "")
+        if (
+            self.proposal_store is not None
+            and hasattr(self.proposal_store, "pin_review_hashes")
+            and _REVIEW_PLAN_ID.fullmatch(plan_id)
+            and site_id
+            and base_sha
+            and work_sha
+        ):
+            self.proposal_store.pin_review_hashes(
+                chat_id,
+                actor=actor,
+                site_id=site_id,
+                plan_id=plan_id,
+                base_sha256=base_sha,
+                work_sha256=work_sha,
+            )
+
+    def _clear_review_tracking(
+        self,
+        chat_id: str | int,
+        session: dict[str, Any],
+        plan_id: str,
+    ) -> None:
+        if (
+            self.proposal_store is not None
+            and hasattr(self.proposal_store, "drop_pinned_review_hashes")
+            and _REVIEW_PLAN_ID.fullmatch(plan_id)
+        ):
+            self.proposal_store.drop_pinned_review_hashes(chat_id, plan_id)
+        pop_keys = ["active_wp_review"] if "active_wp_review" in session else []
+        updates: dict[str, Any] = {}
+        if _drop_review_hash(session, plan_id):
+            remaining = session.get("wp_review_hashes")
+            if isinstance(remaining, dict) and remaining:
+                updates["wp_review_hashes"] = dict(remaining)
+            else:
+                pop_keys.append("wp_review_hashes")
+        if updates or pop_keys:
+            self._update_session_atomic(
+                chat_id,
+                session_updates=updates or None,
+                pop_session_keys=pop_keys,
+            )
+
+    def _clarify_lookup_breakout(
+        self,
+        chat_id: str | int,
+        text: str,
+        *,
+        clarify_id: str,
+        image_paths: list[str] | tuple[str, ...] | None = None,
+        on_progress: ProgressCallback | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        on_text_reset: Callable[[], None] | None = None,
+        on_stream_clear: Callable[[], None] | None = None,
+        on_phase_change: Callable[[dict[str, Any]], None] | None = None,
+        on_checkpoint: Callable[[], list[str]] | None = None,
+        task_id: str | None = None,
+    ) -> BotReply:
+        if clarify_id:
+            self._cancel_clarification(chat_id, clarify_id)
+        self._clear_clarify_flow(chat_id)
+        fast = ORDER_FAST_RE.match(text)
+        if fast:
+            oid = fast.group(1)
+            self._touch_session_order(chat_id, oid)
+            return BotReply(
+                text=self._lookup_order_with_progress(
+                    chat_id, oid, on_progress=on_progress
+                )
+            )
+        return self._run_llm_chat(
+            chat_id,
+            text,
+            on_progress=on_progress,
+            on_text_delta=on_text_delta,
+            on_text_reset=on_text_reset,
+            on_stream_clear=on_stream_clear,
+            on_phase_change=on_phase_change,
+            on_checkpoint=on_checkpoint,
+            task_id=task_id,
+            image_paths=image_paths,
+        )
 
     def _lookup_order_with_progress(
         self,
@@ -1446,21 +1559,11 @@ class BotHandler:
                             actions=actions,
                         )
                 if _is_unrelated_lookup(text):
-                    if clarify_id:
-                        self._cancel_clarification(chat_id, clarify_id)
-                    self._clear_clarify_flow(chat_id)
-                    fast = ORDER_FAST_RE.match(text)
-                    if fast:
-                        oid = fast.group(1)
-                        self._touch_session_order(chat_id, oid)
-                        return BotReply(
-                            text=self._lookup_order_with_progress(
-                                chat_id, oid, on_progress=on_progress
-                            )
-                        )
-                    return self._run_llm_chat(
+                    return self._clarify_lookup_breakout(
                         chat_id,
                         text,
+                        clarify_id=clarify_id,
+                        image_paths=image_paths,
                         on_progress=on_progress,
                         on_text_delta=on_text_delta,
                         on_text_reset=on_text_reset,
@@ -1468,7 +1571,6 @@ class BotHandler:
                         on_phase_change=on_phase_change,
                         on_checkpoint=on_checkpoint,
                         task_id=task_id,
-                        image_paths=image_paths,
                     )
                 if answer in _CLARIFY_CONFIRM_WORDS and len(answer) <= 8:
                     actions = (
@@ -1528,21 +1630,11 @@ class BotHandler:
                         task_id=task_id,
                     )
                 if _is_unrelated_lookup(text):
-                    if clarify_id:
-                        self._cancel_clarification(chat_id, clarify_id)
-                    self._clear_clarify_flow(chat_id)
-                    fast = ORDER_FAST_RE.match(text)
-                    if fast:
-                        oid = fast.group(1)
-                        self._touch_session_order(chat_id, oid)
-                        return BotReply(
-                            text=self._lookup_order_with_progress(
-                                chat_id, oid, on_progress=on_progress
-                            )
-                        )
-                    return self._run_llm_chat(
+                    return self._clarify_lookup_breakout(
                         chat_id,
                         text,
+                        clarify_id=clarify_id,
+                        image_paths=image_paths,
                         on_progress=on_progress,
                         on_text_delta=on_text_delta,
                         on_text_reset=on_text_reset,
@@ -1550,7 +1642,6 @@ class BotHandler:
                         on_phase_change=on_phase_change,
                         on_checkpoint=on_checkpoint,
                         task_id=task_id,
-                        image_paths=image_paths,
                     )
                 if clarify_id:
                     self._consume_clarification(chat_id, clarify_id)
@@ -1574,6 +1665,20 @@ class BotHandler:
                 )
 
             if step == "await_other_text":
+                if _is_unrelated_lookup(text):
+                    return self._clarify_lookup_breakout(
+                        chat_id,
+                        text,
+                        clarify_id=clarify_id,
+                        image_paths=image_paths,
+                        on_progress=on_progress,
+                        on_text_delta=on_text_delta,
+                        on_text_reset=on_text_reset,
+                        on_stream_clear=on_stream_clear,
+                        on_phase_change=on_phase_change,
+                        on_checkpoint=on_checkpoint,
+                        task_id=task_id,
+                    )
                 self._clear_clarify_flow(chat_id)
                 return self._execute_clarified_step(
                     chat_id,
@@ -2599,7 +2704,7 @@ class BotHandler:
 
                 review_plan_row = ReviewPlans().get(review_plan_id)
                 if isinstance(review_plan_row, dict):
-                    _with_review_hashes(session, actor=actor, plan=review_plan_row)
+                    self._pin_review_hashes(chat_id, session, actor=actor, plan=review_plan_row)
                     if isinstance(session.get("wp_review_hashes"), dict):
                         session_updates["wp_review_hashes"] = dict(
                             session["wp_review_hashes"]
@@ -2651,6 +2756,10 @@ class BotHandler:
             session_updates["active_wp_review"] = merged_active_review
             if "active_wp_review" in pop_session_keys:
                 pop_session_keys.remove("active_wp_review")
+        elif getattr(result, "clear_active_wp_review", False):
+            session.pop("active_wp_review", None)
+            if "active_wp_review" not in pop_session_keys:
+                pop_session_keys.append("active_wp_review")
         session.update(session_updates)
 
         if hasattr(self.store, "append_turn_atomic"):
@@ -2803,20 +2912,7 @@ class BotHandler:
                     )
                 prev = self.store.get(chat_id) or {}
                 session = dict(prev.get("session") or {})
-                pop_keys = ["active_wp_review"] if "active_wp_review" in session else []
-                updates: dict[str, Any] = {}
-                if _drop_review_hash(session, plan_id):
-                    remaining = session.get("wp_review_hashes")
-                    if isinstance(remaining, dict) and remaining:
-                        updates["wp_review_hashes"] = dict(remaining)
-                    else:
-                        pop_keys.append("wp_review_hashes")
-                if updates or pop_keys:
-                    self._update_session_atomic(
-                        chat_id,
-                        session_updates=updates or None,
-                        pop_session_keys=pop_keys,
-                    )
+                self._clear_review_tracking(chat_id, session, plan_id)
                 return BotReply(
                     text=f"Avbrutet ({plan_id}). Ingen ändring skrevs till staging eller produktion."
                 )
@@ -2859,16 +2955,37 @@ class BotHandler:
         prev = self.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
         cached = (session.get("wp_review_hashes") or {}).get(plan_id)
-        if (
+        valid_pin = (
             isinstance(cached, dict)
             and cached.get("actor") == actor
             and cached.get("site_id") == site_id
+            and bool(str(cached.get("base_sha256") or "").strip())
+            and bool(str(cached.get("work_sha256") or "").strip())
+        )
+        if (
+            not valid_pin
+            and self.proposal_store is not None
+            and hasattr(self.proposal_store, "get_pinned_review_hashes")
         ):
-            base_sha = str(cached.get("base_sha256") or "")
-            work_sha = str(cached.get("work_sha256") or "")
-        else:
-            base_sha = str(plan.get("base_sha256") or "")
-            work_sha = str(plan.get("work_sha256") or "")
+            db_pin = self.proposal_store.get_pinned_review_hashes(chat_id, plan_id)
+            if (
+                isinstance(db_pin, dict)
+                and db_pin.get("actor") == actor
+                and db_pin.get("site_id") == site_id
+                and bool(str(db_pin.get("base_sha256") or "").strip())
+                and bool(str(db_pin.get("work_sha256") or "").strip())
+            ):
+                cached = db_pin
+                valid_pin = True
+        if not valid_pin:
+            return BotReply(
+                text=(
+                    f"Staging skrevs inte (MissingApprovalHash). Låst godkännandehash för {plan_id} "
+                    "saknas eller har gått ut — kör en ny förhandsvisning i chatten eller godkänn via dashboarden."
+                )
+            )
+        base_sha = str(cached["base_sha256"])
+        work_sha = str(cached["work_sha256"])
 
         prov = _provenance()
         step_id = f"wpreview:{plan_id}"
@@ -2930,20 +3047,7 @@ class BotHandler:
                     legacy_text="Staging-granskningsplan: klar.",
                 ),
             )
-            pop_keys = ["active_wp_review"] if "active_wp_review" in session else []
-            updates: dict[str, Any] = {}
-            if _drop_review_hash(session, plan_id):
-                remaining = session.get("wp_review_hashes")
-                if isinstance(remaining, dict) and remaining:
-                    updates["wp_review_hashes"] = dict(remaining)
-                else:
-                    pop_keys.append("wp_review_hashes")
-            if updates or pop_keys:
-                self._update_session_atomic(
-                    chat_id,
-                    session_updates=updates or None,
-                    pop_session_keys=pop_keys,
-                )
+            self._clear_review_tracking(chat_id, session, plan_id)
             lines = [
                 f"Ändringarna för {plan_id} är skrivna i staging ({site_id}, mock). Produktionen är oförändrad."
             ]
@@ -3112,7 +3216,7 @@ class BotHandler:
         if ready and can_stage:
             prev = self.store.get(chat_id) or {}
             session = dict(prev.get("session") or {})
-            _with_review_hashes(session, actor=actor, plan=raw_plan)
+            self._pin_review_hashes(chat_id, session, actor=actor, plan=raw_plan)
             self._persist_review_hashes(chat_id, session)
             return bot_reply(
                 "\n".join(lines),

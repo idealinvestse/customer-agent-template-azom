@@ -93,6 +93,35 @@ def _sanitize_escalation_json(raw: dict) -> dict:
     return norm
 
 
+def _iso_to_epoch(value: object) -> float:
+    import math
+    from datetime import UTC, datetime
+
+    if isinstance(value, bool) or value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        val = float(value)
+        return val if math.isfinite(val) and val >= 0 else 0.0
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        num = float(text)
+        if math.isfinite(num) and num >= 0:
+            return num
+    except ValueError:
+        pass
+    try:
+        iso = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        ts = dt.timestamp()
+        return ts if math.isfinite(ts) and ts >= 0 else 0.0
+    except ValueError:
+        return 0.0
+
+
 def register_core_routes(app: Flask) -> None:
     @app.route("/metrics")
     def prometheus_metrics():
@@ -116,21 +145,24 @@ def register_core_routes(app: Flask) -> None:
 
         from ecom_ops.budget import budget_status
         from ecom_ops.kpis import support_kpis_last_days
+        from ecom_ops.telemetry import Telemetry
 
+        data_dir = _data_dir()
+        tel = Telemetry(path=data_dir / "telemetry.jsonl")
         lines: list[str] = []
-        bs = budget_status()
+        bs = budget_status(telemetry=tel)
         lines.append("# TYPE azom_budget_used_usd gauge")
         lines.append(f"azom_budget_used_usd {bs.get('used_usd', 0)}")
         lines.append(f"azom_budget_cap_usd {bs.get('cap_usd', 0)}")
         lines.append(f"azom_budget_used_ratio {bs.get('used_ratio', 0)}")
-        kpis = support_kpis_last_days(days=7)
+        kpis = support_kpis_last_days(telemetry=tel, days=7)
         lines.append("# TYPE azom_case_approved_total gauge")
         lines.append(f"azom_case_approved_total {kpis.get('n_case_approved', 0)}")
         if kpis.get("median_time_to_approve_sec") is not None:
             lines.append(f"azom_median_time_to_approve_sec {kpis['median_time_to_approve_sec']}")
         if kpis.get("mean_draft_edit_distance") is not None:
             lines.append(f"azom_mean_draft_edit_distance {kpis['mean_draft_edit_distance']}")
-        db_path = _data_dir() / "cases.db"
+        db_path = data_dir / "cases.db"
         if db_path.is_file():
             try:
                 conn = sqlite3.connect(str(db_path))
@@ -142,13 +174,15 @@ def register_core_routes(app: Flask) -> None:
                 conn.close()
             except Exception:
                 pass
-        probe_path = _data_dir() / "probe_last.json"
+        probe_path = data_dir / "probe_last.json"
         if probe_path.is_file():
             try:
                 import json as _json
 
-                data = _json.loads(probe_path.read_text(encoding="utf-8"))
-                lines.append(f"azom_probe_last_ts {data.get('checked_at', '')!r}")
+                probe_data = _json.loads(probe_path.read_text(encoding="utf-8"))
+                ts = _iso_to_epoch(probe_data.get("checked_at") if isinstance(probe_data, dict) else None)
+                lines.append("# TYPE azom_probe_last_ts gauge")
+                lines.append(f"azom_probe_last_ts {ts:.3f}" if ts else "azom_probe_last_ts 0")
             except Exception:
                 pass
         return Response("\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4")
@@ -171,12 +205,18 @@ def register_core_routes(app: Flask) -> None:
         presence = _presence_integrations(runtime)
         last_probe = _load_probe_last()
         section_errors: dict[str, str] = {}
+        tel = None
+        try:
+            from ecom_ops.telemetry import Telemetry
+
+            tel = Telemetry(path=data / "telemetry.jsonl")
+        except Exception:
+            tel = None
         budget = None
         try:
             from ecom_ops.budget import budget_status
-            from ecom_ops.telemetry import Telemetry
 
-            budget = budget_status(telemetry=Telemetry(path=_data_dir() / "telemetry.jsonl"))
+            budget = budget_status(telemetry=tel)
             if budget.get("used_usd") is not None:
                 cost = float(budget["used_usd"])
                 cost_pct = min(100, int((cost / cap) * 100)) if cap else 0
@@ -186,12 +226,8 @@ def register_core_routes(app: Flask) -> None:
         kpis = None
         try:
             from ecom_ops.kpis import support_kpis_last_days
-            from ecom_ops.telemetry import Telemetry as _Tel
 
-            kpis = support_kpis_last_days(
-                telemetry=_Tel(path=_data_dir() / "telemetry.jsonl"),
-                days=7,
-            )
+            kpis = support_kpis_last_days(telemetry=tel, days=7)
         except Exception as exc:
             kpis = None
             section_errors["kpis"] = f"Support-KPI otillgänglig ({type(exc).__name__})"

@@ -13,6 +13,8 @@ import difflib
 import json
 import os
 import re
+import secrets
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -49,8 +51,13 @@ _HIGH_RISK = re.compile(
     r"checkout|cart|payment|gateway|kassan|varukorg|betalning",
     re.I,
 )
+_CSS_COMMENT_RE = re.compile(r"/\*[\s\S]*?(?:\*/|$)")
+_CSS_HEX_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\r\n\f]?")
+_CSS_CHAR_ESCAPE_RE = re.compile(r"\\([^\r\n\f0-9a-fA-F])")
 _CSS_HIGH_RISK = re.compile(
-    r"checkout|payment|gateway|kassan|betalning|<\?|<script\b|javascript:|vbscript:|expression\s*\(|@import\b",
+    r"checkout|payment|gateway|kassan|betalning|<\?|<script\b|</|"
+    r"javascript:|vbscript:|expression\s*\(|url\s*\(|image-set\s*\(|"
+    r"@import\b|behavior\s*:|-moz-binding\s*:",
     re.I,
 )
 _MAX_CSS_SEARCH_BYTES = 512 * 1024
@@ -120,15 +127,39 @@ def rest_reads_allowed() -> bool:
     return str(raw).strip().lower() in {"0", "false", "no", "off"}
 
 
+def _normalize_css_for_check(text: str) -> str:
+    """Strip CSS comments and decode CSS backslash/hex escapes before security regex checks."""
+    cleaned = _CSS_COMMENT_RE.sub("", str(text or ""))
+
+    def _decode_hex(match: re.Match[str]) -> str:
+        try:
+            cp = int(match.group(1), 16)
+        except ValueError:
+            return ""
+        if cp == 0 or cp > 0x10FFFF:
+            return "\ufffd"
+        return chr(cp)
+
+    cleaned = _CSS_HEX_ESCAPE_RE.sub(_decode_hex, cleaned)
+    cleaned = _CSS_CHAR_ESCAPE_RE.sub(lambda m: m.group(1), cleaned)
+    return cleaned
+
+
 def is_safe_pure_css_file(relative: str, text: str) -> bool:
-    """True for pure ``.css`` files outside checkout/payment paths with no script/PHP/payment tokens."""
+    """True for pure ``.css`` files outside checkout/payment paths with no script/PHP/exfil tokens."""
     clean = str(relative or "").strip().replace("\\", "/")
     if not clean.lower().endswith(".css"):
         return False
     parts = [part.lower() for part in clean.split("/") if part]
     if any(part in {"checkout", "cart", "gateway", "payment"} for part in parts):
         return False
-    if _CSS_HIGH_RISK.search(clean) or _CSS_HIGH_RISK.search(text or ""):
+    raw_text = text or ""
+    normalized = _normalize_css_for_check(raw_text)
+    if (
+        _CSS_HIGH_RISK.search(clean)
+        or _CSS_HIGH_RISK.search(raw_text)
+        or _CSS_HIGH_RISK.search(normalized)
+    ):
         return False
     return True
 
@@ -178,7 +209,9 @@ def payload_path(data_dir: Path, plan_id: str) -> Path:
 def write_payload(data_dir: Path, plan_id: str, new_text: str, diff: str) -> None:
     path = payload_path(data_dir, plan_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = path.with_name(
+        f"{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(4)}.tmp"
+    )
     temporary.write_text(
         json.dumps({"new_text": new_text, "diff": diff}, ensure_ascii=False),
         encoding="utf-8",
@@ -265,6 +298,171 @@ def _scrub_search_text(text: str, extra_secrets: list[str] | None = None) -> str
     return out
 
 
+_QUANT_BRACE_RE = re.compile(r"\{(\d+)(?:,(\d*))?\}")
+_BACKREF_RE = re.compile(r"(?<!\\)(?:\\\\)*(\\[1-9]|\(\?P=)")
+
+
+def validate_safe_regex(pattern: str) -> None:
+    """Reject regex patterns prone to catastrophic backtracking (ReDoS)."""
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError("Invalid regular expression.")
+    if _BACKREF_RE.search(pattern):
+        raise ValueError("Unsafe regular expression: backreferences are not allowed.")
+
+    # Stack entries: [has_repeat_quant, has_alt, start_index, branch_starts, has_optional]
+    stack: list[list[Any]] = []
+    in_class = False
+    quant_count = 0
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+            i += 1
+            if i < n and pattern[i] == "^":
+                i += 1
+            if i < n and pattern[i] == "]":
+                i += 1
+            continue
+        if ch == "(":
+            if len(stack) >= 6:
+                raise ValueError("Unsafe regular expression: group nesting too deep.")
+            start = i + 1
+            advance = 1
+            if i + 1 < n and pattern[i + 1] == "?":
+                # Skip group header prefix like (?:, (?i), (?P<name>
+                if i + 2 < n and pattern[i + 2] in (":", "=", "!"):
+                    start = i + 3
+                    advance = 3
+                elif i + 2 < n and pattern[i + 2] == "<":
+                    start = i + 3
+                    advance = 3
+                else:
+                    advance = 2
+            stack.append([False, False, start, [start], False])
+            i += advance
+            continue
+        if ch == "|":
+            if stack:
+                stack[-1][1] = True
+                stack[-1][3].append(i + 1)
+            i += 1
+            continue
+        if ch == ")":
+            if not stack:
+                i += 1
+                continue
+            had_quant, had_alt, _g_start, branch_starts, had_optional = stack.pop()
+            group_end = i
+            i += 1
+            is_repeat = False
+            max_rep: int | None = 1
+            is_optional_after = False
+            if i < n and pattern[i] in ("+", "*"):
+                is_repeat = True
+                max_rep = None
+                if pattern[i] == "*":
+                    is_optional_after = True
+            elif i < n and pattern[i] == "?":
+                is_optional_after = True
+            elif i < n and pattern[i] == "{":
+                m_brace = _QUANT_BRACE_RE.match(pattern, i)
+                if m_brace is not None:
+                    lo = int(m_brace.group(1))
+                    hi_raw = m_brace.group(2)
+                    if hi_raw is None:
+                        is_repeat = lo > 1
+                        max_rep = lo
+                    elif hi_raw == "":
+                        is_repeat = True
+                        max_rep = None
+                    else:
+                        hi_val = int(hi_raw)
+                        is_repeat = hi_val > 1
+                        max_rep = hi_val
+                        if lo == 0 or hi_val != lo:
+                            is_optional_after = True
+            if is_repeat:
+                if had_quant:
+                    raise ValueError("Unsafe regular expression: nested quantifier rejected.")
+                if had_optional and (max_rep is None or max_rep >= 6):
+                    raise ValueError("Unsafe regular expression: quantified optional group rejected.")
+                if max_rep is not None and max_rep > 50:
+                    raise ValueError("Unsafe regular expression: excessive group repetition rejected.")
+                if had_alt:
+                    if max_rep is None or max_rep >= 6:
+                        branches: list[str] = []
+                        for b_idx, b_start in enumerate(branch_starts):
+                            b_end = (
+                                (branch_starts[b_idx + 1] - 1)
+                                if (b_idx + 1 < len(branch_starts))
+                                else group_end
+                            )
+                            branches.append(pattern[b_start:b_end])
+                        first_chars: set[str] = set()
+                        for br in branches:
+                            if not br or any(
+                                tok in br for tok in (".", "[", "\\w", "\\d", "\\s", "\\W", "\\D", "\\S")
+                            ):
+                                raise ValueError(
+                                    "Unsafe regular expression: ambiguous quantified alternation rejected."
+                                )
+                            lead = br[0]
+                            if lead in first_chars:
+                                raise ValueError(
+                                    "Unsafe regular expression: overlapping quantified alternation rejected."
+                                )
+                            first_chars.add(lead)
+            if stack:
+                if had_quant or is_repeat:
+                    stack[-1][0] = True
+                if had_optional or is_optional_after:
+                    stack[-1][4] = True
+            continue
+        if ch == "?":
+            if stack:
+                stack[-1][4] = True
+            i += 1
+            continue
+        if ch in ("+", "*"):
+            quant_count += 1
+            if quant_count > 16:
+                raise ValueError("Unsafe regular expression: too many quantifiers.")
+            if stack:
+                stack[-1][0] = True
+                if ch == "*":
+                    stack[-1][4] = True
+            i += 1
+            continue
+        if ch == "{":
+            m_brace = _QUANT_BRACE_RE.match(pattern, i)
+            if m_brace is not None:
+                lo = int(m_brace.group(1))
+                hi_raw = m_brace.group(2)
+                repeats = (lo > 1) if hi_raw is None else (True if hi_raw == "" else int(hi_raw) > 1)
+                variable = hi_raw is not None and (hi_raw == "" or int(hi_raw) != lo)
+                if repeats:
+                    quant_count += 1
+                    if quant_count > 16:
+                        raise ValueError("Unsafe regular expression: too many quantifiers.")
+                    if stack:
+                        stack[-1][0] = True
+                if (lo == 0 or variable) and stack:
+                    stack[-1][4] = True
+                i = m_brace.end()
+                continue
+        i += 1
+
+
 def _compile_search_matcher(
     query: str,
     *,
@@ -277,6 +475,7 @@ def _compile_search_matcher(
         raise ValueError("Search text must be 2 to 80 characters.")
     if mode == "literal":
         return None
+    validate_safe_regex(query)
     flags = re.IGNORECASE if case_insensitive else 0
     try:
         return re.compile(query, flags)
@@ -1030,10 +1229,17 @@ class FileChangeOps:
             return prepared
         site, plan, proposed, resolved, transport = prepared
         if plan.get("created") is True:
-            transport._local(resolved).write_bytes(proposed.encode())
+            try:
+                target_path = transport._local_checked(resolved)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_bytes(proposed.encode())
+            except PathRejected:
+                return editor._fail("PathRejected", "Kind or path is not editable.", site=site)
         else:
             try:
                 transport.write_bytes(resolved, proposed.encode())
+            except PathRejected:
+                return editor._fail("PathRejected", "Kind or path is not editable.", site=site)
             except TransportError as exc:
                 return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
         written = editor._read_text(site, resolved)

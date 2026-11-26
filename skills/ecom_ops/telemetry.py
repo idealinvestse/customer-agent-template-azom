@@ -174,27 +174,46 @@ class Telemetry:
         if days < 1 or not self.path.is_file():
             return 0
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-        kept: list[str] = []
-        removed = 0
-        with self.path.open(encoding="utf-8") as fh:
-            for line in fh:
-                s = line.strip()
-                if not s:
-                    continue
-                try:
-                    ev = json.loads(s)
-                except json.JSONDecodeError:
-                    continue
-                ts = str(ev.get("created_at") or "")
-                if ts < cutoff:
-                    removed += 1
-                    continue
-                kept.append(s)
+        retry_delays = (0.02, 0.04, 0.06, 0.08)
         with _lock:
-            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-            tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-            tmp.replace(self.path)
-            self._cost_cache = None
+            if not self.path.is_file():
+                return 0
+            kept: list[str] = []
+            removed = 0
+            with self.path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    s = line.strip()
+                    if not s:
+                        continue
+                    try:
+                        ev = json.loads(s)
+                    except json.JSONDecodeError:
+                        continue
+                    ts = str(ev.get("created_at") or "")
+                    if ts < cutoff:
+                        removed += 1
+                        continue
+                    kept.append(s)
+            tmp = self.path.with_name(
+                f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp"
+            )
+            try:
+                tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+                for attempt in range(5):
+                    try:
+                        os.replace(tmp, self.path)
+                        break
+                    except PermissionError:
+                        if attempt >= 4:
+                            raise
+                        time.sleep(retry_delays[min(attempt, len(retry_delays) - 1)])
+                self._cost_cache = None
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
         return removed
 
 

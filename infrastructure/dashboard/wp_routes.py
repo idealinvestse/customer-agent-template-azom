@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from urllib.parse import urlencode
 
 from flask import Flask, Response, g, redirect, render_template, request, url_for
@@ -380,7 +381,14 @@ def _render_files(
         else:
             file_error = listed.message
     elif selected_kind and selected_slug and selected_path and draft is None:
-        loaded = svc.read_file(site_id, selected_kind, selected_slug, selected_path, actor=actor)
+        loaded = svc.read_file(
+            site_id,
+            selected_kind,
+            selected_slug,
+            selected_path,
+            actor=actor,
+            admin_only=True,
+        )
         blocked = _file_block(site_id, loaded)
         if blocked is not None:
             return blocked
@@ -762,6 +770,16 @@ def _build_live_overlay_comparison(
     }
 
 
+def _has_preview_html_fast(ops: object, site_id: str, plan_id: str) -> bool:
+    """Check ``artifacts/preview.html`` directly on disk without re-parsing ``wp_review_plans.json``."""
+    from ecom_ops.wp_ops.review_plan import _safe_preview_html_path
+
+    data_dir = getattr(ops, "data_dir", None)
+    if data_dir is None:
+        return False
+    return _safe_preview_html_path(data_dir, site_id, plan_id) is not None
+
+
 def _site_review_plans(site_id: str, *, actor: str, admin: bool, limit: int = 20) -> list[dict[str, object]]:
     """Return recent wr-* review plans for a site, safe for both viewers and admins."""
     if not _can_read_wp():
@@ -795,7 +813,7 @@ def _site_review_plans(site_id: str, *, actor: str, admin: bool, limit: int = 20
                 "forked_from": _safe_review_id(item.get("forked_from") or ex.get("forked_from")),
                 "variant_group": _safe_variant_group(item.get("variant_group") or ex.get("variant_group")),
                 "summary": summary,
-                "has_interactive_preview": ops.has_preview_html(site_id, pid, actor=actor),
+                "has_interactive_preview": _has_preview_html_fast(ops, site_id, pid) if admin else False,
                 "is_standalone_page": _is_standalone_plan(ops, site_id, pid),
             }
         )
@@ -855,7 +873,7 @@ def _render_review(
     live_overlay_screenshots = [
         name for name in screenshots if name.startswith(("live-", "preview-", "change-", "focus-"))
     ]
-    has_interactive_preview = ops.has_preview_html(site_id, plan_id, actor=g.actor["name"])
+    has_interactive_preview = _has_preview_html_fast(ops, site_id, plan_id) if admin else False
     browser_passed = any(
         isinstance(row, dict)
         and row.get("job") == "browser_smoke"
@@ -1050,29 +1068,155 @@ def _can_read_wp() -> bool:
     return actor.has(Permission.WP_OPS_READ)
 
 
-def _preview_csp_for_site(site_id: str) -> str:
-    from urllib.parse import urlparse
+_SCRIPT_BLOCK_RE = re.compile(r"<script\b([^>]*)>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
+_STRAY_SCRIPT_RE = re.compile(r"</?script\b[^>]*>", re.IGNORECASE)
+_SCRIPT_SRC_ATTR_RE = re.compile(r"\bsrc\s*=", re.IGNORECASE)
+_AZOM_GUARD_ATTR_RE = re.compile(
+    r"""\b(?:data-azom-guard\s*=\s*(?:"1"|'1'|1(?=[\s>/]|$))|data-azom-sandbox\s*=\s*(?:"guard"|'guard'|guard(?=[\s>/]|$)))""",
+    re.IGNORECASE,
+)
+_AZOM_TOOLBAR_RE = re.compile(r"""\bid\s*=\s*(?:"azom-sandbox-toolbar"|'azom-sandbox-toolbar')""", re.IGNORECASE)
+_GUARD_PARAM_RES = (
+    ("highlight_token", re.compile(r"""\bvar\s+highlightToken\s*=\s*("(?:\\.|[^"\\])*")\s*;""")),
+    ("focus_text", re.compile(r"""\bvar\s+focusText\s*=\s*("(?:\\.|[^"\\])*")\s*;""")),
+    ("focus_selector", re.compile(r"""\bvar\s+focusSelector\s*=\s*("(?:\\.|[^"\\])*")\s*;""")),
+)
+_HTML_OPEN_TAG_RE = re.compile(r"""<([a-zA-Z][a-zA-Z0-9:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>""")
+_TAG_ATTR_RE = re.compile(
+    r"""([\s/]*)([a-zA-Z_:][a-zA-Z0-9_.:-]*)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`/]+))?""",
+    re.DOTALL,
+)
+_UNSAFE_URL_ATTRS = frozenset({"href", "src", "action", "formaction", "xlink:href"})
+_UNSAFE_SCHEME_RE = re.compile(r"^\s*(?:javascript|vbscript)\s*:", re.IGNORECASE)
+_BODY_CLOSE_RE = re.compile(r"</body\s*>", re.IGNORECASE)
 
-    from ecom_ops.wp_ops.registry import load_sites, site_by_id
 
-    extra_script_hosts: list[str] = []
-    try:
-        site = site_by_id(load_sites(), site_id)
-        if site is not None:
-            parsed = urlparse(str(site.canonical_url or ""))
-            host = (parsed.hostname or "").strip().lower().rstrip(".")
-            if parsed.scheme == "https" and host and not any(ch in host for ch in " ;'\""):
-                extra_script_hosts.append(f"https://{host}")
-                if host.startswith("www."):
-                    bare = host[4:]
-                    if bare:
-                        extra_script_hosts.append(f"https://{bare}")
-                else:
-                    extra_script_hosts.append(f"https://www.{host}")
-    except Exception:
-        pass
-    script_src = " ".join(["'unsafe-inline'", *extra_script_hosts])
+def _strip_tag_unsafe_attrs(match: re.Match[str]) -> str:
+    tag_name = match.group(1)
+    raw_tail = match.group(2) or ""
+    if not raw_tail:
+        return match.group(0)
+    self_close = False
+    tail = raw_tail
+    if tail.rstrip().endswith("/"):
+        stripped = tail.rstrip()
+        # Treat trailing "/" as self-closing slash only if it is not inside an unquoted value
+        if stripped == "/" or stripped[-2] in " \t\r\n\"'":
+            self_close = True
+            tail = stripped[:-1]
+    kept: list[str] = []
+    pos = 0
+    first = True
+    while pos < len(tail):
+        m = _TAG_ATTR_RE.match(tail, pos)
+        if m is None:
+            pos += 1
+            continue
+        sep, name, raw_val = m.group(1), m.group(2), m.group(3)
+        if first and not sep:
+            # Guard against malformed tail bytes right after tag name
+            pos = m.end()
+            continue
+        first = False
+        pos = m.end()
+        lname = name.lower()
+        if lname.startswith("on") and len(lname) > 2:
+            continue
+        if raw_val is not None and lname in _UNSAFE_URL_ATTRS:
+            unquoted = raw_val[1:-1] if len(raw_val) >= 2 and raw_val[0] in "\"'" else raw_val
+            compact = re.sub(r"[\x00-\x20]+", "", unquoted)
+            if _UNSAFE_SCHEME_RE.match(compact):
+                continue
+        clean_sep = " " if (not sep or "/" in sep) else sep
+        kept.append(f"{clean_sep}{name}={raw_val}" if raw_val is not None else f"{clean_sep}{name}")
+    suffix = " />" if self_close else ">"
+    return f"<{tag_name}{''.join(kept)}{suffix}"
+
+
+def _build_canonical_guard_script(
+    *,
+    nonce: str,
+    highlight_token: str = "",
+    focus_text: str = "",
+    focus_selector: str = "",
+) -> str:
+    from ecom_ops.integrations.wp_live_preview import build_interactive_sandbox_html
+
+    synthetic = build_interactive_sandbox_html(
+        "<html><body></body></html>",
+        site_canonical_url="",
+        site_id="",
+        plan_id="",
+        path="/",
+        highlight_token=highlight_token,
+        focus_text=focus_text,
+        focus_selector=focus_selector,
+    )
+    match = _SCRIPT_BLOCK_RE.search(synthetic)
+    if match is None:
+        return ""
+    attrs = match.group(1) or ""
+    body = match.group(2) or ""
+    return f'<script nonce="{nonce}"{attrs}>{body}</script>'
+
+
+def _extract_genuine_guard_params(html_text: str) -> tuple[bool, dict[str, str]]:
+    """Extract only safe JSON string parameters if a genuine Azom guard script was present."""
+    found = False
+    params = {"highlight_token": "", "focus_text": "", "focus_selector": ""}
+    for match in _SCRIPT_BLOCK_RE.finditer(html_text):
+        attrs = match.group(1) or ""
+        body = match.group(2) or ""
+        if _SCRIPT_SRC_ATTR_RE.search(attrs) or not _AZOM_GUARD_ATTR_RE.search(attrs):
+            continue
+        if "Blockerad i sandbox-läget" not in body or "#azom-sandbox-toast" not in body:
+            continue
+        found = True
+        extracted: dict[str, str] = {"highlight_token": "", "focus_text": "", "focus_selector": ""}
+        for key, pat in _GUARD_PARAM_RES:
+            pm = pat.search(body)
+            if pm is None:
+                continue
+            try:
+                val = json.loads(pm.group(1))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(val, str):
+                extracted[key] = val[:400]
+        params = extracted
+    return found, params
+
+
+def _harden_preview_html(html_text: str, nonce: str) -> str:
+    """Strip ALL on-disk scripts & inline handlers; emit only server-generated canonical guard."""
+    had_genuine_guard, guard_params = _extract_genuine_guard_params(html_text)
+
+    # Zero on-disk JavaScript survives into the served response (prevents spoofed guard tags).
+    working = _SCRIPT_BLOCK_RE.sub("", html_text)
+    working = _STRAY_SCRIPT_RE.sub("", working)
+    working = _HTML_OPEN_TAG_RE.sub(_strip_tag_unsafe_attrs, working)
+
+    if had_genuine_guard or _AZOM_TOOLBAR_RE.search(working):
+        canonical_guard = _build_canonical_guard_script(nonce=nonce, **guard_params)
+        if canonical_guard:
+            body_close = _BODY_CLOSE_RE.search(working)
+            if body_close is not None:
+                working = (
+                    working[: body_close.start()]
+                    + canonical_guard
+                    + "\n"
+                    + working[body_close.start() :]
+                )
+            else:
+                working = working + "\n" + canonical_guard
+    return working
+
+
+def _preview_csp_for_site(site_id: str, *, nonce: str = "") -> str:
+    del site_id  # Opaque CSP sandbox never grants origin/script-host trust to the previewed site.
+    script_src = f"'nonce-{nonce}'" if nonce else "'none'"
     return (
+        "sandbox allow-scripts; "
         "default-src 'none'; "
         f"script-src {script_src}; "
         "style-src 'unsafe-inline' https: data:; "
@@ -1089,7 +1233,7 @@ def _preview_csp_for_site(site_id: str) -> str:
 def _get_review_preview_html(site_id: str, plan_id: str):
     if not _SITE_ID.fullmatch(str(site_id or "")) or not _REVIEW_ID.fullmatch(str(plan_id or "")):
         return Response("Okänd plan", 404)
-    if not _can_read_wp():
+    if not _file_admin():
         return Response("Saknar behörighet", 403)
     path, err = _review_ops().preview_html_file(site_id, plan_id, actor=g.actor["name"])
     if err is not None or path is None:
@@ -1101,7 +1245,8 @@ def _get_review_preview_html(site_id: str, plan_id: str):
         html_text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return Response("Sandbox-förhandsvisning saknas", 404)
-    html_text = _scrub_posted(site_id, html_text)
+    nonce = secrets.token_urlsafe(16)
+    html_text = _harden_preview_html(_scrub_posted(site_id, html_text), nonce)
     return Response(
         html_text,
         status=200,
@@ -1111,7 +1256,7 @@ def _get_review_preview_html(site_id: str, plan_id: str):
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "X-Frame-Options": "SAMEORIGIN",
-            "Content-Security-Policy": _preview_csp_for_site(site_id),
+            "Content-Security-Policy": _preview_csp_for_site(site_id, nonce=nonce),
         },
     )
 

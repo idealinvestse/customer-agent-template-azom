@@ -21,6 +21,7 @@ from typing import Any
 from ecom_ops.wp_ops.file_changes import (
     _normalize_extensions,
     sensitive_relative,
+    validate_safe_regex,
 )
 from ecom_ops.wp_ops.files import (
     LocalTree,
@@ -402,18 +403,14 @@ def write_tree(folder: Path, files: list[tuple[str, bytes]]) -> None:
 
 
 def place_work_file(root: Path, relative: str, data: bytes) -> None:
-    """Write one file under ``work/``. A path that reaches ``base/`` is refused."""
-    work = (root / "work").resolve()
-    parts = [part for part in str(relative or "").replace("\\", "/").split("/") if part]
-    if not parts or any(part in {".", ".."} for part in parts):
-        raise ReviewError("PathRejected")
+    """Write one file under ``work/``. A path that reaches ``base/`` or fails validation is refused."""
+    work = _work_dir(root)
     if len(data) > _MAX_FILE:
         raise ReviewError("FileTooLarge")
-    dest = work.joinpath(*parts).resolve()
+    parts = _validate_work_relative(relative)
+    dest = _check_no_symlink(work, parts)
     if dest != work and work not in dest.parents:
         raise ReviewError("BaseSealed")
-    if not work.is_dir():
-        raise ReviewError("WorkspaceMissing")
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(data)
 
@@ -1107,9 +1104,10 @@ def bulk_replace_work(
     compiled: re.Pattern[str] | None = None
     if mode == "regex":
         try:
+            validate_safe_regex(find)
             compiled = re.compile(find)
-        except re.error as exc:
-            raise ReviewError("InvalidSearch", exc.msg) from exc
+        except (ValueError, re.error) as exc:
+            raise ReviewError("InvalidSearch", str(exc)) from exc
 
     try:
         allowed_exts = _normalize_extensions(extensions, allowed=_TEXT_EXTENSIONS)

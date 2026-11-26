@@ -74,12 +74,14 @@ class TelegramJobStore:
             yield conn
         finally:
             conn.close()
-            for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
-                try:
-                    if candidate.exists():
-                        os.chmod(candidate, 0o600)
-                except OSError:
-                    pass
+
+    def _chmod_db_files(self) -> None:
+        for candidate in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+            try:
+                if candidate.exists():
+                    os.chmod(candidate, 0o600)
+            except OSError:
+                pass
 
     def _initialize(self) -> None:
         with self._connection() as conn:
@@ -173,10 +175,22 @@ class TelegramJobStore:
                     site_id TEXT,
                     state TEXT NOT NULL DEFAULT 'open',
                     created_at REAL NOT NULL,
-                    consumed_at REAL
+                    consumed_at REAL,
+                    expires_at REAL
                 );
                 CREATE INDEX IF NOT EXISTS bot_proposals_chat_state
                     ON bot_proposals(chat_id, state);
+                CREATE TABLE IF NOT EXISTS wp_review_pins (
+                    chat_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    site_id TEXT NOT NULL,
+                    base_sha256 TEXT NOT NULL,
+                    work_sha256 TEXT NOT NULL,
+                    expires_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (chat_id, plan_id)
+                );
                 CREATE TABLE IF NOT EXISTS bot_resource_locks (
                     resource_key TEXT PRIMARY KEY,
                     job_id TEXT NOT NULL,
@@ -224,10 +238,12 @@ class TelegramJobStore:
                 "CREATE UNIQUE INDEX IF NOT EXISTS bot_jobs_one_running_per_task "
                 "ON bot_jobs(conversation_id, task_id) WHERE state='running'"
             )
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+            prop_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(bot_proposals)")
+            }
+            if "expires_at" not in prop_columns:
+                conn.execute("ALTER TABLE bot_proposals ADD COLUMN expires_at REAL")
+        self._chmod_db_files()
 
     def _begin(self, conn: sqlite3.Connection) -> None:
         conn.execute("BEGIN IMMEDIATE")
@@ -1287,17 +1303,19 @@ class TelegramJobStore:
         domain: str | None = None,
         site_id: str | None = None,
         id_prefix: str = "pr",
+        ttl_seconds: int = 12 * 3600,
     ) -> dict[str, Any]:
         raw_prefix = str(id_prefix or "")
         prefix = raw_prefix if re.fullmatch(r"[a-z]{2,4}", raw_prefix) else "pr"
         proposal_id = f"{prefix}-{uuid.uuid4().hex[:12]}"
         now = _now()
+        expires_at = now + max(60, int(ttl_seconds))
         with self._connection() as conn:
             self._begin(conn)
             conn.execute(
                 "INSERT INTO bot_proposals("
-                "proposal_id,chat_id,task_id,kind,payload_json,domain,site_id,state,created_at"
-                ") VALUES(?,?,?,?,?,?,?,'open',?)",
+                "proposal_id,chat_id,task_id,kind,payload_json,domain,site_id,state,created_at,expires_at"
+                ") VALUES(?,?,?,?,?,?,?,'open',?,?)",
                 (
                     proposal_id,
                     str(chat_id),
@@ -1307,6 +1325,7 @@ class TelegramJobStore:
                     domain,
                     site_id,
                     now,
+                    expires_at,
                 ),
             )
             row = conn.execute(
@@ -1315,6 +1334,71 @@ class TelegramJobStore:
             ).fetchone()
             conn.commit()
         return self._proposal(row) or {}
+
+    def pin_review_hashes(
+        self,
+        chat_id: str | int,
+        *,
+        actor: str,
+        site_id: str,
+        plan_id: str,
+        base_sha256: str,
+        work_sha256: str,
+        ttl_seconds: int = 12 * 3600,
+    ) -> None:
+        """Durably bind approved WP review base/work SHA-256 hashes per chat and plan."""
+        now = _now()
+        expires_at = now + max(60, int(ttl_seconds))
+        with self._connection() as conn:
+            self._begin(conn)
+            conn.execute(
+                "INSERT INTO wp_review_pins("
+                "chat_id,plan_id,actor,site_id,base_sha256,work_sha256,expires_at,created_at"
+                ") VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(chat_id,plan_id) DO UPDATE SET "
+                "actor=excluded.actor,site_id=excluded.site_id,"
+                "base_sha256=excluded.base_sha256,work_sha256=excluded.work_sha256,"
+                "expires_at=excluded.expires_at,created_at=excluded.created_at",
+                (
+                    str(chat_id),
+                    str(plan_id).strip().lower(),
+                    str(actor),
+                    str(site_id),
+                    str(base_sha256),
+                    str(work_sha256),
+                    expires_at,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def get_pinned_review_hashes(
+        self, chat_id: str | int, plan_id: str
+    ) -> dict[str, str] | None:
+        now = _now()
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT actor,site_id,base_sha256,work_sha256,expires_at "
+                "FROM wp_review_pins WHERE chat_id=? AND plan_id=?",
+                (str(chat_id), str(plan_id).strip().lower()),
+            ).fetchone()
+        if row is None or float(row["expires_at"]) <= now:
+            return None
+        return {
+            "actor": str(row["actor"]),
+            "site_id": str(row["site_id"]),
+            "base_sha256": str(row["base_sha256"]),
+            "work_sha256": str(row["work_sha256"]),
+        }
+
+    def drop_pinned_review_hashes(self, chat_id: str | int, plan_id: str) -> None:
+        with self._connection() as conn:
+            self._begin(conn)
+            conn.execute(
+                "DELETE FROM wp_review_pins WHERE chat_id=? AND plan_id=?",
+                (str(chat_id), str(plan_id).strip().lower()),
+            )
+            conn.commit()
 
     def get_proposal(
         self, proposal_id: str, *, chat_id: str | int | None = None
@@ -1581,8 +1665,13 @@ class TelegramJobStore:
             )
             conn.execute(
                 "DELETE FROM bot_proposals "
-                "WHERE state!='open' AND COALESCE(consumed_at, created_at)<?",
-                (cutoff,),
+                "WHERE (state!='open' AND COALESCE(consumed_at, created_at)<?) "
+                "OR (state='open' AND COALESCE(expires_at, created_at + 43200)<?)",
+                (cutoff, now),
+            )
+            conn.execute(
+                "DELETE FROM wp_review_pins WHERE expires_at<=?",
+                (now,),
             )
             conn.execute(
                 "DELETE FROM bot_resource_locks "

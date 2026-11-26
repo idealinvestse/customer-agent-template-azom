@@ -204,9 +204,8 @@ def test_dashboard_file_edit_is_typed_and_not_a_shell(tmp_path, monkeypatch):
         headers=jonatan,
     )
     hidden_body = hidden.get_data(as_text=True)
-    assert hidden.status_code == 200
+    assert hidden.status_code == 403
     assert SECRET not in hidden_body
-    assert "***" in hidden_body
     assert 'data-file-action="propose"' not in hidden_body
     assert 'name="command"' not in hidden_body
     assert client.post(
@@ -221,6 +220,14 @@ def test_dashboard_file_edit_is_typed_and_not_a_shell(tmp_path, monkeypatch):
     ).status_code == 403
 
     oscar = _auth(client, "oscar")
+    oscar_prod_file = client.get(
+        "/wp/mock-shop/files?kind=theme&slug=twentytwentyfive&path=style.css",
+        headers=oscar,
+    )
+    oscar_prod_body = oscar_prod_file.get_data(as_text=True)
+    assert oscar_prod_file.status_code == 200
+    assert SECRET not in oscar_prod_body
+    assert "***" in oscar_prod_body
     opened = client.get(
         "/wp/mock-staging/files?kind=theme&slug=twentytwentyfive&path=style.css",
         headers=oscar,
@@ -738,3 +745,43 @@ def test_wp_review_standalone_page_draft_gallery_metadata_and_site_badge(tmp_pat
     j_site_html = j_site.get_data(as_text=True)
     assert 'data-standalone-badge="true"' in j_site_html
     assert "Ny tacksida med syntetisk orderbekräftelse" not in j_site_html
+
+
+def test_wp_site_review_plans_avoids_n_plus_one_and_hides_preview_from_viewer(tmp_path, monkeypatch):
+    from ecom_ops.wp_ops.review_plan import ReviewPlans, VerifiedTheme
+    from ecom_ops.wp_ops.review_workspace import workspace_root
+
+    client = _setup_dashboard_env(tmp_path, monkeypatch)
+    plans = ReviewPlans(data_dir=tmp_path)
+    pids: list[str] = []
+    for _ in range(3):
+        opened = plans.open(
+            "mock-staging",
+            "theme",
+            actor="oscar",
+            verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+        )
+        assert opened.ok
+        pids.append(opened.data["plan_id"])
+
+    art_dir = workspace_root(tmp_path, "mock-staging", pids[0]) / "artifacts"
+    art_dir.mkdir(parents=True, exist_ok=True)
+    (art_dir / "preview.html").write_text("<html><body>ok</body></html>", encoding="utf-8")
+
+    # Ensure _site_review_plans never calls ReviewPlans.has_preview_html (N+1 plan-store reads)
+    def _fail_has_preview(*args, **kwargs):
+        raise AssertionError("N+1 ReviewPlans.has_preview_html should not be called")
+
+    monkeypatch.setattr(ReviewPlans, "has_preview_html", _fail_has_preview)
+
+    oscar = _auth(client, "oscar")
+    oscar_resp = client.get("/wp/mock-staging", headers=oscar)
+    assert oscar_resp.status_code == 200
+    oscar_html = oscar_resp.get_data(as_text=True)
+    assert f"/wp/mock-staging/reviews/{pids[0]}/preview" in oscar_html
+    assert f"/wp/mock-staging/reviews/{pids[1]}/preview" not in oscar_html
+
+    jonatan = _auth(client, "jonatan")
+    viewer_resp = client.get("/wp/mock-staging", headers=jonatan)
+    assert viewer_resp.status_code == 200
+    assert f"/wp/mock-staging/reviews/{pids[0]}/preview" not in viewer_resp.get_data(as_text=True)

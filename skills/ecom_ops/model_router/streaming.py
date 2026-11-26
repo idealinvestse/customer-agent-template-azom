@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable, Iterable
 from typing import Any
+
+from ecom_ops.model_router.errors import ModelUnavailableError
 
 
 def _decode_line(line: str | bytes) -> str:
@@ -29,12 +32,22 @@ def read_chat_completion_sse(
     lines: Iterable[str | bytes],
     *,
     on_text_delta: Callable[[str], None] | None = None,
+    hard_deadline: float | None = None,
+    timeout_error_factory: Callable[[], Exception] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Read chat-completion SSE, returning full text and usage when present."""
+
+    def _check_deadline() -> None:
+        if hard_deadline is not None and time.monotonic() > hard_deadline:
+            if timeout_error_factory is not None:
+                raise timeout_error_factory()
+            raise ModelUnavailableError("Stream hard timeout", code="hard_timeout")
+
     parts: list[str] = []
     plain_lines: list[str] = []
     usage: dict[str, Any] = {}
     for line_value in lines:
+        _check_deadline()
         line = _decode_line(line_value).strip()
         if not line:
             continue
@@ -67,6 +80,8 @@ def read_chat_completion_sse(
             if on_text_delta:
                 try:
                     on_text_delta(text)
+                except ModelUnavailableError:
+                    raise
                 except Exception:
                     # A transport callback must not fail model inference.
                     pass
@@ -91,6 +106,8 @@ def read_chat_completion_sse(
                 if text and on_text_delta:
                     try:
                         on_text_delta(text)
+                    except ModelUnavailableError:
+                        raise
                     except Exception:
                         pass
                 return text.strip(), usage
