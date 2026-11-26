@@ -312,7 +312,7 @@ def test_show_site_does_not_return_another_site(tmp_path):
 
 def test_package_has_no_shell_or_http_client():
     package = ROOT / "skills" / "ecom_ops" / "wp_ops"
-    text = "\n".join(path.read_text(encoding="utf-8") for path in package.glob("*.py"))
+    text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(package.rglob("*.py")))
     for banned in ("requests", "urlopen", "http.client", "subprocess", "os.system", "integrations.wordpress"):
         assert banned not in text
 
