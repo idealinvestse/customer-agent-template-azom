@@ -47,6 +47,7 @@ Language split: **Swedish** = ops/pilot/runbooks · **English** = agents/dev/arc
 | [`WP_SKILL_GUARDRAILS.md`](WP_SKILL_GUARDRAILS.md) | Coding agents | Shared budgets, HITL gates, URL/zero-PII rules for WordPress skill cards |
 | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) | Developers / Oscar | Google Ads + GA4 mock-first HITL |
 | [`MODEL_ROUTER.md`](MODEL_ROUTER.md) | Developers / Oscar | Model routes, ChatGPT OAuth, xAI, OpenRouter |
+| [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) | Developers / Oscar | Web search providers, Deep Research worker, PII/SSRF firewall, `/research` |
 | [`../skills/ecom-ops/SKILL.md`](../skills/ecom-ops/SKILL.md) | Skill hosts | Skill card |
 | [`../README.md`](../README.md) | Everyone | Project intro + quick start |
 
@@ -66,6 +67,7 @@ Each major surface has one **primary** living doc:
 | Mail providers | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
 | Marketing Google (Ads+GA4) | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Model router | [`MODEL_ROUTER.md`](MODEL_ROUTER.md) · [`runbooks/model-oauth.md`](runbooks/model-oauth.md) |
+| Web search & Deep Research | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
 | Telegram | [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) |
 | Messenger | [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) |
 | Woo / WordPress content API | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |

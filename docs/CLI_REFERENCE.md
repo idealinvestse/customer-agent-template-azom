@@ -78,8 +78,11 @@ Generate (and optionally publish) a product description.
 
 ```bash
 python -m ecom_ops --mock product-desc --product-id 42 --language sv
+python -m ecom_ops --mock product-desc --product-id 42 --language sv --research
+python -m ecom_ops --mock product-desc --product-id 42 --language sv --research-brief res-000000000001
 python -m ecom_ops --mock product-desc --name "Widget" --features "a,b" --language nb --publish
-# flags: --product-id, --name, --features, --language (default sv), --publish
+# flags: --product-id, --name, --features, --language (default sv), --publish, --research-brief, --research
+# note: --research runs product research before generating copy and refuses --publish
 ```
 
 ### `support`
@@ -117,7 +120,7 @@ python -m ecom_ops ops gc --dry-run [--grace-hours 24] [--json]
 # expect: dry-run counts for expired wr-* workspaces, untracked pv-* dirs, old inbox media, expired proposals, and log rotation; mutates nothing
 
 python -m ecom_ops --actor oscar ops gc [--grace-hours 24] [--json]
-# Oscar ADMIN: executes housekeeping (cleans expired wr-* dirs past grace period, untracked pv-*, old telegram/messenger inbox media, expired bot_proposals/wp_review_pins, and gzip-rotates telemetry.jsonl / audit.jsonl)
+# Oscar ADMIN: executes housekeeping (cleans expired wr-* dirs past grace period, untracked pv-*, old telegram/messenger inbox media, expired bot_proposals/wp_review_pins, expired/LRU web_search_cache.sqlite3 rows, expired non-pinned research_artifacts/res-*, and gzip-rotates telemetry.jsonl / audit.jsonl)
 ```
 
 Live execution of `ops gc` requires `--actor oscar` (`full_admin`). `--dry-run` and `ops status` are read-only. Active (non-expired) `wr-*` workspaces are never removed.
@@ -198,7 +201,10 @@ python -m ecom_ops --mock cases close --id <uuid> [--reason "..."]
 # close without customer reply
 
 python -m ecom_ops --actor oscar cases retention-purge [--days 90] [--redact] [--dry-run]
-# Oscar ADMIN — GDPR: delete or redact old closed cases
+# Oscar ADMIN — GDPR: delete or redact old closed cases (and unlink case:<uuid> target_ref from research_jobs.sqlite3)
+
+python -m ecom_ops --mock cases research --id <uuid> [--query "..."] [--depth quick|standard] [--wait]
+# Run or enqueue PII-firewalled web research linked to case:<uuid> (never sends customer mail)
 ```
 
 Global `--null-send` (or `AZOM_NULL_SEND=1`) activates the null-send profile. `status` always prints `null_send=on|off`.  
@@ -237,6 +243,7 @@ python -m ecom_ops --mock --actor jonatan marketing suggests approve --id <uuid>
 # approve requires kill-switch unset + ads_mutate_enabled (negatives: Jonatan; else Oscar)
 python -m ecom_ops --mock --actor jonatan marketing mp-queue --name purchase --payload-json '{}'
 python -m ecom_ops --mock --actor jonatan marketing merchant-queue --offer-id SKU-1 --title "…"
+python -m ecom_ops --mock marketing research --topic "Google Ads Consent Mode v2 SE" [--depth quick|standard|deep] [--wait]
 ```
 
 ### `wp`
@@ -279,7 +286,25 @@ The document root and SSH login are set in the dashboard at `/wp/<id>/ssh`, not 
 - Pass a shell command to `wp file-propose`. The edit path is site, kind, slug, and one relative file.
 - Treat an unknown backup, a verified local mock manifest, or a single failed probe as a green, healthy site.
 
-`status` includes `ga4=on|off` and `ads=on|off`. Soft path: `bash bin/mock-marketing-azom.sh`.
+`status` includes `ga4=on|off`, `ads=on|off`, and `web_search` readiness. Soft path: `bash bin/mock-marketing-azom.sh`.
+
+### `search`, `fetch-url`, and `research`
+
+Fail-closed mock-first web search, public HTTPS extraction, and async Deep Research jobs (`skills/ecom_ops/research/`, [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md)):
+
+```bash
+# cwd: repository root
+# env: AZOM_USE_MOCK=1
+python -m ecom_ops --mock search --query "WooCommerce HPOS hooks" [--profile deep_general] [--locale sv] [--freshness-days 30] [--max-results 5]
+python -m ecom_ops --mock fetch-url --url "https://developer.woocommerce.com/docs/hpos-overview/" [--profile deep_general] [--max-chars 5000]
+python -m ecom_ops --mock research start --topic "Nordisk CarPlay marknadsanalys" [--profile deep_general] [--depth quick|standard|deep] [--market SE|NO|DK] [--target-ref <ref>] [--wait]
+python -m ecom_ops --mock research list [--status STATUS] [--limit 20]
+python -m ecom_ops --mock research show --id <res-id> [--section full|summary|sources]
+python -m ecom_ops --mock research status --id <res-id>
+python -m ecom_ops --mock research steer --id <res-id> --note "..."
+python -m ecom_ops --mock research cancel --id <res-id>
+# expect: JSON with ok: true, provenance: "mock" (in mock mode), and res-<12hex> identifiers
+```
 
 ## Environment that changes CLI behavior
 
@@ -296,12 +321,17 @@ The document root and SSH login are set in the dashboard at `/wp/<id>/ssh`, not 
 | `AZOM_ADS_MUTATE_KILL=1` | Always deny Ads mutate / merchant write |
 | `AZOM_GA_MUTATE_KILL=1` | Reserved GA-admin mutate kill (deny when set; no mutate path yet) |
 | `AZOM_MP_KILL=1` | Always deny Measurement Protocol send |
+| `AZOM_WEB_SEARCH_ENABLED=1` | Live web search egress gate (process env only; requires `AZOM_USE_MOCK=0`) |
+| `AZOM_WEB_FETCH_ENABLED=1` | Live web fetch egress gate (process env only; requires `AZOM_USE_MOCK=0`) |
+| `AZOM_RESEARCH_ENABLED=1` | Live async Deep Research gate (process env only; requires `AZOM_USE_MOCK=0`) |
+| `AZOM_WEB_SEARCH_KILL=1` / `AZOM_RESEARCH_KILL=1` | Emergency kill-switches forcing search/research off (process env only) |
 
 ## Related
 
 - Cases ops (Swedish): [`CASES.md`](CASES.md)
 - Mail setup (Swedish): [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md)
 - Marketing Google: [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md)
+- Web search & research: [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md)
 - System map: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)
 
 ## System Launcher (`ecom_ops.launcher`)

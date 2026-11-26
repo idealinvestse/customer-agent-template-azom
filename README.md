@@ -30,9 +30,10 @@ Dokumentationsstil: [`docs/DOC_STYLE.md`](docs/DOC_STYLE.md) · Index: [`docs/RE
 | **Messenger** | Daily-driver ops chat (webhook) | Fail-closed PSID allowlist i prod |
 | **Telegram bot** | Backup OpenClaw slash + hybrid NL | Draft/send → human path |
 | **Woo/WP** | Orders, trackings, WP REST, webhooks | Se [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) |
+| **Web search & research** | Sökning & asynkron Deep Research (Parallel, Exa, Brave, Tavily, opt-in SearXNG, mock) | Fail-closed; PII-brandvägg; se [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md) |
 | **smoke / readiness** | Opt-in live smoke; `/health` poll-age | — |
 
-**RBAC:** Jonatan = viewer (+ CASE_REPLY, MARKETING_READ/SUGGEST) · Oscar = full_admin · agent = operator (MAIL_SEND + CASE_REPLY + MARKETING_READ).
+**RBAC:** Jonatan = viewer (+ CASE_REPLY, MARKETING_READ/SUGGEST, WEB_SEARCH, RESEARCH_RUN) · Oscar = full_admin · agent = operator (MAIL_SEND + CASE_REPLY + MARKETING_READ + WEB_SEARCH/RESEARCH_RUN).
 
 **AI rails:** `config/cases_ai.yaml` — suggest-approve on; auto-send **default off**, **not wired** into poll (+ kill-switch `AZOM_AUTO_SEND_KILL`). Null-send: `AZOM_NULL_SEND` (default off).
 
@@ -95,6 +96,7 @@ Se [`docs/DOCKER_CONFIG_OVERLAY.md`](docs/DOCKER_CONFIG_OVERLAY.md).
 | `/settings` | Jonatan: non-secret config |
 | `/cases` | Ärende-kö, draft, approve/close (+ skugg-badges) |
 | `/marketing` | Ads+GA4 digest + suggest HITL |
+| `/research` | Webbsökning + asynkrona Deep Research-jobb (`res-*`) |
 | `/oscar` | Oscar admin (secrets + resolve escalations + probes) |
 | `/webhooks/messenger` | Meta Messenger |
 | `/webhooks/woo` | Woo HMAC webhooks |
@@ -117,6 +119,8 @@ python -m ecom_ops --mock cases show --id <uuid>
 python -m ecom_ops --mock cases reply --id <uuid>   # approve + send
 python -m ecom_ops --actor oscar cases shadow-report --days 7
 python -m ecom_ops --mock marketing digest --days 7
+python -m ecom_ops --mock search --query "WooCommerce HPOS hooks" --profile technical_docs
+python -m ecom_ops --mock research start --topic "Nordisk CarPlay marknadsanalys" --depth quick --wait
 python -m ecom_ops smoke --live                     # opt-in; se docs
 ```
 
@@ -147,6 +151,7 @@ Full table + coverage matrix: [`docs/README.md`](docs/README.md)
 | [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) | Woo/WP (EN) |
 | [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md) | WordPress site ops, Phase 1–2 mock and typed file edit (EN) |
 | [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md) | Model router (EN) |
+| [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md) | Web search & Deep Research (EN) |
 | [`docs/TEMPLATE_GUIDE.md`](docs/TEMPLATE_GUIDE.md) | Fork / instantiate checklist (EN) |
 | [`docs/runbooks/`](docs/runbooks/) | Incident-runbooks (SV) |
 | [`docs/openclaw-upgrade-report.md`](docs/openclaw-upgrade-report.md) | Senaste lokala OpenClaw-uppgraderingen (SV, snapshot) |

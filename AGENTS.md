@@ -19,6 +19,7 @@
    - WordPress site ops: [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md)
    - Marketing Google (Ads+GA4): [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md)
    - Model router: [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md)
+   - Web search & research: [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md)
    - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
    - Telegram: [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)
 5. Skill card: [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md)
@@ -28,9 +29,9 @@
 ## Budget and roles
 
 - OpenRouter budget: **USD 100** (`config/limits.yaml`)
-- **Jonatan:** `viewer` (+ mail/SSH read, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**, **WP_OPS_READ**)
-- **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags + **MARKETING_MUTATE** + `shadow-report` / `retention-purge` + **WP_OPS_ADMIN**; **WP_OPS_RESTORE** still refuses)
-- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**, **WP_OPS_OPERATE** for staging health, mock backup, staging drill, and a staging theme/plugin file edit)
+- **Jonatan:** `viewer` (+ mail/SSH read, non-secret settings, **CASE_REPLY**, **MARKETING_READ** + **MARKETING_SUGGEST**, **WP_OPS_READ**, **WEB_SEARCH** + **RESEARCH_RUN**)
+- **Oscar:** `full_admin` + escalation target (critical + code_edit + secrets UI + experiment flags + **MARKETING_MUTATE** + `shadow-report` / `retention-purge` + **WP_OPS_ADMIN** + **RESEARCH_ADMIN**; **WP_OPS_RESTORE** still refuses)
+- **Agent automation:** `operator` (order/product/support, **MAIL_SEND**+**MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**, **WP_OPS_OPERATE** for staging health, mock backup, staging drill, and a staging theme/plugin file edit, **WEB_SEARCH** + **RESEARCH_RUN**)
 
 ## Goals
 
@@ -140,6 +141,7 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 - **V2.3:** robustness (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak**
 - **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live **reads** shipped (GA4 runReport + Ads GAQL); mutate/MP still refused
 - **Model router:** ChatGPT OAuth (Azom-owned refresh) + opt-in xAI Grok Build + xAI API key + OpenRouter fallback — [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md). Direct xAI OAuth is not implemented. Live SIWC connect is Oscar-owned.
+- **Web Search & Async Deep Research:** Fail-closed mock-first (`AZOM_USE_MOCK=1` offline fixtures; live egress gated by `AZOM_USE_MOCK=0` + process-env `AZOM_WEB_SEARCH_ENABLED=1` / `AZOM_WEB_FETCH_ENABLED=1` / `AZOM_RESEARCH_ENABLED=1` and kill-switches unset). Parallel, Exa, Brave, Tavily, opt-in SearXNG; `OutboundQueryFirewall` zero-PII/SSRF/nonce framing; 6 profiles; `<clarify>` scoping; lazy `ResearchWorkerPool`; Dashboard `/research`; CLI `search`/`fetch-url`/`research`; isolated from OpenRouter `$100` cap (`cost_usd=0.0`, `monthly_external_usd_cap: 25.0`) — [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md).
 
 ## Cases quick CLI
 
@@ -172,6 +174,14 @@ python -m ecom_ops status
 python -m ecom_ops --mock marketing digest --days 7
 python -m ecom_ops --mock --actor jonatan marketing suggests build
 bash bin/mock-marketing-azom.sh
+```
+
+## Web search & research CLI (mock)
+
+```bash
+python -m ecom_ops --mock search --query "WooCommerce HPOS hooks" --profile technical_docs
+python -m ecom_ops --mock research start --topic "Nordisk CarPlay marknadsanalys" --depth quick --wait
+python -m ecom_ops --mock research list
 ```
 
 ## Telegram / Messenger env (prod)

@@ -21,6 +21,8 @@
 | OAuth-tokens (ChatGPT) | Modellutkast via användarens ChatGPT-plan | Samtycke (Oscar som kontoägare) | Tills disconnect | `/var/lib/azom/model_oauth/` (0600, **undantagen vanlig backup**) |
 | xAI API-nyckel | Modellfallback | Berättigat intresse | I `.env`, inte i SQLite | Processmiljö |
 | OpenRouter API-nyckel | Modellfallback | Berättigat intresse | I `.env`, inte i SQLite | Processmiljö |
+| Webbsökcache (`web_search_cache.sqlite3`) | Minska externa sök-/hämtanrop | Berättigat intresse | TTL 1h (nyheter) / 6h (standard) / 24h (docs); LRU max 1000 rader / 50 MB; rensas av `ops gc` | `/var/lib/azom/web_search_cache.sqlite3` (Hetzner EU) |
+| Deep Research-jobb & artefakter | Intern produkt-/teknik-/marknadsresearch (`res-*`) | Berättigat intresse | `research_artifacts/` + icke-pinnade jobb 14 dagar + 24h grace (`ops gc`); `case:<uuid>` frikopplas atomiskt vid `gdpr_delete` / `retention-purge` | `/var/lib/azom/research_jobs.sqlite3` + `/var/lib/azom/research_artifacts/` |
 
 ## Dataresidency & tredjepartsöverföring (P8.4)
 
@@ -43,6 +45,18 @@
 - **Grok Build:** Azom anropar lokal `grok`-CLI. Grok Build äger sin OAuth-session. Azom läser inte `auth.json`.
 - **API-nyckel:** Anrop till `https://api.x.ai/v1/chat/completions`. Nyckeln loggas inte.
 - **Direkt xAI OAuth:** inte implementerat.
+
+### Extern webbsökning & Deep Research (Parallel.ai, Exa, Brave, Tavily, opt-in SearXNG)
+- **Mottagare & tredjelandsöverföring:**
+  - **Parallel.ai (`POST https://api.parallel.ai/v1/search` / `/v1/extract`):** US-baserad leverantör (SCC/DPA krävs vid live-aktivering).
+  - **Exa (`POST https://api.exa.ai/search`):** US-baserad leverantör (SCC/DPA krävs vid live-aktivering).
+  - **Brave Search (`GET https://api.search.brave.com/res/v1/web/search`):** US-baserad leverantör (SCC/DPA krävs vid live-aktivering).
+  - **Tavily (`POST https://api.tavily.com/search`):** US-baserad leverantör (SCC/DPA krävs vid live-aktivering).
+  - **SearXNG (opt-in, default `enabled: false`):** Självhostad instans via processmiljöns `SEARXNG_BASE_URL` (HTTPS eller lokal loopback — ingen tredjepartsöverföring när den körs på Azoms egen EU-värd).
+- **Data överfört & zero-PII-mitigering:** Endast icke-personliga sökfrågor (max 250 tecken) eller publika HTTPS-URL:er. `OutboundQueryFirewall` (`skills/ecom_ops/research/firewall.py`) och `QueryTaintContext` blockerar kundnamn, e-post, telefon, adress, person-/CPR-nummer, order-id, spårningsnummer, interna UUID/`wr-*`/`res-*`-id och hemligheter innan någon HTTP-anslutning öppnas. API-nycklar skickas endast i HTTP-headers och loggas aldrig.
+- **Fail-closed aktivering:** Live-egress är avstängd som standard och kräver `AZOM_USE_MOCK=0` samt processmiljöns `AZOM_WEB_SEARCH_ENABLED=1` / `AZOM_WEB_FETCH_ENABLED=1` / `AZOM_RESEARCH_ENABLED=1` (skyddade i `PROTECTED_OVERLAY_KEYS`). I mockläge (`AZOM_USE_MOCK=1`) sker inga externa nätverksanrop.
+- **Cache, artefakt-TTL & GDPR-radering:** `web_search_cache.sqlite3` har TTL 1h/6h/24h (rensas av `ops gc`); `research_artifacts/res-*/` saknar `target_ref` på disk och rensas efter 14 dagars TTL + 24h grace av `ops gc`. Vid `gdpr_delete` eller `cases retention-purge` anropar `cases/retention.py` `ResearchStore.unlink_target_ref("case:<uuid>")` så ärendekopplingar tas bort atomiskt ur `research_jobs.sqlite3`.
+- **Kvar för Oscar:** Bekräfta DPA/SCC för valda aktiva sökleverantörer innan `AZOM_WEB_SEARCH_ENABLED=1` sätts i produktion. DPIA och A1 live soak förblir mänskligt ägda.
 
 ### Telegram (bot-notiser)
 - **Mottagare:** Telegram (Dubai-baserad)

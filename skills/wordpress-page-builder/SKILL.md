@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Enable AzomOps to design, build, populate with real catalog products plus strictly synthetic zero-PII example data, and visually verify any net-new WordPress page or WooCommerce template inside an isolated `wr-*` workspace wrapped in the live site's real header, navigation, footer, and theme CSS.  
 **Audience:** Coding agents and the OpenClaw chat agent (`Messenger` and `Telegram`) operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/web-research/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
 ## Supported page archetypes
 
@@ -30,7 +30,8 @@ Follow this same four-stage workflow uniformly for any net-new page or template 
 1. Resolve `site_id` (`/wp use <site-id>` or `wp_list_sites`).
 2. Inspect the live **public** homepage or shop shell (`/` or `/butik/`) with `wp_fetch_page_html` / `wp_inspect_element` / `wp_theme_overview` to extract real fonts, colors, typography (`theme.json`), header/footer layout, and button classes.
 3. Discover existing site pages and help/setup guides (such as `/setup-guide/` or installation pages) in one call via `wp_list_pages(site_id=..., search=..., post_type=...)` and `wp_get_page(site_id=..., page_id=... | slug=...)` instead of grepping theme PHP files.
-4. **URL & path guard:** Never pass blocked WooCommerce paths (`/checkout`, `/kasse`, `/cart`, `/handlekurv`, `/my-account`, `/min-konto`), uncreated slugs (`/tack`, `/kampanj`), or local dashboard URLs (`/wp/<site>/reviews/wr-.../preview`) to `wp_fetch_page_html`.
+4. **Optional UX & technical research (`skills/web-research/SKILL.md`):** For thank-you, landing, campaign, or comparison pages where external UX patterns or WooCommerce 9.x/10.x hooks help, call `web_search(profile="design_inspiration")` + optional `web_fetch_extract` (or read an existing `res-*` brief with `web_research_get`), keeping strictly within the 16-call / 60s loop's web sub-budget (max **3** web searches, **2** web fetches, **18s** web time, **>= 8s** remaining wall time; zero PII).
+5. **URL & path guard:** Never pass blocked WooCommerce paths (`/checkout`, `/kasse`, `/cart`, `/handlekurv`, `/my-account`, `/min-konto`), uncreated slugs (`/tack`, `/kampanj`), or local dashboard URLs (`/wp/<site>/reviews/wr-.../preview`) to `wp_fetch_page_html`.
 
 ### Stage 2 — Real catalog products + synthetic zero-PII fixtures
 
@@ -40,11 +41,11 @@ Follow this same four-stage workflow uniformly for any net-new page or template 
 
 ### Stage 3 — Dual-artifact authoring inside `wr-*`
 
-1. Open an isolated workspace (`wp_open_review_workspace`), or branch an existing one with `wp_workspace_fork` (using a shared non-empty `variant_group` when producing 2–3 layout proposals so variants coexist without superseding each other).
+1. Open an isolated workspace (`wp_open_review_workspace`), or branch an existing one with `wp_workspace_fork` (using a shared non-empty `variant_group` when producing 2–3 layout proposals so variants coexist without superseding each other). If a `res-*` brief informed the design, link it via `wp_workspace_attach_research(plan_id=..., research_id=...)` — snapshots live outside `work/` so `work_sha256` and staging HITL stay unchanged, and `wp_workspace_fork` inherits `research_ids` across variants.
 2. **Author the visual preview blueprint (`wp_workspace_page_draft`):**
    - Save sanitized `work/page_draft.json` (`slug`, `title`, `page_type`, `body_html` ≤ 48 KB, `page_css` ≤ 24 KB, `shell_path` defaulting to `"/"`, optional `template_file`, `focus_selector`, and `synthetic_context`).
    - All modified/created `.css` files in `work/` (e.g., `style.css` or `css/thankyou.css`) are automatically injected alongside `page_css`.
-   - `sanitize_page_draft_html` strips `<script>`, `<iframe>`, `<object>`, `<embed>`, `<form action=...>`, `on*`, and `javascript:`; keep `<img src>` strictly on the site host or allowlisted CDN URLs returned by `wp_list_products` / `wp_get_product`.
+   - `sanitize_page_draft_html` strips `<script>`, `<iframe>`, `<object>`, `<embed>`, `<form action=...>`, `on*`, and `javascript:`, and blocks external image hotlinking (`allowed_hosts` restricts `<img>` `src` strictly to the site host or allowlisted catalog product URLs returned by `wp_list_products` / `wp_get_product`, plus relative `/...` paths).
 3. **Author deployable theme templates when applicable (`wp_workspace_create_file` / `wp_workspace_patch_file`):**
    - For WooCommerce or theme templates (`woocommerce/checkout/thankyou.php`, `wc-order-confirmation.php`, `page-<slug>.php`), also write clean WordPress PHP in the same `wr-*` workspace (with `ABSPATH` guard, `esc_html` / `esc_attr` / `esc_url` escaping, and HPOS-compatible `wc_get_order()` calls — never direct `shop_order` post assumptions) and link `template_file` in `wp_workspace_page_draft`.
 

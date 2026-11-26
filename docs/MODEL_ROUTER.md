@@ -72,7 +72,7 @@ Unconfigured ChatGPT is already skipped, so the default order is safe when the S
 
 ## Model profiles, capabilities, and circuit breaker
 
-- **Profiles (`config/model_profiles.yaml`):** 7 task-scoped profiles (`cases_classify`, `cases_draft`, `product_copy`, `chat_fast_tools`, `chat_general`, `wp_tool_router`, `wp_code_deep`) bind a `prompt_ref`, fixed `runtime_policy_mode`, generation parameters, timeouts, context budgets, schema escalation policy, and ordered mount slots (subscription routes first, surgical OpenRouter models, opt-in `xai_api_key` fallback).
+- **Profiles (`config/model_profiles.yaml`):** 9 task-scoped profiles (`cases_classify`, `cases_draft`, `product_copy`, `chat_fast_tools`, `chat_general`, `wp_tool_router`, `wp_code_deep`, `research_planner`, `research_synthesizer`) bind a `prompt_ref`, fixed `runtime_policy_mode`, generation parameters, timeouts, context budgets, schema escalation policy, and ordered mount slots (subscription routes first, surgical OpenRouter models, opt-in `xai_api_key` fallback). `research_planner` handles strict JSON query decomposition and gap analysis; `research_synthesizer` produces `[S#]`-cited Swedish/Nordic research briefs (`on_all_failed: template_fallback`).
 - **Overrides (`AZOM_DATA_DIR/model_profiles.override.yaml`):** Oscar edits profile mounts/params on `/oscar`. Writes are atomic (`0600`), strictly allowlisted (never tokens, secrets, `PROTECTED_OVERLAY_KEYS`, or `isolated_test`), and hot-reloaded across `azom-dashboard`, `azom-bot`, and `azom-cases-poll` via file mtime.
 - **Capabilities & static prefix:** Adapters declare `RouteCapabilities` so unsupported parameters (`temperature` on ChatGPT/Grok Build, `reasoning_effort` on `xai_api_key`) are omitted cleanly and per-slot model IDs never leak across providers on fallback. `openai_chatgpt.py` hoists only the contiguous leading `system` block into `instructions` so prompt caching survives multi-turn tool loops.
 - **Channel isolation:** `AZOM_TELEGRAM_MODEL_ROUTE` applies only to `channel="telegram"` (optional `AZOM_MESSENGER_MODEL_ROUTE` for Messenger). `/model` session pins override `openrouter` slots only.
@@ -150,6 +150,8 @@ The USD cap in `config/limits.yaml` applies to that estimate only. Route telemet
 
 If the cap is exhausted and no other route is configured, classify, draft, and product description return `None` and telemetry records `llm_budget_skip` without an HTTP call. If another route is configured, those flows may still call it.
 
+External web search and Deep Research calls (`SearchRouter` / `SafePublicHttpClient`) are strictly isolated from this `$100` OpenRouter cap: they log `cost_usd=0.0` and track external provider spend separately via `meta.estimated_search_usd` against `monthly_external_usd_cap` (`25.0` USD) in `config/research.yaml` (see [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md)).
+
 ## Session files
 
 ```text
@@ -180,7 +182,7 @@ Oscar only, existing CSRF on POST:
 | xAI login | `POST /oscar/models/xai/login` runs `grok login --device-auth` and shows the code. `GET /oscar/models/xai/login/status` is Oscar-only and returns status, URL, code, and detail. The page polls it while status is `pending`. Azom does not read `auth.json`. |
 | Model search | `GET /oscar?model_q=&catalog=openrouter`, `catalog=openai`, or `catalog=xai`. Choosing a row fills the matching model field (`OPENROUTER_MODEL`, `OPENAI_MODEL`, or `XAI_MODEL`). Save still writes `runtime.env`. |
 | xAI | Grok Build enable flag and model id. `XAI_API_KEY` is an Oscar secret (opt-in fallback; logs `cost_kind="estimated_external"` with `cost_usd=0.0` so OpenRouter cap is untouched). Direct app-owned xAI OAuth stays unavailable. |
-| Behavior | `GET/POST /oscar/behavior` edits versioned `chat`, `classify`, `draft`, `product_desc`, and `wp_coder` prompts in `config/prompts.yaml`. The bot reads current prompt text from disk; chat appends fixed runtime policy and attaches the WordPress tool guide conditionally (`wp` / `wp_drift` turns only). Changed prompt text gets a new version. |
+| Behavior | `GET/POST /oscar/behavior` edits versioned `chat`, `classify`, `draft`, `product_desc`, `wp_coder`, `research_planner`, and `research_synthesizer` prompts in `config/prompts.yaml`. The bot reads current prompt text from disk; chat appends fixed runtime policy and attaches the WordPress tool guide conditionally (`wp` / `wp_drift` turns only). Changed prompt text gets a new version. |
 | Usage | `GET /data/telemetry` filters action, route, and errors. Meta is shown without secret-like keys. |
 | History | `GET /data/audit` reads `audit.jsonl`. Jonatan can read it. A `cases` target links to the case. |
 

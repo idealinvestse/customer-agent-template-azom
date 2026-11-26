@@ -42,7 +42,7 @@
 | Skill metadata | `skills/ecom-ops/SKILL.md` | Moss/agent skill card |
 | Config (ro in Docker) | `config/*.yaml`, `customer.json` | sites, rbac, mailboxes, limits, cases_ai |
 | Data (rw) | `AZOM_DATA_DIR` | cases.db, oauth, secrets.env, telemetry, probes |
-| Dashboard | `infrastructure/dashboard/` | Thin `app.py` factory + `auth.py` / `core_routes.py` / `cases_routes.py` / `oscar_routes.py` / `marketing_routes.py` / `oauth_routes.py` / `webhooks.py` / `health_routes.py` |
+| Dashboard | `infrastructure/dashboard/` | Thin `app.py` factory + `auth.py` / `core_routes.py` / `cases_routes.py` / `oscar_routes.py` / `marketing_routes.py` / `research_routes.py` / `oauth_routes.py` / `webhooks.py` / `health_routes.py` |
 | Deploy | `bin/install*.sh`, `infrastructure/systemd/`, Docker | One-shot + services |
 
 **Surface roles:**
@@ -62,9 +62,9 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 
 | Actor | Role | Typical powers |
 |-------|------|----------------|
-| **Jonatan** | `viewer` | Read + mail/SSH read + **CASE_REPLY** + **MARKETING_READ** + **MARKETING_SUGGEST** (negatives approve) |
-| **Oscar** | `full_admin` | All permissions: secrets, probes, escalations, experiment flags, **MARKETING_MUTATE**, `cases shadow-report`, `retention-purge` |
-| **agent** | `operator` | order/product/support, **MAIL_SEND** + **MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ** only |
+| **Jonatan** | `viewer` | Read + mail/SSH read + **CASE_REPLY** + **MARKETING_READ** + **MARKETING_SUGGEST** (negatives approve) + **WP_OPS_READ** + **WEB_SEARCH** + **RESEARCH_RUN** |
+| **Oscar** | `full_admin` | All permissions: secrets, probes, escalations, experiment flags, **MARKETING_MUTATE**, `cases shadow-report`, `retention-purge`, **WP_OPS_ADMIN**, **RESEARCH_ADMIN** |
+| **agent** | `operator` | order/product/support, **MAIL_SEND** + **MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ** only, **WP_OPS_OPERATE**, **WEB_SEARCH** + **RESEARCH_RUN** |
 
 - Telegram: `TELEGRAM_ACTOR_MAP` maps chat → actor. Non-empty map ⇒ unmapped denied. Allowlist: `TELEGRAM_ALLOWED_CHAT_IDS`.
 - Messenger: `MESSENGER_ACTOR_MAP` / `MESSENGER_ALLOWED_PSIDS` — **fail-closed when empty in live mode**.
@@ -87,7 +87,8 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **OAuth Google marketing** | `oauth/google_marketing` | Oscar-only start → `oauth/google_marketing.json` |
 | **Telegram / Messenger** | `bot/*` | OpenClaw slash + hybrid free-text + `/marketing` read; Telegram also surfaces progress and streamed answer drafts |
 | **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | Content and store API — [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
-| **WordPress site ops** | `wp_ops/` | Mock health/backups, a separate theme/plugin file turn (windowed read, tree, literal search, named diff), a separate homepage source review (four site-bound reads; fixed `php -l` runs when PHP exists, while browser/runtime remain unavailable), local-tree staging only after a plan-id button, production deploy still `BackupNotVerified`, key-only read-only SFTP with no remote shell, and immutable non-executable update/restore previews — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
+| **WordPress site ops** | `wp_ops/` | Mock health/backups, a separate theme/plugin file turn (windowed read, tree, literal search, named diff, web sub-budget + `wp_workspace_attach_research`), a separate homepage source review (four site-bound reads; fixed `php -l` runs when PHP exists, while browser/runtime remain unavailable), local-tree staging only after a plan-id button, production deploy still `BackupNotVerified`, key-only read-only SFTP with no remote shell, and immutable non-executable update/restore previews — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
+| **Web search & research** | `integrations/search/`, `research/*` | Fail-closed mock-first search (`parallel`, `exa`, `brave`, `tavily`, opt-in `searxng`, `mock`), `OutboundQueryFirewall`, DNS-pinned `_http_guard.py`, async `ResearchWorkerPool` (`res-*`), `<clarify>` scoping — [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
 | **smoke / readiness** | `smoke.py`, `ops_status.py` | Opt-in live smoke; `/health` poll age |
 
 ## 4. Cases 2.0 + Path B (AI)
@@ -137,6 +138,7 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/cases`, `/cases/<id>` | J/O | Queue, draft save, approve, close (+ shadow badges) |
 | `/cases/poll` | POST | Manual poll |
 | `/marketing` | J/O | Ads+GA4 digest + suggest HITL |
+| `/research`, `/research/<res_id>` | `WEB_SEARCH` / `RESEARCH_RUN` | Research Hub (quick search, async jobs, status polling, steer, cancel, md/json export) |
 | `/wp`, `/wp/<id>` | `WP_OPS_READ` | WordPress site status. Unknown and mock-verified backups are not green |
 | `GET /wp/<id>/ssh` | `WP_OPS_READ` | Site root and SSH login. The private key is not shown. A viewer does not see the identity path |
 | `POST /wp/<id>/ssh` | `WP_OPS_ADMIN` | Save root, host, user, port, key, and a public host key. Does not open SSH |
@@ -192,6 +194,7 @@ python -m ecom_ops --actor oscar cases shadow-report [--days 7]
 python -m ecom_ops --actor oscar cases retention-purge [--dry-run]
 python -m ecom_ops --mock marketing digest|health|suggests|…
 python -m ecom_ops --mock wp sites|status|show|check|backup|backups|restore-drill
+python -m ecom_ops --mock search|fetch-url|research ...
 python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends|soak-preflight
 python -m ecom_ops.bot
 ```
@@ -211,6 +214,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `config/cases_ai.yaml` | suggest-approve + auto-send rails |
 | `config/marketing.yaml` | Ads/GA4 allowlists, mutate defaults, kill env names |
 | `config/wp_sites.yaml` | Live Azom production target; mock mode uses `config/wp_sites.mock.yaml`. Secret refs only |
+| `config/research.yaml` | Web search & Deep Research defaults, providers, budgets, egress, cache, 6 profiles |
 | `config/integrations.yaml` | mail presets; Google flags are **non-gating reserved** |
 | `config/dashboard.yaml` | reserved UI flags — **not loaded** by Python |
 | `config/customer.json` | customer metadata / KPIs |
@@ -236,6 +240,9 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `AZOM_NULL_SEND` | Null-send / shadow profile (default off) |
 | `AZOM_GA4_PROPERTY_IDS` / `AZOM_GADS_CUSTOMER_IDS` | Marketing fail-closed allowlists |
 | `AZOM_ADS_MUTATE_KILL` / `AZOM_GA_MUTATE_KILL` / `AZOM_MP_KILL` | Marketing mutate kills (`GA` reserved until admin mutate exists) |
+| `AZOM_WEB_SEARCH_ENABLED` / `AZOM_WEB_FETCH_ENABLED` / `AZOM_RESEARCH_ENABLED` | Process-env live gates for web search, page fetch, and async Deep Research (default `0`; protected overlay keys) |
+| `AZOM_WEB_SEARCH_KILL` / `AZOM_RESEARCH_KILL` | Emergency kill-switches for web search and Deep Research (protected overlay keys) |
+| `PARALLEL_API_KEY` / `EXA_API_KEY` / `BRAVE_SEARCH_API_KEY` / `TAVILY_API_KEY` | Search provider API keys (Oscar-owned secrets) |
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
 | `METRICS_SCRAPE_TOKEN` | Required Bearer for `/metrics` (empty = 403) |
 | `WOO_WEBHOOK_SECRET` | Inbound Woo webhook HMAC |
@@ -270,6 +277,8 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 | telemetry / KPI files | Cost + case KPIs (`python -m ecom_ops kpis`) |
 | `last_case_poll.json` | Poll readiness (`partial` / errors / age → `/health`) |
 | `probe_last.json` | Last Oscar probe results |
+| `research_jobs.sqlite3`, `web_search_cache.sqlite3`, `research_artifacts/` | Deep Research jobs (`res-*`), `target_ref`, cached searches, exported briefs/sources |
+| `search_router_health.json` | Cross-process web search circuit breaker state (`0600`) |
 
 ## 11. Security model
 
@@ -324,4 +333,5 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md). Per-surface code a
 | Mail (SV) | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) |
 | Marketing Google (EN) | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Woo/WP (EN) | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
+| Web search & research (EN) | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
 | CLI (EN) | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |

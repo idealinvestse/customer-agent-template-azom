@@ -12,7 +12,7 @@ version: "3.0.0"
 
 **Purpose:** Guide visual and iterative WordPress/WooCommerce UI edits inside isolated `wr-*` workspaces so changes are grounded in real rendered DOM/CSS, build cleanly on top of prior sandbox revisions, support multiple coexisting variants, and pass visual health verification without weakening HITL or RBAC gates.  
 **Audience:** Coding agents and the OpenClaw chat agent (`Messenger` and `Telegram`) operating on registered sites.  
-**Read this first:** `AGENTS.md`, `SOUL.md`, `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
+**Read this first:** `AGENTS.md`, `SOUL.md`, `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/web-research/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
 > **Net-new pages & templates:** If the user asks to design or build a brand-new page or WooCommerce template (for example a thank-you / `order-received` page, landing page, campaign page, or guide page) rather than tweaking an existing public page, follow `skills/wordpress-page-builder/SKILL.md` (`wp_list_pages`, `wp_build_sample_data`, `wp_workspace_page_draft`, and standalone live-shell `wp_preview_page`).
 
@@ -28,9 +28,12 @@ version: "3.0.0"
 
 1. **Continue on top of active `wr-*` work:** When an active `wr-*` workspace already exists in the conversation, inspect it first (`wp_workspace_status`, `wp_workspace_diff`, `wp_workspace_read_file(plan_id=...)`) instead of opening a fresh workspace from an empty skeleton.
 2. **Fork and group variants without clobbering siblings:**
-   - Use `wp_workspace_fork(plan_id=..., summary=..., variant_group=...)` (or `wp_open_review_workspace(..., base_plan_id=..., variant_group=...)`) to branch follow-up refinements on top of existing edits.
+   - Use `wp_workspace_fork(plan_id=..., summary=..., variant_group=...)` (or `wp_open_review_workspace(..., base_plan_id=..., variant_group=...)`) to branch follow-up refinements on top of existing edits. `wp_workspace_fork` automatically inherits linked `research_ids` and sibling `research/` snapshots.
    - Pass a shared non-empty `variant_group` when producing 2–3 comparable sandbox proposals so `ReviewPlans.open()` does **not** auto-supersede sibling proposals.
-3. **Product copy in sandbox:** Use `wp_workspace_product_edit` inside `wr-*` for WooCommerce product text proposals (`product_edits.json`); never mutate live WooCommerce directly from chat text.
+3. **Autonomous UX & docs inspiration (`skills/web-research/SKILL.md`):**
+   - Ground in local DOM/theme data first; only run `web_search` (`profile="design_inspiration"` for thank-you/landing UX patterns or `profile="technical_docs"` for Woo/CSS specs) + optional `web_fetch_extract` when external inspiration or API verification is needed, or read/link a prior `res-*` brief with `web_research_get` + `wp_workspace_attach_research` (stored outside `work/` so `work_sha256` and staging HITL stay unchanged).
+   - Respect the web sub-budget inside the 16-call / 60s loop: max **3** `web_search` calls, **2** `web_fetch_extract` calls, **18s** web time, and **>= 8s** remaining wall time (zero PII/secrets; external image hotlinks are blocked by `sanitize_page_draft_html`).
+4. **Product copy in sandbox:** Use `wp_workspace_product_edit` inside `wr-*` for WooCommerce product text proposals (`product_edits.json`); never mutate live WooCommerce directly from chat text.
 
 ## 3. Overlay mechanics and CSS discipline
 

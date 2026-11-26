@@ -32,6 +32,7 @@
 | Telegram | Backup | [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) |
 | Dashboard `/cases` | Full power | denna fil + [`CASES.md`](CASES.md) |
 | Dashboard `/marketing` | Ads+GA4 ledger / HITL | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
+| Dashboard `/research` | Webbsök & asynkron Deep Research (`res-*`) | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
 | Dashboard `/onboarding` | Checklist, Gmail connect | — |
 | Dashboard `/settings` | Jonatan non-secret | — |
 | Dashboard `/oscar` | Secrets, probes, eskaleringar | — |
@@ -47,6 +48,7 @@
 | `/cases` | Kö, filter `suggest=1`, draft, approve, close, skugg-badges |
 | `/cases/<id>` | Orderpanel, spara draft, regenerate, approve-confirm |
 | `/marketing` | Ads+GA4 digest + suggest HITL |
+| `/research` | Snabbsök, asynkrona research-jobb (`res-*`), status, styrning & export |
 | `/oscar` | Admin: secrets, probes, resolve escalations |
 | `/oauth/gmail/start` | Gmail browser OAuth |
 | `/oauth/google/start` | Marketing Google OAuth (Oscar) |
@@ -85,8 +87,8 @@ bash bin/daily-brief-azom.sh
 # expect: status/health utan kritiska fel; partial poll → eskalering / last_case_poll.errors
 ```
 
-Messenger: `/help` `/cases` `/brief` `/marketing`  
-Telegram backup: samma kommandon.
+Messenger: `/help` `/cases` `/brief` `/marketing` `/search` `/research`  
+Telegram backup: samma kommandon. Live-egress för webbsökning kräver `AZOM_USE_MOCK=0` och `AZOM_WEB_SEARCH_ENABLED=1` / `AZOM_RESEARCH_ENABLED=1` i processmiljön (avstängt som standard; se [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md)).
 
 Dashboard visar en **null-send**-banner/badge när `AZOM_NULL_SEND=1` (kundmail skickas inte).
 

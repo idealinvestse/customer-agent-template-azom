@@ -73,6 +73,8 @@ python -m ecom_ops --mock cases poll
 python -m ecom_ops --mock --null-send cases poll
 python -m ecom_ops --mock support --message "Var är order 1001?"
 python -m ecom_ops --mock marketing digest --days 7
+python -m ecom_ops --mock search --query "WooCommerce HPOS hooks" --profile technical_docs
+python -m ecom_ops --mock research start --topic "Nordisk CarPlay marknadsanalys" --depth quick --wait
 python -m ecom_ops classify-eval
 python -m ecom_ops kpis --days 7
 bash bin/mock-soak-azom.sh
@@ -140,6 +142,7 @@ bash tests/test_spinup.sh
 | Null-send / shadow ledger | `skills/ecom_ops/runtime_profile.py`, `cases/shadow_report.py`, `cases/auto_send.py` |
 | Suggest / auto-send rails | `skills/ecom_ops/cases/suggest.py`, `auto_send.py`, `config/cases_ai.yaml` |
 | Model router / ChatGPT OAuth | `skills/ecom_ops/model_router/`, facade `skills/ecom_ops/llm.py` — [`MODEL_ROUTER.md`](MODEL_ROUTER.md) |
+| Web search & Deep Research | `skills/ecom_ops/integrations/search/`, `skills/ecom_ops/research/`, `config/research.yaml` — [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
 | Marketing Ads+GA4 | `skills/ecom_ops/actions/marketing.py`, `skills/ecom_ops/marketing/`, `config/marketing.yaml` — [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Telegram / Messenger brain | `skills/ecom_ops/bot/` |
 | Woo / WP clients | `skills/ecom_ops/integrations/woocommerce.py`, `wordpress.py`, `webhooks.py` |
@@ -175,3 +178,4 @@ Escalate to **Oscar** (ticket / human) when you hit: critical security issues, r
 - Architecture: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)
 - Woo/WP: [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md)
 - Cases safety: [`CASES.md`](CASES.md)
+- Web search & research: [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md)
