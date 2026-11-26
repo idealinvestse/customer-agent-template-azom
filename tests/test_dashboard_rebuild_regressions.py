@@ -36,9 +36,14 @@ def _load_dashboard_module():
         "status",
         "support",
         "webhooks",
+        "wp",
         "wp_routes",
     ):
         sys.modules.pop(name, None)
+    for key in [
+        k for k in list(sys.modules) if k.startswith(("wp.", "infrastructure.dashboard.wp"))
+    ]:
+        sys.modules.pop(key, None)
     spec = importlib.util.spec_from_file_location("azom_dashboard_rebuild", DASH_DIR / "app.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)

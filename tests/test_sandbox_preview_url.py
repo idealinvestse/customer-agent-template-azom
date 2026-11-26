@@ -25,8 +25,12 @@ def _load_app():
     dash_dir = str(DASH_DIR)
     if dash_dir not in sys.path:
         sys.path.insert(0, dash_dir)
-    for name in ("azom_dashboard", "wp_routes", "settings_store", "auth", "support"):
+    for name in ("azom_dashboard", "wp", "wp_routes", "settings_store", "auth", "support"):
         sys.modules.pop(name, None)
+    for key in [
+        k for k in list(sys.modules) if k.startswith(("wp.", "infrastructure.dashboard.wp"))
+    ]:
+        sys.modules.pop(key, None)
     spec = importlib.util.spec_from_file_location("azom_dashboard", DASH_DIR / "app.py")
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
