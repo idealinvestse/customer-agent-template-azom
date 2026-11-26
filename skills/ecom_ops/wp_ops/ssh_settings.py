@@ -17,7 +17,7 @@ import os
 import re
 import stat
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +70,23 @@ _PROCESS_LOCK = threading.Lock()
 
 class SettingsRejected(ValueError):
     """The SSH settings were refused. The message is a fixed sentence."""
+
+
+@dataclass(frozen=True)
+class SshSettingsInput:
+    """Validated-on-save input bundle for per-site WordPress SFTP settings."""
+
+    files_root: str
+    ssh_host: str
+    ssh_user: str
+    ssh_port: str
+    ssh_identity_file: str
+    private_key: str
+    clear_key: bool
+    global_user: str
+    global_port: str
+    global_identity_file: str
+    host_public_key: str = ""
 
 
 def overlay_file(data_dir: Path | None) -> Path:
@@ -194,66 +211,37 @@ def save_ssh(
 ) -> dict[str, Any]:
     """Validate every field, then write. No connection is opened."""
     base = data_dir_path(data_dir)
+    settings = SshSettingsInput(
+        files_root=files_root,
+        ssh_host=ssh_host,
+        ssh_user=ssh_user,
+        ssh_port=ssh_port,
+        ssh_identity_file=ssh_identity_file,
+        private_key=private_key,
+        clear_key=clear_key,
+        global_user=global_user,
+        global_port=global_port,
+        global_identity_file=global_identity_file,
+        host_public_key=host_public_key,
+    )
     with _PROCESS_LOCK:
         try:
             lock_cm = advisory_file_lock(base / "wp_ssh.lock", mode=0o600, raise_on_timeout=True)
             with lock_cm:
-                return _save_locked(
-                    base,
-                    site,
-                    files_root=files_root,
-                    ssh_host=ssh_host,
-                    ssh_user=ssh_user,
-                    ssh_port=ssh_port,
-                    ssh_identity_file=ssh_identity_file,
-                    private_key=private_key,
-                    clear_key=clear_key,
-                    global_user=global_user,
-                    global_port=global_port,
-                    global_identity_file=global_identity_file,
-                    host_public_key=host_public_key,
-                )
+                return _save_locked(base, site, settings)
         except SettingsRejected:
             raise
         except OSError as exc:
             raise SettingsRejected(_SAVE) from exc
 
 
-def _save_locked(
-    base: Path,
-    site: Site,
+def _enforce_user_rotation_key_policy(
+    key_path: Path,
     *,
-    files_root: str,
-    ssh_host: str,
-    ssh_user: str,
-    ssh_port: str,
-    ssh_identity_file: str,
-    private_key: str,
-    clear_key: bool,
-    global_user: str,
-    global_port: str,
-    global_identity_file: str,
-    host_public_key: str,
-) -> dict[str, Any]:
-    overlay = load_overlay(base)
-    previous = dict(overlay.get(site.id, {}))
-    new_row = _validated_row(
-        site.id,
-        files_root=files_root,
-        ssh_host=ssh_host,
-        ssh_user=ssh_user,
-        ssh_port=ssh_port,
-        ssh_identity_file=ssh_identity_file,
-        host_public_key=host_public_key,
-    )
-    if new_row.get("files_root") == site.files_root:
-        new_row.pop("files_root", None)
-    if new_row.get("ssh_host") == site.ssh_host:
-        new_row.pop("ssh_host", None)
-    key_text = _validated_key(private_key, clear_key=clear_key)
-    old_user = str(previous.get("ssh_user", site.ssh_user) or "").strip()
-    new_user = str(new_row.get("ssh_user", site.ssh_user) or "").strip()
-    key_path = stored_key_path(base, site.id)
+    old_user: str,
+    new_user: str,
+    key_text: str | None,
+) -> None:
     try:
         saved_key_stat = key_path.lstat()
         has_saved_key = True
@@ -262,22 +250,41 @@ def _save_locked(
         has_saved_key = False
     except OSError as exc:
         raise SettingsRejected(_KEY_WRITE) from exc
-    if old_user.casefold() != new_user.casefold() and has_saved_key:
-        if key_text is None:
+    if old_user.casefold() == new_user.casefold() or not has_saved_key:
+        return
+    if key_text is None:
+        raise SettingsRejected(
+            "När WordPress SSH-användaren byts måste du skicka en ny, unik nyckel för läsarkontot."
+        )
+    if saved_key_stat is not None and stat.S_ISREG(saved_key_stat.st_mode):
+        try:
+            old_key_digest = hashlib.sha256(key_path.read_bytes().strip()).digest()
+        except OSError as exc:
+            raise SettingsRejected(_KEY_WRITE) from exc
+        new_key_digest = hashlib.sha256(key_text.strip().encode("utf-8")).digest()
+        if hmac.compare_digest(old_key_digest, new_key_digest):
             raise SettingsRejected(
-                "När WordPress SSH-användaren byts måste du skicka en ny, unik nyckel för läsarkontot."
+                "Använd en annan nyckel än den som var kopplad till det tidigare SSH-kontot."
             )
-        if saved_key_stat is not None and stat.S_ISREG(saved_key_stat.st_mode):
-            try:
-                old_key_digest = hashlib.sha256(key_path.read_bytes().strip()).digest()
-            except OSError as exc:
-                raise SettingsRejected(_KEY_WRITE) from exc
-            new_key_digest = hashlib.sha256(key_text.strip().encode("utf-8")).digest()
-            if hmac.compare_digest(old_key_digest, new_key_digest):
-                raise SettingsRejected(
-                    "Använd en annan nyckel än den som var kopplad till det tidigare SSH-kontot."
-                )
-    if any(str(value or "").strip() for value in (global_user, global_port, global_identity_file)):
+
+
+def _save_locked(base: Path, site: Site, settings: SshSettingsInput) -> dict[str, Any]:
+    overlay = load_overlay(base)
+    previous = dict(overlay.get(site.id, {}))
+    new_row = _validated_row(site.id, settings)
+    if new_row.get("files_root") == site.files_root:
+        new_row.pop("files_root", None)
+    if new_row.get("ssh_host") == site.ssh_host:
+        new_row.pop("ssh_host", None)
+    key_text = _validated_key(settings.private_key, clear_key=settings.clear_key)
+    old_user = str(previous.get("ssh_user", site.ssh_user) or "").strip()
+    new_user = str(new_row.get("ssh_user", site.ssh_user) or "").strip()
+    key_path = stored_key_path(base, site.id)
+    _enforce_user_rotation_key_policy(key_path, old_user=old_user, new_user=new_user, key_text=key_text)
+    if any(
+        str(value or "").strip()
+        for value in (settings.global_user, settings.global_port, settings.global_identity_file)
+    ):
         raise SettingsRejected("WordPress SFTP cannot change global SSH settings.")
     changed = [name for name in _FIELDS if previous.get(name) != new_row.get(name)]
     staged = dict(overlay)
@@ -294,19 +301,16 @@ def _save_locked(
             _install_private(tmp_key, key_path)
             tmp_key = None
             changed.append("ssh_key")
-        elif clear_key and key_path.is_file():
+        elif settings.clear_key and key_path.is_file():
             _clear_private(key_path)
             changed.append("ssh_key")
-        notice = None
     except SettingsRejected:
         if tmp_key is not None:
             _unlink_quiet(tmp_key)
         raise
-    stored = key_path.is_file()
     return {
         "changed": changed,
-        "identity_present": stored,
-        "global_notice": notice,
+        "identity_present": key_path.is_file(),
     }
 
 
@@ -338,98 +342,116 @@ def _parse_overlay(data_dir: Path | None) -> tuple[dict[str, dict[str, Any]], di
     return cleaned, errors
 
 
+def _validate_root_field(raw: Any, *, site_id: str, strict: bool) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        root = validate_files_root(text, site_id=site_id)
+    except ValueError as exc:
+        if strict:
+            raise SettingsRejected(_ROOT) from exc
+        raise ValueError(_ROW) from exc
+    if not root:
+        raise SettingsRejected(_ROOT) if strict else ValueError(_ROW)
+    if not files_root_narrow(root):
+        raise SettingsRejected(_ROOT_BROAD) if strict else ValueError(_ROW)
+    return root
+
+
+def _validate_host_field(raw: Any, *, site_id: str, strict: bool) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        host = validate_ssh_host(text, site_id=site_id)
+    except ValueError as exc:
+        if strict:
+            raise SettingsRejected(_HOST) from exc
+        raise ValueError(_ROW) from exc
+    if not host:
+        raise SettingsRejected(_HOST) if strict else ValueError(_ROW)
+    return host
+
+
+def _validate_user_field(raw: Any, *, strict: bool) -> str | None:
+    if not strict and not isinstance(raw, str):
+        raise ValueError(_ROW)
+    user = str(raw or "").strip()
+    if not user:
+        return None
+    if not user_ok(user) or not user.casefold().endswith("-wp-reader"):
+        if strict:
+            raise SettingsRejected("WordPress SFTP kräver en dedikerad *-wp-reader-användare.")
+        raise ValueError(_ROW)
+    return user
+
+
+def _validate_port_field(raw: Any, *, strict: bool) -> int | None:
+    if strict:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        if not text.isdigit() or not 1 <= int(text) <= 65535:
+            raise SettingsRejected(_PORT)
+        return int(text)
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 65535:
+        raise ValueError(_ROW)
+    return raw
+
+
+def _validate_host_key_field(raw: Any, *, strict: bool) -> str | None:
+    if not strict and (not isinstance(raw, str) or _looks_like_key(raw)):
+        raise ValueError(_ROW)
+    public = str(raw or "").strip()
+    if not public:
+        return None
+    if not host_key_ok(public):
+        raise SettingsRejected(_HOST_KEY) if strict else ValueError(_ROW)
+    return public
+
+
 def _changes_from_row(site_id: str, row: dict[str, Any]) -> dict[str, Any]:
     if set(row) - set(_FIELDS):
         raise ValueError(_ROW)
-    changes: dict[str, Any] = {}
-    if row.get("files_root"):
-        root = validate_files_root(row["files_root"], site_id=site_id)
-        if not root or not files_root_narrow(root):
-            raise ValueError(_ROW)
-        changes["files_root"] = root
-    if row.get("ssh_host"):
-        host = validate_ssh_host(row["ssh_host"], site_id=site_id)
-        if not host:
-            raise ValueError(_ROW)
-        changes["ssh_host"] = host
-    if "ssh_user" in row:
-        if not isinstance(row["ssh_user"], str):
-            raise ValueError(_ROW)
-        user = row["ssh_user"].strip()
-        if user and (not user_ok(user) or not user.casefold().endswith("-wp-reader")):
-            raise ValueError(_ROW)
-        if user:
-            changes["ssh_user"] = user
-    if "ssh_port" in row:
-        port = row["ssh_port"]
-        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-            raise ValueError(_ROW)
-        changes["ssh_port"] = port
-    if "host_public_key" in row:
-        raw_key = row["host_public_key"]
-        if not isinstance(raw_key, str) or _looks_like_key(raw_key):
-            raise ValueError(_ROW)
-        public = raw_key.strip()
-        if public and not host_key_ok(public):
-            raise ValueError(_ROW)
-        if public:
-            changes["host_public_key"] = public
     for key, value in row.items():
-        if key == "ssh_port":
-            continue
-        if not isinstance(value, str) or _looks_like_key(value):
+        if key != "ssh_port" and (not isinstance(value, str) or _looks_like_key(value)):
             raise ValueError(_ROW)
+    validators = (
+        ("files_root", lambda v: _validate_root_field(v, site_id=site_id, strict=False)),
+        ("ssh_host", lambda v: _validate_host_field(v, site_id=site_id, strict=False)),
+        ("ssh_user", lambda v: _validate_user_field(v, strict=False)),
+        ("ssh_port", lambda v: _validate_port_field(v, strict=False)),
+        ("host_public_key", lambda v: _validate_host_key_field(v, strict=False)),
+    )
+    changes: dict[str, Any] = {}
+    for field_name, validator in validators:
+        if field_name not in row:
+            continue
+        cleaned = validator(row[field_name])
+        if cleaned is not None:
+            changes[field_name] = cleaned
     return changes
 
 
-def _validated_row(
-    site_id: str,
-    *,
-    files_root: str,
-    ssh_host: str,
-    ssh_user: str,
-    ssh_port: str,
-    ssh_identity_file: str,
-    host_public_key: str,
-) -> dict[str, Any]:
+def _validated_row(site_id: str, settings: SshSettingsInput) -> dict[str, Any]:
     row: dict[str, Any] = {}
-    root_text = str(files_root or "").strip()
-    if root_text:
-        try:
-            root = validate_files_root(root_text, site_id=site_id)
-        except ValueError as exc:
-            raise SettingsRejected(_ROOT) from exc
-        if not root:
-            raise SettingsRejected(_ROOT)
-        if not files_root_narrow(root):
-            raise SettingsRejected(_ROOT_BROAD)
+    root = _validate_root_field(settings.files_root, site_id=site_id, strict=True)
+    if root:
         row["files_root"] = root
-    host_text = str(ssh_host or "").strip()
-    if host_text:
-        try:
-            host = validate_ssh_host(host_text, site_id=site_id)
-        except ValueError as exc:
-            raise SettingsRejected(_HOST) from exc
-        if not host:
-            raise SettingsRejected(_HOST)
+    host = _validate_host_field(settings.ssh_host, site_id=site_id, strict=True)
+    if host:
         row["ssh_host"] = host
-    user = str(ssh_user or "").strip()
+    user = _validate_user_field(settings.ssh_user, strict=True)
     if user:
-        if not user_ok(user) or not user.casefold().endswith("-wp-reader"):
-            raise SettingsRejected("WordPress SFTP kräver en dedikerad *-wp-reader-användare.")
         row["ssh_user"] = user
-    port_text = str(ssh_port or "").strip()
-    if port_text:
-        if not port_text.isdigit() or not 1 <= int(port_text) <= 65535:
-            raise SettingsRejected(_PORT)
-        row["ssh_port"] = int(port_text)
-    identity = str(ssh_identity_file or "").strip()
-    if identity:
+    port = _validate_port_field(settings.ssh_port, strict=True)
+    if port is not None:
+        row["ssh_port"] = port
+    if str(settings.ssh_identity_file or "").strip():
         raise SettingsRejected(_IDENTITY_MSG)
-    public = str(host_public_key or "").strip()
+    public = _validate_host_key_field(settings.host_public_key, strict=True)
     if public:
-        if not host_key_ok(public):
-            raise SettingsRejected(_HOST_KEY)
         row["host_public_key"] = public
     return row
 
