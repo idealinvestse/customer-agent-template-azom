@@ -44,6 +44,11 @@ SECRET_KEYS = frozenset(
         "DASHBOARD_OSCAR_PASSWORD",
         "DASHBOARD_OSCAR_PASSWORD_HASH",
         "DASHBOARD_SECRET_KEY",
+        "PARALLEL_API_KEY",
+        "EXA_API_KEY",
+        "BRAVE_SEARCH_API_KEY",
+        "TAVILY_API_KEY",
+        "SEARXNG_API_KEY",
     }
 )
 
@@ -91,6 +96,11 @@ EDITABLE_SECRET_KEYS = (
     "AZOM_GADS_CUSTOMER_IDS",
     "GA4_MEASUREMENT_ID",
     "GA4_MEASUREMENT_API_SECRET",
+    "PARALLEL_API_KEY",
+    "EXA_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "TAVILY_API_KEY",
+    "SEARXNG_API_KEY",
     "DASHBOARD_PASSWORD",
     "DASHBOARD_OSCAR_PASSWORD",
 )
@@ -480,6 +490,11 @@ _SECRET_FIELD_META: dict[str, dict[str, Any]] = {
     "AZOM_GADS_CUSTOMER_IDS": {"secret": False, "input_type": "text", "label": "Google Ads Customer IDs", "hint": "Kommaseparerad lista"},
     "GA4_MEASUREMENT_ID": {"secret": False, "input_type": "text", "label": "GA4 Measurement ID", "hint": "G-XXXXXXXXXX"},
     "GA4_MEASUREMENT_API_SECRET": {"secret": True, "input_type": "password", "label": "GA4 Measurement API Secret", "hint": "Measurement Protocol-hemlighet"},
+    "PARALLEL_API_KEY": {"secret": True, "input_type": "password", "label": "Parallel.ai API-nyckel", "hint": "Webbsök & extrahering (x-api-key)"},
+    "EXA_API_KEY": {"secret": True, "input_type": "password", "label": "Exa API-nyckel", "hint": "Semantisk webbsökning (x-api-key)"},
+    "BRAVE_SEARCH_API_KEY": {"secret": True, "input_type": "password", "label": "Brave Search API-nyckel", "hint": "Snabbsökning (BSA...)"},
+    "TAVILY_API_KEY": {"secret": True, "input_type": "password", "label": "Tavily API-nyckel", "hint": "Sök & innehåll (tvly-...)"},
+    "SEARXNG_API_KEY": {"secret": True, "input_type": "password", "label": "SearXNG API-nyckel", "hint": "Valfri Bearer-token för SearXNG"},
     "DASHBOARD_PASSWORD": {"secret": True, "input_type": "password", "label": "Dashboard-lösenord (Jonatan)", "hint": "Basic Auth-lösenord"},
     "DASHBOARD_OSCAR_PASSWORD": {"secret": True, "input_type": "password", "label": "Dashboard-lösenord (Oscar)", "hint": "Admin Basic Auth-lösenord"},
 }
@@ -495,6 +510,7 @@ _SECRET_GROUPS: list[tuple[str, list[str]]] = [
     ("Telegram", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_CHAT_IDS"]),
     ("Messenger", ["MESSENGER_PAGE_ACCESS_TOKEN", "MESSENGER_APP_SECRET", "MESSENGER_VERIFY_TOKEN", "MESSENGER_ALLOWED_PSIDS", "MESSENGER_ACTOR_MAP", "AZOM_DASHBOARD_PUBLIC_URL"]),
     ("Google Marketing", ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_LOGIN_CUSTOMER_ID", "AZOM_GA4_PROPERTY_IDS", "AZOM_GADS_CUSTOMER_IDS", "GA4_MEASUREMENT_ID", "GA4_MEASUREMENT_API_SECRET"]),
+    ("Web Search & Research", ["PARALLEL_API_KEY", "EXA_API_KEY", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "SEARXNG_API_KEY"]),
     ("Dashboard", ["DASHBOARD_PASSWORD", "DASHBOARD_OSCAR_PASSWORD"]),
 ]
 
@@ -525,7 +541,7 @@ def secrets_status() -> list[dict[str, Any]]:
 
 
 def editable_secret_groups() -> list[dict[str, Any]]:
-    """Return all 44 EDITABLE_SECRET_KEYS grouped with rich field metadata."""
+    """Return all EDITABLE_SECRET_KEYS grouped with rich field metadata."""
     apply_env_overlays()
     groups: list[dict[str, Any]] = []
     for group, keys in _SECRET_GROUPS:

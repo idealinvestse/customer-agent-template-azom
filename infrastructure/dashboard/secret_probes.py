@@ -39,6 +39,11 @@ def _scrub_error(exc: Exception | str) -> str:
     text = re.sub(r"(https?://)([^/\s:@]+):([^/\s@]+)@", r"\1***@", text)
     text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", text)
     text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer ***", text)
+    text = re.sub(
+        r"\b(?:BSA[A-Za-z0-9_-]{12,}|tvly-[A-Za-z0-9_-]{8,}|pplx-[A-Za-z0-9_-]{8,})\b",
+        "***",
+        text,
+    )
     text = re.sub(r"https?://[^\s\"'>]+", "[url]", text)
     text = re.sub(r"\?[^\s\"'>]+", "?***", text)
     try:
@@ -60,6 +65,11 @@ def _scrub_error(exc: Exception | str) -> str:
         "SMTP_PASSWORD",
         "SSH_PASSWORD",
         "GOOGLE_ADS_DEVELOPER_TOKEN",
+        "PARALLEL_API_KEY",
+        "EXA_API_KEY",
+        "BRAVE_SEARCH_API_KEY",
+        "TAVILY_API_KEY",
+        "SEARXNG_API_KEY",
     ):
         val = os.environ.get(key, "").strip()
         if val and len(val) >= 4 and val in text:
@@ -444,6 +454,85 @@ def probe_merchant() -> ProbeResult:
         return _result("merchant", label, "error", _scrub_error(exc))
 
 
+_WEB_SEARCH_ROUTE_ENV_KEYS: tuple[tuple[str, str], ...] = (
+    ("parallel", "PARALLEL_API_KEY"),
+    ("exa", "EXA_API_KEY"),
+    ("brave", "BRAVE_SEARCH_API_KEY"),
+    ("tavily", "TAVILY_API_KEY"),
+    ("searxng", "SEARXNG_BASE_URL"),
+)
+
+
+def probe_web_search() -> ProbeResult:
+    """Probe configured web-search routes without leaking secrets or raw bodies."""
+    label = "Web Search"
+    if _is_mock():
+        return _result("web_search", label, "ok", "mock mode (offline fixtures)")
+    try:
+        from ecom_ops.research.config import kill_switch_active, web_search_enabled
+
+        if kill_switch_active("search"):
+            return _result("web_search", label, "skipped", "disabled (kill switch active)")
+        if not web_search_enabled():
+            return _result(
+                "web_search",
+                label,
+                "skipped",
+                "disabled (AZOM_WEB_SEARCH_ENABLED not enabled)",
+            )
+
+        configured = [
+            route_id
+            for route_id, env_key in _WEB_SEARCH_ROUTE_ENV_KEYS
+            if os.environ.get(env_key, "").strip()
+        ]
+        if not configured:
+            return _result(
+                "web_search",
+                label,
+                "missing",
+                "not_configured (inga search API-nycklar eller SEARXNG_BASE_URL satta)",
+            )
+
+        from ecom_ops.integrations.search.router import get_search_router
+
+        router = get_search_router()
+        ok_count = 0
+        failed_count = 0
+        parts: list[str] = []
+        for route_id in configured:
+            try:
+                res = router.test_route(route_id)
+            except Exception as exc:
+                failed_count += 1
+                parts.append(f"{route_id}:{type(exc).__name__}")
+                continue
+            route_ok = bool(res.get("ok")) if isinstance(res, dict) else bool(getattr(res, "ok", False))
+            if route_ok:
+                ok_count += 1
+                parts.append(f"{route_id}:ok")
+            else:
+                failed_count += 1
+                err_code = (
+                    res.get("error_code") or res.get("error_class") or res.get("status")
+                    if isinstance(res, dict)
+                    else getattr(res, "error_code", None)
+                    or getattr(res, "error_class", None)
+                    or getattr(res, "status", None)
+                )
+                safe_reason = _scrub_error(str(err_code or "error")) or "error"
+                parts.append(f"{route_id}:{safe_reason}")
+
+        summary = f"{ok_count}/{len(configured)} routes ok ({', '.join(parts)})"
+        if failed_count == 0:
+            return _result("web_search", label, "ok", summary)
+        if ok_count > 0:
+            return _result("web_search", label, "warn", _scrub_error(summary))
+        return _result("web_search", label, "error", summary)
+    except Exception as exc:
+        return _result("web_search", label, "error", _scrub_error(exc))
+
+
 PROBES: dict[str, Callable[[], ProbeResult]] = {
     "woocommerce": probe_woocommerce,
     "wordpress": probe_wordpress,
@@ -456,6 +545,7 @@ PROBES: dict[str, Callable[[], ProbeResult]] = {
     "ga4": probe_ga4,
     "google_ads": probe_google_ads,
     "merchant": probe_merchant,
+    "web_search": probe_web_search,
 }
 
 
