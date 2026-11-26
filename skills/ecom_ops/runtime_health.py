@@ -323,8 +323,7 @@ def _collect_messenger_dbs(root: Path) -> dict[str, Any]:
     return queue
 
 
-def _collect_breakers(root: Path, now_ts: float) -> dict[str, dict[str, Any]]:
-    path = root / "model_router_health.json"
+def _collect_breakers_file(path: Path, now_ts: float) -> dict[str, dict[str, Any]]:
     if not path.is_file() or path.is_symlink():
         return {}
     try:
@@ -352,6 +351,73 @@ def _collect_breakers(root: Path, now_ts: float) -> dict[str, dict[str, Any]]:
             "last_error_code": str(ent.get("last_error_code") or ""),
         }
     return out
+
+
+def _collect_breakers(root: Path, now_ts: float) -> dict[str, dict[str, Any]]:
+    return _collect_breakers_file(root / "model_router_health.json", now_ts)
+
+
+def _collect_research_db(root: Path) -> dict[str, Any]:
+    queue: dict[str, Any] = {
+        "db_present": False,
+        "queued": 0,
+        "running": 0,
+        "completed": 0,
+        "partial": 0,
+        "failed": 0,
+        "cancelled": 0,
+    }
+    conn = _open_sqlite_ro(root / "research_jobs.sqlite3")
+    if conn is None:
+        return queue
+    queue["db_present"] = True
+    running_states = {"planning", "searching", "fetching", "evaluating", "synthesizing", "running"}
+    try:
+        tables = {
+            str(r[0])
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "research_jobs" in tables:
+            for status, count in conn.execute(
+                "SELECT status, COUNT(*) FROM research_jobs GROUP BY status"
+            ).fetchall():
+                key = str(status or "").strip()
+                n = int(count or 0)
+                if key in running_states:
+                    queue["running"] += n
+                elif key in queue:
+                    queue[key] += n
+    except sqlite3.Error:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return queue
+
+
+def _collect_search_router(root: Path, now_ts: float) -> dict[str, Any]:
+    from ecom_ops.research.budget import research_budget_status
+    from ecom_ops.research.config import is_mock_mode, kill_switch_active, web_search_enabled
+    from ecom_ops.telemetry import Telemetry
+
+    breakers = _collect_breakers_file(root / "search_router_health.json", now_ts)
+    open_breakers = sum(
+        1 for item in breakers.values() if str(item.get("state") or "closed") != "closed"
+    )
+    budget = research_budget_status(telemetry=Telemetry(path=root / "telemetry.jsonl"))
+    return {
+        "enabled": web_search_enabled(),
+        "mock_mode": is_mock_mode(),
+        "kill_switch": kill_switch_active("search"),
+        "breakers": breakers,
+        "open_breakers_count": open_breakers,
+        "daily_queries_used": int(budget["queries_today"]),
+        "daily_queries_cap": int(budget["max_queries_per_day"]),
+        "monthly_external_usd": float(budget["monthly_external_usd"]),
+        "monthly_external_usd_cap": float(budget["monthly_external_usd_cap"]),
+    }
 
 
 def _collect_chatgpt_oauth_meta(root: Path, now_ts: float) -> dict[str, Any]:
@@ -455,6 +521,8 @@ def _collect_disk_usage(root: Path, now_dt: datetime) -> dict[str, Any]:
     wp_bytes = _safe_dir_bytes(root / "wp_workspaces")
     tg_media_bytes = _safe_dir_bytes(root / "telegram_inbox_media")
     ms_media_bytes = _safe_dir_bytes(root / "messenger_inbox_media")
+    research_artifacts_bytes = _safe_dir_bytes(root / "research_artifacts")
+    web_search_cache_bytes = _glob_bytes("web_search_cache.sqlite3*")
     telemetry_bytes = _glob_bytes("telemetry.jsonl*")
     audit_bytes = _glob_bytes("audit.jsonl*")
     sqlite_bytes = _glob_bytes("*.sqlite3*")
@@ -493,6 +561,72 @@ def _collect_disk_usage(root: Path, now_dt: datetime) -> dict[str, Any]:
         except OSError:
             pass
 
+    # Expired non-pinned terminal research artifacts count
+    expired_research_artifacts_count = 0
+    try:
+        from ecom_ops.research.config import load_research_config
+
+        ret_cfg = load_research_config().retention
+        ttl_s = max(1, int(ret_cfg.artifact_ttl_days)) * 86400.0
+        grace_s = max(0, int(ret_cfg.artifact_grace_hours)) * 3600.0
+    except Exception:
+        ttl_s = 14 * 86400.0
+        grace_s = 24 * 3600.0
+    res_cutoff_ts = now_dt.timestamp() - (ttl_s + grace_s)
+    res_expired_ids: set[str] = set()
+    res_db_ids: set[str] = set()
+    rconn = _open_sqlite_ro(root / "research_jobs.sqlite3")
+    if rconn is not None:
+        try:
+            rtables = {
+                str(r[0])
+                for r in rconn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            if "research_jobs" in rtables:
+                for row in rconn.execute("SELECT id FROM research_jobs").fetchall():
+                    if row[0]:
+                        res_db_ids.add(str(row[0]))
+                for row in rconn.execute(
+                    """
+                    SELECT id FROM research_jobs
+                    WHERE status IN ('completed', 'partial', 'cancelled', 'failed')
+                      AND COALESCE(pinned, 0) = 0
+                      AND COALESCE(completed_at, updated_at, created_at) <= ?
+                    """,
+                    (res_cutoff_ts,),
+                ).fetchall():
+                    if row[0]:
+                        res_expired_ids.add(str(row[0]))
+        except sqlite3.Error:
+            pass
+        finally:
+            try:
+                rconn.close()
+            except Exception:
+                pass
+    res_art_root = root / "research_artifacts"
+    if res_art_root.is_dir() and not res_art_root.is_symlink():
+        try:
+            for item in res_art_root.iterdir():
+                if not item.name.startswith("res-") or item.is_symlink() or not item.is_dir():
+                    continue
+                if item.name in res_db_ids:
+                    continue
+                try:
+                    newest_mt = item.lstat().st_mtime
+                    for dp, _dns, fns in os.walk(item, topdown=True, followlinks=False):
+                        for fn in fns:
+                            fp = Path(dp) / fn
+                            if not fp.is_symlink():
+                                newest_mt = max(newest_mt, fp.lstat().st_mtime)
+                    if newest_mt <= res_cutoff_ts:
+                        res_expired_ids.add(item.name)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+    expired_research_artifacts_count = len(res_expired_ids)
+
     return {
         "total_bytes": total_bytes,
         "total_mb": round(total_bytes / (1024 * 1024), 2),
@@ -500,12 +634,15 @@ def _collect_disk_usage(root: Path, now_dt: datetime) -> dict[str, Any]:
             "wp_workspaces": _entry(wp_bytes),
             "telegram_inbox_media": _entry(tg_media_bytes),
             "messenger_inbox_media": _entry(ms_media_bytes),
+            "research_artifacts": _entry(research_artifacts_bytes),
+            "web_search_cache": _entry(web_search_cache_bytes),
             "telemetry_jsonl": _entry(telemetry_bytes),
             "audit_jsonl": _entry(audit_bytes),
             "sqlite_dbs": _entry(sqlite_bytes),
         },
         "expired_plans_count": expired_plans_count,
         "untracked_pv_count": untracked_pv_count,
+        "expired_research_artifacts_count": expired_research_artifacts_count,
     }
 
 
@@ -569,11 +706,13 @@ def collect_runtime_snapshot(
 
     poller, tg_queue = _collect_telegram_db(root, now_ts)
     ms_queue = _collect_messenger_dbs(root)
+    research_queue = _collect_research_db(root)
     breakers = _collect_breakers(root, now_ts)
     open_breakers = sum(
         1 for item in breakers.values() if str(item.get("state") or "closed") != "closed"
     )
     chatgpt_oauth = _collect_chatgpt_oauth_meta(root, now_ts)
+    search_router = _collect_search_router(root, now_ts)
     disk_usage = _collect_disk_usage(root, now_dt)
     recent_errors, recent_errors_total = _collect_recent_errors(root, recent_error_limit)
 
@@ -584,12 +723,14 @@ def collect_runtime_snapshot(
         "queues": {
             "telegram": tg_queue,
             "messenger": ms_queue,
+            "research": research_queue,
         },
         "model_router": {
             "breakers": breakers,
             "open_breakers_count": open_breakers,
             "chatgpt_oauth": chatgpt_oauth,
         },
+        "search_router": search_router,
         "disk_usage": disk_usage,
         "recent_errors": recent_errors,
         "recent_errors_total": recent_errors_total,
@@ -616,9 +757,12 @@ def format_ops_telegram_summary(snapshot: dict[str, Any]) -> str:
     queues = snapshot.get("queues") or {}
     tg = queues.get("telegram") or {}
     ms = queues.get("messenger") or {}
+    res_q = queues.get("research") or {}
     mr = snapshot.get("model_router") or {}
     breakers = mr.get("breakers") or {}
     oauth = mr.get("chatgpt_oauth") or {}
+    sr = snapshot.get("search_router") or {}
+    sr_breakers = sr.get("breakers") or {}
     disk = snapshot.get("disk_usage") or {}
     folders = disk.get("folders") or {}
     waitress = snapshot.get("waitress") or {}
@@ -656,10 +800,19 @@ def format_ops_telegram_summary(snapshot: dict[str, Any]) -> str:
     media_mb = float((folders.get("telegram_inbox_media") or {}).get("mb") or 0.0) + float(
         (folders.get("messenger_inbox_media") or {}).get("mb") or 0.0
     )
+    res_mb = float((folders.get("research_artifacts") or {}).get("mb") or 0.0)
     logs_mb = float((folders.get("telemetry_jsonl") or {}).get("mb") or 0.0) + float(
         (folders.get("audit_jsonl") or {}).get("mb") or 0.0
     )
     db_mb = float((folders.get("sqlite_dbs") or {}).get("mb") or 0.0)
+
+    sr_open_list = [
+        f"{k}={v.get('state')} ({v.get('remaining_s', 0)}s)"
+        for k, v in sr_breakers.items()
+        if str(v.get("state") or "closed") != "closed"
+    ]
+    sr_breaker_line = "OK (0 öppna)" if not sr_open_list else ", ".join(sr_open_list[:3])
+    sr_mode = "mock" if sr.get("mock_mode") else ("på" if sr.get("enabled") else "av")
 
     lines = [
         f"Azom Runtime /ops ({snapshot.get('generated_at', '')})",
@@ -673,15 +826,28 @@ def format_ops_telegram_summary(snapshot: dict[str, Any]) -> str:
             f"Messenger-kö: kö {ms.get('pending', 0)} · kör {ms.get('running', 0)} · "
             f"fel {ms.get('failed', 0)} · öppna förslag {ms.get('open_proposals', 0)}"
         ),
+        (
+            f"Research-kö: kö {res_q.get('queued', 0)} · kör {res_q.get('running', 0)} · "
+            f"klara {res_q.get('completed', 0)} · fel {res_q.get('failed', 0)} · "
+            f"avbrutna {res_q.get('cancelled', 0)}"
+        ),
         f"Model router: breakers {breaker_line}",
+        (
+            f"Sökrouter ({sr_mode}): breakers {sr_breaker_line} · "
+            f"frågor {sr.get('daily_queries_used', 0)}/{sr.get('daily_queries_cap', 0)} · "
+            f"${float(sr.get('monthly_external_usd') or 0.0):.2f}/"
+            f"${float(sr.get('monthly_external_usd_cap') or 0.0):.2f}"
+        ),
         f"ChatGPT OAuth: {oauth_line}",
         (
             f"Disk: {float(disk.get('total_mb') or 0.0):.2f} MB "
-            f"(wp {wp_mb:.2f} · media {media_mb:.2f} · loggar {logs_mb:.2f} · db {db_mb:.2f} MB)"
+            f"(wp {wp_mb:.2f} · media {media_mb:.2f} · research {res_mb:.2f} · "
+            f"loggar {logs_mb:.2f} · db {db_mb:.2f} MB)"
         ),
         (
             f"Städbart: {int(disk.get('expired_plans_count') or 0)} utgångna WP-planer · "
-            f"{int(disk.get('untracked_pv_count') or 0)} pv-* arbetsytor"
+            f"{int(disk.get('untracked_pv_count') or 0)} pv-* arbetsytor · "
+            f"{int(disk.get('expired_research_artifacts_count') or 0)} utgångna research-artefakter"
         ),
         f"Dashboard Waitress: {int(waitress.get('configured_threads') or 12)} trådar",
         f"Senaste driftfel: {recent_total} i buffert",

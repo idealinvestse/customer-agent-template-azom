@@ -60,6 +60,22 @@ def _print(result: Any) -> int:
     return 0
 
 
+def _cli_error_result(exc: Exception) -> int:
+    from ecom_ops.rbac import AccessDenied
+
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error_class": type(exc).__name__,
+        "message": str(exc),
+    }
+    if isinstance(exc, AccessDenied):
+        payload["error"] = "access_denied"
+    code = getattr(exc, "code", None)
+    if code:
+        payload["error_code"] = str(code)
+    return _print(payload)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ecom-ops",
@@ -105,6 +121,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_prod.add_argument("--features", default="")
     p_prod.add_argument("--language", default="sv")
     p_prod.add_argument("--publish", action="store_true")
+    p_prod.add_argument(
+        "--research-brief",
+        default=None,
+        dest="research_brief_id",
+        help="Attach an existing res-... research brief",
+    )
+    p_prod.add_argument(
+        "--research",
+        action="store_true",
+        help="Run product research before generating copy (refuses --publish)",
+    )
 
     p_sup = sub.add_parser("support", help="Handle support message")
     p_sup.add_argument("--message", required=True)
@@ -212,6 +239,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_mkt_feed.add_argument("--offer-id", required=True)
     p_mkt_feed.add_argument("--title", default="")
     p_mkt_feed.add_argument("--op", default="upsert", choices=["upsert", "delete"])
+    p_mkt_res = mkt_sub.add_parser(
+        "research", help="Run or enqueue marketing intelligence research"
+    )
+    p_mkt_res.add_argument("--topic", required=True)
+    p_mkt_res.add_argument(
+        "--depth", default="standard", choices=("quick", "standard", "deep")
+    )
+    p_mkt_res.add_argument("--wait", action="store_true")
 
     p_smoke = sub.add_parser(
         "smoke",
@@ -322,6 +357,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Report counts without modifying"
     )
 
+    p_cases_res = cases_sub.add_parser(
+        "research", help="Run or enqueue web research for a case (no customer PII)"
+    )
+    p_cases_res.add_argument("--id", required=True, dest="case_id")
+    p_cases_res.add_argument("--query", default=None)
+    p_cases_res.add_argument(
+        "--depth", default="quick", choices=("quick", "standard")
+    )
+    p_cases_res.add_argument("--wait", action="store_true")
+
     p_wp = sub.add_parser(
         "wp",
         help="WordPress site operations (mock health, local backup metadata, typed file edits)",
@@ -427,6 +472,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output",
     )
 
+    p_search = sub.add_parser("search", help="Run bounded synchronous web search")
+    p_search.add_argument("--query", required=True)
+    p_search.add_argument("--profile", default="deep_general")
+    p_search.add_argument("--locale", default=None)
+    p_search.add_argument("--freshness-days", type=int, default=None)
+    p_search.add_argument("--max-results", type=int, default=5)
+
+    p_fetch = sub.add_parser("fetch-url", help="Fetch and extract clean text from a public HTTPS URL")
+    p_fetch.add_argument("--url", required=True)
+    p_fetch.add_argument("--profile", default="deep_general")
+    p_fetch.add_argument("--max-chars", type=int, default=5000)
+
+    p_res = sub.add_parser("research", help="Async Deep Research jobs and briefs")
+    res_sub = p_res.add_subparsers(dest="research_command", required=True)
+
+    p_res_start = res_sub.add_parser("start", help="Enqueue (or --wait) a Deep Research job")
+    p_res_start.add_argument("--topic", required=True)
+    p_res_start.add_argument("--profile", default="deep_general")
+    p_res_start.add_argument(
+        "--depth", default="standard", choices=("quick", "standard", "deep")
+    )
+    p_res_start.add_argument("--market", default=None, choices=("SE", "NO", "DK"))
+    p_res_start.add_argument("--target-ref", default=None)
+    p_res_start.add_argument("--wait", action="store_true")
+
+    p_res_list = res_sub.add_parser("list", help="List research jobs visible to actor")
+    p_res_list.add_argument("--status", default=None)
+    p_res_list.add_argument("--limit", type=int, default=20)
+
+    p_res_show = res_sub.add_parser("show", help="Show a persisted research brief")
+    p_res_show.add_argument("--id", required=True, dest="research_id")
+    p_res_show.add_argument(
+        "--section", default="full", choices=("full", "summary", "sources")
+    )
+
+    p_res_status = res_sub.add_parser("status", help="Show research job status and events")
+    p_res_status.add_argument("--id", required=True, dest="research_id")
+
+    p_res_steer = res_sub.add_parser("steer", help="Queue a steering note for a research job")
+    p_res_steer.add_argument("--id", required=True, dest="research_id")
+    p_res_steer.add_argument("--note", required=True)
+
+    p_res_cancel = res_sub.add_parser("cancel", help="Cancel a research job")
+    p_res_cancel.add_argument("--id", required=True, dest="research_id")
+
     return parser
 
 
@@ -479,16 +569,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "product-desc":
         svc = ProductDescService(woo=_woo())
-        result = svc.generate(
-            product_id=args.product_id,
-            name=args.name,
-            features=args.features,
-            language=args.language,
-            site=args.site,
-            publish=args.publish,
-            actor=args.actor,
-            allow_llm=not _mock_mode(),
-        )
+        kwargs: dict[str, Any] = {
+            "product_id": args.product_id,
+            "name": args.name,
+            "features": args.features,
+            "language": args.language,
+            "site": args.site,
+            "publish": args.publish,
+            "actor": args.actor,
+            "allow_llm": not _mock_mode(),
+        }
+        if getattr(args, "research_brief_id", None):
+            kwargs["research_brief_id"] = args.research_brief_id
+        if getattr(args, "research", False):
+            kwargs["run_research"] = True
+        try:
+            result = svc.generate(**kwargs)
+        except Exception as exc:
+            return _cli_error_result(exc)
         return _print(result)
 
     if args.command == "support":
@@ -532,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
             GoogleMarketingOAuthStore,
             google_marketing_oauth_configured,
         )
-        from ecom_ops.ops_status import readiness_from_last_poll
+        from ecom_ops.ops_status import readiness_from_last_poll, web_search_readiness
         from ecom_ops.runtime_profile import null_send_label
 
         try:
@@ -563,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
                     os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
                 ),
                 "readiness": readiness_from_last_poll(),
+                "web_search": web_search_readiness(),
                 "budget": budget,
             }
         except Exception as exc:
@@ -572,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
                 "null_send": null_send_label(),
                 "ga4": "off",
                 "ads": "off",
+                "web_search": {"ready": False, "status": "error"},
                 "error": str(exc),
             }
         print(json.dumps(status, ensure_ascii=False, indent=2))
@@ -815,6 +915,29 @@ def main(argv: list[str] | None = None) -> int:
                 redact=args.redact,
             )
             return _print(result)
+        if args.cases_command == "research":
+            import inspect
+
+            try:
+                init_params = inspect.signature(CaseService.__init__).parameters
+                svc_for_res = (
+                    CaseService(actor=args.actor)
+                    if "actor" in init_params
+                    else case_svc
+                )
+                fn = svc_for_res.start_case_research
+                fn_params = inspect.signature(fn).parameters
+                res_kwargs: dict[str, Any] = {
+                    "query": args.query,
+                    "depth": args.depth,
+                    "wait": bool(args.wait),
+                }
+                if "actor" in fn_params:
+                    res_kwargs["actor"] = args.actor
+                res = fn(args.case_id, **res_kwargs)
+                return _print(res)
+            except Exception as exc:
+                return _cli_error_result(exc)
         parser.error(f"Unknown cases command: {args.cases_command}")
         return 2
 
@@ -893,6 +1016,27 @@ def main(argv: list[str] | None = None) -> int:
                     product, op=args.op, actor=args.actor
                 )
             )
+        if cmd == "research":
+            import inspect
+
+            try:
+                init_params = inspect.signature(MarketingService.__init__).parameters
+                mkt_for_res = (
+                    MarketingService(use_mock=args.mock or None, actor=args.actor)
+                    if "actor" in init_params
+                    else mkt
+                )
+                fn = mkt_for_res.research_topic
+                fn_params = inspect.signature(fn).parameters
+                res_kwargs: dict[str, Any] = {
+                    "depth": args.depth,
+                    "wait": bool(args.wait),
+                }
+                if "actor" in fn_params:
+                    res_kwargs["actor"] = args.actor
+                return _print(fn(args.topic, **res_kwargs))
+            except Exception as exc:
+                return _cli_error_result(exc)
         parser.error(f"Unknown marketing command: {cmd}")
         return 2
 
@@ -1005,12 +1149,152 @@ def main(argv: list[str] | None = None) -> int:
                     f"pv_dirs={res['removed_pv_dirs']} "
                     f"media={res['removed_media_files']} "
                     f"proposals={res['purged_proposals']} "
+                    f"search_cache={res['purged_search_cache_rows']} "
+                    f"research_artifacts={res['removed_research_artifacts']} "
                     f"rotated={len(res['rotated_logs'])} "
                     f"reclaimed={res['mb_reclaimed']:.2f} MB "
                     f"errors={len(res['errors'])}"
                 )
             return 0 if res.get("ok") else 1
         parser.error(f"Unknown ops command: {cmd}")
+        return 2
+
+    if args.command == "search":
+        from ecom_ops.integrations.search.errors import SearchRouteError
+        from ecom_ops.rbac import AccessDenied
+        from ecom_ops.research import SearchPolicyError, get_research_service
+
+        try:
+            svc = get_research_service()
+            res = svc.quick_search(
+                args.query,
+                actor=args.actor,
+                profile_id=args.profile,
+                locale=args.locale,
+                freshness_days=args.freshness_days,
+                max_results=args.max_results,
+            )
+            return _print(res)
+        except (AccessDenied, SearchRouteError, SearchPolicyError, KeyError, ValueError) as exc:
+            return _cli_error_result(exc)
+
+    if args.command == "fetch-url":
+        from ecom_ops.integrations.search.errors import SearchRouteError
+        from ecom_ops.rbac import AccessDenied
+        from ecom_ops.research import SearchPolicyError, get_research_service
+
+        try:
+            svc = get_research_service()
+            res = svc.fetch_extract(
+                args.url,
+                actor=args.actor,
+                profile_id=args.profile,
+                max_chars=args.max_chars,
+            )
+            return _print(res)
+        except (AccessDenied, SearchRouteError, SearchPolicyError, KeyError, ValueError) as exc:
+            return _cli_error_result(exc)
+
+    if args.command == "research":
+        from ecom_ops.integrations.search.errors import SearchRouteError
+        from ecom_ops.rbac import AccessDenied
+        from ecom_ops.research import SearchPolicyError, get_research_service
+
+        svc = get_research_service()
+        rcmd = args.research_command
+        try:
+            if rcmd == "start":
+                job = svc.start_research(
+                    args.topic,
+                    actor=args.actor,
+                    profile_id=args.profile,
+                    depth=args.depth,
+                    markets=[args.market] if args.market else None,
+                    country=args.market,
+                    target_ref=args.target_ref,
+                    start_worker=False,
+                )
+                if args.wait:
+                    import ecom_ops.bot.progress_events  # noqa: F401  # break bot<->research cycle
+                    from ecom_ops.research.engine import ResearchEngine
+
+                    engine = ResearchEngine(
+                        store=svc.store,
+                        search_router=svc.search_router,
+                        fetcher=svc.fetcher,
+                        telemetry=svc.telemetry,
+                    )
+                    job = engine.run_job(job.research_id)
+                    brief_res = svc.get_brief(job.research_id, actor=args.actor)
+                    return _print(
+                        {
+                            "ok": job.status in {"completed", "partial"},
+                            "research_id": job.research_id,
+                            "status": job.status,
+                            "job": job.to_dict(),
+                            "brief": brief_res.get("brief") if brief_res.get("ok") else None,
+                            "sources": brief_res.get("sources") if brief_res.get("ok") else [],
+                        }
+                    )
+                return _print(
+                    {
+                        "ok": True,
+                        "research_id": job.research_id,
+                        "status": job.status,
+                        "job": job.to_dict(),
+                    }
+                )
+            if rcmd == "list":
+                jobs = svc.list_jobs(
+                    actor=args.actor,
+                    status=args.status,
+                    limit=args.limit,
+                )
+                return _print(
+                    {
+                        "ok": True,
+                        "count": len(jobs),
+                        "jobs": [j.to_dict() for j in jobs],
+                    }
+                )
+            if rcmd == "show":
+                brief_res = svc.get_brief(args.research_id, actor=args.actor)
+                if not brief_res.get("ok"):
+                    return _print(brief_res)
+                if args.section == "summary":
+                    brief = brief_res.get("brief") or {}
+                    return _print(
+                        {
+                            "ok": True,
+                            "research_id": args.research_id,
+                            "section": "summary",
+                            "evidence_status": brief.get("evidence_status"),
+                            "summary": brief.get("summary", ""),
+                            "recommendations": brief.get("recommendations", []),
+                            "gaps": brief.get("gaps", []),
+                        }
+                    )
+                if args.section == "sources":
+                    brief = brief_res.get("brief") or {}
+                    return _print(
+                        {
+                            "ok": True,
+                            "research_id": args.research_id,
+                            "section": "sources",
+                            "sources": brief_res.get("sources", []),
+                            "citations": brief.get("citations", []),
+                        }
+                    )
+                return _print(brief_res)
+            if rcmd == "status":
+                return _print(svc.get_status(args.research_id, actor=args.actor))
+            if rcmd == "steer":
+                return _print(svc.steer_research(args.research_id, args.note, actor=args.actor))
+            if rcmd == "cancel":
+                return _print(svc.cancel_research(args.research_id, actor=args.actor))
+        except (AccessDenied, SearchRouteError, SearchPolicyError, KeyError, ValueError) as exc:
+            return _cli_error_result(exc)
+        parser.error(f"Unknown research command: {rcmd}")
         return 2
 
     parser.error(f"Unknown command: {args.command}")

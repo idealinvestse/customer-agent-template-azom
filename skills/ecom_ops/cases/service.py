@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
+from email.utils import parseaddr
 from typing import Any
 
 from ecom_ops.actions.mail import MailService
-from ecom_ops.actions.support import SupportService
+from ecom_ops.actions.support import SupportService, extract_order_id
 from ecom_ops.cases.results import ACTIVE_CASE_STATUSES, CaseActionResult, IngestResult
-from ecom_ops.cases.store import Case, CaseStore
+from ecom_ops.cases.store import Case, CaseMessage, CaseStore
 from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.integrations.mail import MailClient, MailMessage
 from ecom_ops.integrations.mail_threading import assemble_outbound_thread_headers
@@ -19,12 +21,42 @@ from ecom_ops.order_context import (
 )
 from ecom_ops.profile import load_profile
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
+from ecom_ops.research import get_research_service
+from ecom_ops.research.config import is_mock_mode
+from ecom_ops.research.firewall import OutboundQueryFirewall, QueryTaintContext
+from ecom_ops.research.sanitizer import sanitize_untrusted_text
 from ecom_ops.runtime_profile import null_send_active
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 _ACTIVE = ACTIVE_CASE_STATUSES
 REGENERATE_COOLDOWN_SEC = 60
 _log = logging.getLogger("ecom_ops.cases")
+
+_EMAIL_SCAN_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_PHONE_SCAN_RE = re.compile(
+    r"(?<!\d)(?:\+|00)?[1-9]\d{1,3}[\s.\-]?\d(?:[\s.\-]?\d){5,11}(?!\d)"
+)
+_POSTAL_SCAN_RE = re.compile(
+    r"(?:\b(?:SE|NO|DK)-?\d{4,5}\b|\b\d{3}\s+\d{2}\b|\b(?:postnr|postnummer|zip)[\s:#-]*(\d{4,5})\b)",
+    re.I,
+)
+_TRACKING_SCAN_RE = re.compile(
+    r"\b(?:JJFI[A-Z0-9]{6,}|BRING[A-Z0-9]{4,}|DHL[A-Z0-9]{6,})\b"
+    r"|(?:\b(?:tracking|kolli|spårning|sporing)[\s:#-]*([A-Z0-9]{6,24})\b)",
+    re.I,
+)
+_SIG_NAME_RE = re.compile(
+    r"(?:^|\n)\s*(?:mvh|hälsningar|med vänlig hälsning|vennlig hilsen|venlig hilsen|best regards|regards|"
+    r"mitt namn är|jag heter)\s*[,:-]?\s*([A-ZÅÄÖÆØ][a-zåäöæøA-ZÅÄÖÆØ-]{1,24}(?:\s+[A-ZÅÄÖÆØ][a-zåäöæøA-ZÅÄÖÆØ-]{1,24}){0,2})",
+    re.I,
+)
+_FALLBACK_CASE_TOPICS: dict[str, str] = {
+    "shipping": "PostNord Bring DHL leverans driftinformation status",
+    "return": "konsumentköp ångerrätt 14 dagar reklamation regler",
+    "billing": "e-handel faktura betalning ångerrätt regler",
+    "product": "bilmultimedia CarPlay DAB+ kompatibilitet specifikation",
+    "technical": "bilmultimedia CarPlay DAB+ felsökning specifikation",
+}
 
 
 def _edit_distance_ratio(a: str, b: str) -> float:
@@ -120,6 +152,7 @@ class CaseService:
         telemetry: Telemetry | None = None,
         escalation: EscalationService | None = None,
         mail_client: MailClient | None = None,
+        actor: Actor | str | None = None,
     ) -> None:
         self.store = store or CaseStore()
         self.mail = mail or MailService(client=mail_client)
@@ -127,6 +160,7 @@ class CaseService:
         self.telemetry = telemetry or default_telemetry
         self.escalation = escalation or default_escalation
         self._injected_mail_client = mail_client
+        self._default_actor = actor
         self._shutdown_requested = False  # P6.6: graceful shutdown flag
 
     def request_shutdown(self) -> None:
@@ -301,10 +335,214 @@ class CaseService:
         *,
         actor: Actor | str | None = None,
         use_mock: bool | None = None,
+        research_brief_id: str | None = None,
     ) -> CaseActionResult:
         from ecom_ops.cases.drafting import regenerate_draft as _regen
 
-        return _regen(self, case_id, actor=actor, use_mock=use_mock)
+        return _regen(
+            self,
+            case_id,
+            actor=actor,
+            use_mock=use_mock,
+            research_brief_id=research_brief_id,
+        )
+
+    @staticmethod
+    def _build_case_taint_context(
+        case: Case, messages: list[CaseMessage]
+    ) -> QueryTaintContext:
+        emails: list[str] = []
+        names: list[str] = []
+        phones: list[str] = []
+        postal_codes: list[str] = []
+        order_ids: list[str] = []
+        tracking_numbers: list[str] = []
+
+        def _add_addr(raw_addr: str | None) -> None:
+            raw = (raw_addr or "").strip()
+            if not raw:
+                return
+            disp, addr = parseaddr(raw)
+            if disp.strip():
+                names.append(disp.strip())
+            if addr.strip() and "@" in addr:
+                emails.append(addr.strip())
+            elif "@" in raw:
+                emails.append(raw)
+
+        _add_addr(case.from_addr)
+        if case.order_id:
+            order_ids.append(str(case.order_id).strip())
+
+        texts: list[str] = [case.subject or ""]
+        for msg in messages:
+            if (msg.direction or "") == "inbound":
+                _add_addr(msg.from_addr)
+            if msg.subject:
+                texts.append(msg.subject)
+            if msg.body:
+                texts.append(msg.body)
+
+        combined = "\n".join(texts)
+        emails.extend(_EMAIL_SCAN_RE.findall(combined))
+        phones.extend(m.group(0).strip() for m in _PHONE_SCAN_RE.finditer(combined))
+        for pm in _POSTAL_SCAN_RE.finditer(combined):
+            postal_codes.append((pm.group(1) or pm.group(0)).strip())
+        for tm in _TRACKING_SCAN_RE.finditer(combined):
+            tracking_numbers.append((tm.group(1) or tm.group(0)).strip())
+        for sm in _SIG_NAME_RE.finditer(combined):
+            cand_name = sm.group(1).strip()
+            if cand_name:
+                names.append(cand_name)
+        extracted_oid = extract_order_id(combined)
+        if extracted_oid:
+            order_ids.append(extracted_oid)
+
+        case_ids = [case.id]
+        if len(case.id) >= 8:
+            case_ids.append(case.id[:8])
+
+        return QueryTaintContext(
+            customer_names=tuple(dict.fromkeys(names)),
+            emails=tuple(dict.fromkeys(emails)),
+            phones=tuple(dict.fromkeys(phones)),
+            postal_codes=tuple(dict.fromkeys(postal_codes)),
+            order_ids=tuple(dict.fromkeys(order_ids)),
+            tracking_numbers=tuple(dict.fromkeys(tracking_numbers)),
+            case_ids=tuple(dict.fromkeys(case_ids)),
+        )
+
+    @staticmethod
+    def _build_safe_case_query(
+        case: Case,
+        messages: list[CaseMessage],
+        taint: QueryTaintContext,
+        fw: OutboundQueryFirewall,
+    ) -> str:
+        raw_subject = re.sub(r"^(?:re|fw|fwd)\s*:\s*", "", case.subject or "", flags=re.I)
+        scrubbed = _EMAIL_SCAN_RE.sub(" ", raw_subject)
+        scrubbed = _PHONE_SCAN_RE.sub(" ", scrubbed)
+        scrubbed = _POSTAL_SCAN_RE.sub(" ", scrubbed)
+        scrubbed = _TRACKING_SCAN_RE.sub(" ", scrubbed)
+        scrubbed = re.sub(r"\b(?:order|ordre|beställning|bestilling)?\s*#?\d{4,12}\b", " ", scrubbed, flags=re.I)
+        for token in (*taint.customer_names, *taint.order_ids, *taint.case_ids):
+            if token:
+                scrubbed = re.sub(rf"(?<!\w){re.escape(token)}(?!\w)", " ", scrubbed, flags=re.I)
+        cand = " ".join(sanitize_untrusted_text(scrubbed, max_chars=180).split())
+        cat = (case.category or "").strip().lower()
+        hint = _FALLBACK_CASE_TOPICS.get(cat, "nordisk e-handel kundsupport fakta")
+        market = (case.market or "").strip().upper()
+        if cand and len(cand) >= 6:
+            try:
+                return fw.check_query(cand[:220], taint=taint)
+            except Exception:
+                pass
+        fallback = f"{hint} {market}".strip() if market in {"SE", "NO", "DK"} else hint
+        return fw.check_query(fallback[:220], taint=taint)
+
+    def start_case_research(
+        self,
+        case_id: str,
+        *,
+        query: str | None = None,
+        profile_id: str = "support_fact_check",
+        depth: str = "quick",
+        wait: bool = False,
+        actor: Actor | str | None = None,
+    ) -> dict[str, Any]:
+        """Run or enqueue PII-firewalled research linked to ``case:<case_id>``."""
+        actor_obj = (
+            actor
+            if isinstance(actor, Actor)
+            else resolve_actor(actor if actor is not None else self._default_actor)
+        )
+        require_permission(actor_obj, Permission.CASE_REPLY)
+        require_permission(actor_obj, Permission.RESEARCH_RUN)
+
+        case = self.store.get(case_id)
+        if not case:
+            return {
+                "ok": False,
+                "error_class": "not_found",
+                "message": f"Case not found: {case_id}",
+            }
+
+        messages = self.store.messages(case_id)
+        taint = self._build_case_taint_context(case, messages)
+        fw = OutboundQueryFirewall()
+        if query is not None:
+            clean_query = fw.check_query(query, taint=taint)
+        else:
+            clean_query = self._build_safe_case_query(case, messages, taint, fw)
+
+        market_u = (case.market or "").strip().upper()
+        country = market_u if market_u in {"SE", "NO", "DK"} else None
+        locale = (case.language or "").strip().lower() or None
+
+        res_svc = get_research_service()
+        job = res_svc.start_research(
+            clean_query,
+            actor=actor_obj.name,
+            profile_id=profile_id,
+            depth=depth,
+            locale=locale,
+            country=country,
+            target_ref=f"case:{case_id}",
+            taint=taint,
+            start_worker=(False if wait else not is_mock_mode()),
+        )
+        self.telemetry.record(
+            action="case_research_started",
+            site=case.site or load_profile().customer,
+            case_id=case_id,
+            meta={
+                "case_id": case_id,
+                "research_id": job.research_id,
+                "profile_id": profile_id,
+                "depth": depth,
+                "wait": wait,
+                "actor": actor_obj.name,
+            },
+        )
+        if not wait:
+            return {
+                "ok": True,
+                "research_id": job.research_id,
+                "status": job.status,
+                "target_ref": job.target_ref,
+                "profile_id": profile_id,
+                "depth": depth,
+                "wait": False,
+                "job": job.to_dict(),
+            }
+
+        import ecom_ops.bot  # noqa: F401 - initialize bot package before engine->progress_events
+        from ecom_ops.research.engine import ResearchEngine
+
+        engine = ResearchEngine(
+            store=res_svc.store,
+            search_router=res_svc.search_router,
+            fetcher=res_svc.fetcher,
+            telemetry=res_svc.telemetry,
+        )
+        finished = engine.run_job(job.research_id, taint=taint)
+        brief_res = (
+            res_svc.get_brief(finished.research_id, actor=actor_obj.name)
+            if finished.status in {"completed", "partial"}
+            else {}
+        )
+        return {
+            "ok": finished.status in {"completed", "partial"},
+            "research_id": finished.research_id,
+            "status": finished.status,
+            "target_ref": finished.target_ref,
+            "profile_id": profile_id,
+            "depth": depth,
+            "wait": True,
+            "job": finished.to_dict(),
+            "brief": brief_res.get("brief") if brief_res.get("ok") else None,
+            "sources": brief_res.get("sources") if brief_res.get("ok") else [],
+        }
 
     def _inbound_text_for_regen(self, case: Case) -> tuple[str, str]:
         msgs = self.store.messages(case.id)

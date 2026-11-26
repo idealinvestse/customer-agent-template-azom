@@ -133,16 +133,86 @@ def readiness_from_last_poll() -> dict[str, Any]:
     }
 
 
+def web_search_readiness() -> dict[str, Any]:
+    """Build non-secret readiness and provider status for web search & research."""
+    from ecom_ops.integrations.search.router import LIVE_ROUTE_IDS, get_search_router
+    from ecom_ops.research.config import (
+        effective_route_order,
+        is_mock_mode,
+        kill_switch_active,
+        load_research_config,
+        research_enabled,
+        web_fetch_enabled,
+        web_search_enabled,
+    )
+
+    mock_mode = is_mock_mode()
+    cfg = load_research_config()
+    search_kill = kill_switch_active("search")
+    research_kill = kill_switch_active("research")
+    search_en = web_search_enabled()
+    fetch_en = web_fetch_enabled()
+    research_en = research_enabled()
+
+    router = get_search_router()
+    routes = router.routes()
+    providers: dict[str, dict[str, bool]] = {}
+    for rid in LIVE_ROUTE_IDS:
+        configured = bool((routes.get(rid) or {}).get("configured"))
+        if rid == "searxng":
+            route_enabled = configured
+        else:
+            p_cfg = cfg.providers.get(rid)
+            route_enabled = not (isinstance(p_cfg, dict) and p_cfg.get("enabled") is False)
+        providers[rid] = {
+            "configured": configured,
+            "enabled": route_enabled,
+        }
+
+    any_configured = any(p["configured"] and p["enabled"] for p in providers.values())
+    if mock_mode:
+        status = "mock"
+        ready = True
+    elif search_kill:
+        status = "kill_switch"
+        ready = False
+    elif not search_en:
+        status = "disabled"
+        ready = False
+    elif any_configured:
+        status = "ready"
+        ready = True
+    else:
+        status = "unconfigured"
+        ready = False
+
+    return {
+        "ready": ready,
+        "status": status,
+        "mock_mode": mock_mode,
+        "enabled": search_en,
+        "fetch_enabled": fetch_en,
+        "research_enabled": research_en,
+        "kill_switch_search": search_kill,
+        "kill_switch_research": research_kill,
+        "any_configured": any_configured,
+        "route_order": list(effective_route_order(cfg)),
+        "providers": providers,
+    }
+
+
 def health_extras() -> dict[str, Any]:
-    """Additive /health fields: null-send, budget ratio, last poll errors."""
+    """Additive /health fields: null-send, budget ratio, last poll errors, web search status."""
     from ecom_ops.budget import budget_status
     from ecom_ops.runtime_profile import null_send_label
 
     readiness = readiness_from_last_poll()
     budget = budget_status()
+    ws = web_search_readiness()
     return {
         "null_send": null_send_label(),
         "budget_ratio": budget.get("used_ratio"),
         "budget_pacing_warn": bool(budget.get("pacing_warn")),
         "last_poll_errors": int(readiness.get("errors") or 0),
+        "web_search_status": ws.get("status"),
     }

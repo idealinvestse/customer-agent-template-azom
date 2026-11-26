@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.cases.store import CaseStore
+from ecom_ops.research.store import ResearchStore
 from ecom_ops.security import SecurityError, validate_email
 
 # Default retention window (days) for closed + replied cases.
@@ -137,6 +138,28 @@ def purge_sidecar_jsonl(*, now: datetime | None = None) -> dict[str, int]:
     return out
 
 
+def _unlink_case_research_refs(case_ids: list[str], *, db_dir: Path | None = None) -> int:
+    """Sever ``case:<uuid>`` linkages in ``research_jobs.sqlite3`` (invariant #17.8)."""
+    if not case_ids:
+        return 0
+    stores: list[ResearchStore] = [ResearchStore()]
+    if db_dir is not None:
+        local_jobs = db_dir / "research_jobs.sqlite3"
+        if local_jobs.is_file() and db_dir.resolve() != _data_dir().resolve():
+            stores.append(
+                ResearchStore(
+                    path=local_jobs,
+                    artifacts_dir=db_dir / "research_artifacts",
+                )
+            )
+    unlinked = 0
+    for cid in case_ids:
+        ref = f"case:{cid}"
+        for rs in stores:
+            unlinked += rs.unlink_target_ref(ref)
+    return unlinked
+
+
 def purge_closed_cases(
     *,
     store: CaseStore | None = None,
@@ -158,6 +181,13 @@ def purge_closed_cases(
     conn = sqlite3.connect(str(cs.path))
     conn.row_factory = sqlite3.Row
     try:
+        target_ids = [
+            str(r[0])
+            for r in conn.execute(
+                f"SELECT id FROM cases WHERE status IN ({placeholders}) AND updated_at < ?",
+                (*TERMINAL_STATUSES, cutoff_iso),
+            ).fetchall()
+        ]
         if redact:
             cur = conn.execute(
                 f"""
@@ -186,6 +216,7 @@ def purge_closed_cases(
                 (*TERMINAL_STATUSES, cutoff_iso),
             )
             conn.commit()
+            _unlink_case_research_refs(target_ids, db_dir=cs.path.parent)
             jsonl = purge_sidecar_jsonl(now=now)
             return RetentionResult(
                 ok=True,
@@ -213,6 +244,7 @@ def purge_closed_cases(
         )
         deleted = cur.rowcount
         conn.commit()
+        _unlink_case_research_refs(target_ids, db_dir=cs.path.parent)
         jsonl = purge_sidecar_jsonl(now=now)
         return RetentionResult(
             ok=True,
@@ -313,6 +345,7 @@ def gdpr_delete(*, email: str, db_path: Path) -> dict[str, Any]:
         )
         conn.execute(f"DELETE FROM cases WHERE id IN ({placeholders})", ids)
         conn.commit()
+        _unlink_case_research_refs(ids, db_dir=db_path.parent)
         return {
             "ok": True,
             "deleted": len(ids),

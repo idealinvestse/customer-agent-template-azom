@@ -113,5 +113,115 @@ def run_live_smoke(*, force: bool = False) -> dict[str, Any]:
                 {"name": "telegram", "ok": False, "detail": str(exc)[:200], "mock": False}
             )
 
+    # Web search (mock fixture in --mock; live probe only when web_search_enabled())
+    if use_mock:
+        try:
+            from ecom_ops.integrations.search.base import SearchRequest
+            from ecom_ops.integrations.search.router import get_search_router
+
+            router = get_search_router()
+            res = router.search(
+                SearchRequest(
+                    query="woocommerce order confirmation",
+                    profile_id="technical_docs",
+                    max_results=2,
+                    mode="quick",
+                )
+            )
+            ok = bool(res.ok and len(res.hits) >= 1 and res.provenance in {"mock", "mock_fixture"})
+            checks.append(
+                {
+                    "name": "web_search",
+                    "ok": ok,
+                    "status": "mock",
+                    "detail": f"mock fixture ({len(res.hits)} hit(s))",
+                    "mock": True,
+                }
+            )
+        except Exception as exc:
+            checks.append(
+                {
+                    "name": "web_search",
+                    "ok": False,
+                    "status": "error",
+                    "detail": type(exc).__name__,
+                    "mock": True,
+                }
+            )
+    else:
+        try:
+            from ecom_ops.research.config import kill_switch_active, web_search_enabled
+
+            if kill_switch_active("search"):
+                checks.append(
+                    {
+                        "name": "web_search",
+                        "ok": True,
+                        "status": "skipped_disabled",
+                        "detail": "skipped_disabled (kill switch active)",
+                        "mock": False,
+                    }
+                )
+            elif not web_search_enabled():
+                checks.append(
+                    {
+                        "name": "web_search",
+                        "ok": True,
+                        "status": "skipped_disabled",
+                        "detail": "skipped_disabled (AZOM_WEB_SEARCH_ENABLED not enabled)",
+                        "mock": False,
+                    }
+                )
+            else:
+                from ecom_ops.integrations.search.router import get_search_router
+
+                router = get_search_router()
+                routes_info = router.routes()
+                configured = [
+                    rid
+                    for rid in router.ordered_route_ids()
+                    if bool((routes_info.get(rid) or {}).get("configured"))
+                ]
+                if not configured:
+                    checks.append(
+                        {
+                            "name": "web_search",
+                            "ok": False,
+                            "status": "missing",
+                            "detail": "no search provider configured",
+                            "mock": False,
+                        }
+                    )
+                else:
+                    ok_count = 0
+                    parts: list[str] = []
+                    for rid in configured:
+                        probe = router.test_route(rid)
+                        if probe.get("ok"):
+                            ok_count += 1
+                            parts.append(f"{rid}:ok")
+                        else:
+                            code = probe.get("error_code") or probe.get("error_class") or probe.get("status") or "error"
+                            parts.append(f"{rid}:{code}")
+                    checks.append(
+                        {
+                            "name": "web_search",
+                            "ok": ok_count > 0,
+                            "status": "ok" if ok_count > 0 else "error",
+                            "detail": f"{ok_count}/{len(configured)} route(s) ok ({', '.join(parts)})",
+                            "mock": False,
+                        }
+                    )
+        except Exception as exc:
+            checks.append(
+                {
+                    "name": "web_search",
+                    "ok": False,
+                    "status": "error",
+                    "detail": type(exc).__name__,
+                    "mock": False,
+                }
+            )
+
     all_ok = all(c.get("ok") for c in checks)
     return {"ok": all_ok, "skipped": False, "mock": use_mock, "checks": checks}

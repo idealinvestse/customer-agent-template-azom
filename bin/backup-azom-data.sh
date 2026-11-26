@@ -63,14 +63,21 @@ PY
 }
 
 # SQLite's online backup API keeps each live database consistent under WAL writes.
-for database in cases telegram_jobs; do
-  if [[ "$database" == "cases" ]]; then
-    SOURCE_DB="${DATA_DIR}/cases.db"
-    TARGET_DB="${STAMP_DIR}/cases.db"
-  else
-    SOURCE_DB="${DATA_DIR}/telegram_jobs.sqlite3"
-    TARGET_DB="${STAMP_DIR}/telegram_jobs.sqlite3"
-  fi
+for database in cases telegram_jobs research_jobs; do
+  case "$database" in
+    cases)
+      SOURCE_DB="${DATA_DIR}/cases.db"
+      TARGET_DB="${STAMP_DIR}/cases.db"
+      ;;
+    telegram_jobs)
+      SOURCE_DB="${DATA_DIR}/telegram_jobs.sqlite3"
+      TARGET_DB="${STAMP_DIR}/telegram_jobs.sqlite3"
+      ;;
+    research_jobs)
+      SOURCE_DB="${DATA_DIR}/research_jobs.sqlite3"
+      TARGET_DB="${STAMP_DIR}/research_jobs.sqlite3"
+      ;;
+  esac
   if [[ -f "$SOURCE_DB" ]]; then
     log "Creating online SQLite backup of ${database}"
     backup_sqlite "$SOURCE_DB" "$TARGET_DB"
@@ -112,6 +119,10 @@ tar -czf "$TARBALL" \
   --exclude="*/telegram_jobs.sqlite3" \
   --exclude="*/telegram_jobs.sqlite3-wal" \
   --exclude="*/telegram_jobs.sqlite3-shm" \
+  --exclude="*/research_jobs.sqlite3" \
+  --exclude="*/research_jobs.sqlite3-wal" \
+  --exclude="*/research_jobs.sqlite3-shm" \
+  --exclude="*/web_search_cache.sqlite3*" \
   --exclude="*/model_oauth" \
   --exclude="*/model_oauth/*" \
   --exclude="*/ssh-keys" \
@@ -120,7 +131,9 @@ tar -czf "$TARBALL" \
   --exclude="*/wp_file_payloads/*" \
   --exclude="*/wp_workspaces" \
   --exclude="*/wp_workspaces/*" \
+  --exclude="*/research_artifacts*" \
   --exclude="*/wp_ssh.lock" \
+  --exclude="*/search_router_health.lock" \
   -C "$(dirname "$DATA_DIR")" \
   "$(basename "$DATA_DIR")"
 
@@ -145,6 +158,7 @@ find "$BACKUP_DIR" -maxdepth 1 -type d -name '20*' -mtime +${KEEP} -exec rm -rf 
   echo "backup_dir=${STAMP_DIR}"
   echo "cases_db_bytes=$(stat -c%s "${STAMP_DIR}/cases.db" 2>/dev/null || echo 0)"
   echo "telegram_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/telegram_jobs.sqlite3" 2>/dev/null || echo 0)"
+  echo "research_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/research_jobs.sqlite3" 2>/dev/null || echo 0)"
   echo "tarball_bytes=$(stat -c%s "$TARBALL" 2>/dev/null || echo 0)"
   echo "dest=${DEST:-local}"
 } > "${STAMP_DIR}/manifest.txt"

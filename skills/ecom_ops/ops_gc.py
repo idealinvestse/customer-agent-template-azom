@@ -626,6 +626,274 @@ def _rotate_jsonl_logs(
     return rotated, reclaimed
 
 
+def _open_sqlite_conn(db_path: Path, *, dry_run: bool) -> sqlite3.Connection:
+    if dry_run:
+        try:
+            return sqlite3.connect(
+                f"{db_path.resolve().as_uri()}?mode=ro",
+                uri=True,
+                timeout=5.0,
+            )
+        except sqlite3.OperationalError:
+            conn = sqlite3.connect(str(db_path), timeout=5.0)
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+            return conn
+    conn = sqlite3.connect(str(db_path), timeout=5.0)
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def _purge_expired_search_cache(
+    data_dir: Path,
+    *,
+    dry_run: bool,
+    now_ts: float,
+    errors: list[str] | None = None,
+) -> tuple[int, int]:
+    """Purge expired rows and LRU excess from ``web_search_cache.sqlite3``."""
+    root = _resolve_data_dir(data_dir)
+    db_path = root / "web_search_cache.sqlite3"
+    if not db_path.is_file() or db_path.is_symlink() or not _is_safe_contained(db_path, root):
+        return 0, 0
+
+    try:
+        from ecom_ops.research.config import load_research_config
+
+        max_entries = max(1, int(load_research_config().cache.max_entries))
+    except Exception:
+        max_entries = 1000
+
+    conn: sqlite3.Connection | None = None
+    purged_rows = 0
+    reclaimed_bytes = 0
+    try:
+        conn = _open_sqlite_conn(db_path, dry_run=bool(dry_run))
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "search_cache" not in tables:
+            return 0, 0
+
+        exp_row = conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(
+                SUM(CASE WHEN size_bytes > 0 THEN size_bytes ELSE LENGTH(CAST(payload_json AS BLOB)) END),
+                0
+            )
+            FROM search_cache
+            WHERE expires_at <= ?
+            """,
+            (float(now_ts),),
+        ).fetchone()
+        expired_count = int(exp_row[0] or 0) if exp_row else 0
+        expired_bytes = int(exp_row[1] or 0) if exp_row else 0
+
+        rem_row = conn.execute(
+            "SELECT COUNT(*) FROM search_cache WHERE expires_at > ?",
+            (float(now_ts),),
+        ).fetchone()
+        remaining = int(rem_row[0] or 0) if rem_row else 0
+        excess = max(0, remaining - max_entries)
+        excess_bytes = 0
+        if excess > 0:
+            ex_row = conn.execute(
+                """
+                SELECT COALESCE(SUM(sz), 0) FROM (
+                    SELECT CASE WHEN size_bytes > 0 THEN size_bytes ELSE LENGTH(CAST(payload_json AS BLOB)) END AS sz
+                    FROM search_cache
+                    WHERE expires_at > ?
+                    ORDER BY last_accessed_at ASC, created_at ASC
+                    LIMIT ?
+                )
+                """,
+                (float(now_ts), excess),
+            ).fetchone()
+            excess_bytes = int(ex_row[0] or 0) if ex_row else 0
+
+        if dry_run:
+            return expired_count + excess, expired_bytes + excess_bytes
+
+        if expired_count > 0 or excess > 0:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur_exp = conn.execute("DELETE FROM search_cache WHERE expires_at <= ?", (float(now_ts),))
+                purged_rows += max(0, int(cur_exp.rowcount or 0))
+                if excess > 0:
+                    cur_ex = conn.execute(
+                        """
+                        DELETE FROM search_cache WHERE cache_key IN (
+                            SELECT cache_key FROM search_cache
+                            ORDER BY last_accessed_at ASC, created_at ASC
+                            LIMIT ?
+                        )
+                        """,
+                        (excess,),
+                    )
+                    purged_rows += max(0, int(cur_ex.rowcount or 0))
+                conn.commit()
+                reclaimed_bytes = expired_bytes + excess_bytes
+            except Exception:
+                conn.rollback()
+                raise
+    except Exception as exc:
+        if errors is not None:
+            errors.append(f"search_cache_purge:{type(exc).__name__}")
+        return 0, 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return purged_rows, reclaimed_bytes
+
+
+def _clean_expired_research_artifacts(
+    data_dir: Path,
+    *,
+    dry_run: bool,
+    grace_hours: int,
+    now_ts: float,
+    errors: list[str] | None = None,
+) -> tuple[int, int]:
+    """Remove expired non-pinned terminal research artifacts and prune DB rows safely."""
+    root = _resolve_data_dir(data_dir)
+    try:
+        from ecom_ops.research.config import load_research_config
+
+        ttl_days = max(1, int(load_research_config().retention.artifact_ttl_days))
+    except Exception:
+        ttl_days = 14
+
+    cutoff_ts = float(now_ts) - (ttl_days * 86400.0 + max(0, int(grace_hours)) * 3600.0)
+    artifacts_root = root / "research_artifacts"
+    artifacts_root_ok = (
+        artifacts_root.is_dir()
+        and not artifacts_root.is_symlink()
+        and _is_safe_contained(artifacts_root, root)
+    )
+    db_path = root / "research_jobs.sqlite3"
+    db_ok = db_path.is_file() and not db_path.is_symlink() and _is_safe_contained(db_path, root)
+
+    all_db_ids: set[str] = set()
+    eligible_ids: list[str] = []
+    conn: sqlite3.Connection | None = None
+    removed_artifacts = 0
+    reclaimed = 0
+
+    try:
+        if db_ok:
+            conn = _open_sqlite_conn(db_path, dry_run=bool(dry_run))
+            if not dry_run:
+                conn.execute("PRAGMA foreign_keys=ON")
+            tables = {
+                str(row[0])
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+            if "research_jobs" in tables:
+                all_db_ids = {
+                    str(row[0])
+                    for row in conn.execute("SELECT id FROM research_jobs").fetchall()
+                    if row[0]
+                }
+                eligible_rows = conn.execute(
+                    """
+                    SELECT id FROM research_jobs
+                    WHERE status IN ('completed', 'partial', 'cancelled', 'failed')
+                      AND COALESCE(pinned, 0) = 0
+                      AND COALESCE(completed_at, updated_at, created_at) <= ?
+                    """,
+                    (cutoff_ts,),
+                ).fetchall()
+                eligible_ids = [str(row[0]) for row in eligible_rows if row[0]]
+
+        prunable_ids: list[str] = []
+        for job_id in eligible_ids:
+            if not _SAFE_ID_RE.fullmatch(job_id) or ".." in job_id:
+                continue
+            dir_blocked = False
+            if artifacts_root_ok:
+                job_dir = artifacts_root / job_id
+                if job_dir.exists() or job_dir.is_symlink():
+                    if (
+                        job_dir.is_symlink()
+                        or not _is_safe_contained(job_dir, artifacts_root)
+                        or not job_dir.is_dir()
+                    ):
+                        dir_blocked = True
+                    else:
+                        size_bytes, _ = _tree_stats_non_symlink(job_dir, artifacts_root)
+                        if dry_run:
+                            removed_artifacts += 1
+                            reclaimed += size_bytes
+                        else:
+                            if _safe_remove_tree(job_dir, artifacts_root):
+                                removed_artifacts += 1
+                                reclaimed += size_bytes
+                            else:
+                                dir_blocked = True
+            if not dir_blocked:
+                prunable_ids.append(job_id)
+
+        if not dry_run and conn is not None and prunable_ids:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                marks = ",".join("?" for _ in prunable_ids)
+                conn.execute(f"DELETE FROM research_jobs WHERE id IN ({marks})", prunable_ids)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        if artifacts_root_ok:
+            try:
+                entries = list(artifacts_root.iterdir())
+            except OSError:
+                entries = []
+            for entry in entries:
+                if not entry.name.startswith("res-"):
+                    continue
+                if entry.name in all_db_ids:
+                    continue
+                if entry.is_symlink() or not entry.is_dir() or not _is_safe_contained(entry, artifacts_root):
+                    continue
+                meta_path = entry / "meta.json"
+                if (
+                    meta_path.is_file()
+                    and not meta_path.is_symlink()
+                    and _is_safe_contained(meta_path, artifacts_root)
+                ):
+                    try:
+                        meta_obj = json.loads(meta_path.read_text(encoding="utf-8"))
+                        if isinstance(meta_obj, dict) and meta_obj.get("pinned"):
+                            continue
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                size_bytes, newest_mtime = _tree_stats_non_symlink(entry, artifacts_root)
+                if newest_mtime > cutoff_ts:
+                    continue
+                if dry_run:
+                    removed_artifacts += 1
+                    reclaimed += size_bytes
+                else:
+                    if _safe_remove_tree(entry, artifacts_root):
+                        removed_artifacts += 1
+                        reclaimed += size_bytes
+    except Exception as exc:
+        if errors is not None:
+            errors.append(f"research_artifacts_cleanup:{type(exc).__name__}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return removed_artifacts, reclaimed
+
+
 def run_ops_gc(
     *,
     data_dir: Path | None = None,
@@ -679,6 +947,23 @@ def run_ops_gc(
         errors=errors,
     )
 
+    purged_search_cache_rows, search_cache_bytes = _purge_expired_search_cache(
+        root,
+        dry_run=bool(dry_run),
+        now_ts=now_ts,
+        errors=errors,
+    )
+    bytes_reclaimed += search_cache_bytes
+
+    removed_research_artifacts, research_bytes = _clean_expired_research_artifacts(
+        root,
+        dry_run=bool(dry_run),
+        grace_hours=artifact_grace_hours,
+        now_ts=now_ts,
+        errors=errors,
+    )
+    bytes_reclaimed += research_bytes
+
     rotated_logs, log_bytes = _rotate_jsonl_logs(
         root,
         rotate_max_mb=rotate_max_mb,
@@ -696,6 +981,8 @@ def run_ops_gc(
         "removed_pv_dirs": removed_pv,
         "removed_media_files": removed_media,
         "purged_proposals": purged_proposals,
+        "purged_search_cache_rows": purged_search_cache_rows,
+        "removed_research_artifacts": removed_research_artifacts,
         "rotated_logs": rotated_logs,
         "bytes_reclaimed": bytes_reclaimed,
         "mb_reclaimed": round(bytes_reclaimed / (1024 * 1024), 2),

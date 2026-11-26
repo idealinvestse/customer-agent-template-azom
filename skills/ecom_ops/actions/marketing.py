@@ -11,6 +11,7 @@ from ecom_ops.escalation import EscalationService, default_escalation
 from ecom_ops.integrations import ga4 as ga4_mod
 from ecom_ops.integrations import google_ads as ads_mod
 from ecom_ops.integrations import merchant as merchant_mod
+from ecom_ops.integrations.search.errors import SearchRouteError
 from ecom_ops.marketing.config import load_marketing_config
 from ecom_ops.marketing.kill_switch import (
     ads_mutate_allowed,
@@ -25,6 +26,12 @@ from ecom_ops.rbac import (
     require_permission,
     resolve_actor,
 )
+from ecom_ops.research import get_research_service
+from ecom_ops.research.config import is_mock_mode
+from ecom_ops.research.firewall import OutboundQueryFirewall
+from ecom_ops.research.models import SearchPolicyError
+from ecom_ops.research.sanitizer import sanitize_untrusted_text
+from ecom_ops.research.store import authorize_target_ref
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
 
@@ -57,8 +64,10 @@ class MarketingService:
         telemetry: Telemetry | None = None,
         escalation: EscalationService | None = None,
         use_mock: bool | None = None,
+        actor: Actor | str | None = None,
     ) -> None:
         self._use_mock = use_mock
+        self._default_actor = actor
         self.ga4 = ga4 or ga4_mod.client_from_env(use_mock=use_mock)
         self.ads = ads or ads_mod.client_from_env(use_mock=use_mock)
         self.merchant = merchant or merchant_mod.client_from_env(use_mock=use_mock)
@@ -67,7 +76,8 @@ class MarketingService:
         self.escalation = escalation or default_escalation
 
     def _actor(self, actor: Actor | str | None) -> Actor:
-        return actor if isinstance(actor, Actor) else resolve_actor(actor)
+        target = actor if actor is not None else self._default_actor
+        return target if isinstance(target, Actor) else resolve_actor(target)
 
     def digest(
         self,
@@ -281,12 +291,68 @@ class MarketingService:
         except Exception as exc:
             return MarketingResult(ok=False, message=f"Failed: {exc}")
 
+    def _annotate_waste_term_with_research(
+        self,
+        term: dict[str, Any],
+        *,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Attach bounded ``evidence['research']`` context without altering Ads/GA/Woo metrics."""
+        evidence = dict(term)
+        raw_term = str(term.get("search_term") or "").strip()
+        if len(raw_term) < 3:
+            return evidence
+        try:
+            clean_term = OutboundQueryFirewall().check_query(f"{raw_term[:180]} search intent")
+            res = get_research_service().quick_search(
+                clean_term,
+                actor=actor,
+                profile_id="marketing_intel",
+                max_results=2,
+            )
+            sources = [
+                {
+                    "title": sanitize_untrusted_text(str(s.get("title") or ""), max_chars=120),
+                    "domain": str(s.get("domain") or "")[:80],
+                    "url": str(s.get("canonical_url") or s.get("url") or "")[:240],
+                    "snippet": sanitize_untrusted_text(str(s.get("snippet") or ""), max_chars=220),
+                }
+                for s in (res.get("sources") or [])[:2]
+            ]
+            summary = sanitize_untrusted_text(
+                "; ".join(
+                    f"{s['title']}: {s['snippet']}" if s["title"] else s["snippet"]
+                    for s in sources
+                    if s["title"] or s["snippet"]
+                ),
+                max_chars=500,
+            )
+            evidence["research"] = {
+                "source": "web_research",
+                "provenance": str(res.get("provenance") or "mock"),
+                "evidence_status": str(res.get("evidence_status") or "insufficient"),
+                "summary": summary,
+                "sources": sources,
+            }
+        except (SearchPolicyError, SearchRouteError) as exc:
+            evidence["research"] = {
+                "source": "web_research",
+                "status": "skipped",
+                "reason": type(exc).__name__,
+            }
+        return evidence
+
     def build_waste_suggests(
-        self, *, actor: Actor | str | None = None
+        self,
+        *,
+        actor: Actor | str | None = None,
+        annotate_research: bool = False,
     ) -> MarketingResult:
         try:
             actor_obj = self._actor(actor)
             require_permission(actor_obj, Permission.MARKETING_SUGGEST)
+            if annotate_research:
+                require_permission(actor_obj, Permission.WEB_SEARCH)
             open_rows = self.suggests.list(status="open", limit=500)
             open_keys = {
                 (
@@ -300,6 +366,7 @@ class MarketingService:
             waste = self.ads.waste_report()
             created = []
             skipped = 0
+            annotated = 0
             for term in waste[:20]:
                 key = (
                     "negative",
@@ -310,11 +377,17 @@ class MarketingService:
                 if key in open_keys:
                     skipped += 1
                     continue
+                evidence: dict[str, Any] = dict(term)
+                if annotate_research and annotated < 5:
+                    evidence = self._annotate_waste_term_with_research(
+                        term, actor=actor_obj.name
+                    )
+                    annotated += 1
                 item = self.suggests.add(
                     kind="negative",
                     title=f"Negativ: {term.get('search_term')}",
                     reason="zero_conversions_with_cost",
-                    evidence=term,
+                    evidence=evidence,
                     payload={
                         "op": "add_negative_keyword",
                         "search_term": term.get("search_term"),
@@ -359,6 +432,100 @@ class MarketingService:
             return MarketingResult(ok=False, message=str(exc))
         except Exception as exc:
             return MarketingResult(ok=False, message=f"Failed: {exc}")
+
+    def research_topic(
+        self,
+        topic: str,
+        *,
+        profile_id: str = "marketing_intel",
+        depth: str = "standard",
+        wait: bool = False,
+        target_ref: str = "marketing:general",
+        actor: Actor | str | None = None,
+    ) -> dict[str, Any]:
+        """Run or enqueue marketing intelligence research (read-only external context)."""
+        try:
+            actor_obj = self._actor(actor)
+            require_permission(actor_obj, Permission.MARKETING_READ)
+            require_permission(actor_obj, Permission.RESEARCH_RUN)
+
+            ref = str(target_ref or "marketing:general").strip()
+            if not ref.startswith("marketing:"):
+                raise SearchPolicyError(f"Invalid marketing target_ref: {ref}")
+            authorize_target_ref(actor_obj.name, ref)
+
+            res_svc = get_research_service()
+            job = res_svc.start_research(
+                topic,
+                actor=actor_obj.name,
+                profile_id=profile_id,
+                depth=depth,
+                target_ref=ref,
+                start_worker=(False if wait else not is_mock_mode()),
+            )
+            self.telemetry.record(
+                action="marketing_research_started",
+                site="azom",
+                meta={
+                    "research_id": job.research_id,
+                    "profile_id": profile_id,
+                    "depth": depth,
+                    "wait": wait,
+                    "target_ref": ref,
+                    "actor": actor_obj.name,
+                },
+            )
+            truth_note = (
+                "Web research is external context only (source=web_research); "
+                "never overrides Woo orders, Ads ROAS, or GA4 figures."
+            )
+            if not wait:
+                return {
+                    "ok": True,
+                    "research_id": job.research_id,
+                    "status": job.status,
+                    "target_ref": job.target_ref,
+                    "profile_id": profile_id,
+                    "depth": depth,
+                    "wait": False,
+                    "truth_note": truth_note,
+                    "job": job.to_dict(),
+                }
+
+            import ecom_ops.bot  # noqa: F401 - initialize bot package before engine->progress_events
+            from ecom_ops.research.engine import ResearchEngine
+
+            engine = ResearchEngine(
+                store=res_svc.store,
+                search_router=res_svc.search_router,
+                fetcher=res_svc.fetcher,
+                telemetry=res_svc.telemetry,
+            )
+            finished = engine.run_job(job.research_id)
+            brief_res = (
+                res_svc.get_brief(finished.research_id, actor=actor_obj.name)
+                if finished.status in {"completed", "partial"}
+                else {}
+            )
+            return {
+                "ok": finished.status in {"completed", "partial"},
+                "research_id": finished.research_id,
+                "status": finished.status,
+                "target_ref": finished.target_ref,
+                "profile_id": profile_id,
+                "depth": depth,
+                "wait": True,
+                "truth_note": truth_note,
+                "job": finished.to_dict(),
+                "brief": brief_res.get("brief") if brief_res.get("ok") else None,
+                "sources": brief_res.get("sources") if brief_res.get("ok") else [],
+            }
+        except (AccessDenied, PermissionError) as exc:
+            return {"ok": False, "error_class": "access_denied", "message": str(exc)}
+        except SearchPolicyError as exc:
+            return {"ok": False, "error_class": "policy_blocked", "message": str(exc)}
+        except (ValueError, KeyError) as exc:
+            return {"ok": False, "error_class": "invalid_input", "message": str(exc)}
 
     def list_suggests(
         self,
