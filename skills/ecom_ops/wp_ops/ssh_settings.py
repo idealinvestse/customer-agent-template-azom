@@ -84,16 +84,6 @@ def stored_key_path(data_dir: Path | None, site_id: str) -> Path:
     return path
 
 
-def known_hosts_path(data_dir: Path | None, site_id: str) -> Path | None:
-    if not _SITE_ID.fullmatch(site_id):
-        return None
-    root = (data_dir_path(data_dir) / "ssh-known-hosts").resolve()
-    path = (root / site_id).resolve()
-    if path.parent != root:
-        return None
-    return path
-
-
 def user_ok(user: str) -> bool:
     return _USER.fullmatch(user) is not None and user.casefold() != "root"
 
@@ -143,14 +133,6 @@ def apply_ssh_overlay(sites: tuple[Site, ...], data_dir: Path | None = None) -> 
             continue
         updated.append(replace(site, **row))
     return tuple(updated)
-
-
-def effective_identity(site: Site, data_dir: Path | None = None) -> str | None:
-    """Return the stored per-site key only; never resolve external identities."""
-    path = stored_key_path(data_dir, site.id)
-    if path.is_file() and not path.is_symlink():
-        return str(path)
-    return None
 
 
 def describe_ssh(

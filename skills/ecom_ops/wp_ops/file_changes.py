@@ -668,7 +668,7 @@ class FileChangeOps:
             return editor._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
             return editor._fail(
-                exc.error_class, transport_message(exc.error_class), site=site, ssh=editor._ssh(site)
+                exc.error_class, transport_message(exc.error_class), ssh=editor._ssh(site)
             )
         entries: list[dict[str, str]] = []
         truncated = False
@@ -950,7 +950,7 @@ class FileChangeOps:
         except PathRejected:
             return editor._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+            return editor._fail(exc.error_class, transport_message(exc.error_class))
         if create and not self._parent_ready(site, path):
             return editor._fail("PathRejected", "Kind or path is not editable.")
         try:
@@ -960,7 +960,7 @@ class FileChangeOps:
                 current = ""
             else:
                 return editor._fail(
-                    exc.error_class, transport_message(exc.error_class), site=site, ssh=editor._ssh(site)
+                    exc.error_class, transport_message(exc.error_class), ssh=editor._ssh(site)
                 )
         else:
             if create:
@@ -1087,14 +1087,14 @@ class FileChangeOps:
                 editor._read_text(site, resolved)
             except TransportError as exc:
                 if exc.error_class != "FileMissing":
-                    return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+                    return editor._fail(exc.error_class, transport_message(exc.error_class))
             else:
                 return editor._fail("AlreadyExists", "The file already exists.")
         else:
             try:
                 current = editor._read_text(site, resolved)
             except TransportError as exc:
-                return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+                return editor._fail(exc.error_class, transport_message(exc.error_class))
             if _digest(current.encode()) != plan.get("before_digest"):
                 return editor._fail("StaleFile", "The file changed after the plan was created.")
         advance = plan.get("risk") != "high"
@@ -1162,7 +1162,6 @@ class FileChangeOps:
             return editor._fail(
                 "DeployTransportUnavailable",
                 "Live SFTP cannot write. A separate deploy identity is required.",
-                site=site,
                 ssh=True,
             )
         try:
@@ -1177,7 +1176,7 @@ class FileChangeOps:
         except PathRejected:
             return editor._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+            return editor._fail(exc.error_class, transport_message(exc.error_class))
         if _digest(proposed.encode()) != plan.get("after_digest"):
             return editor._fail("DigestMismatch", "The stored diff does not match the plan.")
         if plan.get("created") is True:
@@ -1187,14 +1186,14 @@ class FileChangeOps:
                 editor._read_text(site, resolved)
             except TransportError as exc:
                 if exc.error_class != "FileMissing":
-                    return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+                    return editor._fail(exc.error_class, transport_message(exc.error_class))
             else:
                 return editor._fail("AlreadyExists", "The file already exists.")
         else:
             try:
                 current = editor._read_text(site, resolved)
             except TransportError as exc:
-                return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+                return editor._fail(exc.error_class, transport_message(exc.error_class))
             if _digest(current.encode()) != plan.get("before_digest"):
                 return editor._fail("StaleFile", "The file changed after the plan was created.")
         return site, plan, proposed, resolved, transport
@@ -1234,14 +1233,14 @@ class FileChangeOps:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 target_path.write_bytes(proposed.encode())
             except PathRejected:
-                return editor._fail("PathRejected", "Kind or path is not editable.", site=site)
+                return editor._fail("PathRejected", "Kind or path is not editable.")
         else:
             try:
                 transport.write_bytes(resolved, proposed.encode())
             except PathRejected:
-                return editor._fail("PathRejected", "Kind or path is not editable.", site=site)
+                return editor._fail("PathRejected", "Kind or path is not editable.")
             except TransportError as exc:
-                return editor._fail(exc.error_class, transport_message(exc.error_class), site=site)
+                return editor._fail(exc.error_class, transport_message(exc.error_class))
         written = editor._read_text(site, resolved)
         if _digest(written.encode()) != plan.get("after_digest"):
             return editor._fail("DigestMismatch", "The written file does not match the plan.")

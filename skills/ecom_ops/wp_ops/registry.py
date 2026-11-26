@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlparse
 
 import yaml
@@ -108,7 +107,3 @@ def resolve_site_id_from_text(
     if len(matches) == 1:
         return matches[0].id
     return ""
-
-
-def as_public(sites: tuple[Site, ...], present: dict[str, bool]) -> list[dict[str, Any]]:
-    return [site.public_dict(credential_present=present.get(site.id, False)) for site in sites]

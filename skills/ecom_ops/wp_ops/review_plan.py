@@ -347,7 +347,7 @@ class ReviewPlans:
         }
         write_diff(root, "")
         write_manifest(root, plan)
-        with _STORE:
+        with _STORE, self._store_file_lock():
             plans = self._load()
             for older in plans:
                 if not self._same_target(older, plan) or older.get("status") in _TERMINAL:
@@ -1857,8 +1857,7 @@ class ReviewPlans:
             plan["page_draft"] = draft_summary
             meta_changed = True
         if meta_changed:
-            with _STORE:
-                self._replace(plan)
+            self._replace(plan)
             write_manifest(root, plan)
 
         preview_route_path = f"/wp/{site_id}/reviews/{plan_id}/preview"
@@ -3208,17 +3207,6 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _risk_text(files: list[tuple[str, bytes]], summary: str) -> str:
-    parts = [summary]
-    for _relative, data in files:
-        parts.append(data.decode("utf-8", errors="replace"))
-    return "\n".join(parts)
-
-
-def _disk_text(folder: Path) -> str:
-    return "\n".join(data.decode("utf-8", errors="replace") for _rel, data in iter_files(folder))
-
-
 def _text_files(folder: Path) -> list[tuple[str, str]]:
     return [(rel, data.decode("utf-8", errors="replace")) for rel, data in iter_files(folder)]
 
@@ -3237,26 +3225,6 @@ def _diff_ops(root: Path) -> list[tuple[str, str, bytes | None, bool]]:
         else:
             ops.append(("write", relative, new, old is not None))
     return ops
-
-
-def _changed(root: Path) -> tuple[list[tuple[str, bytes]], str]:
-    base = root / "base"
-    work = root / "work"
-    names: set[str] = set()
-    for folder in (base, work):
-        for relative, _data in iter_files(folder):
-            names.add(relative)
-    changed: list[tuple[str, bytes]] = []
-    for relative in sorted(names):
-        before = base / relative
-        after = work / relative
-        if not after.is_file():
-            return [], "DeleteRefused"
-        new = after.read_bytes()
-        old = before.read_bytes() if before.is_file() else b""
-        if new != old:
-            changed.append((relative, new))
-    return changed, ""
 
 
 def _unified(root: Path) -> str:

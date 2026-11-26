@@ -87,9 +87,6 @@ def _copy_component_tree(source: Path, dest: Path) -> None:
         target.write_bytes(path.read_bytes())
 
 
-_copy_theme_tree = _copy_component_tree
-
-
 def _php_serialize_list(items: list[str]) -> str:
     """Serialize a list of strings as a PHP indexed array using UTF-8 byte lengths."""
     if not items:

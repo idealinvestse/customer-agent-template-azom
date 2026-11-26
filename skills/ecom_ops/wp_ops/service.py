@@ -21,7 +21,7 @@ from typing import Any
 
 from ecom_ops.audit import log_action
 from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
-from ecom_ops.wp_ops.backup import MockBackup, new_manifest, valid_backup_id
+from ecom_ops.wp_ops.backup import BackupProvider, MockBackup, new_manifest, valid_backup_id
 from ecom_ops.wp_ops.connectors import (
     MockRest,
     MockUptime,
@@ -74,7 +74,7 @@ class WpOpsService:
         data_dir: Path | None = None,
         uptime: UptimeConnector | None = None,
         rest: RestConnector | None = None,
-        backup: MockBackup | None = None,
+        backup: BackupProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         files_factory: Callable[[Site], Any] | None = None,
     ) -> None:
@@ -375,52 +375,6 @@ class WpOpsService:
             base_sha256=base_sha256,
             work_sha256=work_sha256,
             client=client,
-        )
-
-    def audit_overrides(
-        self,
-        site_id: str,
-        slug: str,
-        *,
-        actor: str,
-        woo_version: str | None = None,
-        reference_versions: dict[str, str] | None = None,
-    ) -> WpOpsResult:
-        from ecom_ops.wp_ops.files import PathRejected, component_dir
-        from ecom_ops.wp_ops.review_workspace import ReviewError, read_site_component
-        from ecom_ops.wp_ops.woo_templates import audit_overrides as run_override_audit
-
-        editor = self._file_editor()
-        site, denied = editor._site(site_id, actor, write=False)
-        if denied is not None:
-            return denied
-        assert isinstance(site, Site)
-        try:
-            component_dir(site.files_root, "theme", slug)
-        except PathRejected:
-            return editor._fail("PathRejected", "Kind or path is not editable.")
-        ssh = editor._ssh(site)
-        transport = editor._transport(site)
-        try:
-            raw_files = read_site_component(transport, site.files_root, "theme", slug)
-        except ReviewError as exc:
-            return editor._fail(exc.error_class, exc.error_class, site=site, ssh=ssh)
-        text_files = [(rel, data.decode("utf-8", errors="replace")) for rel, data in raw_files]
-        report = run_override_audit(
-            text_files,
-            woo_version=woo_version or site.woo_version or None,
-            reference_versions=reference_versions,
-        )
-        return WpOpsResult(
-            ok=True,
-            message="woo overrides audited",
-            data={
-                "site_id": site.id,
-                "slug": slug,
-                **report,
-                "ssh": ssh,
-                "live_calls": ssh,
-            },
         )
 
     def propose_file_diff(

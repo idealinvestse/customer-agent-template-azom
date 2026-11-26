@@ -112,6 +112,9 @@ _REDACT_SECRET_LINES = re.compile(
     r").*$"
 )
 
+_FILE_READ_DEFAULT = 8192
+_FILE_READ_MAX = 20480
+
 WP_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "wp_list_sites": {"type": "object", "properties": {}, "additionalProperties": False},
     "wp_site_status": {
@@ -164,7 +167,7 @@ WP_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "slug": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9_-]{0,60}$"},
             "path": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,219}$"},
             "offset": {"type": "integer", "minimum": 0, "maximum": 65536},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 12288},
+            "limit": {"type": "integer", "minimum": 1, "maximum": _FILE_READ_MAX},
             "start_line": {"type": "integer", "minimum": 1, "maximum": 50000},
             "end_line": {"type": "integer", "minimum": 1, "maximum": 50000},
         },
@@ -290,8 +293,6 @@ FILE_LOOP_MAX_SEARCHES = 5
 FILE_LOOP_MAX_SECONDS = 60.0
 FILE_LOOP_MAX_RESULT_BYTES = 28_672
 FILE_LOOP_MAX_TOTAL_BYTES = 81_920
-_FILE_READ_DEFAULT = 8192
-_FILE_READ_MAX = 20480
 _PAGE_DRAFT_FILE = "page_draft.json"
 _PAGE_DRAFT_TYPES = frozenset({"thankyou", "landing", "campaign", "comparison", "upsell", "faq", "custom"})
 _SAMPLE_SCENARIOS = frozenset({"thankyou", "landing", "campaign", "comparison", "upsell", "custom"})
@@ -304,9 +305,6 @@ _RECOVERY_ERROR_CLASSES = frozenset(
     {"SiteRequired", "InvalidToolArguments", "InvalidSearch", "FileMissing", "InvalidPreviewPath"}
 )
 _PREVIEW_FOCUS_SECTIONS = ("top", "header", "hero", "main", "footer", "bottom")
-_PREVIEW_FOCUS_SELECTOR_RE = re.compile(
-    r"^[A-Za-z0-9_#.\-\s>,+~:()\[\]=\"'^*$|/]{1,120}$"
-)
 _SCAFFOLD_ONLY_FILES = frozenset({"style.css", "functions.php", "screenshot.png", "readme.txt"})
 _PRODUCT_SLUG_RE = re.compile(r"^[a-z0-9%][a-z0-9._%-]{0,120}$")
 _PRODUCT_ID_RE = re.compile(r"^[1-9][0-9]{0,11}$")
@@ -2117,7 +2115,7 @@ class WpAgentTools:
             return ToolOutput(_error("PathRejected"), site_id)
         except TransportError as exc:
             return self._file_result(
-                editor._fail(exc.error_class, "WooCommerce template read failed.", site=site_obj, ssh=editor._ssh(site_obj)),
+                editor._fail(exc.error_class, "WooCommerce template read failed.", ssh=editor._ssh(site_obj)),
                 site_id,
             )
 
@@ -2791,7 +2789,6 @@ class WpAgentTools:
             validate_focus_options,
             validate_preview_path,
         )
-        from ecom_ops.wp_ops.review_workspace import ReviewError
 
         site_obj, denied_out = self._site_for_preview(site_id, actor)
         if denied_out is not None:
@@ -2978,7 +2975,6 @@ class WpAgentTools:
             validate_focus_options,
             validate_preview_path,
         )
-        from ecom_ops.wp_ops.review_workspace import ReviewError
 
         site_obj, denied_out = self._site_for_preview(site_id, actor)
         if denied_out is not None:
@@ -3069,8 +3065,6 @@ class WpAgentTools:
         except ReviewError as exc:
             return ToolOutput(_error(exc.error_class), site_id)
 
-        from ecom_ops.wp_ops.file_changes import _scrub_search_text
-
         def _scrub_nested(value: Any) -> Any:
             if isinstance(value, str):
                 return _scrub_search_text(value)
@@ -3094,43 +3088,6 @@ class WpAgentTools:
         if overlay_meta is not None:
             payload["overlay"] = overlay_meta
         return ToolOutput(payload, site_id=site_id)
-
-    @staticmethod
-    def _validate_focus_fallback(
-        *,
-        focus_section: str | None = None,
-        focus_selector: str | None = None,
-        focus_text: str | None = None,
-        full_page: bool = False,
-    ) -> tuple[str | None, str | None, str | None, bool]:
-        if type(full_page) is not bool:
-            raise ReviewError("InvalidFocusTarget")
-        clean_section: str | None = None
-        if focus_section is not None:
-            sec = focus_section.strip().lower()
-            if sec:
-                if sec not in _PREVIEW_FOCUS_SECTIONS:
-                    raise ReviewError("InvalidFocusTarget")
-                clean_section = sec
-        clean_selector: str | None = None
-        if focus_selector is not None:
-            sel = focus_selector.strip()
-            if sel:
-                if (
-                    len(sel) > 120
-                    or _PREVIEW_FOCUS_SELECTOR_RE.fullmatch(sel) is None
-                    or any(tok in sel.lower() for tok in ("javascript:", "expression(", "url(", "/*", "*/", "<", ";"))
-                ):
-                    raise ReviewError("InvalidFocusTarget")
-                clean_selector = sel
-        clean_text: str | None = None
-        if focus_text is not None:
-            txt = " ".join(focus_text.split()).strip()
-            if txt:
-                if len(txt) > 120 or any(ord(ch) < 32 or ord(ch) == 127 for ch in txt):
-                    raise ReviewError("InvalidFocusTarget")
-                clean_text = txt
-        return clean_section, clean_selector, clean_text, full_page
 
     @staticmethod
     def _supported_kwargs(fn: Any, extra: dict[str, Any]) -> dict[str, Any]:
@@ -3203,15 +3160,14 @@ class WpAgentTools:
         return preview_path, preview_url, preview_html_ready
 
     def _preview_page(self, site_id: str, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
-        import ecom_ops.integrations.wp_live_preview as wp_live_preview_mod
         from ecom_ops.bot.reply import safe_workspace_attachments
         from ecom_ops.integrations.wp_live_preview import (
             capture_preview,
             fetch_live_html,
             live_preview_enabled,
+            validate_focus_options,
             validate_preview_path,
         )
-        from ecom_ops.wp_ops.review_workspace import ReviewError
 
         raw_path = arguments.get("path", "/")
         if raw_path is not None and not isinstance(raw_path, str):
@@ -3232,24 +3188,15 @@ class WpAgentTools:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
         if type(raw_reuse) is not bool:
             return ToolOutput(_error("InvalidToolArguments"), site_id)
-        validator = getattr(wp_live_preview_mod, "validate_focus_options", None)
         plan_id = arguments.get("plan_id")
         try:
             clean_path = validate_preview_path(raw_path)
-            if callable(validator):
-                focus_section, focus_selector, focus_text, full_page = validator(
-                    focus_section=raw_section,
-                    focus_selector=raw_selector,
-                    focus_text=raw_text,
-                    full_page=raw_full,
-                )
-            else:
-                focus_section, focus_selector, focus_text, full_page = self._validate_focus_fallback(
-                    focus_section=raw_section,
-                    focus_selector=raw_selector,
-                    focus_text=raw_text,
-                    full_page=raw_full,
-                )
+            focus_section, focus_selector, focus_text, full_page = validate_focus_options(
+                focus_section=raw_section,
+                focus_selector=raw_selector,
+                focus_text=raw_text,
+                full_page=raw_full,
+            )
         except ReviewError as exc:
             err_payload = _error(exc.error_class)
             if exc.error_class == "PreviewPathRefused" and isinstance(plan_id, str) and plan_id.strip():
@@ -5046,10 +4993,6 @@ class WpAgentTools:
         return re.sub(r"[\u200b-\u200f\ufeff]", "", text)
 
     @staticmethod
-    def _contains_non_synthetic_email(value: Any) -> bool:
-        return WpAgentTools._contains_real_pii(value)
-
-    @staticmethod
     def _contains_real_pii(value: Any) -> bool:
         """Detect real customer PII (non-synthetic emails, Nordic phones, national IDs) in keys & values."""
         if isinstance(value, str):
@@ -5300,7 +5243,7 @@ class WpAgentTools:
         )
 
     def _woo_overrides_audit(self, site_id: str, arguments: dict[str, Any], *, actor: str) -> ToolOutput:
-        from ecom_ops.wp_ops.review_workspace import ReviewError, read_theme_woo_files
+        from ecom_ops.wp_ops.review_workspace import read_theme_woo_files
         from ecom_ops.wp_ops.woo_templates import audit_overrides as run_override_audit
 
         editor = self.service._file_editor()
@@ -5326,7 +5269,7 @@ class WpAgentTools:
         try:
             scanned = read_theme_woo_files(transport, site_obj.files_root, target_slug)
         except ReviewError as exc:
-            return self._file_result(editor._fail(exc.error_class, exc.error_class, site=site_obj, ssh=ssh), site_id)
+            return self._file_result(editor._fail(exc.error_class, exc.error_class, ssh=ssh), site_id)
         report = run_override_audit(
             scanned["woo_files"],
             woo_version=site_obj.woo_version or None,
@@ -6966,8 +6909,6 @@ def _has_site_rest_credentials(site: Site | None) -> bool:
     if site is None:
         return False
     try:
-        from ecom_ops.wp_ops.credentials import bind_credential
-
         bound = bind_credential(site)
         return bound.present and ":" in bound.value
     except Exception:

@@ -51,30 +51,7 @@ PREVIEW_VIEWPORTS: tuple[tuple[str, int, int, bool], ...] = (
     ("mobile", 390, 844, True),
 )
 _PREVIEW_PATH_RE = re.compile(r"^/[A-Za-z0-9/_\-.%]{0,200}$")
-_REFUSED_PATH_TOKENS = (
-    "wp-admin",
-    "wp-login",
-    "wp-json",
-    "rest_route",
-    "xmlrpc",
-    "wp-cron",
-    "admin-ajax",
-    "wc-ajax",
-    "add-to-cart",
-    "/cart",
-    "/checkout",
-    "/my-account",
-    "/handlekurv",
-    "/kasse",
-    "/min-konto",
-    "/varukorg",
-    "/kassa",
-    "/kassan",
-    "/mitt-konto",
-    "/betalning",
-    "/kurv",
-)
-_SITE_BLOCKED_SUBSTRINGS = (
+BLOCKED_WP_PATHS: tuple[str, ...] = (
     "wp-admin",
     "wp-login",
     "admin-ajax",
@@ -96,6 +73,10 @@ _SITE_BLOCKED_SUBSTRINGS = (
     "/mitt-konto",
     "/betalning",
     "/kurv",
+)
+_SITE_BLOCKED_SUBSTRINGS = BLOCKED_WP_PATHS
+_REFUSED_PATH_TOKENS: tuple[str, ...] = tuple(
+    "wp-json" if token == "/wp-json" else token for token in BLOCKED_WP_PATHS
 )
 _STATIC_ASSET_HOSTS = frozenset(
     {
@@ -252,10 +233,6 @@ def _unquote_iteratively(value: str, *, max_rounds: int = 6) -> str:
     return current
 
 
-def _unquote_twice(value: str) -> str:
-    return _unquote_iteratively(value)
-
-
 def validate_preview_path(path: str | None) -> str:
     """Validate and normalize a public GET preview path."""
     raw = "/" if path is None or str(path).strip() == "" else str(path).strip()
@@ -265,7 +242,7 @@ def validate_preview_path(path: str | None) -> str:
         raise ReviewError("PreviewPathRefused")
     if _PREVIEW_PATH_RE.fullmatch(raw) is None:
         raise ReviewError("PreviewPathRefused")
-    decoded = _unquote_twice(raw)
+    decoded = _unquote_iteratively(raw)
     if "?" in decoded or "#" in decoded or "\\" in decoded or ".." in decoded or "//" in decoded:
         raise ReviewError("PreviewPathRefused")
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in decoded):
@@ -833,10 +810,6 @@ def _scroll_sweep_script(max_height: int) -> str:
     )
 
 
-def _highlight_script(token: str) -> str:
-    return _focus_and_highlight_script(highlight_token=token)
-
-
 def _dom_probe_script() -> str:
     return (
         "(() => {"
@@ -1115,10 +1088,6 @@ def _strip_sandbox_scripts_and_trackers(html: str) -> str:
     return cleaned
 
 
-def _strip_sandbox_trackers(html: str) -> str:
-    return _strip_sandbox_scripts_and_trackers(html)
-
-
 def _sandbox_base_href(site_canonical_url: str) -> str:
     parsed = urllib.parse.urlparse(str(site_canonical_url or "").strip())
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
@@ -1149,7 +1118,7 @@ def build_interactive_sandbox_html(
     synthetic_data: bool = False,
 ) -> str:
     """Build a standalone, read-only interactive sandbox HTML page for browser review."""
-    html = _strip_sandbox_trackers(str(overlay_html or ""))
+    html = _strip_sandbox_scripts_and_trackers(str(overlay_html or ""))
     html = _BASE_TAG_RE.sub("", html)
 
     base_href = _sandbox_base_href(site_canonical_url)
@@ -1231,6 +1200,7 @@ def build_interactive_sandbox_html(
     hi_js = _safe_js_json(highlight_token or "")
     focus_js = _safe_js_json(focus_text or "")
     sel_js = _safe_js_json(focus_selector or "")
+    blocked_paths_js = _safe_js_json(list(BLOCKED_WP_PATHS))
     guard_script = (
         '<script data-azom-sandbox="guard" data-azom-guard="1">\n'
         "(function(){\n"
@@ -1238,9 +1208,7 @@ def build_interactive_sandbox_html(
         f"  var focusText = {focus_js};\n"
         f"  var focusSelector = {sel_js};\n"
         "  var BLOCKED_MSG = 'Blockerad i sandbox-läget — inga ändringar skickas till live';\n"
-        "  var BLOCKED_PATHS = ['wp-admin','wp-login','admin-ajax','wc-ajax','/wp-json','rest_route',"
-        "'xmlrpc','wp-cron','add-to-cart','/cart','/checkout','/my-account','/handlekurv','/kasse',"
-        "'/min-konto','/varukorg','/kassa','/kassan','/mitt-konto','/betalning','/kurv'];\n"
+        f"  var BLOCKED_PATHS = {blocked_paths_js};\n"
         "  var toastTimer = null;\n"
         "  function showToast(msg){\n"
         "    var el = document.getElementById('azom-sandbox-toast');\n"

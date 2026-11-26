@@ -29,6 +29,7 @@ from typing import Any
 
 from ecom_ops.integrations.wp_local_runtime import (
     LocalWordPressSandbox,
+    _pick_loopback_port,
     build_php_child_env,
     make_local_sandbox_gate,
     resolve_local_runtime,
@@ -95,12 +96,6 @@ def assert_loopback_http_url(url: str) -> urllib.parse.ParseResult:
     if parsed.username or parsed.password:
         raise ReviewError("NonLoopbackUrlRefused")
     return parsed
-
-
-def _pick_loopback_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _png_dimensions(data: bytes) -> tuple[int, int] | None:

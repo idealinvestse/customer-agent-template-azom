@@ -808,3 +808,118 @@ def test_messenger_queue_ensure_started_does_not_reconcile_live_running_job(monk
     finally:
         q2.stop()
     assert q2.stats()["done"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 7. ReviewPlans.open() cross-process file lock & unified BLOCKED_WP_PATHS
+# ---------------------------------------------------------------------------
+
+
+def test_review_plans_open_acquires_store_file_lock_and_preserves_concurrent_plans(
+    monkeypatch, tmp_path
+):
+    import contextlib
+
+    from ecom_ops.wp_ops.files import LocalTree
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_AUDIT_PATH", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AZOM_WP_FILES_SSH", "0")
+
+    files_root = tmp_path / "wp_files"
+    theme_dir = files_root / "wp-content" / "themes" / "azom-child"
+    theme_dir.mkdir(parents=True)
+    (theme_dir / "style.css").write_text(
+        "/*\nTheme Name: Azom Child\nTemplate: storefront\n*/\nbody { color: #111; }\n",
+        encoding="utf-8",
+    )
+    registry_path = Path(__file__).resolve().parents[1] / "config" / "wp_sites.mock.yaml"
+
+    plans = ReviewPlans(
+        data_dir=tmp_path / "data",
+        registry_path=registry_path,
+        transport_factory=lambda site: LocalTree(site.files_root, files_root),
+    )
+    lock_events: list[str] = []
+    real_lock = plans._store_file_lock
+
+    @contextlib.contextmanager
+    def _tracking_lock():
+        lock_events.append("enter")
+        with real_lock():
+            yield
+        lock_events.append("exit")
+
+    monkeypatch.setattr(plans, "_store_file_lock", _tracking_lock)
+
+    first = plans.open(
+        "mock-staging",
+        "theme",
+        "azom-child",
+        actor="agent",
+        summary="lock check",
+        variant_group="vg-first",
+    )
+    assert first.ok is True
+    assert lock_events == ["enter", "exit"]
+
+    # Concurrent open() calls with distinct variant groups must persist every plan row
+    results: list[Any] = []
+    res_guard = threading.Lock()
+    barrier = threading.Barrier(6)
+
+    def _worker(idx: int) -> None:
+        barrier.wait()
+        out = plans.open(
+            "mock-staging",
+            "theme",
+            "azom-child",
+            actor="agent",
+            summary=f"concurrent {idx}",
+            variant_group=f"vg-conc-{idx}",
+        )
+        with res_guard:
+            results.append(out)
+
+    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    assert len(results) == 6
+    assert all(r.ok for r in results)
+    expected_ids = {first.data["plan_id"], *(r.data["plan_id"] for r in results)}
+    stored = json.loads((tmp_path / "data" / "wp_review_plans.json").read_text(encoding="utf-8"))
+    stored_ids = {row["plan_id"] for row in stored["plans"]}
+    assert expected_ids <= stored_ids
+    assert lock_events.count("enter") == 7
+    assert lock_events.count("exit") == 7
+
+
+def test_blocked_wp_paths_unified_single_source():
+    import re
+
+    from ecom_ops.integrations.wp_live_preview import (
+        _REFUSED_PATH_TOKENS,
+        _SITE_BLOCKED_SUBSTRINGS,
+        BLOCKED_WP_PATHS,
+        build_interactive_sandbox_html,
+    )
+
+    assert _SITE_BLOCKED_SUBSTRINGS is BLOCKED_WP_PATHS
+    assert _REFUSED_PATH_TOKENS == tuple(
+        "wp-json" if tok == "/wp-json" else tok for tok in BLOCKED_WP_PATHS
+    )
+    html = build_interactive_sandbox_html(
+        "<html><body><p>Hello</p></body></html>",
+        site_canonical_url="https://azom.no",
+        site_id="azom-no",
+        plan_id="wr-0123456789ab",
+        path="/",
+    )
+    m = re.search(r"var BLOCKED_PATHS = (\[[^\n;]+\]);", html)
+    assert m is not None
+    assert json.loads(m.group(1)) == list(BLOCKED_WP_PATHS)

@@ -420,12 +420,6 @@ def _inject_css_blocks(
     return style_tag, injected_bytes
 
 
-def _inject_child_css(html: str, child_css: str | None) -> tuple[str, int]:
-    if not child_css:
-        return html, 0
-    return _inject_css_blocks(html, [("", child_css)], marker="child-css")
-
-
 @dataclass(frozen=True)
 class SiteShell:
     """Extracted site chrome (head, header/nav, footer) around a replaceable main slot."""

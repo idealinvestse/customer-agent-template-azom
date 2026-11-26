@@ -362,7 +362,7 @@ class FileEditor:
         except PathRejected:
             return self._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), ssh=self._ssh(site))
         slugs = [name for name in names if _SLUG.fullmatch(name)]
         return WpOpsResult(
             ok=True,
@@ -384,7 +384,7 @@ class FileEditor:
         except PathRejected:
             return self._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), ssh=self._ssh(site))
         files = []
         for name in names:
             try:
@@ -434,7 +434,7 @@ class FileEditor:
         except PathRejected:
             return self._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), ssh=self._ssh(site))
         encoded = body.encode()
         self._audit_file(
             actor,
@@ -521,7 +521,7 @@ class FileEditor:
         except PathRejected:
             return self._fail("PathRejected", "Kind or path is not editable.")
         except TransportError as exc:
-            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), ssh=self._ssh(site))
         before = _digest(current.encode())
         after = _digest(proposed.encode())
         if before == after:
@@ -598,7 +598,7 @@ class FileEditor:
         try:
             current = self._read_text(site, resolved)
         except TransportError as exc:
-            return self._fail(exc.error_class, transport_message(exc.error_class), site=site, ssh=self._ssh(site))
+            return self._fail(exc.error_class, transport_message(exc.error_class), ssh=self._ssh(site))
         if _digest(current.encode()) != plan.get("before_digest"):
             return self._fail("StaleFile", "The file changed after the plan was created.")
         try:
@@ -610,7 +610,6 @@ class FileEditor:
             return self._fail(
                 error,
                 transport_message(error),
-                site=site,
                 executed=False,
                 ssh=self._ssh(site),
             )
@@ -717,11 +716,9 @@ class FileEditor:
         error_class: str,
         message: str,
         *,
-        site: Site | None = None,
         executed: bool = False,
         ssh: bool = False,
     ) -> WpOpsResult:
-        del site
         return WpOpsResult(
             ok=False,
             message=message,
