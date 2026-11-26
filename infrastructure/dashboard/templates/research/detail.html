@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}{{ job.research_id if job else 'Research' }} – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Research-rapport{% endblock %}
+{% block content %}
+{% set rj_id = job.research_id or job.id %}
+{% set rj_spec = job.spec if (job.spec is defined and job.spec) else none %}
+{% set rj_topic = (job.topic if (job.topic is defined and job.topic) else none) or (rj_spec.topic if (rj_spec and rj_spec.topic is defined) else rj_id) %}
+{% set rj_profile = (job.profile_id if (job.profile_id is defined and job.profile_id) else none) or (rj_spec.profile_id if (rj_spec and rj_spec.profile_id is defined) else 'deep_general') %}
+{% set rj_depth = (job.depth if (job.depth is defined and job.depth) else none) or (rj_spec.depth if (rj_spec and rj_spec.depth is defined) else 'standard') %}
+{% set rj_country = (job.country if (job.country is defined and job.country) else none) or (rj_spec.country if (rj_spec and rj_spec.country is defined) else 'SE') %}
+{% set rj_locale = (job.locale if (job.locale is defined and job.locale) else none) or (rj_spec.locale if (rj_spec and rj_spec.locale is defined) else 'sv') %}
+{% set rj_status = job.status | default('queued') %}
+{% set rj_rounds = job.rounds_completed if (job.rounds_completed is defined and job.rounds_completed is not none) else (job.current_round | default(0)) %}
+{% set rj_err_code = (job.error_code if job.error_code is defined else none) or (job.error_class if job.error_class is defined else none) %}
+{% set rj_active = rj_status in ['queued', 'planning', 'searching', 'fetching', 'evaluating', 'synthesizing', 'running'] %}
+{% set rj_events = events | default([]) %}
+{% set rj_steers = steers | default([]) %}
+{% set rj_sources = sources | default([]) %}
+{% set rj_brief = brief if (brief is defined and brief is mapping) else {} %}
+{% set allow_mutate = can_mutate if can_mutate is defined else true %}
+
+<script type="application/json" id="research-events-init">
+  {{ rj_events | tojson }}
+</script>
+
+<div
+  class="space-y-5"
+  data-research-detail="{{ rj_id }}"
+  x-data="researchPolling"
+  data-status-url="/research/{{ rj_id }}/status"
+  data-detail-url="/research/{{ rj_id }}"
+  data-initial-status="{{ rj_status }}"
+  data-initial-rounds="{{ rj_rounds }}"
+  data-initial-queries="{{ job.queries_used | default(0) }}"
+  data-initial-fetches="{{ job.fetches_used | default(0) }}"
+  data-initial-evidence="{{ job.evidence_status or rj_brief.get('evidence_status') or '' }}"
+  data-initial-error="{{ job.error_message or '' }}"
+>
+  {{ ui.breadcrumb([
+    {'label': 'Research', 'href': '/research'},
+    {'label': rj_id}
+  ]) }}
+
+  {% call ui.page_header(
+    rj_topic,
+    rj_id ~ " · " ~ rj_profile ~ " · " ~ rj_depth ~ " · " ~ rj_country ~ "/" ~ rj_locale,
+    badge_text=rj_status,
+    badge_tone='ok' if rj_status == 'completed' else ('warn' if rj_status in ['partial', 'cancelled'] else ('error' if rj_status == 'failed' else 'info'))
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/research/{{ rj_id }}/export?format=md">
+      <span>Exportera MD</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/research/{{ rj_id }}/export?format=json">
+      <span>Exportera JSON</span>
+    </a>
+    {% if allow_mutate and rj_active %}
+    <form
+      method="post"
+      action="/research/{{ rj_id }}/cancel"
+      x-show="isActive"
+      data-confirm="Avbryta pågående research-jobb?"
+      data-confirm-title="Avbryt research"
+      data-confirm-ok="Avbryt jobb"
+      data-confirm-danger="1"
+    >
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button type="submit" class="az-btn-danger az-btn-sm" data-busy-label="Avbryter...">
+        {{ icon('x', 'xs') }}
+        <span>Avbryt jobb</span>
+      </button>
+    </form>
+    {% endif %}
+    <a class="az-btn-secondary az-btn-sm" href="/research">
+      {{ icon('arrow-left', 'xs') }}
+      <span>Tillbaka</span>
+    </a>
+  {% endcall %}
+
+  <!-- Live polling notice when job transitions to terminal state -->
+  <div x-show="reloadReady" x-cloak class="az-callout az-callout-ok" role="status">
+    <span class="mt-0.5 shrink-0">{{ icon('check-circle', 'sm') }}</span>
+    <div class="flex flex-wrap items-center justify-between gap-3 min-w-0 flex-1">
+      <span>Research-jobbet har slutförts (<span class="font-mono" x-text="status"></span>). Ladda om sidan för att läsa full brief och källor.</span>
+      <a class="az-btn-primary az-btn-sm shrink-0" href="/research/{{ rj_id }}">Ladda om vy</a>
+    </div>
+  </div>
+
+  <!-- Error banner if failed or poll error -->
+  {% if job.error_message or rj_err_code %}
+  <div x-show="notMounted">
+    {{ ui.info_callout('error', rj_err_code or 'Research-fel', job.error_message or '') }}
+  </div>
+  {% endif %}
+  <div x-show="mounted" x-cloak>
+    <div x-show="hasError" class="az-callout az-callout-danger" role="alert">
+      <span class="mt-0.5 shrink-0">{{ icon('alert-circle', 'sm') }}</span>
+      <span x-text="errorMessage"></span>
+    </div>
+  </div>
+
+  <!-- Job metadata -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0">Jobbstatus &amp; Resursförbrukning</h2>
+      <div class="flex flex-wrap items-center gap-2">
+        <span x-show="notMounted">
+          {{ ui.status_badge('info', rj_status) }}
+        </span>
+        <span x-show="mounted" x-cloak :class="statusBadgeClass" x-text="status"></span>
+        {% if job.evidence_status or rj_brief.get('evidence_status') %}
+        <span x-show="notMounted">{{ ui.status_badge('neutral', job.evidence_status or rj_brief.get('evidence_status')) }}</span>
+        {% endif %}
+        <span x-show="hasEvidence" x-cloak class="az-badge az-badge-neutral" x-text="evidenceStatus"></span>
+      </div>
+    </div>
+
+    <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Aktör &amp; Synlighet</dt>
+        <dd class="mt-1 font-mono text-mist-100">{{ job.actor }} · {{ job.visibility | default('private') }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Rundor / Sök / Hämtningar</dt>
+        <dd class="mt-1 font-mono text-mist-100 tabular-nums">
+          <span x-text="roundsCompleted">{{ rj_rounds }}</span> rundor ·
+          <span x-text="queriesUsed">{{ job.queries_used | default(0) }}</span> sök ·
+          <span x-text="fetchesUsed">{{ job.fetches_used | default(0) }}</span> sidor
+        </dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Skapad / Slutförd</dt>
+        <dd class="mt-1 font-mono text-mist-200 tabular-nums">
+          {{ fmt_dt(job.created_at) or job.created_at or '—' }}
+          {% if job.completed_at %}
+          <div class="text-mist-400">Klar: {{ fmt_dt(job.completed_at) or job.completed_at }}</div>
+          {% endif %}
+        </dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Målreferens &amp; Kostnad</dt>
+        <dd class="mt-1 font-mono text-mist-200 tabular-nums">
+          {{ job.target_ref or '—' }} · {{ fmt_usd(job.estimated_search_usd | default(0.0)) }}
+        </dd>
+      </div>
+    </dl>
+  </section>
+
+  <!-- 2-column: Brief/Findings + Timeline/Steer -->
+  <div class="grid items-start gap-5 lg:grid-cols-12">
+    <!-- Left: Brief & Sources -->
+    <div class="space-y-5 lg:col-span-7">
+      <section class="az-card space-y-4" data-research-brief="true">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="az-section-title mb-0">Syntetiserad Brief</h2>
+          {% if rj_brief.get('provenance') %}
+          {{ ui.status_badge('neutral', rj_brief.get('provenance')) }}
+          {% endif %}
+        </div>
+
+        {% if rj_brief %}
+          {% if rj_brief.get('summary') %}
+          <div class="rounded-lg border border-ink-700/80 bg-ink-950/60 p-4">
+            <h3 class="az-section-heading mb-1.5">Sammanfattning</h3>
+            <p class="whitespace-pre-wrap text-sm leading-relaxed text-mist-100">{{ rj_brief.get('summary') }}</p>
+          </div>
+          {% endif %}
+
+          {% if rj_brief.get('findings') %}
+          <div class="space-y-2">
+            <h3 class="az-section-heading mb-1">Resultat &amp; Påståenden</h3>
+            <ul class="space-y-2 text-sm">
+              {% for item in rj_brief.get('findings') %}
+              <li class="rounded-lg border border-ink-700/70 bg-ink-950/50 p-3 space-y-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  {{ ui.status_badge('info', item.get('claim_kind') or 'fact') }}
+                  {% if item.get('citations') %}
+                  <span class="font-mono text-xs text-mist-400">[{{ item.get('citations') | join(', ') }}]</span>
+                  {% endif %}
+                </div>
+                <p class="text-mist-100 leading-relaxed">{{ item.get('claim') }}</p>
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          {% if rj_brief.get('recommendations') %}
+          <div class="space-y-1.5">
+            <h3 class="az-section-heading mb-1">Rekommendationer</h3>
+            <ul class="list-disc space-y-1 pl-5 text-sm text-mist-200">
+              {% for rec in rj_brief.get('recommendations') %}
+              <li>{{ rec }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          {% if rj_brief.get('gaps') %}
+          <div class="space-y-1.5">
+            <h3 class="az-section-heading mb-1">Kunskapsluckor</h3>
+            <ul class="list-disc space-y-1 pl-5 text-sm text-mist-300">
+              {% for gap in rj_brief.get('gaps') %}
+              <li>{{ gap }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+
+          {% if rj_brief.get('conflicts') %}
+          <div class="space-y-2">
+            {% call ui.info_callout('warn', 'Källkonflikter') %}
+              <ul class="mt-1 list-disc space-y-1 pl-4 text-xs">
+                {% for conf in rj_brief.get('conflicts') %}
+                <li><strong>{{ conf.get('topic') or 'Konflikt' }}:</strong> {{ conf.get('summary') }}</li>
+                {% endfor %}
+              </ul>
+            {% endcall %}
+          </div>
+          {% endif %}
+        {% else %}
+          <p class="az-muted text-sm">Brief genereras när jobbet har slutförts.</p>
+        {% endif %}
+      </section>
+
+      <!-- Verified Sources Table -->
+      <section class="az-card space-y-4" data-research-sources="true">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 id="research-sources-heading" class="az-section-title mb-0">Källor ({{ rj_sources | length }})</h2>
+        </div>
+
+        {% if rj_sources %}
+        <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="research-sources-heading">
+          <table class="az-table">
+            <thead>
+              <tr>
+                <th scope="col">ID</th>
+                <th scope="col">Källa &amp; Utdrag</th>
+                <th scope="col">Typ / Proveniens</th>
+                <th scope="col">Poäng</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for src in rj_sources %}
+              <tr>
+                <td class="font-mono text-xs text-mist-300 whitespace-nowrap">{{ src.get('source_id') or ('S' ~ loop.index) }}</td>
+                <td class="text-xs space-y-1 max-w-md">
+                  <div>
+                    {% if src.get('safe_url') %}
+                    <a
+                      href="{{ src.get('safe_url') }}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="font-semibold text-steel-300 hover:text-steel-200 hover:underline inline-flex items-center gap-1"
+                    >
+                      <span>{{ src.get('title') or src.get('domain') or src.get('safe_url') }}</span>
+                      {{ icon('external-link', 'xs') }}
+                    </a>
+                    {% else %}
+                    <span class="font-semibold text-mist-100">{{ src.get('title') or src.get('domain') or 'Källa' }}</span>
+                    <div class="font-mono text-mist-400 break-all">{{ src.get('url') }}</div>
+                    {% endif %}
+                  </div>
+                  {% if src.get('domain') %}
+                  <div><code class="az-code font-mono">{{ src.get('domain') }}</code></div>
+                  {% endif %}
+                  {% if src.get('snippet') %}
+                  <p class="text-mist-300 leading-relaxed">{{ src.get('snippet') }}</p>
+                  {% endif %}
+                </td>
+                <td class="text-xs whitespace-nowrap space-y-1">
+                  {% if src.get('claim_kind') %}<div>{{ ui.status_badge('info', src.get('claim_kind')) }}</div>{% endif %}
+                  {% if src.get('source_type') %}<div class="text-mist-300">{{ src.get('source_type') }}</div>{% endif %}
+                  {% if src.get('provenance') %}<div class="font-mono text-mist-400">{{ src.get('provenance') }}</div>{% endif %}
+                </td>
+                <td class="font-mono text-xs tabular-nums whitespace-nowrap">{{ '%.2f'|format((src.get('score') or 0)|float) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="az-muted text-sm">Inga källor sparade ännu.</p>
+        {% endif %}
+      </section>
+    </div>
+
+    <!-- Right: Phase Timeline & Steer -->
+    <div class="space-y-5 lg:col-span-5">
+      <section class="az-card space-y-4" data-research-timeline="true">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h2 class="az-section-title mb-0">Händelseförlopp</h2>
+          <span x-show="isActive" x-cloak class="az-badge az-badge-info">Uppdateras automatiskt</span>
+        </div>
+
+        <ul class="space-y-2 text-xs" x-show="notMounted">
+          {% for ev in rj_events %}
+          <li class="rounded-lg border border-ink-700/70 bg-ink-950/60 px-3 py-2 space-y-0.5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-mono font-semibold text-steel-300">{{ ev.get('phase') }}</span>
+              <span class="font-mono text-mist-400 tabular-nums">{{ fmt_dt(ev.get('created_at')) or ev.get('created_at') or '' }}</span>
+            </div>
+            <p class="text-mist-200">{{ ev.get('message') }}</p>
+          </li>
+          {% else %}
+          <li class="az-muted">Inga händelser loggade ännu.</li>
+          {% endfor %}
+        </ul>
+
+        <ul class="space-y-2 text-xs" x-show="mounted" x-cloak>
+          <template x-for="ev in events" :key="ev.seq">
+            <li class="rounded-lg border border-ink-700/70 bg-ink-950/60 px-3 py-2 space-y-0.5">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-mono font-semibold text-steel-300" x-text="ev.phase"></span>
+                <span class="font-mono text-mist-400 tabular-nums" x-text="ev.created_at"></span>
+              </div>
+              <p class="text-mist-200" x-text="ev.message"></p>
+            </li>
+          </template>
+          <li x-show="noEvents" class="az-muted">Inga händelser loggade ännu.</li>
+        </ul>
+      </section>
+
+      {% if allow_mutate %}
+      <section class="az-card space-y-4" data-research-steer="true">
+        <h2 class="az-section-title mb-0">Styrning (Steer)</h2>
+        <form method="post" action="/research/{{ rj_id }}/steer" class="space-y-3">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <div>
+            <label class="az-label" for="research-steer-note">Styrningsnotering till nästa runda</label>
+            <textarea
+              id="research-steer-note"
+              name="note"
+              rows="2"
+              maxlength="500"
+              required
+              class="az-textarea"
+              placeholder="Fokusera på officiella dokument eller avgränsa frågan (utan PII)..."
+            ></textarea>
+          </div>
+          <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Skickar...">
+            {{ icon('send', 'xs') }}
+            <span>Lägg till styrning</span>
+          </button>
+        </form>
+
+        {% if rj_steers %}
+        <div class="border-t border-ink-700/80 pt-3 space-y-2">
+          <h3 class="az-section-heading mb-1">Tidigare styrningar</h3>
+          <ul class="space-y-1.5 text-xs">
+            {% for st_item in rj_steers %}
+            <li class="rounded-lg border border-ink-700/70 bg-ink-950/60 px-3 py-2">
+              <div class="flex items-center justify-between gap-2 text-mist-400">
+                <span class="font-mono">{{ st_item.get('actor') or '—' }}</span>
+                <span class="tabular-nums">{{ fmt_dt(st_item.get('created_at')) or st_item.get('created_at') or '' }}</span>
+              </div>
+              <p class="mt-1 text-mist-100">{{ st_item.get('note') }}</p>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+      </section>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

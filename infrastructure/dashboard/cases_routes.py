@@ -34,6 +34,23 @@ _ALLOWED_CASE_ACTIONS = frozenset(
 _QUEUE_LIMIT = 100
 
 
+def _safe_case_research_query(case: object) -> str:
+    """Build a strictly PII-free entity-only research query hint for a support case."""
+    cat = str(getattr(case, "category", "") or "").strip().lower()
+    market = str(getattr(case, "market", "") or "SE").strip().upper()
+    country_name = {"SE": "Sverige", "NO": "Norge", "DK": "Danmark"}.get(market, "Sverige")
+    hints = {
+        "shipping": f"PostNord Bring DHL driftstörning leverans {country_name}",
+        "order_status": f"PostNord Bring spårning leveransstatus {country_name}",
+        "return": f"Konsumentverket ångerrätt retur e-handel {country_name}",
+        "warranty": f"Konsumentköplagen reklamation garanti bilelektronik {country_name}",
+        "billing": f"Klarna faktura återbetalning e-handel {country_name}",
+        "technical": "Android Auto Apple CarPlay kompatibilitet felsökning",
+        "product": "bilstereo Apple CarPlay Android Auto kompatibilitet",
+    }
+    return hints.get(cat, f"e-handel kundservice fakta {cat} {country_name}".strip())
+
+
 def _known_categories() -> list[str]:
     from ecom_ops.actions.support import SupportCategory
 
@@ -385,6 +402,17 @@ def register_cases_routes(app: Flask) -> None:
                 use_mock=_is_mock() or None,
                 domain=woo_domain_from_market(case.market),
             )
+        case_research_jobs: list[dict] = []
+        try:
+            from research_routes import load_linked_research_jobs
+
+            case_research_jobs = load_linked_research_jobs(
+                actor=g.actor["name"],
+                target_ref=f"case:{case.id}",
+                limit=10,
+            )
+        except Exception:
+            case_research_jobs = []
         return render_template(
             "case_detail.html",
             **_dashboard_context(
@@ -400,5 +428,7 @@ def register_cases_routes(app: Flask) -> None:
                 case_site=case.site,
                 classify_method=case.classify_method,
                 categories=_known_categories(),
+                case_research_jobs=case_research_jobs,
+                case_research_query=_safe_case_research_query(case),
             ),
         )

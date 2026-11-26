@@ -124,6 +124,10 @@
             {{ icon('trending-up', 'sm') }}
             <span data-nav-label>Marknadsföring</span>
           </a>
+          <a href="/research" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/research') else '' }}"{% if path.startswith('/research') %} aria-current="page"{% endif %}>
+            {{ icon('search', 'sm') }}
+            <span data-nav-label>Research</span>
+          </a>
         </div>
 
         <div data-nav-group="Drift &amp; Webbplatser">

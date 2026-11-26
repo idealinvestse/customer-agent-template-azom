@@ -1,0 +1,326 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Research – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Webbsök &amp; Djupresearch{% endblock %}
+{% block content %}
+{% set st = search_status | default({}) %}
+{% set st_mode = st.get('mode') or ('mock' if st.get('mock_mode') else ('live' if st.get('enabled') else 'disabled')) %}
+{% set q_used = st.get('daily_queries_used') if st.get('daily_queries_used') is not none else (st.get('queries_today') | default(0)) %}
+{% set q_cap = st.get('daily_queries_cap') if st.get('daily_queries_cap') is not none else (st.get('max_queries_per_day') | default(0)) %}
+{% set usd_used = st.get('monthly_external_usd') | default(0.0) %}
+{% set usd_cap = st.get('monthly_external_usd_cap') | default(0.0) %}
+{% set cur_profile = selected_profile | default('deep_general') %}
+{% set cur_locale = quick_locale | default('SE') %}
+{% set profile_list = profiles | default([]) %}
+{% set job_list = jobs | default([]) %}
+
+<div class="space-y-5" data-research-hub="true">
+  {% call ui.page_header(
+    "Research & Webbsök",
+    "Verifierad webbsökning (PII-tvättad) och asynkron djupresearch med källcitat."
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/research">
+      {{ icon('refresh', 'xs') }}
+      <span>Uppdatera</span>
+    </a>
+  {% endcall %}
+
+  <!-- Provider & budget readiness bar -->
+  <section class="az-card space-y-3" data-search-readiness="true">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="az-section-title mb-0">Sökstatus &amp; Dagsbudget</h2>
+        {% if st_mode == 'live' and not st.get('kill_switch') %}
+          {{ ui.status_badge('ok', 'Live webbsökning aktiv', show_icon=True) }}
+        {% elif st_mode == 'mock' %}
+          {{ ui.status_badge('warn', 'Mock-läge (offline-fixturer)', show_icon=True) }}
+        {% else %}
+          {{ ui.status_badge('neutral', 'Inaktiverad (fail-closed)', show_icon=True) }}
+        {% endif %}
+        {% if st.get('kill_switch') %}
+          {{ ui.status_badge('error', 'Kill-switch aktiv', show_icon=True) }}
+        {% endif %}
+      </div>
+      <div class="flex flex-wrap items-center gap-4 text-xs text-mist-300 font-mono tabular-nums">
+        <span>Frågor idag: <strong class="text-mist-100">{{ q_used }}</strong> / {{ q_cap }}</span>
+        <span>Månadsbudget: <strong class="text-mist-100">{{ fmt_usd(usd_used) }}</strong> / {{ fmt_usd(usd_cap) }}</span>
+      </div>
+    </div>
+    {% if st.get('message') %}
+    <p class="az-muted text-xs">{{ st.get('message') }}</p>
+    {% endif %}
+  </section>
+
+  <!-- Two-column launch panels: Quick Search + Async Deep Research -->
+  <div class="grid gap-5 lg:grid-cols-2">
+    <!-- Quick Search panel -->
+    <section class="az-card space-y-4">
+      <div>
+        <h2 class="az-section-title mb-1">Snabbsökning (synkron)</h2>
+        <p class="az-muted text-xs">Kör en begränsad webbsökning (max 8s) utan kund-PII och visar poängsatta träffar.</p>
+      </div>
+
+      <form method="post" action="/research/search" class="space-y-3">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <div>
+          <label class="az-label" for="quick-search-query">Sökfråga</label>
+          <input
+            id="quick-search-query"
+            name="query"
+            type="text"
+            class="az-input"
+            maxlength="250"
+            required
+            value="{{ quick_query | default('') }}"
+            placeholder="T.ex. PostNord driftstörning paketombud Sverige"
+          />
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="quick-search-profile">Sökprofil</label>
+            <select id="quick-search-profile" name="profile_id" class="az-select">
+              {% if profile_list %}
+                {% for prof in profile_list %}
+                <option value="{{ prof.id }}" {% if cur_profile == prof.id %}selected{% endif %}>{{ prof.id }}</option>
+                {% endfor %}
+              {% else %}
+                {% for pid in ['deep_general', 'support_fact_check', 'marketing_intel', 'competitor_market', 'design_inspiration', 'technical_docs'] %}
+                <option value="{{ pid }}" {% if cur_profile == pid %}selected{% endif %}>{{ pid }}</option>
+                {% endfor %}
+              {% endif %}
+            </select>
+          </div>
+          <div>
+            <label class="az-label" for="quick-search-locale">Marknad / Språk</label>
+            <select id="quick-search-locale" name="locale" class="az-select">
+              {% for loc_val, loc_lbl in [('SE', 'SE (Svenska)'), ('NO', 'NO (Norska)'), ('DK', 'DK (Danska)'), ('en', 'EN (Engelska)')] %}
+              <option value="{{ loc_val }}" {% if cur_locale == loc_val %}selected{% endif %}>{{ loc_lbl }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Söker...">
+          {{ icon('search', 'xs') }}
+          <span>Kör snabbsök</span>
+        </button>
+      </form>
+    </section>
+
+    <!-- Launch Async Deep Research panel -->
+    <section class="az-card space-y-4">
+      <div>
+        <h2 class="az-section-title mb-1">Starta djupresearch (asynkron)</h2>
+        <p class="az-muted text-xs">Köar ett flerstegs research-jobb (<code class="az-code">res-*</code>) med källhämtning och syntes.</p>
+      </div>
+
+      <form method="post" action="/research/jobs" class="space-y-3">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <div>
+          <label class="az-label" for="deep-research-topic">Ämne / Frågeställning</label>
+          <textarea
+            id="deep-research-topic"
+            name="topic"
+            rows="2"
+            maxlength="500"
+            required
+            class="az-textarea"
+            placeholder="Beskriv vad som ska undersökas (utan kunddata eller hemligheter)..."
+          ></textarea>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label class="az-label" for="deep-research-profile">Profil</label>
+            <select id="deep-research-profile" name="profile_id" class="az-select">
+              {% if profile_list %}
+                {% for prof in profile_list %}
+                <option value="{{ prof.id }}" {% if cur_profile == prof.id %}selected{% endif %}>{{ prof.id }}</option>
+                {% endfor %}
+              {% else %}
+                {% for pid in ['deep_general', 'support_fact_check', 'marketing_intel', 'competitor_market', 'design_inspiration', 'technical_docs'] %}
+                <option value="{{ pid }}" {% if cur_profile == pid %}selected{% endif %}>{{ pid }}</option>
+                {% endfor %}
+              {% endif %}
+            </select>
+          </div>
+          <div>
+            <label class="az-label" for="deep-research-depth">Djup</label>
+            <select id="deep-research-depth" name="depth" class="az-select">
+              <option value="quick">quick</option>
+              <option value="standard" selected>standard</option>
+              <option value="deep">deep</option>
+            </select>
+          </div>
+          <div>
+            <label class="az-label" for="deep-research-market">Marknad</label>
+            <select id="deep-research-market" name="market" class="az-select">
+              <option value="SE" selected>SE</option>
+              <option value="NO">NO</option>
+              <option value="DK">DK</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="az-label" for="deep-research-target">Målreferens (valfritt)</label>
+          <input
+            id="deep-research-target"
+            name="target_ref"
+            type="text"
+            class="az-input font-mono text-xs"
+            maxlength="120"
+            placeholder="T.ex. marketing:general eller product:1234"
+          />
+        </div>
+        <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Startar jobb...">
+          {{ icon('rocket', 'xs') }}
+          <span>Starta djupresearch</span>
+        </button>
+      </form>
+    </section>
+  </div>
+
+  <!-- Quick Search Results -->
+  {% if quick_result %}
+  <section class="az-card space-y-4" data-quick-search-results="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="az-section-title mb-0">Sökresultat</h2>
+        {{ ui.status_badge('info', quick_result.get('evidence_status') or 'mock') }}
+        {{ ui.status_badge('neutral', quick_result.get('provenance') or 'mock') }}
+        {% if quick_result.get('provider') %}
+        <span class="az-badge az-badge-neutral font-mono">{{ quick_result.get('provider') }}</span>
+        {% endif %}
+        {% if quick_result.get('cached') %}
+        {{ ui.status_badge('ok', 'cache') }}
+        {% endif %}
+      </div>
+      <span class="text-xs text-mist-400 tabular-nums">{{ (quick_result.get('sources') or []) | length }} träffar</span>
+    </div>
+
+    {% if quick_result.get('conflicts') %}
+    {% call ui.info_callout('warn', 'Källkonflikter upptäckta') %}
+      <ul class="mt-1 list-disc space-y-1 pl-4 text-xs">
+        {% for c in quick_result.get('conflicts') %}
+        <li><strong>{{ c.get('topic') or 'Konflikt' }}:</strong> {{ c.get('summary') }}</li>
+        {% endfor %}
+      </ul>
+    {% endcall %}
+    {% endif %}
+
+    {% set q_sources = quick_result.get('sources') or [] %}
+    {% if q_sources %}
+    <div class="space-y-3">
+      {% for src in q_sources %}
+      <article class="rounded-lg border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-1.5">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div class="min-w-0 space-y-1">
+            <div class="flex flex-wrap items-center gap-2">
+              {% if src.get('safe_url') %}
+              <a
+                href="{{ src.get('safe_url') }}"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="font-semibold text-sm text-steel-300 hover:text-steel-200 hover:underline inline-flex items-center gap-1"
+              >
+                <span>{{ src.get('title') or src.get('domain') or src.get('url') }}</span>
+                {{ icon('external-link', 'xs') }}
+              </a>
+              {% else %}
+              <span class="font-semibold text-sm text-mist-100">{{ src.get('title') or src.get('domain') or 'Källa' }}</span>
+              <span class="font-mono text-xs text-mist-400 break-all">{{ src.get('url') }}</span>
+              {% endif %}
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5 text-xs">
+              {% if src.get('domain') %}<code class="az-code font-mono">{{ src.get('domain') }}</code>{% endif %}
+              {{ ui.status_badge('info', src.get('claim_kind') or 'fact') }}
+              {{ ui.status_badge('neutral', src.get('evidence_status') or quick_result.get('evidence_status') or 'mock') }}
+              {{ ui.status_badge('neutral', src.get('provenance') or quick_result.get('provenance') or 'mock') }}
+              {% if src.get('source_type') %}<span class="text-mist-400">{{ src.get('source_type') }}</span>{% endif %}
+            </div>
+          </div>
+          {% if src.get('score') is not none %}
+          <span class="az-badge az-badge-neutral font-mono tabular-nums shrink-0">{{ '%.2f'|format((src.get('score') or 0)|float) }}</span>
+          {% endif %}
+        </div>
+        {% if src.get('snippet') %}
+        <p class="text-xs leading-relaxed text-mist-200">{{ src.get('snippet') }}</p>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga träffar hittades', 'Prova att justera sökfrågan eller sökprofilen.', icon_name='search') }}
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <!-- Research Jobs Ledger Table -->
+  <section class="az-card space-y-4" data-research-ledger="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 id="research-ledger-heading" class="az-section-title mb-0">Research-jobb ({{ job_list | length }})</h2>
+    </div>
+
+    {% if job_list %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-labelledby="research-ledger-heading">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">ID</th>
+            <th scope="col">Ämne</th>
+            <th scope="col">Profil / Djup</th>
+            <th scope="col">Status</th>
+            <th scope="col">Rundor</th>
+            <th scope="col">Skapad</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rj in job_list %}
+          {% set rj_id = rj.research_id or rj.id %}
+          {% set rj_spec = rj.spec if (rj.spec is defined and rj.spec) else none %}
+          {% set rj_topic = (rj.topic if (rj.topic is defined and rj.topic) else none) or (rj_spec.topic if (rj_spec and rj_spec.topic is defined) else rj_id) %}
+          {% set rj_profile = (rj.profile_id if (rj.profile_id is defined and rj.profile_id) else none) or (rj_spec.profile_id if (rj_spec and rj_spec.profile_id is defined) else 'deep_general') %}
+          {% set rj_depth = (rj.depth if (rj.depth is defined and rj.depth) else none) or (rj_spec.depth if (rj_spec and rj_spec.depth is defined) else 'standard') %}
+          {% set rj_status = rj.status | default('queued') %}
+          {% set rj_rounds = rj.rounds_completed if (rj.rounds_completed is defined and rj.rounds_completed is not none) else (rj.current_round | default(0)) %}
+          {% set rj_created = (rj.created_at_fmt if (rj.created_at_fmt is defined and rj.created_at_fmt) else none) or fmt_dt(rj.created_at) or rj.created_at or '—' %}
+          <tr>
+            <td class="whitespace-nowrap">
+              <a class="font-mono text-xs text-steel-300 hover:underline" href="/research/{{ rj_id }}">{{ rj_id }}</a>
+            </td>
+            <td class="text-sm text-mist-100 max-w-md">
+              <a class="hover:text-steel-200 hover:underline" href="/research/{{ rj_id }}">{{ rj_topic }}</a>
+              {% if rj.target_ref %}
+              <div class="mt-0.5 font-mono text-xs text-mist-400">{{ rj.target_ref }}</div>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap text-xs">
+              <code class="az-code font-mono">{{ rj_profile }}</code>
+              <span class="ml-1 text-mist-400">{{ rj_depth }}</span>
+            </td>
+            <td class="whitespace-nowrap">
+              {% if rj_status in ['completed'] %}
+                {{ ui.status_badge('ok', rj_status, show_icon=True) }}
+              {% elif rj_status in ['partial', 'cancelled'] %}
+                {{ ui.status_badge('warn', rj_status) }}
+              {% elif rj_status in ['failed'] %}
+                {{ ui.status_badge('error', rj_status) }}
+              {% else %}
+                {{ ui.status_badge('info', rj_status) }}
+              {% endif %}
+              {% if rj.evidence_status %}
+              <span class="ml-1 text-xs text-mist-400">{{ rj.evidence_status }}</span>
+              {% endif %}
+            </td>
+            <td class="font-mono text-xs text-mist-300 tabular-nums whitespace-nowrap">{{ rj_rounds }}</td>
+            <td class="font-mono text-xs text-mist-400 tabular-nums whitespace-nowrap">{{ rj_created }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga research-jobb ännu', 'Starta en asynkron djupresearch ovan för att samla in och verifiera källor.', icon_name='search') }}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

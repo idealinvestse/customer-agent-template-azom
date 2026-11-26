@@ -233,6 +233,20 @@ def render_review(
                 or effective_err in {"BackupNotVerified", "RestoreNotInMvp"}
             ),
         }
+    wp_research_allowed = bool(admin or drill)
+    wp_research_jobs: list[dict] = []
+    if wp_research_allowed:
+        try:
+            from research_routes import load_linked_research_jobs
+
+            wp_research_jobs = load_linked_research_jobs(
+                actor=g.actor["name"],
+                target_ref=f"wp:{site_id}:{plan_id}",
+                extra_ids=list(plan.get("research_ids") or []),
+                limit=10,
+            )
+        except Exception:
+            wp_research_jobs = []
     return render_template(
         "wp_review.html",
         **_dashboard_context(
@@ -240,6 +254,9 @@ def render_review(
             diff=diff,
             can_review=admin,
             can_drill=drill,
+            wp_research_allowed=wp_research_allowed,
+            can_wp_research=wp_research_allowed,
+            wp_research_jobs=wp_research_jobs,
             comments=list(plan.get("comments") or []),
             sandbox=dict(plan.get("sandbox") or {}),
             expires_at_fmt=_fmt_dt(plan.get("expires_at")),

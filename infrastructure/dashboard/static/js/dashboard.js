@@ -870,6 +870,155 @@
         },
       };
     });
+
+    window.Alpine.data('researchPolling', function () {
+      var ACTIVE_STATUSES = {
+        queued: true,
+        planning: true,
+        searching: true,
+        fetching: true,
+        evaluating: true,
+        synthesizing: true,
+        running: true,
+      };
+      return {
+        mounted: false,
+        notMounted: true,
+        status: 'queued',
+        roundsCompleted: 0,
+        queriesUsed: 0,
+        fetchesUsed: 0,
+        evidenceStatus: '',
+        errorMessage: '',
+        events: [],
+        isActive: false,
+        hasEvents: false,
+        noEvents: true,
+        hasError: false,
+        hasEvidence: false,
+        reloadReady: false,
+        statusBadgeClass: 'az-badge az-badge-info',
+        statusUrl: '',
+        detailUrl: '',
+        _wasActiveOnInit: false,
+        _tries: 0,
+
+        _sync: function () {
+          this.notMounted = !this.mounted;
+          this.isActive = Boolean(ACTIVE_STATUSES[this.status]);
+          this.hasEvents = Array.isArray(this.events) && this.events.length > 0;
+          this.noEvents = !this.hasEvents;
+          this.hasError = Boolean(this.errorMessage);
+          this.hasEvidence = Boolean(this.evidenceStatus);
+          if (this.status === 'completed') {
+            this.statusBadgeClass = 'az-badge az-badge-ok';
+          } else if (this.status === 'partial' || this.status === 'cancelled') {
+            this.statusBadgeClass = 'az-badge az-badge-warn';
+          } else if (this.status === 'failed') {
+            this.statusBadgeClass = 'az-badge az-badge-danger';
+          } else {
+            this.statusBadgeClass = 'az-badge az-badge-info';
+          }
+          if (this._wasActiveOnInit && !this.isActive) {
+            this.reloadReady = true;
+          }
+        },
+
+        _normalizeEvents: function (list) {
+          return (Array.isArray(list) ? list : []).map(function (ev, idx) {
+            return {
+              seq: ev && ev.seq !== undefined ? ev.seq : idx + 1,
+              phase: (ev && ev.phase) ? String(ev.phase) : 'info',
+              message: (ev && ev.message) ? String(ev.message) : '',
+              created_at: (ev && ev.created_at) ? String(ev.created_at) : '',
+            };
+          });
+        },
+
+        init: function () {
+          var initScript = document.getElementById('research-events-init');
+          if (initScript && initScript.textContent) {
+            try {
+              this.events = this._normalizeEvents(JSON.parse(initScript.textContent));
+            } catch (_err) {
+              this.events = [];
+            }
+          }
+          if (this.$el) {
+            this.statusUrl = this.$el.getAttribute('data-status-url') || '';
+            this.detailUrl = this.$el.getAttribute('data-detail-url') || '';
+            this.status = this.$el.getAttribute('data-initial-status') || 'queued';
+            this.roundsCompleted = Number(this.$el.getAttribute('data-initial-rounds') || 0);
+            this.queriesUsed = Number(this.$el.getAttribute('data-initial-queries') || 0);
+            this.fetchesUsed = Number(this.$el.getAttribute('data-initial-fetches') || 0);
+            this.evidenceStatus = this.$el.getAttribute('data-initial-evidence') || '';
+            this.errorMessage = this.$el.getAttribute('data-initial-error') || '';
+          }
+          this._wasActiveOnInit = Boolean(ACTIVE_STATUSES[this.status]);
+          this.mounted = true;
+          this._sync();
+          if (this.isActive && this.statusUrl) {
+            var self = this;
+            window.setTimeout(function () {
+              self.tick();
+            }, 2500);
+          }
+        },
+
+        tick: async function () {
+          if (!this.statusUrl) return;
+          this._tries += 1;
+          try {
+            var res = await fetch(this.statusUrl, {
+              credentials: 'same-origin',
+              headers: { Accept: 'application/json' },
+            });
+            if (!res.ok) throw new Error('status');
+            var body = await res.json();
+            if (body && body.status) {
+              var job = body.job && typeof body.job === 'object' ? body.job : {};
+              this.status = String(body.status);
+              if (body.rounds_completed !== undefined && body.rounds_completed !== null) {
+                this.roundsCompleted = Number(body.rounds_completed);
+              } else if (job.current_round !== undefined) {
+                this.roundsCompleted = Number(job.current_round);
+              }
+              if (body.queries_used !== undefined && body.queries_used !== null) {
+                this.queriesUsed = Number(body.queries_used);
+              } else if (job.queries_used !== undefined) {
+                this.queriesUsed = Number(job.queries_used);
+              }
+              if (body.fetches_used !== undefined && body.fetches_used !== null) {
+                this.fetchesUsed = Number(body.fetches_used);
+              } else if (job.fetches_used !== undefined) {
+                this.fetchesUsed = Number(job.fetches_used);
+              }
+              var evStatus = body.evidence_status !== undefined ? body.evidence_status : job.evidence_status;
+              if (evStatus) this.evidenceStatus = String(evStatus);
+              var errMsg = body.error_message !== undefined ? body.error_message : job.error_message;
+              if (errMsg) this.errorMessage = String(errMsg);
+              if (Array.isArray(body.events)) {
+                this.events = this._normalizeEvents(body.events);
+              }
+            }
+            this._sync();
+            if (this.isActive && this._tries < 240) {
+              var self = this;
+              window.setTimeout(function () {
+                self.tick();
+              }, 2500);
+            }
+          } catch (_err) {
+            if (this.isActive && this._tries < 240) {
+              var self = this;
+              window.setTimeout(function () {
+                self.tick();
+              }, 2500);
+            }
+          }
+        },
+      };
+    });
   }
 
   document.addEventListener('alpine:init', registerAlpineComponents);

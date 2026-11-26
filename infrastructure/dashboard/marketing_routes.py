@@ -87,6 +87,17 @@ def register_marketing_routes(app: Flask) -> None:
         err = section_errors.get("digest") or (
             next(iter(section_errors.values())) if section_errors else None
         )
+        marketing_research_jobs: list[dict] = []
+        try:
+            from research_routes import load_linked_research_jobs
+
+            marketing_research_jobs = load_linked_research_jobs(
+                actor=actor,
+                target_ref_prefix="marketing:",
+                limit=10,
+            )
+        except Exception:
+            marketing_research_jobs = []
         return render_template(
             "marketing.html",
             **_dashboard_context(
@@ -104,6 +115,7 @@ def register_marketing_routes(app: Flask) -> None:
                 google_oauth_configured=google_marketing_oauth_configured(),
                 can_suggest=actor_obj.has(Permission.MARKETING_SUGGEST),
                 can_mutate=actor_obj.has(Permission.MARKETING_MUTATE),
+                marketing_research_jobs=marketing_research_jobs,
             ),
         )
 

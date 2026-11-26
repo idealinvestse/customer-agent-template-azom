@@ -722,6 +722,7 @@ def register_oscar_routes(app: Flask) -> None:
         return jsonify(result)
 
     @app.route("/ops/runtime", methods=["GET"])
+    @app.route("/oscar/runtime", methods=["GET"])
     @_oscar_required
     def ops_runtime():
         snapshot: dict = {}
@@ -798,5 +799,36 @@ def register_oscar_routes(app: Flask) -> None:
             "rotated_logs": rotated_count,
             "errors": list(summary.get("errors") or [])[:5],
         }
+        _flash(msg, "ok")
+        return redirect(url_for("ops_runtime") + f"?{_flash_q(msg)}")
+
+    @app.route("/oscar/runtime/search-breaker-reset", methods=["POST"])
+    @_oscar_required
+    def oscar_search_breaker_reset():
+        from auth import _dashboard_actor
+        from ecom_ops.audit import log_action
+        from ecom_ops.integrations.search.circuit_breaker import (
+            bump_search_epoch,
+            reset_breaker,
+        )
+        from ecom_ops.rbac import AccessDenied, Permission, require_permission
+
+        try:
+            require_permission(_dashboard_actor(g.actor), Permission.ADMIN)
+        except AccessDenied:
+            from flask import Response
+
+            return Response("Saknar behörighet", 403)
+
+        key = (request.form.get("breaker_key") or "").strip() or None
+        reset_breaker(key)
+        epoch = bump_search_epoch()
+        log_action(
+            actor=g.actor["name"],
+            action="search_breaker_reset",
+            target=key or "all",
+            details={"epoch": epoch},
+        )
+        msg = "Sök-routerns kretsbrytare nollställda"
         _flash(msg, "ok")
         return redirect(url_for("ops_runtime") + f"?{_flash_q(msg)}")

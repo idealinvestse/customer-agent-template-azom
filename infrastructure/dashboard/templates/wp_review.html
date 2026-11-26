@@ -603,6 +603,74 @@
   </section>
   {% endif %}
 
+  {% if (wp_research_allowed | default(false)) or (can_wp_research | default(false)) %}
+  <section class="az-card-oscar space-y-4" data-wp-research="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="font-display text-base font-semibold text-oscar-300">WP-design &amp; teknisk research</h2>
+        <p class="az-muted text-xs">Kopplad extern UX/teknik-research för <code class="az-code font-mono">{{ plan.plan_id }}</code> (skrivskyddad, påverkar ej diff eller staging-gate).</p>
+      </div>
+      <a class="az-btn-secondary az-btn-sm" href="/research">Research-hubb</a>
+    </div>
+
+    <form method="post" action="/research/jobs" class="grid gap-3 sm:grid-cols-4 sm:items-end">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="target_ref" value="wp:{{ plan.site_id }}:{{ plan.plan_id }}" />
+      <input type="hidden" name="next_url" value="{{ url_for('wp_review', site_id=plan.site_id, plan_id=plan.plan_id) }}" />
+      <div class="sm:col-span-2">
+        <label class="az-label" for="wp-review-research-topic">Ämne</label>
+        <input
+          id="wp-review-research-topic"
+          name="topic"
+          type="text"
+          maxlength="300"
+          required
+          class="az-input text-xs"
+          placeholder="T.ex. WooCommerce template hook eller tillgänglighet WCAG"
+        />
+      </div>
+      <div>
+        <label class="az-label" for="wp-review-research-profile">Profil</label>
+        <select id="wp-review-research-profile" name="profile_id" class="az-select text-xs">
+          <option value="design_inspiration" selected>design_inspiration</option>
+          <option value="technical_docs">technical_docs</option>
+        </select>
+      </div>
+      <div class="flex gap-2">
+        <select name="depth" aria-label="Djup" class="az-select text-xs">
+          <option value="quick">quick</option>
+          <option value="standard" selected>standard</option>
+        </select>
+        <button type="submit" class="az-btn-oscar az-btn-sm shrink-0" data-busy-label="Startar...">Starta</button>
+      </div>
+    </form>
+
+    {% set wp_jobs = wp_research_jobs | default([]) %}
+    {% if wp_jobs %}
+    <ul class="space-y-2 text-xs">
+      {% for rj in wp_jobs %}
+      {% set rj_id = rj.research_id or rj.id %}
+      {% set rj_topic = (rj.topic if (rj.topic is defined and rj.topic) else none) or (rj.spec.topic if (rj.spec is defined and rj.spec and rj.spec.topic is defined) else rj_id) %}
+      {% set rj_profile = (rj.profile_id if (rj.profile_id is defined and rj.profile_id) else none) or (rj.spec.profile_id if (rj.spec is defined and rj.spec and rj.spec.profile_id is defined) else 'design_inspiration') %}
+      <li class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ink-700/70 bg-ink-950/60 px-3 py-2">
+        <div class="min-w-0">
+          <a class="font-medium text-steel-300 hover:underline" href="/research/{{ rj_id }}">
+            {{ rj_topic }}
+          </a>
+          <div class="font-mono text-mist-400">{{ rj_id }} · {{ rj_profile }}</div>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          {{ ui.status_badge('ok' if rj.status == 'completed' else ('warn' if rj.status in ['partial', 'cancelled'] else ('error' if rj.status == 'failed' else 'info')), rj.status) }}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="az-muted text-xs">Inga research-briefs kopplade till denna arbetsyta.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
   {% if has_sandbox_smoke and sandbox_screenshots %}
   <section class="az-card space-y-3" data-sandbox-smoke-gallery="true">
     <h2 class="font-display text-base font-semibold text-mist-100">Syntetiska skärmdumpar (sandlåda)</h2>

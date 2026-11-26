@@ -243,6 +243,91 @@
     {% endif %}
   </section>
 
+  <!-- 3b. Sök-router & kretsbrytare -->
+  {% set sr = snapshot.get('search_router') or {} %}
+  {% set sr_breakers = sr.get('breakers') or {} %}
+  <section class="az-card-oscar space-y-4" data-runtime-card="search-router">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="font-display text-base font-semibold text-oscar-300">Sök-router &amp; kretsbrytare</h2>
+        {% if sr.get('kill_switch') %}
+          {{ ui.status_badge('error', 'Kill-switch aktiv') }}
+        {% elif sr.get('mock_mode') %}
+          {{ ui.status_badge('warn', 'Mock-läge') }}
+        {% elif sr.get('enabled') %}
+          {{ ui.status_badge('ok', 'Live aktiverad') }}
+        {% else %}
+          {{ ui.status_badge('neutral', 'Inaktiverad') }}
+        {% endif %}
+      </div>
+      <form
+        method="post"
+        action="/oscar/runtime/search-breaker-reset"
+        data-confirm="Nollställa alla kretsbrytare för externa sökproviders och höja epoken?"
+        data-confirm-title="Nollställ sök-kretsbrytare"
+        data-confirm-ok="Nollställ"
+      >
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button class="az-btn-secondary az-btn-sm" type="submit" data-search-breaker-reset="true" data-busy-label="Nollställer...">
+          {{ icon('refresh', 'xs') }}
+          <span>Nollställ sök-kretsbrytare</span>
+        </button>
+      </form>
+    </div>
+
+    <dl class="grid gap-3 sm:grid-cols-3 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Öppna breakers</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ sr.get('open_breakers_count', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Dagskvot (sökningar)</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ sr.get('daily_queries_used', 0) }} / {{ sr.get('daily_queries_cap', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Månadskvot (extern USD)</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ fmt_usd(sr.get('monthly_external_usd', 0)) }} / {{ fmt_usd(sr.get('monthly_external_usd_cap', 0)) }}</dd>
+      </div>
+    </dl>
+
+    {% if sr_breakers %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Sök-router circuit breakers">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Provider / Route</th>
+            <th scope="col">Tillstånd</th>
+            <th scope="col">Fel</th>
+            <th scope="col">Återstår / Öppen till</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for bkey, binfo in sr_breakers.items() %}
+          {% set bstate = (binfo.get('state') if binfo is mapping else binfo) or 'closed' %}
+          {% set bfail = (binfo.get('failure_count') if (binfo is mapping and binfo.get('failure_count') is not none) else (binfo.get('failures', 0) if binfo is mapping else 0)) %}
+          <tr>
+            <td><code class="az-code font-mono">{{ bkey }}</code></td>
+            <td>{{ ui.status_badge('ok' if bstate == 'closed' else 'warn', bstate) }}</td>
+            <td class="font-mono text-xs tabular-nums">{{ bfail }}</td>
+            <td class="font-mono text-xs text-mist-400 tabular-nums">
+              {% if binfo is mapping and binfo.get('remaining_s') %}
+                {{ binfo.get('remaining_s') }} s
+              {% elif binfo is mapping and binfo.get('open_until') %}
+                {{ fmt_dt(binfo.get('open_until')) or binfo.get('open_until') }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Inga öppna eller registrerade sök-kretsbrytare.</p>
+    {% endif %}
+  </section>
+
   <!-- 4. Diskförbrukning (.azom-data) + Städning (GC) -->
   <section class="az-card-oscar space-y-4" data-runtime-card="disk-gc">
     <div class="flex flex-wrap items-center justify-between gap-2">

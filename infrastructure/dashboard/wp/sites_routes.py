@@ -35,6 +35,31 @@ def register_sites_routes(app: Flask) -> None:
         data = result.data or {}
         site = data.get("site")
         review_plans = site_review_plans(site_id, actor=g.actor["name"], admin=file_admin()) if site else []
+        wp_research_allowed = bool(file_admin() or can_drill())
+        wp_research_jobs: list[dict] = []
+        if site and wp_research_allowed:
+            try:
+                from research_routes import load_linked_research_jobs
+
+                site_jobs = load_linked_research_jobs(
+                    actor=g.actor["name"],
+                    target_ref=f"wp_site:{site_id}",
+                    limit=10,
+                )
+                plan_jobs = load_linked_research_jobs(
+                    actor=g.actor["name"],
+                    target_ref_prefix=f"wp:{site_id}:",
+                    limit=10,
+                )
+                seen_ids: set[str] = set()
+                for item in [*site_jobs, *plan_jobs]:
+                    jid = str(item.get("research_id") or "")
+                    if jid and jid not in seen_ids:
+                        seen_ids.add(jid)
+                        wp_research_jobs.append(item)
+                wp_research_jobs = wp_research_jobs[:10]
+            except Exception:
+                wp_research_jobs = []
         return render_template(
             "wp_site.html",
             **_dashboard_context(
@@ -47,6 +72,9 @@ def register_sites_routes(app: Flask) -> None:
                 review_plans=review_plans,
                 can_run=can_run(site),
                 can_drill=can_drill(),
+                wp_research_allowed=wp_research_allowed,
+                can_wp_research=wp_research_allowed,
+                wp_research_jobs=wp_research_jobs,
                 error=None if result.ok else result.message,
             ),
         )

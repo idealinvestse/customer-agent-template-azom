@@ -253,6 +253,80 @@
     {% endif %}
   </section>
 
+  <!-- Marknads- & konkurrentresearch -->
+  <section class="az-card space-y-4" data-marketing-research="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">Marknads- &amp; konkurrentresearch</h2>
+        <p class="az-muted text-xs">Kör extern research för Google Ads/GA4-uppdateringar, säsongstrender eller nordiska konkurrenter (skrivskyddat).</p>
+      </div>
+      <a class="az-btn-secondary az-btn-sm" href="/research">Öppna Research-hubb</a>
+    </div>
+
+    <form method="post" action="/research/jobs" class="grid gap-3 sm:grid-cols-4 sm:items-end">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="target_ref" value="marketing:general" />
+      <input type="hidden" name="next_url" value="/marketing" />
+      <div class="sm:col-span-2">
+        <label class="az-label" for="mkt-research-topic">Ämne</label>
+        <input
+          id="mkt-research-topic"
+          name="topic"
+          type="text"
+          maxlength="300"
+          required
+          class="az-input text-xs"
+          placeholder="T.ex. Google Ads Consent Mode v2 krav Sverige 2026"
+        />
+      </div>
+      <div>
+        <label class="az-label" for="mkt-research-profile">Profil</label>
+        <select id="mkt-research-profile" name="profile_id" class="az-select text-xs">
+          <option value="marketing_intel" selected>marketing_intel</option>
+          <option value="competitor_market">competitor_market</option>
+        </select>
+      </div>
+      <div class="flex gap-2">
+        <select name="market" aria-label="Marknad" class="az-select text-xs">
+          <option value="SE" selected>SE</option>
+          <option value="NO">NO</option>
+          <option value="DK">DK</option>
+        </select>
+        <button type="submit" class="az-btn-primary az-btn-sm shrink-0" data-busy-label="Startar...">
+          {{ icon('search', 'xs') }}
+          <span>Starta</span>
+        </button>
+      </div>
+    </form>
+
+    {% set mkt_jobs = marketing_research_jobs | default([]) %}
+    {% if mkt_jobs %}
+    <ul class="space-y-2 text-xs">
+      {% for rj in mkt_jobs %}
+      {% set rj_id = rj.research_id or rj.id %}
+      {% set rj_topic = (rj.topic if (rj.topic is defined and rj.topic) else none) or (rj.spec.topic if (rj.spec is defined and rj.spec and rj.spec.topic is defined) else rj_id) %}
+      {% set rj_profile = (rj.profile_id if (rj.profile_id is defined and rj.profile_id) else none) or (rj.spec.profile_id if (rj.spec is defined and rj.spec and rj.spec.profile_id is defined) else 'marketing_intel') %}
+      <li class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ink-700/70 bg-ink-950/60 px-3 py-2">
+        <div class="min-w-0">
+          <a class="font-medium text-steel-300 hover:underline" href="/research/{{ rj_id }}">
+            {{ rj_topic }}
+          </a>
+          <div class="font-mono text-mist-400">{{ rj_id }} · {{ rj_profile }}</div>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          {{ ui.status_badge('ok' if rj.status == 'completed' else ('warn' if rj.status in ['partial', 'cancelled'] else ('error' if rj.status == 'failed' else 'info')), rj.status) }}
+          {% if rj.evidence_status %}
+          {{ ui.status_badge('neutral', rj.evidence_status) }}
+          {% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="az-muted text-xs">Inga marknadsresearch-jobb startade ännu.</p>
+    {% endif %}
+  </section>
+
   {% if is_oscar %}
   <section class="az-card-oscar flex flex-wrap items-center justify-between gap-3">
     <div>
