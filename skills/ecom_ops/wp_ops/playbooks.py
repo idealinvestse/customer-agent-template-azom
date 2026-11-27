@@ -567,7 +567,8 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "summary": (
             "Lär och fråga skrivskyddad, noll-PII butikskunskap över 7 domäner "
             "(plattformsregler, katalog/prissättning, temaarkitektur, varumärkesröst, "
-            "policyer, plugin-ekosystem och säkerhetsläge) via wp_shop_intel_*."
+            "policyer, plugin-ekosystem och säkerhetsläge) via wp_shop_intel_status, "
+            "wp_shop_intel_run, wp_shop_intel_query och wp_shop_intel_security_audit."
         ),
         "steps": [
             "Kontrollera senaste snapshot och grindstatus med wp_shop_intel_status(site_id=...).",
@@ -733,7 +734,7 @@ _TOPIC_RULES: dict[str, tuple[tuple[re.Pattern[str], int], ...]] = {
         (re.compile(r"\b(?:ankartext\w*|anchor\s+(?:text|mix)|dofollow|nofollow|drip\s+plan|leverant[öo]rsbrief)\b", re.I), 4),
     ),
     "shop_intel_learning": (
-        (re.compile(r"wp_shop_intel_(?:run|status|query)|SHOP_INTEL_CONTEXT|\bsi-[a-f0-9]{4,12}\b", re.I), 5),
+        (re.compile(r"wp_shop_intel_run|wp_shop_intel_status|wp_shop_intel_query|SHOP_INTEL_CONTEXT|\bsi-[a-f0-9]{4,12}\b", re.I), 5),
         (re.compile(r"\b(?:shop[_\s-]?intel(?:ligence)?|butiks(?:intelligens|analys|kunskap|profil|dossier|fakta)|store\s+(?:intel|dossier|profile|knowledge|learning))\b", re.I), 5),
         (re.compile(r"\b(?:fraktregler|fraktzon\w*|fri\s+frakt|returpolicy|[åa]ngerr[äa]tt|k[öo]pvillkor|betalmetoder|betals[äa]tt|betalgateway\w*|plugin-?landskap|tema-?arkitektur)\b", re.I), 3),
     ),
