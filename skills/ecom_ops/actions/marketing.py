@@ -793,30 +793,51 @@ class MarketingService:
         }
 
     def _woo_orders_in_window(self, *, days: int) -> list[Any]:
-        """Orders in lookback window (paginated, capped)."""
+        """Orders in lookback window across configured markets (paginated, capped)."""
         from ecom_ops.integrations.woocommerce import client_from_env
 
-        woo = client_from_env(use_mock=self._use_mock)
+        domains_to_query: list[str | None] = [None]
+        if not self._mock_runtime():
+            for dom in ("se", "no", "dk", "fi"):
+                if os.environ.get(f"WOO_BASE_URL_{dom.upper()}", "").strip():
+                    domains_to_query.append(dom)
+
         end = datetime.now(UTC)
         start = end - timedelta(days=max(1, int(days)))
         after = start.isoformat().replace("+00:00", "Z")
         before = end.isoformat().replace("+00:00", "Z")
         collected: list[Any] = []
-        page = 1
-        while page <= 20 and len(collected) < 2000:
-            batch = woo.list_orders(
-                status="processing,completed",
-                per_page=100,
-                page=page,
-                after=after,
-                before=before,
-            )
-            if not batch:
-                break
-            collected.extend(batch)
-            if len(batch) < 100:
-                break
-            page += 1
+        seen_keys: set[tuple[str, str]] = set()
+        for dom in domains_to_query:
+            if dom is None:
+                woo = client_from_env(use_mock=self._use_mock)
+            else:
+                try:
+                    woo = client_from_env(use_mock=self._use_mock, domain=dom)
+                except TypeError:
+                    woo = client_from_env(use_mock=self._use_mock)
+            page = 1
+            while page <= 20 and len(collected) < 2000:
+                batch = woo.list_orders(
+                    status="processing,completed",
+                    per_page=100,
+                    page=page,
+                    after=after,
+                    before=before,
+                )
+                if not batch:
+                    break
+                for row in batch:
+                    oid = str(getattr(row, "id", "") or (row.get("id") if isinstance(row, dict) else ""))
+                    dedup_key = (str(getattr(woo, "base_url", dom or "")), oid)
+                    if oid and dedup_key in seen_keys:
+                        continue
+                    if oid:
+                        seen_keys.add(dedup_key)
+                    collected.append(row)
+                if len(batch) < 100:
+                    break
+                page += 1
         return collected
 
     def _woo_purchase_count(self, *, days: int) -> int:

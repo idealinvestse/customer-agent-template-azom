@@ -193,7 +193,7 @@ python -m ecom_ops --mock [--null-send] cases poll|list|show|reply|draft|regener
 python -m ecom_ops --actor oscar cases shadow-report [--days 7]
 python -m ecom_ops --actor oscar cases retention-purge [--dry-run]
 python -m ecom_ops --mock marketing digest|health|suggests|…
-python -m ecom_ops --mock wp sites|status|show|check|backup|backups|restore-drill
+python -m ecom_ops --mock wp sites|status|show|check|backup|backups|restore-drill|changes|change-show|rollback|bridge-health|cache-flush
 python -m ecom_ops --mock search|fetch-url|research ...
 python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends|soak-preflight
 python -m ecom_ops.bot

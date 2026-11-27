@@ -165,7 +165,7 @@ def wp_push_draft_actions(plan_id: str) -> ActionMarkup:
         rows=[
             [
                 ActionButton(
-                    label="📝 Skicka som WP-utkast",
+                    label="📝 Skicka WP-utkast",
                     payload=f"wpreview:push_draft:{pid}",
                 ),
                 ActionButton(label="❌ Avbryt", payload=f"wpreview:no:{pid}"),
@@ -188,7 +188,7 @@ def wp_review_actions(
         rows.append(
             [
                 ActionButton(
-                    label="Stagea ändringar till staging",
+                    label="Stagea till staging",
                     payload=f"wpreview:stage:{pid}",
                 ),
                 ActionButton(label="Avbryt", payload=f"wpreview:no:{pid}"),
@@ -198,7 +198,7 @@ def wp_review_actions(
             rows.append(
                 [
                     ActionButton(
-                        label="📝 Skicka som WP-utkast",
+                        label="📝 Skicka WP-utkast",
                         payload=f"wpreview:push_draft:{pid}",
                     )
                 ]
@@ -207,7 +207,7 @@ def wp_review_actions(
         rows.append(
             [
                 ActionButton(
-                    label="📝 Skicka som WP-utkast",
+                    label="📝 Skicka WP-utkast",
                     payload=f"wpreview:push_draft:{pid}",
                 ),
                 ActionButton(label="Avbryt", payload=f"wpreview:no:{pid}"),
@@ -317,7 +317,10 @@ def clarification_actions(
             else:
                 label = clean_label[:20].rstrip()
         else:
-            label = (f"⭐ {clean_label}" if recommended else clean_label)[:48]
+            if recommended:
+                label = f"⭐ {clean_label[:18].rstrip()}"[:20] if len(clean_label) <= 24 else f"⭐ {clean_label}"[:48]
+            else:
+                label = clean_label[:48]
         rows.append([ActionButton(label=label, payload=payload)])
 
     rows.append(

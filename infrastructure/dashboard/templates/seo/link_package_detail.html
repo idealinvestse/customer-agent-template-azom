@@ -1,0 +1,568 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Länkpaket {{ pkg.get('package_id') }} – SEO Studio – Azom{% endblock %}
+{% block page_subtitle %}Leverantörsunderlag &amp; Ankartext-guardrails{% endblock %}
+{% block content %}
+{% set st = (pkg.get('status') or 'draft') | lower %}
+{% set blocked = pkg.get('guardrail_blocked') %}
+{% set warnings = pkg.get('guardrail_warnings') or [] %}
+{% set qc = pkg.get('quality_criteria') if pkg.get('quality_criteria') is mapping else {} %}
+{% set drip = pkg.get('drip_plan') if pkg.get('drip_plan') is sequence and pkg.get('drip_plan') is not string else [] %}
+{% set targets = pkg.get('targets') if pkg.get('targets') is sequence and pkg.get('targets') is not string else [] %}
+
+<div class="space-y-5" data-seo-studio="true" data-seo-page="link_package_detail">
+  {{ ui.breadcrumb([
+    {'label': 'SEO Studio', 'href': '/seo'},
+    {'label': 'Länkpaket', 'href': '/seo/link-packages'},
+    {'label': pkg.get('package_id') or 'Detalj'}
+  ]) }}
+
+  {% set _raw_b = pkg.get('budget_sek_int') if pkg.get('budget_sek_int') is not none else pkg.get('budget_sek', 0) %}
+  {% set _safe_b = (_raw_b | int) if (_raw_b is number and -1000000000000 < _raw_b < 1000000000000) else 0 %}
+  {% call ui.page_header(
+    pkg.get('name') or pkg.get('package_id'),
+    "Paket " ~ (pkg.get('package_id') or '') ~ " · " ~ (pkg.get('site_id') or '') ~ " · Marknad " ~ ((pkg.get('market') or 'no') | upper) ~ " · " ~ _safe_b ~ " SEK · " ~ pkg.get('link_count', 0) ~ " länkar",
+    badge_text=st,
+    badge_tone='ok' if st in ('approved_for_manual_order', 'ordered_external', 'delivered') else ('warn' if st == 'ready_for_review' else ('error' if st == 'cancelled' else 'info'))
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/seo/vendors?site={{ selected_site }}&amp;market={{ pkg.get('market') or 'no' }}&amp;budget={{ _safe_b if _safe_b >= 1000 else 15000 }}&amp;links={{ pkg.get('link_count', 6) }}">
+      {{ icon('shield', 'xs') }}
+      <span>SEO-butiker</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages/{{ pkg.get('package_id') }}/export.md">
+      {{ icon('download', 'xs') }}
+      <span>Markdown</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages/{{ pkg.get('package_id') }}/export.json">
+      {{ icon('download', 'xs') }}
+      <span>JSON</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages/{{ pkg.get('package_id') }}/export.csv">
+      {{ icon('download', 'xs') }}
+      <span>CSV</span>
+    </a>
+  {% endcall %}
+
+  {% if autopilot_banner %}
+  {{ ui.info_callout(
+    'ok',
+    'Skapad av Autonom SEO-pipeline (HITL-utkast)',
+    'Audit, webbresearch, strategi, kampanj och kvalitetssäkrad SEO-butik är klara och kopplade till detta utkast. Granska ankarprofil och vald butik innan du skickar till Oscar.'
+  ) }}
+  {% endif %}
+
+  <!-- Zero external auto-order notice -->
+  {{ ui.info_callout(
+    'warn',
+    'Manuell beställning — inga externa köp görs automatiskt',
+    'Godkännande här markerar endast att leverantörsunderlaget är granskat och godkänt av Oscar för manuell beställning utanför Azom.'
+  ) }}
+
+  <!-- Cumulative Site Anchor Profile Banner -->
+  {% set cum = cumulative_anchor_mix | default({}) %}
+  {% if cum and (cum.get('total_links') is not none or cum.get('percentages') or cum.get('anchor_mix')) %}
+  {% set cum_pct = cum.get('percentages') if cum.get('percentages') is mapping else (cum.get('anchor_mix') if cum.get('anchor_mix') is mapping else {}) %}
+  {% set cum_blocked = cum.get('blocked') or cum.get('guardrail_blocked') %}
+  {% set cum_warns = cum.get('warnings') or cum.get('guardrail_warnings') or [] %}
+  {% set cum_exact = cum.get('exact_match_pct') if cum.get('exact_match_pct') is not none else cum_pct.get('exact', cum_pct.get('exact_match', 0)) %}
+  {% set cum_natural = cum.get('brand_url_generic_pct') if cum.get('brand_url_generic_pct') is not none else cum.get('natural_pct') %}
+  <section class="az-card p-3.5 space-y-2" data-seo-cumulative-anchor="true">
+    <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-semibold text-mist-100">Kumulativ sajt-ankarprofil ({{ pkg.get('site_id') }}):</span>
+        <span class="font-mono text-mist-300">{{ cum.get('total_links', 0) }} sammanlagda länkar</span>
+        <span class="font-mono text-mist-300">Exact: {{ cum_exact }}%</span>
+        {% if cum_natural is not none %}
+        <span class="font-mono text-mist-300">Naturlig: {{ cum_natural }}%</span>
+        {% endif %}
+      </div>
+      {{ ui.status_badge('error' if cum_blocked else ('warn' if cum_warns else 'ok'), 'Kumulativ risk' if cum_blocked else ('Kumulativ varning' if cum_warns else 'Kumulativt OK')) }}
+    </div>
+    {% if cum_warns %}
+    <ul class="list-disc pl-4 text-xs text-warn">
+      {% for cw in cum_warns[:3] %}
+      <li>{{ cw }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <!-- HITL Status Chain & Controls -->
+  <section class="{{ 'az-card-oscar' if can_approve_links else 'az-card' }} space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0 {{ 'text-oscar-300' if can_approve_links else '' }}">HITL-statuskedja</h2>
+      <div class="flex flex-wrap items-center gap-1.5 text-xs">
+        {% for step_key, step_lbl in [
+          ('draft', '1. Utkast'),
+          ('ready_for_review', '2. Granskning'),
+          ('approved_for_manual_order', '3. Godkänd (Oscar)'),
+          ('ordered_external', '4. Beställd externt'),
+          ('delivered', '5. Levererad')
+        ] %}
+          {{ ui.status_badge('ok' if st == step_key else 'neutral', step_lbl) }}
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      {% if st == 'draft' and can_suggest %}
+      <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/status" class="flex flex-wrap items-center gap-2">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="new_status" value="ready_for_review" />
+        <button
+          type="submit"
+          class="az-btn-primary az-btn-sm"
+          data-busy-label="Skickar..."
+          {% if blocked %}disabled aria-disabled="true"{% endif %}
+        >
+          Skicka till granskning (ready_for_review)
+        </button>
+      </form>
+      {% if blocked %}
+      <span class="text-xs text-danger-text">Blockerad av anti-spam-guardrail — åtgärda risker innan granskning.</span>
+      {% endif %}
+      {% endif %}
+
+      {% if can_approve_links %}
+        {% if st == 'ready_for_review' %}
+        <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/status">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="new_status" value="approved_for_manual_order" />
+          <button
+            type="submit"
+            class="az-btn-oscar az-btn-sm"
+            data-confirm="Godkänn länkpaket {{ pkg.get('package_id') }} för manuell extern beställning? (Inga automatiska köp görs.)"
+            data-confirm-title="Godkänn länkpaket (Oscar)"
+            data-confirm-ok="Godkänn underlag"
+            data-busy-label="Godkänner..."
+            {% if blocked %}disabled aria-disabled="true"{% endif %}
+          >
+            {{ icon('shield', 'xs') }}
+            <span>Godkänn för manuell order (Oscar)</span>
+          </button>
+        </form>
+        {% if blocked %}
+        <span class="text-xs text-danger-text">Godkännande spärrat av anti-spam-guardrail.</span>
+        {% endif %}
+        <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/status">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="new_status" value="draft" />
+          <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Skickar tillbaka...">
+            Skicka tillbaka till utkast
+          </button>
+        </form>
+        {% endif %}
+
+        {% if st == 'approved_for_manual_order' %}
+        <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/status">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="new_status" value="ordered_external" />
+          <button type="submit" class="az-btn-oscar az-btn-sm" data-busy-label="Uppdaterar...">
+            Markera som beställd externt
+          </button>
+        </form>
+        {% endif %}
+
+        {% if st == 'ordered_external' %}
+        <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/status">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="new_status" value="delivered" />
+          <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Uppdaterar...">
+            Markera som levererad
+          </button>
+        </form>
+        {% endif %}
+
+        {% if st not in ('delivered', 'cancelled') %}
+        <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/status">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="new_status" value="cancelled" />
+          <button
+            type="submit"
+            class="az-btn-danger az-btn-sm"
+            data-confirm="Avbryt länkpaket {{ pkg.get('package_id') }}?"
+            data-confirm-title="Avbryt länkpaket"
+            data-confirm-ok="Avbryt paket"
+            data-confirm-danger="1"
+            data-busy-label="Avbryter..."
+          >Avbryt</button>
+        </form>
+        {% endif %}
+      {% else %}
+      <span class="text-xs text-mist-400">Godkännande, beställningsstatus och avbryt kräver Oscar (MARKETING_MUTATE).</span>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- Anchor Mix Visual + Anti-Spam Guardrails -->
+  <div class="grid gap-5 lg:grid-cols-2">
+    <section class="az-card space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="az-section-title mb-0">Ankartext-mix &amp; Anti-spam-guardrails</h2>
+        {{ ui.status_badge('error' if guardrail_tone == 'danger' else guardrail_tone, guardrail_label, show_icon=True) }}
+      </div>
+
+      <div class="space-y-3">
+        {% for row in anchor_rows %}
+        <div class="space-y-1">
+          <div class="flex items-center justify-between text-xs">
+            <span class="font-medium text-mist-200">{{ row.label }}</span>
+            <span class="font-mono tabular-nums text-mist-300">
+              {{ row.pct }}%{% if row.count is not none %} ({{ row.count }} st){% endif %}
+            </span>
+          </div>
+          <progress class="az-progress w-full" max="100" value="{{ row.pct }}">{{ row.pct }}%</progress>
+        </div>
+        {% endfor %}
+      </div>
+
+      {% set block_reasons = pkg.get('blocking_reasons') or [] %}
+      {% if warnings or block_reasons %}
+      <div class="az-callout {{ 'az-callout-danger' if blocked else 'az-callout-warn' }}" role="note">
+        <span class="mt-0.5 shrink-0">{{ icon('alert-triangle', 'sm') }}</span>
+        <div class="min-w-0 flex-1 space-y-1 text-xs">
+          <p class="font-semibold">{{ 'Blockerande guardrail-varningar' if blocked else 'Guardrail-noteringar' }}</p>
+          <ul class="list-disc space-y-0.5 pl-4">
+            {% for b in block_reasons %}
+            <li>{{ b }}</li>
+            {% endfor %}
+            {% for w in warnings %}
+            <li>{{ w }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+      {% else %}
+      {{ ui.info_callout('ok', 'Guardrail godkänd', 'Ankartextprofilen håller en naturlig nordisk fördelning utan överoptimering.') }}
+      {% endif %}
+    </section>
+
+    <!-- Quality Criteria & Drip Plan -->
+    <section class="az-card space-y-4">
+      <h2 class="az-section-title mb-0">Kvalitetskriterier &amp; Droppplan</h2>
+
+      {% if qc %}
+      <dl class="grid grid-cols-2 gap-3 text-xs">
+        {% for qk, qv in qc.items() %}
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">{{ qk }}</dt>
+          <dd class="mt-1 font-medium text-mist-100">
+            {% if qv is sequence and qv is not string %}
+              {{ qv | join(', ') }}
+            {% elif qv is boolean %}
+              {{ fmt_sv_bool(qv) }}
+            {% else %}
+              {{ qv }}
+            {% endif %}
+          </dd>
+        </div>
+        {% endfor %}
+      </dl>
+      {% endif %}
+
+      {% if drip %}
+      <div class="space-y-2 border-t border-ink-700/70 pt-3">
+        <p class="text-xs font-semibold uppercase tracking-wider text-mist-400">Droppplan (publiceringstakt)</p>
+        <div class="az-table-wrap" tabindex="0" role="region" aria-label="Droppplan">
+          <table class="az-table">
+            <thead>
+              <tr>
+                <th scope="col">Period</th>
+                <th scope="col">Länkar</th>
+                <th scope="col">Fokus</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for step in drip %}
+              <tr>
+                <td class="font-mono text-xs">{{ ('Vecka ' ~ step.get('week')) if (step is mapping and step.get('week')) else (step.get('period') or ('Steg ' ~ loop.index) if step is mapping else step) }}</td>
+                <td class="font-mono text-xs tabular-nums">{{ step.get('links_scheduled') or step.get('links') or step.get('count') or '—' if step is mapping else '—' }}</td>
+                <td class="text-xs text-mist-300">{{ step.get('velocity_note') or step.get('focus') or step.get('note') or '' if step is mapping else '' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% endif %}
+    </section>
+  </div>
+
+  <!-- Vetted Nordic SEO Shop Selection & Comparison -->
+  {% set vs = vendor_selection | default({}) %}
+  {% set vcands = vs.get('candidates') if vs.get('candidates') is sequence and vs.get('candidates') is not string else [] %}
+  {% set sel_vid = pkg.get('selected_vendor_id') or vs.get('selected_vendor_id') or '' %}
+  {% set sel_vobj = vs.get('selected_vendor') if vs.get('selected_vendor') is mapping else {} %}
+  {% set v_checklist = vs.get('disclosure_checklist') if vs.get('disclosure_checklist') is sequence and vs.get('disclosure_checklist') is not string else [] %}
+  {% set v_citations = vs.get('citations') if vs.get('citations') is sequence and vs.get('citations') is not string else [] %}
+  <section class="az-card space-y-4" data-seo-vendor-selection="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">Vald kvalitetssäkrad SEO-butik &amp; jämförelse</h2>
+        <p class="az-muted text-xs">Objektiv white-hat vetting-matris (0–100) med anti-PBN-kontroll och nordisk reklammarkering. Endast manuell extern beställning efter Oscars godkännande.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-1.5">
+        {% if sel_vid %}
+        {{ ui.status_badge('ok', 'Vald butik: ' ~ (sel_vobj.get('name') or sel_vid) ~ ' (' ~ sel_vid ~ ')', show_icon=True) }}
+        {% else %}
+        {{ ui.status_badge('neutral', 'Ingen SEO-butik vald') }}
+        {% endif %}
+        {% if vs.get('recommended_tier') %}
+        {{ ui.status_badge('info', 'Nivå: ' ~ vs.get('recommended_tier')) }}
+        {% endif %}
+      </div>
+    </div>
+
+    {% if vs.get('budget_warning') %}
+    {{ ui.info_callout('warn', 'Budgetvarning (White-Hat golv)', vs.get('budget_warning')) }}
+    {% endif %}
+
+    {% if st == 'draft' and can_suggest and vcands %}
+    <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/vendor" class="flex flex-wrap items-end gap-3 rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div class="min-w-0 flex-1">
+        <label class="az-label" for="seo-pkg-vendor-select">Välj / byt kvalitetssäkrad SEO-butik (endast utkast)</label>
+        <select id="seo-pkg-vendor-select" name="vendor_id" class="az-select">
+          {% for vc in vcands %}
+          {% set vcid = vc.get('vendor_id') or '' %}
+          <option value="{{ vcid }}" {% if vcid == sel_vid %}selected{% endif %}>{{ vc.get('name') or vcid }} ({{ vc.get('domain') or vcid }}) — {{ vc.get('vetting_score') if vc.get('vetting_score') is not none else vc.get('score', '—') }}/100</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Sparar butik...">
+        {{ icon('check', 'xs') }}
+        <span>Spara vald SEO-butik</span>
+      </button>
+    </form>
+    {% elif st != 'draft' %}
+    <p class="text-xs text-mist-400">Vald SEO-butik är låst eftersom paketets status är <code class="az-code">{{ st }}</code> (endast redigerbar i <code class="az-code">draft</code>).</p>
+    {% endif %}
+
+    {% if vcands %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Jämförelse av kvalitetssäkrade SEO-butiker">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">SEO-butik &amp; Domän</th>
+            <th scope="col">Vetting-poäng</th>
+            <th scope="col">Nivå / Modell</th>
+            <th scope="col">Est. pris (SEK)</th>
+            <th scope="col">Garanti &amp; Språk</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for vc in vcands[:3] %}
+          {% set vcid = vc.get('vendor_id') or '' %}
+          {% set vscore = vc.get('vetting_score') if vc.get('vetting_score') is not none else (vc.get('score') or 0) %}
+          {% set u_rng = vc.get('estimated_unit_sek_range') if vc.get('estimated_unit_sek_range') is sequence and vc.get('estimated_unit_sek_range') is not string else [] %}
+          {% set vest = (u_rng[0] ~ '–' ~ u_rng[1] ~ ' SEK/länk') if (u_rng | length) == 2 else (vc.get('estimated_sek_range') or vc.get('price_range_sek') or '—') %}
+          <tr>
+            <td class="text-xs">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="font-medium text-mist-100">{{ vc.get('name') or vcid }}</span>
+                {% if vcid == sel_vid %}
+                {{ ui.status_badge('ok', 'Vald') }}
+                {% endif %}
+              </div>
+              <div class="font-mono text-mist-400">{{ vc.get('domain') or vcid }}</div>
+            </td>
+            <td class="font-mono text-xs tabular-nums">
+              {{ ui.status_badge('ok' if vscore >= 85 else ('warn' if vscore >= 70 else 'error'), vscore ~ '/100') }}
+            </td>
+            <td class="font-mono text-xs text-mist-300">{{ vc.get('business_model') or vc.get('archetype') or vc.get('tier') or '—' }}</td>
+            <td class="font-mono text-xs tabular-nums text-mist-200">{{ vest }}</td>
+            <td class="text-xs text-mist-300">{{ (vc.get('guarantee_months') or 12) ~ ' mån · ' ~ ('Modersmålsskribent' if vc.get('native_copywriting') else 'Egen copy') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 space-y-1.5 text-xs">
+        <p class="font-semibold text-mist-100">Nordisk disclosure-checklista (Annons / Annonse / Annonce)</p>
+        {% if v_checklist %}
+        <ul class="list-disc space-y-0.5 pl-4 text-mist-300">
+          {% for item in v_checklist %}
+          <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <ul class="list-disc space-y-0.5 pl-4 text-mist-300">
+          <li>SE: Märk betald redaktionell placering med Annons/Reklam (Konsumentverket).</li>
+          <li>NO: Märk betald redaktionell placering med Annonse/Reklame (Forbrukertilsynet).</li>
+          <li>DK: Märk betald redaktionell placering med Annonce (Forbrugerombudsmanden).</li>
+        </ul>
+        {% endif %}
+      </div>
+
+      {% if v_citations %}
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 space-y-1.5 text-xs">
+        <p class="font-semibold text-mist-100">Webb-vetting källor ({{ v_citations | length }})</p>
+        <ul class="space-y-1 text-mist-300">
+          {% for cit in v_citations[:4] %}
+          <li>
+            <span class="font-medium text-mist-200">{{ cit.get('title') or cit.get('url') }}</span>
+            {% if cit.get('url') %}<span class="block font-mono text-mist-400 break-all">{{ cit.get('url') }}</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <!-- In-Place Draft Edit Form (only while status == draft) -->
+  {% if st == 'draft' and can_suggest %}
+  <section class="az-card space-y-4" data-seo-link-draft-edit="true">
+    <div>
+      <h2 class="az-section-title mb-1">Redigera utkast</h2>
+      <p class="az-muted text-xs">Justera namn, budget, mål-rader eller anteckningar direkt på utkastet. Anti-spam-guardrails och kumulativ ankarprofil räknas om automatiskt.</p>
+    </div>
+    <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/edit" class="space-y-3">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div class="grid gap-3 sm:grid-cols-2">
+        <div>
+          <label class="az-label" for="seo-lp-edit-name">Paketnamn</label>
+          <input id="seo-lp-edit-name" name="name" type="text" required maxlength="180" class="az-input" value="{{ pkg.get('name') or '' }}" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-lp-edit-budget">Budget (SEK)</label>
+          <input id="seo-lp-edit-budget" name="budget_sek" type="number" min="1000" max="500000" step="500" class="az-input" value="{{ _safe_b if _safe_b >= 1000 else 15000 }}" />
+        </div>
+      </div>
+      <div>
+        <label class="az-label" for="seo-link-targets-raw">Mål-rader (<code class="az-code">URL | sökord | ankartyp | ankartext</code>)</label>
+        <textarea id="seo-link-targets-raw" name="targets_raw" rows="4" class="az-textarea font-mono text-xs">{{ targets_raw_prefill | default('') }}</textarea>
+        <p id="seo-link-mix-preview" class="mt-1 text-xs text-mist-400">Ankarprofil beräknas automatiskt.</p>
+      </div>
+      <div>
+        <label class="az-label" for="seo-lp-notes">Anteckningar</label>
+        <textarea id="seo-lp-notes" name="notes" rows="2" class="az-textarea" maxlength="600">{{ pkg.get('notes') or '' }}</textarea>
+      </div>
+      <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Sparar...">Spara ändringar i utkast</button>
+    </form>
+  </section>
+  {% endif %}
+
+  <!-- Target Rows Table + Delivery Tracking & Live Placement Verification -->
+  {% if targets %}
+  <section class="az-card space-y-3" data-seo-link-targets="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0">Mål-URL:er, Leverans &amp; Verifiering ({{ targets | length }})</h2>
+      <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/verify">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Verifierar...">
+          {{ icon('check-circle', 'xs') }}
+          <span>Verifiera placeringar</span>
+        </button>
+      </form>
+    </div>
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Länkmål">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Mål-URL &amp; Sökord</th>
+            <th scope="col">Ankartyp &amp; Text</th>
+            <th scope="col">Levererad placering</th>
+            <th scope="col">Verifieringsstatus</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in targets %}
+          {% set idx = t.get('index') if t.get('index') is not none else loop.index %}
+          {% set at = (t.get('anchor_type') or 'brand') | lower %}
+          {% set pub_url = t.get('published_url') or '' %}
+          {% set ver = t.get('verification') if t.get('verification') is mapping else (ver_by_idx.get(idx) if ver_by_idx is mapping and idx in ver_by_idx else (ver_by_url.get(pub_url) if ver_by_url is mapping and pub_url in ver_by_url else {})) %}
+          <tr>
+            <td class="text-xs">
+              <div class="font-mono text-mist-100">{{ t.get('target_url') or t.get('url') }}</div>
+              <div class="text-mist-400">{{ t.get('primary_keyword') or t.get('keyword') or '—' }}</div>
+            </td>
+            <td class="text-xs">
+              {{ ui.status_badge('danger' if at in ('exact', 'exact_match') else ('warn' if at in ('partial', 'partial_match') else 'ok'), at) }}
+              <div class="mt-1 text-mist-200">{{ t.get('anchor_text') or '—' }}</div>
+            </td>
+            <td class="text-xs space-y-1.5">
+              {% if pub_url %}
+              <div class="font-mono text-steel-300 break-all">{{ pub_url }}</div>
+              {% if t.get('published_at') %}
+              <div class="text-mist-400">Publicerad: {{ t.get('published_at') }}</div>
+              {% endif %}
+              {% else %}
+              <span class="text-mist-500">Ej levererad ännu</span>
+              {% endif %}
+              {% if can_approve_links and st != 'cancelled' %}
+              <form method="post" action="/seo/link-packages/{{ pkg.get('package_id') }}/deliver" class="flex flex-wrap items-center gap-1.5">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                <input type="hidden" name="target_index" value="{{ idx }}" />
+                <input
+                  type="url"
+                  name="published_url"
+                  required
+                  class="az-input text-xs font-mono"
+                  value="{{ pub_url }}"
+                  placeholder="https://publisher.no/artikel/"
+                  aria-label="Publicerad URL för mål {{ idx }}"
+                />
+                <button type="submit" class="az-btn-oscar az-btn-sm shrink-0" data-busy-label="Sparar...">Spara leverans</button>
+              </form>
+              {% endif %}
+            </td>
+            <td class="text-xs">
+              {% if ver %}
+              {% set http_st = ver.get('http_status', ver.get('status_code')) %}
+              {% set is_indexable = ver.get('indexable', not ver.get('noindex', False)) %}
+              {% set anchor_ok = ver.get('anchor_match', ver.get('target_found')) %}
+              {% set rel_val = ver.get('rel_type') or ver.get('rel') or 'dofollow' %}
+              <div class="flex flex-wrap gap-1">
+                {% if http_st is not none %}
+                {{ ui.status_badge('ok' if http_st == 200 else 'error', 'HTTP ' ~ http_st) }}
+                {% endif %}
+                {{ ui.status_badge('ok' if is_indexable else 'error', 'Indexbar' if is_indexable else 'noindex') }}
+                {% if anchor_ok is not none %}
+                {{ ui.status_badge('ok' if anchor_ok else 'warn', 'Ankare OK' if anchor_ok else 'Ankare avviker') }}
+                {% endif %}
+                {{ ui.status_badge('ok' if rel_val == 'dofollow' else 'warn', 'rel: ' ~ rel_val) }}
+              </div>
+              {% else %}
+              <span class="text-mist-500">Ej verifierad</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- Supplier Order Brief (Markdown) with Copy + Export -->
+  <section class="az-card space-y-3">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-0">Fullständigt leverantörsunderlag</h2>
+        <p class="az-muted text-xs">Kopiera eller ladda ner som Markdown, JSON eller CSV för manuell beställning efter Oscars godkännande.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          class="az-btn-secondary az-btn-sm"
+          data-copy-target="#link-pack-brief-text"
+        >
+          {{ icon('copy', 'xs') }}
+          <span data-copy-label>Kopiera underlag</span>
+        </button>
+        <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages/{{ pkg.get('package_id') }}/export.md">Ladda ner .md</a>
+        <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages/{{ pkg.get('package_id') }}/export.json">Ladda ner .json</a>
+        <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages/{{ pkg.get('package_id') }}/export.csv">Ladda ner .csv</a>
+      </div>
+    </div>
+
+    <pre id="link-pack-brief-text" class="max-h-72 overflow-x-auto overflow-y-auto whitespace-pre-wrap rounded-lg border border-ink-700/70 bg-ink-950/60 p-4 font-mono text-xs text-mist-200">{{ pkg.get('brief_markdown') or '' }}</pre>
+  </section>
+</div>
+{% endblock %}

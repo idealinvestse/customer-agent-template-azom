@@ -25,7 +25,13 @@ from ecom_ops.integrations._http_guard import (
     PinnedHTTPSConnection,
 )
 from ecom_ops.integrations._http_guard import (
+    is_ip_literal as _guard_is_ip_literal,
+)
+from ecom_ops.integrations._http_guard import (
     is_public_global_ip as _guard_is_public_global_ip,
+)
+from ecom_ops.integrations._http_guard import (
+    resolve_and_validate_public_ips as _guard_resolve_pinned_public_ips,
 )
 from ecom_ops.model_router.base import detect_image_format
 from ecom_ops.runtime_profile import null_send_active
@@ -258,7 +264,14 @@ def actions_to_messenger_quick_replies(actions: ActionMarkup | None) -> list[dic
         for btn in row:
             if not btn.payload:
                 continue
-            title = " ".join((btn.label or "").split())[:20] or "Val"
+            raw_title = " ".join((btn.label or "").split())
+            if len(raw_title) > 20:
+                cut = raw_title[:20]
+                if " " in cut and len(cut.rsplit(" ", 1)[0]) >= 8:
+                    cut = cut.rsplit(" ", 1)[0]
+                title = cut.rstrip(" .,;:-") or raw_title[:20]
+            else:
+                title = raw_title or "Val"
             quick_replies.append(
                 {
                     "content_type": "text",
@@ -274,12 +287,16 @@ def actions_to_messenger_quick_replies(actions: ActionMarkup | None) -> list[dic
 def _should_use_quick_replies(actions: ActionMarkup | None) -> bool:
     if not actions or not actions.rows:
         return False
-    postbacks = [btn for row in actions.rows for btn in row if btn.payload]
+    buttons = [btn for row in actions.rows for btn in row]
+    postbacks = [btn for btn in buttons if btn.payload]
     if not postbacks:
         return False
     if any((btn.payload or "").lower().startswith("clarify:") for btn in postbacks):
         return True
-    return len(postbacks) > 3
+    urls = [btn for btn in buttons if btn.url]
+    # Messenger button templates cap at 3 buttons total, so switch to Quick Replies +
+    # URL footer whenever postbacks + URLs exceed 3 (e.g. stage + push_draft + Avbryt + link).
+    return (len(postbacks) + len(urls)) > 3
 
 
 _MESSENGER_CHUNK_LIMIT = 1950
@@ -429,61 +446,27 @@ def _resolve_pinned_public_ips(host: str, port: int = 443) -> list[str]:
     clean = (host or "").strip().lower().rstrip(".")
     if clean.startswith("[") and clean.endswith("]"):
         clean = clean[1:-1]
-    if not clean or clean == "localhost" or clean.endswith((".local", ".internal", ".invalid", ".example")):
+    if not clean or "%" in clean:
         raise urllib.error.URLError("Unsafe host blocked")
-    try:
-        ipaddress.ip_address(clean)
-        if not _is_safe_public_ip(clean):
+    if _guard_is_ip_literal(clean):
+        try:
+            ipaddress.ip_address(clean)
+        except ValueError as exc:
+            raise urllib.error.URLError("Unsafe non-canonical IP blocked") from exc
+        if not _guard_is_public_global_ip(clean):
             raise urllib.error.URLError("Non-public IP blocked")
         return [clean]
-    except ValueError:
-        pass
     try:
-        infos = socket.getaddrinfo(clean, int(port), type=socket.SOCK_STREAM)
-    except OSError as exc:
-        raise urllib.error.URLError(f"DNS resolution failed: {exc}") from exc
-    if not infos:
-        raise urllib.error.URLError("Empty DNS result")
-    pinned: list[str] = []
-    seen: set[str] = set()
-    for info in infos:
-        sockaddr = info[4]
-        if not sockaddr:
-            raise urllib.error.URLError("Malformed sockaddr")
-        ip_str = str(sockaddr[0]).split("%", 1)[0]
-        if not _is_safe_public_ip(ip_str):
-            raise urllib.error.URLError("Non-public resolved IP blocked")
-        if ip_str not in seen:
-            seen.add(ip_str)
-            pinned.append(ip_str)
-    if not pinned:
-        raise urllib.error.URLError("No public IPs resolved")
-    return pinned
+        return _guard_resolve_pinned_public_ips(clean, int(port), getaddrinfo_fn=socket.getaddrinfo)
+    except (ValueError, OSError) as exc:
+        raise urllib.error.URLError(f"Unsafe host or DNS failure: {exc}") from exc
 
 
 def _host_is_public_ip(host: str) -> bool:
-    clean = (host or "").strip().lower().rstrip(".")
-    if not clean or clean == "localhost" or clean.endswith((".local", ".internal", ".invalid", ".example")):
-        return False
     try:
-        ipaddress.ip_address(clean)
-        return _is_safe_public_ip(clean)
-    except ValueError:
-        pass
-    try:
-        infos = socket.getaddrinfo(clean, 443, type=socket.SOCK_STREAM)
-    except OSError:
+        return bool(_resolve_pinned_public_ips(host, 443))
+    except urllib.error.URLError:
         return False
-    if not infos:
-        return False
-    for info in infos:
-        sockaddr = info[4]
-        if not sockaddr:
-            return False
-        ip_str = str(sockaddr[0]).split("%", 1)[0]
-        if not _is_safe_public_ip(ip_str):
-            return False
-    return True
 
 
 def _validate_public_https_image_url(url: str) -> str | None:
@@ -819,15 +802,25 @@ def send_bot_reply(
                 reply_markup=br.reply_markup,
                 attachments=br.attachments,
             )
+    msgs = reply_to_messenger_messages(br)
+    has_qr = any("quick_replies" in m for m in msgs)
+    img_paths = safe_workspace_attachments(br.attachments)[:_MAX_OUTBOUND_IMAGES] if br.attachments else []
     results = []
-    for msg in reply_to_messenger_messages(br):
+    if img_paths and has_qr:
+        for img_path in img_paths:
+            results.append(
+                send_messenger_image(
+                    peer_id, img_path, page_token=page_token, dry_run=dry_run
+                )
+            )
+    for msg in msgs:
         results.append(
             send_messenger_message(
                 peer_id, msg, page_token=page_token, dry_run=dry_run
             )
         )
-    if br.attachments:
-        for img_path in safe_workspace_attachments(br.attachments)[:_MAX_OUTBOUND_IMAGES]:
+    if img_paths and not has_qr:
+        for img_path in img_paths:
             results.append(
                 send_messenger_image(
                     peer_id, img_path, page_token=page_token, dry_run=dry_run
@@ -836,14 +829,18 @@ def send_bot_reply(
     return results
 
 
-def _handle_accepts_image_paths(handler: Any) -> bool:
+def _handle_accepts_kwarg(handler: Any, param_name: str) -> bool:
     try:
         sig = inspect.signature(handler.handle)
     except (TypeError, ValueError):
         return False
-    return "image_paths" in sig.parameters or any(
+    return param_name in sig.parameters or any(
         p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
     )
+
+
+def _handle_accepts_image_paths(handler: Any) -> bool:
+    return _handle_accepts_kwarg(handler, "image_paths")
 
 
 def process_inbound(
@@ -853,12 +850,13 @@ def process_inbound(
     """Route InboundEvent through BotHandler."""
     if event.postback:
         return handler.handle_callback(event.peer_id, event.postback)
-    if event.image_paths and _handle_accepts_image_paths(handler):
-        return handler.handle(
-            event.peer_id,
-            event.text or "",
-            image_paths=list(event.image_paths),
-        )
+    kwargs: dict[str, Any] = {}
+    if event.image_paths and _handle_accepts_kwarg(handler, "image_paths"):
+        kwargs["image_paths"] = list(event.image_paths)
+    if event.image_urls and _handle_accepts_kwarg(handler, "image_urls"):
+        kwargs["image_urls"] = list(event.image_urls)
+    if kwargs:
+        return handler.handle(event.peer_id, event.text or "", **kwargs)
     return handler.handle(event.peer_id, event.text or "")
 
 

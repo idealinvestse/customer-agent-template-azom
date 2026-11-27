@@ -107,7 +107,7 @@ def cmd_help(ctx: CommandContext) -> str:
         "/status · /whoami · /new · /reset · /stop\n"
         "Telegram har också /jobs, /cancel [job-id] och Oscars /reconcile.\n"
         "/tools · /tasks · /usage · /model · /context\n"
-        "/order · /cases · /wp · /search · /research · /oauth · /ops · /health · /brief · /marketing · /commands"
+        "/order · /cases · /wp · /seo · /search · /research · /oauth · /ops · /health · /brief · /marketing · /commands"
     )
 
 
@@ -298,11 +298,19 @@ def cmd_tools(ctx: CommandContext) -> str:
         ("wp_code_index / wp_template_hierarchy / wc_template_overrides_audit", "Kodindex, mallhierarki och WooCommerce override-granskning"),
         ("wp_component_intel / wp_playbook", "WordPress.org-komponentinfo och WP/Woo-playbooks"),
         ("wp_propose_file_diff / wp_propose_new_file", "Enfils diffplan (fe-*) med hashar"),
+        (
+            "wp_seo_audit / wp_seo_plan_meta / wp_seo_batch_plan / wp_seo_drift_digest / wp_seo_strategy / wp_seo_campaign / wp_seo_link_package / wp_seo_autopilot",
+            "SEO Studio: audit (GSC/paritet/deep-crawl/diff), meta-/batch-plan, veckodigest, strategi, kampanj, kvalitetssäkrade SEO-butiker, länkpaket & autopilot (HITL)",
+        ),
     ]
     slash_tools = [
         (
-            "/wp sites | /wp use <site-id> | /wp plans [site-id] | /wp plan <id> | /wp clear",
-            "Välj sajt eller visa granskningsplaner (wr-*)",
+            "/wp sites | use <site-id> | plugins | mu-plugins | plans | plan <id> | changes | rollback <id> | bridge | clear",
+            "Välj sajt, hantera plugins/MU-plugins, granskningsplaner (wr-*), Change Vault & bridge",
+        ),
+        (
+            "/seo scan | product | page | media | batch | gsc | parity | diff | digest | verify | strategy | campaign | links | vendors | autopilot | plans | plan <id>",
+            "SEO Studio: audit, batchplan, GSC, paritet, diff, digest, verifiering, strategi, kampanj, SEO-butiker, autopilot & länkpaket (read-only / utkast)",
         ),
         ("order-status", "Uppdatera Woo-orderstatus (operator/CLI)"),
         ("product-desc", "Generera produktbeskrivning"),
@@ -454,11 +462,20 @@ def cmd_skill(ctx: CommandContext) -> str:
             "Skill: ecom-ops\n"
             "Actions: order-status, product-desc, product-data, pages, posts, "
             "site-text, themes, plugins, WordPress ops reads/previews, support, mail, ssh, cases\n"
-            "WP context: /wp sites, /wp use <site-id>, /wp plans [site-id], /wp plan <plan-id>, /wp clear; plans are preview-only\n"
+            "WP context: /wp sites, /wp use <site-id>, /wp plugins [site-id], /wp mu-plugins [site-id], "
+            "/wp plans [site-id], /wp plan <plan-id>, /wp changes [site-id], /wp rollback <change-id>, "
+            "/wp bridge [site-id], /wp clear; plans are preview-only\n"
             "CLI: python -m ecom_ops --help\n"
             "Docs: skills/ecom-ops/SKILL.md"
         )
-    return f"Okänd skill {name!r}. Prova /skill ecom-ops"
+    if name in {"wordpress-seo", "seo"}:
+        return (
+            "Skill: wordpress-seo\n"
+            "Tools: wp_seo_audit, wp_seo_plan_meta, wp_seo_batch_plan, wp_seo_drift_digest, wp_seo_strategy, wp_seo_campaign, wp_seo_link_package, wp_seo_autopilot\n"
+            "Slash: /seo scan|product|page|media|batch|gsc|parity|diff|digest|verify|strategy|campaign|links|vendors|autopilot|plans|plan\n"
+            "Docs: skills/wordpress-seo/SKILL.md · docs/SEO_STUDIO.md"
+        )
+    return f"Okänd skill {name!r}. Prova /skill ecom-ops eller /skill wordpress-seo"
 
 
 def cmd_context(ctx: CommandContext) -> str:
@@ -783,7 +800,22 @@ def cmd_order(ctx: CommandContext) -> str:
 def cmd_wp(ctx: CommandContext) -> str:
     """WordPress site & review workspace command usage summary."""
     del ctx
-    return "/wp sites · /wp use <site-id> · /wp plans [site-id] · /wp plan <plan-id> · /wp clear"
+    return (
+        "/wp sites · /wp use <site-id> · /wp plugins [site-id] · "
+        "/wp mu-plugins [site-id] · /wp plans [site-id] · /wp plan <plan-id> · "
+        "/wp changes [site-id] · /wp rollback <change-id> · /wp bridge [site-id] · /wp clear"
+    )
+
+
+def cmd_seo(ctx: CommandContext) -> str:
+    """SEO Studio command usage summary (dispatched directly by BotHandler)."""
+    del ctx
+    return (
+        "/seo scan · /seo product · /seo page · /seo media · /seo batch · "
+        "/seo gsc · /seo parity · /seo diff · /seo digest · /seo verify · "
+        "/seo strategy · /seo campaign · /seo links · /seo vendors · /seo autopilot · "
+        "/seo plans · /seo plan <id>"
+    )
 
 
 def cmd_search(ctx: CommandContext) -> str:
@@ -862,7 +894,12 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("marketing", "Ads+GA4 snapshot (read-only)", cmd_marketing, aliases=("ads", "ga4")),
     CommandSpec("cases", "Ärenden: list|show|approve|close", cmd_cases),
     CommandSpec("order", "Orderstatus (read-only)", cmd_order),
-    CommandSpec("wp", "WP: sites|use|plans|plan|clear", cmd_wp),
+    CommandSpec("wp", "WP: sites|use|plugins|mu-plugins|plans|changes|rollback|bridge|clear", cmd_wp),
+    CommandSpec(
+        "seo",
+        "SEO Studio: scan|autopilot|vendors|batch|gsc|parity|links|plans",
+        cmd_seo,
+    ),
     CommandSpec(
         "search",
         "Snabbsök webben (read-only)",
@@ -909,6 +946,7 @@ TELEGRAM_MENU_COMMANDS: list[dict[str, str]] = [
         "brief",
         "skill",
         "wp",
+        "seo",
         "search",
         "research",
         "oauth",

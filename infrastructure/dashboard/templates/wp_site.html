@@ -31,8 +31,10 @@
 
   <nav aria-label="Webbplatsflikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
     <a class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200" href="{{ url_for('wp_site_detail', site_id=site.id) }}" aria-current="page">Översikt</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_plugins', site_id=site.id) }}">Plugins &amp; MU</a>
     <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_files', site_id=site.id) }}">Tema- och pluginfiler</a>
     <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_ssh', site_id=site.id) }}">SSH-inställningar</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_changes', site_id=site.id) }}">Ändringar &amp; Återställning</a>
   </nav>
   {% else %}
     {{ ui.page_header("Webbplats", "Ingen webbplats hittades.") }}

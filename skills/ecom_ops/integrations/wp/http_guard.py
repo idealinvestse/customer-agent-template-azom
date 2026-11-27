@@ -304,6 +304,35 @@ class AllowlistedSiteRedirectHandler(urllib.request.HTTPRedirectHandler):
         return new_req
 
 
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPSHandler that pins DNS resolution to validated public IPs via ``PinnedHTTPSConnection``."""
+
+    def __init__(self, public_host_check: Callable[[str], bool] | None = None) -> None:
+        super().__init__()
+        self._public_host_check = public_host_check
+
+    def https_open(self, req: urllib.request.Request) -> Any:
+        parsed = urllib.parse.urlparse(str(getattr(req, "full_url", "") or ""))
+        host = (parsed.hostname or "").strip().lower().rstrip(".")
+        port = parsed.port or 443
+        check_public = _resolve_public_host_fn(self._public_host_check)
+        if not host or not check_public(host):
+            raise urllib.error.URLError(f"Unsafe host blocked: {host}")
+        pinned_ips = _shared_http_guard.resolve_and_validate_public_ips(host, port)
+
+        def _factory(conn_host: str, *, timeout: float = 15.0, **_kwargs: Any) -> Any:
+            del conn_host
+            return _shared_http_guard.PinnedHTTPSConnection(
+                host,
+                port=port,
+                pinned_ips=pinned_ips,
+                connect_timeout=min(5.0, float(timeout or 15.0)),
+                read_timeout=float(timeout or 15.0),
+            )
+
+        return self.do_open(_factory, req)
+
+
 _AllowlistedSiteRedirectHandler = AllowlistedSiteRedirectHandler
 
 
@@ -340,10 +369,13 @@ def fetch_live_html(
 
     target_url = urllib.parse.urlunsplit(("https", parsed_base.netloc, clean_path, "", ""))
     allowed_hosts = allowed_site_hosts(site_host)
-    opener = urllib.request.build_opener(
+    handlers: list[Any] = [
         urllib.request.ProxyHandler({}),
         AllowlistedSiteRedirectHandler(allowed_hosts, public_host_check=public_host_check),
-    )
+    ]
+    if public_host_check is None:
+        handlers.append(_PinnedHTTPSHandler())
+    opener = urllib.request.build_opener(*handlers)
     req = urllib.request.Request(
         target_url,
         method="GET",
@@ -421,14 +453,17 @@ def fetch_site_rest_json(
             pass
 
     allowed_hosts = allowed_site_hosts(site_host)
-    opener = urllib.request.build_opener(
+    handlers: list[Any] = [
         urllib.request.ProxyHandler({}),
         AllowlistedSiteRedirectHandler(
             allowed_hosts,
             allow_wp_json=True,
             public_host_check=public_host_check,
         ),
-    )
+    ]
+    if public_host_check is None:
+        handlers.append(_PinnedHTTPSHandler())
+    opener = urllib.request.build_opener(*handlers)
     req = urllib.request.Request(target_url, method="GET", headers=headers)
     try:
         with opener.open(req, timeout=float(timeout)) as resp:

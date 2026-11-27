@@ -286,7 +286,7 @@ _PROPOSE_FILE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "site_id": {"type": "string"},
-        "kind": {"type": "string"},
+        "kind": {"type": "string", "enum": ["theme", "plugin", "mu_plugin"]},
         "slug": {"type": "string"},
         "path": {"type": "string"},
         "new_text": {"type": "string"},
@@ -312,7 +312,7 @@ def _propose_file_common(tools: Any, ctx: ToolContext, arguments: dict[str, Any]
     relative = arguments.get("path", "")
     if (
         not isinstance(kind, str)
-        or kind not in {"theme", "plugin"}
+        or kind not in {"theme", "plugin", "mu_plugin"}
         or not isinstance(slug, str)
         or not SLUG_RE.fullmatch(slug)
         or not isinstance(relative, str)
@@ -531,7 +531,7 @@ def _fork_workspace_impl(
         "type": "object",
         "properties": {
             "site_id": {"type": "string"},
-            "kind": {"type": "string"},
+            "kind": {"type": "string", "enum": ["theme", "plugin", "mu_plugin"]},
             "slug": {"type": "string"},
             "summary": {"type": "string"},
             "variant_group": {"type": "string"},
@@ -556,7 +556,7 @@ def handle_open_review_workspace(tools: Any, ctx: ToolContext, arguments: dict[s
     base_plan_id = arguments.get("base_plan_id", "")
     if not isinstance(site_id, str) or not SITE_ID_RE.fullmatch(site_id):
         return tools._site_required_error(ctx.actor)
-    if kind not in {"theme", "plugin"} or not isinstance(slug, str) or not isinstance(summary, str):
+    if kind not in {"theme", "plugin", "mu_plugin"} or not isinstance(slug, str) or not isinstance(summary, str):
         return ToolOutput(error_payload("InvalidToolArguments"), site_id)
     if not isinstance(variant_group, str) or not isinstance(base_plan_id, str):
         return ToolOutput(error_payload("InvalidToolArguments"), site_id)
@@ -1119,6 +1119,17 @@ def handle_workspace_bulk_replace(tools: Any, ctx: ToolContext, arguments: dict[
     return out
 
 
+_SCAFFOLD_TEMPLATES = (
+    "child_theme_basics",
+    "site_plugin_basics",
+    "woo_compat_declaration",
+    "mu_plugin_basics",
+    "mu_plugin_loader",
+    "plugin_hook_extension",
+    "custom_plugin_full",
+)
+
+
 @register_tool(
     name="wp_workspace_scaffold",
     group="workspace",
@@ -1131,7 +1142,7 @@ def handle_workspace_bulk_replace(tools: Any, ctx: ToolContext, arguments: dict[
             "plan_id": {"type": "string"},
             "template": {
                 "type": "string",
-                "enum": ["child_theme_basics", "site_plugin_basics", "woo_compat_declaration"],
+                "enum": list(_SCAFFOLD_TEMPLATES),
             },
         },
         "required": ["plan_id", "template"],
@@ -1150,7 +1161,7 @@ def handle_workspace_scaffold(tools: Any, ctx: ToolContext, arguments: dict[str,
     site_id = str(ctx.site_id)
     plan_id = str(arguments["plan_id"])
     template = arguments.get("template")
-    if template not in {"child_theme_basics", "site_plugin_basics", "woo_compat_declaration"}:
+    if template not in _SCAFFOLD_TEMPLATES:
         return ToolOutput(error_payload("InvalidToolArguments"), site_id)
     return tools._file_result(ops.workspace_scaffold(site_id, plan_id, str(template), actor=ctx.actor), site_id)
 
@@ -1520,15 +1531,22 @@ def handle_workspace_run_checks(tools: Any, ctx: ToolContext, arguments: dict[st
     )
     risk = plan_row.get("risk") if isinstance(plan_row, dict) else cdata.get("risk")
     status_val = cdata.get("status")
-    publishable = (
+    is_standalone_page_draft = isinstance(plan_row, dict) and isinstance(
+        plan_row.get("page_draft"), dict
+    )
+    checks_ready = (
         status_val == "tests_passed"
         and check_run.get("published") is True
-        and env == "staging"
         and risk != "high"
         and REVIEW_PLAN_RE.fullmatch(resolved_plan_id) is not None
         and (plan_row is None or plan_row.get("status") == "tests_passed")
     )
-    review_stage_id = resolved_plan_id if publishable else None
+    publishable = checks_ready and env == "staging"
+    review_stage_id = (
+        resolved_plan_id
+        if (publishable or (checks_ready and is_standalone_page_draft))
+        else None
+    )
     summary_bits = ", ".join(f"{c['job']}={c['status']}" for c in compact_checks)
     overall_summary = tools._scrub_bounded(
         site_obj,
@@ -1564,7 +1582,7 @@ def handle_workspace_run_checks(tools: Any, ctx: ToolContext, arguments: dict[st
         "preview_path": preview_path_val,
         "preview_url": preview_url_val,
         "preview_html_ready": preview_html_ready,
-        "staging_ready": review_stage_id is not None,
+        "staging_ready": publishable,
         "review_path": f"/wp/{site_id}/reviews/{plan_id}",
         "login_required": True,
         "executed": False,

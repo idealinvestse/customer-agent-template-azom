@@ -63,7 +63,7 @@ PY
 }
 
 # SQLite's online backup API keeps each live database consistent under WAL writes.
-for database in cases telegram_jobs research_jobs messenger_jobs messenger_proposals; do
+for database in cases telegram_jobs research_jobs messenger_jobs messenger_proposals wp_change_ledger; do
   case "$database" in
     cases)
       SOURCE_DB="${DATA_DIR}/cases.db"
@@ -84,6 +84,10 @@ for database in cases telegram_jobs research_jobs messenger_jobs messenger_propo
     messenger_proposals)
       SOURCE_DB="${DATA_DIR}/messenger_proposals.sqlite3"
       TARGET_DB="${STAMP_DIR}/messenger_proposals.sqlite3"
+      ;;
+    wp_change_ledger)
+      SOURCE_DB="${DATA_DIR}/wp_change_ledger.sqlite3"
+      TARGET_DB="${STAMP_DIR}/wp_change_ledger.sqlite3"
       ;;
   esac
   if [[ -f "$SOURCE_DB" ]]; then
@@ -139,11 +143,16 @@ tar -czf "$TARBALL" \
   --exclude="*/messenger_proposals.sqlite3" \
   --exclude="*/messenger_proposals.sqlite3-wal" \
   --exclude="*/messenger_proposals.sqlite3-shm" \
+  --exclude="*/wp_change_ledger.sqlite3" \
+  --exclude="*/wp_change_ledger.sqlite3-wal" \
+  --exclude="*/wp_change_ledger.sqlite3-shm" \
   --exclude="*/web_search_cache.sqlite3*" \
   --exclude="*/model_oauth" \
   --exclude="*/model_oauth/*" \
   --exclude="*/ssh-keys" \
   --exclude="*/ssh-keys/*" \
+  --exclude="*/ssh-deploy-keys" \
+  --exclude="*/ssh-deploy-keys/*" \
   --exclude="*/wp_file_payloads" \
   --exclude="*/wp_file_payloads/*" \
   --exclude="*/wp_workspaces" \
@@ -168,6 +177,7 @@ find "$BACKUP_DIR" -maxdepth 1 -type d -name '20*' -mtime +${KEEP} -exec rm -rf 
   echo "research_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/research_jobs.sqlite3" 2>/dev/null || echo 0)"
   echo "messenger_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/messenger_jobs.sqlite3" 2>/dev/null || echo 0)"
   echo "messenger_proposals_db_bytes=$(stat -c%s "${STAMP_DIR}/messenger_proposals.sqlite3" 2>/dev/null || echo 0)"
+  echo "wp_change_ledger_db_bytes=$(stat -c%s "${STAMP_DIR}/wp_change_ledger.sqlite3" 2>/dev/null || echo 0)"
   echo "tarball_bytes=$(stat -c%s "$TARBALL" 2>/dev/null || echo 0)"
   echo "dest=${DEST:-local}"
 } > "${STAMP_DIR}/manifest.txt"

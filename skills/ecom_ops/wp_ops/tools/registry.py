@@ -1,4 +1,4 @@
-"""Declarative WordPress agent tool registry (single source of truth for all 60 tools).
+"""Declarative WordPress agent tool registry (single source of truth for all 77 tools).
 
 Every WordPress tool registers a frozen :class:`ToolSpec` via :func:`register_tool`.
 Schemas, tool-name sets, labels, capability groups, and outcome formatters are all
@@ -45,7 +45,7 @@ class ToolSpec:
     deep_phase: bool = False
     untrusted_output: bool = False
     capability_group: Literal[
-        "drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research", "other"
+        "drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research", "seo", "other"
     ] = "other"
 
 
@@ -148,7 +148,7 @@ def register_tool(
     deep_phase: bool = False,
     untrusted_output: bool = False,
     capability_group: Literal[
-        "drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research", "other"
+        "drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research", "seo", "other"
     ] = "other",
 ) -> Callable[[Callable[..., ToolOutput]], Callable[..., ToolOutput]]:
     """Register a WordPress tool handler in ``TOOL_REGISTRY``."""
@@ -194,6 +194,9 @@ _DOMAIN_MODULES = (
     "ecom_ops.wp_ops.tools.pages",
     "ecom_ops.wp_ops.tools.sandbox_edits",
     "ecom_ops.wp_ops.tools.research",
+    "ecom_ops.wp_ops.tools.bridge",
+    "ecom_ops.wp_ops.tools.plugins",
+    "ecom_ops.wp_ops.tools.seo",
 )
 
 
@@ -258,7 +261,7 @@ WP_TOOL_SHORT_LABELS: dict[str, str] = {spec.name: spec.short_label for spec in 
 
 TOOL_CAPABILITIES: dict[str, tuple[str, ...]] = {
     group: tuple(spec.name for spec in TOOL_REGISTRY.values() if spec.capability_group == group)
-    for group in ("drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research")
+    for group in ("drift_analysis", "workspace", "fe_plan", "preview_catalog", "web_research", "seo")
 }
 
 __all__ = [

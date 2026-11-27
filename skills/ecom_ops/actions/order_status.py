@@ -83,6 +83,21 @@ class OrderStatusService:
                 )
 
             updated = woo.update_order_status(oid, new_status)
+            from ecom_ops.wp_ops.change_ledger import resolve_ledger_site_id, safe_record_change
+            from ecom_ops.wp_ops.config import is_mock_mode
+
+            safe_record_change(
+                site_id=resolve_ledger_site_id(domain=domain),
+                environment="staging" if is_mock_mode() else "production",
+                category="order",
+                transport="woo_rest",
+                actor=actor_obj.name,
+                summary=f"Order {oid}: {current.status} → {updated.status}",
+                target_ref=f"order:{oid}",
+                before_data={"status": current.status},
+                after_data={"status": updated.status},
+                metadata={"order_id": oid, "domain": domain or ""},
+            )
             self.telemetry.record(
                 action="order_status_update",
                 site=site,

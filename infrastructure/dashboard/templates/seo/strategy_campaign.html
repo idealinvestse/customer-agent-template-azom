@@ -1,0 +1,361 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}SEO Strategi &amp; Kampanjer – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Strategi- &amp; Kampanjdesigner{% endblock %}
+{% block content %}
+{% set cur_tab = active_tab | default('strategies') %}
+<div class="space-y-5" data-seo-studio="true" data-seo-page="strategy_campaign">
+  {{ ui.breadcrumb([
+    {'label': 'SEO Studio', 'href': '/seo'},
+    {'label': 'Strategier & Kampanjer'}
+  ]) }}
+
+  {% call ui.page_header(
+    "SEO Strategi- & Kampanjdesigner",
+    "Bygg nordiska SEO-strategier (temakluster, 90-dagars färdplan, KPI:er) och målstyrda SEO-kampanjer kopplade till sökord, mål-URL:er och research."
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages">
+      {{ icon('globe', 'xs') }}
+      <span>Länkpaket-studio</span>
+    </a>
+  {% endcall %}
+
+  <nav aria-label="SEO Studio flikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
+    <a class="az-btn-secondary az-btn-sm" href="/seo">
+      {{ icon('activity', 'xs') }}
+      <span>Översikt &amp; Audit</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm {{ 'bg-ink-800 ring-1 ring-steel-500/35 text-steel-200' if cur_tab == 'strategies' else '' }}" href="/seo/strategies"{% if cur_tab == 'strategies' %} aria-current="page"{% endif %}>
+      {{ icon('trending-up', 'xs') }}
+      <span>Strategier ({{ strategies | length }})</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm {{ 'bg-ink-800 ring-1 ring-steel-500/35 text-steel-200' if cur_tab == 'campaigns' else '' }}" href="/seo/campaigns"{% if cur_tab == 'campaigns' %} aria-current="page"{% endif %}>
+      {{ icon('sliders', 'xs') }}
+      <span>Kampanjer ({{ campaigns | length }})</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages">
+      {{ icon('globe', 'xs') }}
+      <span>Länkpaket</span>
+    </a>
+  </nav>
+
+  <!-- Creation Forms (2 columns) -->
+  {% if can_suggest %}
+  <div class="grid gap-5 lg:grid-cols-2">
+    <!-- New Strategy Form -->
+    <section class="az-card space-y-4">
+      <div>
+        <h2 class="az-section-title mb-1">Generera ny SEO-strategi (<code class="az-code">seos-*</code>)</h2>
+        <p class="az-muted text-xs">Skapar temakluster, 90-dagars färdplan och KPI-ramverk för vald nordisk marknad.</p>
+      </div>
+      <form method="post" action="/seo/strategies" class="space-y-3">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="seo-strat-site">Webbplats</label>
+            <select id="seo-strat-site" name="site_id" class="az-select">
+              {% for s in sites %}
+              <option value="{{ s.id }}" {% if s.id == selected_site %}selected{% endif %}>{{ s.display_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="az-label" for="seo-strat-market">Marknad</label>
+            <select id="seo-strat-market" name="market" class="az-select">
+              <option value="no" selected>NO (Norge)</option>
+              <option value="se">SE (Sverige)</option>
+              <option value="dk">DK (Danmark)</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="az-label" for="seo-strat-title">Strategititel</label>
+          <input id="seo-strat-title" name="title" type="text" required maxlength="180" class="az-input" placeholder="T.ex. Q3 Nordisk CarPlay &amp; OEM-tillväxtstrategi" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-strat-topics">Fokusteman (kommaseparerade eller en per rad)</label>
+          <textarea id="seo-strat-topics" name="focus_topics" rows="2" class="az-textarea" placeholder="Trådlös CarPlay Volvo, Backkamera montering, Android Auto BMW"></textarea>
+        </div>
+        <div>
+          <label class="az-label" for="seo-strat-goals">Affärsmål &amp; KPI-fokus</label>
+          <input id="seo-strat-goals" name="goals" type="text" maxlength="300" class="az-input" placeholder="T.ex. +40% icke-varumärkestrafik och högre konvertering på kategorisidor" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-strat-brief">Kopplat Research-brief (valfritt)</label>
+          <select id="seo-strat-brief" name="research_brief_id" class="az-select">
+            <option value="">Inget kopplat research-brief</option>
+            {% for b in research_briefs %}
+            <option value="{{ b.id }}">{{ b.id }} — {{ b.topic }} ({{ b.status }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Genererar strategi...">
+          {{ icon('plus', 'xs') }}
+          <span>Skapa SEO-strategi</span>
+        </button>
+      </form>
+    </section>
+
+    <!-- New Campaign Form -->
+    <section class="az-card space-y-4">
+      <div>
+        <h2 class="az-section-title mb-1">Generera ny SEO-kampanj (<code class="az-code">seoc-*</code>)</h2>
+        <p class="az-muted text-xs">Mappar målsökord och intent mot mål-URL:er, on-page-checklista och KPI:er.</p>
+      </div>
+      <form method="post" action="/seo/campaigns" class="space-y-3">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <div class="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label class="az-label" for="seo-camp-site">Webbplats</label>
+            <select id="seo-camp-site" name="site_id" class="az-select">
+              {% for s in sites %}
+              <option value="{{ s.id }}" {% if s.id == selected_site %}selected{% endif %}>{{ s.display_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="az-label" for="seo-camp-market">Marknad</label>
+            <select id="seo-camp-market" name="market" class="az-select">
+              <option value="no" selected>NO</option>
+              <option value="se">SE</option>
+              <option value="dk">DK</option>
+            </select>
+          </div>
+          <div>
+            <label class="az-label" for="seo-camp-type">Kampanjtyp</label>
+            <select id="seo-camp-type" name="campaign_type" class="az-select">
+              <option value="commercial" selected>Kommersiell</option>
+              <option value="seasonal">Säsong</option>
+              <option value="product_launch">Produktlansering</option>
+              <option value="content_hub">Innehållshubb</option>
+              <option value="technical_sprint">Teknisk sprint</option>
+              <option value="category">Kategori</option>
+              <option value="informational">Köpguide / Info</option>
+              <option value="technical">Teknisk</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="az-label" for="seo-camp-name">Kampanjnamn</label>
+          <input id="seo-camp-name" name="name" type="text" required maxlength="180" class="az-input" placeholder="T.ex. Volvo XC60/V70 CarPlay Höstkampanj" />
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="seo-camp-kw">Målsökord (komma eller radbrytning)</label>
+            <textarea id="seo-camp-kw" name="target_keywords" rows="2" class="az-textarea" placeholder="carplay volvo xc60, trådlös carplay adapter"></textarea>
+          </div>
+          <div>
+            <label class="az-label" for="seo-camp-urls">Mål-URL:er (komma eller radbrytning)</label>
+            <textarea id="seo-camp-urls" name="target_urls" rows="2" class="az-textarea" placeholder="/produkt/carplay-volvo/, /kategori/carplay/"></textarea>
+          </div>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="seo-camp-strat">Koppla till strategi (valfritt)</label>
+            <select id="seo-camp-strat" name="strategy_id" class="az-select">
+              <option value="">Ingen strategi vald</option>
+              {% for st in strategies %}
+              <option value="{{ st.get('strategy_id') }}">{{ st.get('strategy_id') }} — {{ st.get('title') }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="az-label" for="seo-camp-obj">Syfte / Mål</label>
+            <input id="seo-camp-obj" name="objective" type="text" maxlength="240" class="az-input" placeholder="Öka topp-3 placeringar &amp; organiska köp" />
+          </div>
+        </div>
+        <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Skapar kampanj...">
+          {{ icon('plus', 'xs') }}
+          <span>Skapa SEO-kampanj</span>
+        </button>
+      </form>
+    </section>
+  </div>
+  {% endif %}
+
+  <!-- Strategies List -->
+  <section class="az-card space-y-4">
+    <h2 class="az-section-title mb-0">SEO-strategier ({{ strategies | length }})</h2>
+    {% if strategies %}
+    <div class="space-y-4">
+      {% for st in strategies %}
+      <article class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4 space-y-3">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="font-display text-base font-semibold text-mist-100">{{ st.get('title') }}</h3>
+              {{ ui.status_badge('info', (st.get('market') or 'no') | upper) }}
+              {{ ui.status_badge('neutral', st.get('site_id') or '') }}
+            </div>
+            {% if st.get('goals') %}
+            <p class="az-muted mt-1 text-xs">{{ st.get('goals') }}</p>
+            {% endif %}
+          </div>
+          <div class="text-right font-mono text-xs text-mist-400">
+            <div>{{ st.get('strategy_id') }}</div>
+            <div>{{ st.get('created_at_fmt') or '' }}</div>
+          </div>
+        </div>
+
+        {% if st.get('executive_summary') %}
+        <p class="text-xs text-mist-200">{{ st.get('executive_summary') }}</p>
+        {% endif %}
+
+        <!-- Topic Clusters -->
+        {% set clusters = st.get('topic_clusters') or st.get('pillars') or [] %}
+        {% if clusters %}
+        <div>
+          <p class="mb-1.5 text-xs font-semibold uppercase tracking-wider text-mist-400">Temakluster</p>
+          <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {% for cl in clusters %}
+            <div class="rounded-lg border border-ink-700/70 bg-ink-900/60 p-3 text-xs space-y-1">
+              <div class="flex flex-wrap items-center justify-between gap-1">
+                <span class="font-semibold text-mist-100">{{ cl.get('cluster_name') or cl.get('pillar') or cl.get('topic') or cl.get('name') if cl is mapping else cl }}</span>
+                {% if cl is mapping and cl.get('priority') %}
+                  {{ ui.status_badge('info', cl.get('priority')) }}
+                {% endif %}
+              </div>
+              {% if cl is mapping and cl.get('pillar_url') %}
+              <div class="font-mono text-mist-400">{{ cl.get('pillar_url') }}</div>
+              {% endif %}
+              {% if cl is mapping and (cl.get('secondary_keywords') or cl.get('keywords')) %}
+              <div class="text-mist-300">{{ (cl.get('secondary_keywords') or cl.get('keywords')) | join(', ') }}</div>
+              {% endif %}
+              {% if cl is mapping and (cl.get('search_intent') or cl.get('intent')) %}
+              <div>{{ ui.status_badge('neutral', cl.get('search_intent') or cl.get('intent')) }}</div>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- 90-day Roadmap -->
+        {% set roadmap = st.get('roadmap_90d') or st.get('roadmap') %}
+        {% if roadmap %}
+        <div>
+          <p class="mb-1.5 text-xs font-semibold uppercase tracking-wider text-mist-400">90-dagars färdplan</p>
+          <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {% if roadmap is mapping %}
+              {% for phase_key, phase_items in roadmap.items() %}
+              <div class="rounded-lg border border-ink-700/70 bg-ink-900/60 p-3 text-xs space-y-1.5">
+                <div class="font-semibold text-steel-200">{{ phase_key }}</div>
+                <ul class="list-disc space-y-1 pl-4 text-mist-300">
+                  {% for item in phase_items %}
+                  <li>{{ item.get('task') if item is mapping else item }}{% if item is mapping and item.get('owner') %} <span class="text-mist-400">({{ item.get('owner') }})</span>{% endif %}</li>
+                  {% endfor %}
+                </ul>
+              </div>
+              {% endfor %}
+            {% else %}
+              {% for phase in roadmap %}
+              <div class="rounded-lg border border-ink-700/70 bg-ink-900/60 p-3 text-xs space-y-1">
+                <div class="font-semibold text-steel-200">{{ phase.get('phase') or phase.get('window') or ('Fas ' ~ loop.index) if phase is mapping else phase }}</div>
+              </div>
+              {% endfor %}
+            {% endif %}
+          </div>
+        </div>
+        {% endif %}
+
+        <!-- KPIs -->
+        {% set kpi_list = st.get('kpi_targets') or st.get('kpis') or [] %}
+        {% if kpi_list %}
+        <div class="flex flex-wrap gap-2">
+          {% for kp in kpi_list %}
+          <span class="az-badge az-badge-ok">{{ kp.get('metric') ~ ': ' ~ (kp.get('target_90d') or kp.get('target') or '') if kp is mapping else kp }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga SEO-strategier ännu', 'Använd formuläret ovan för att skapa er första nordiska SEO-strategi.', icon_name='trending-up') }}
+    {% endif %}
+  </section>
+
+  <!-- Campaigns List -->
+  <section class="az-card space-y-4">
+    <h2 class="az-section-title mb-0">SEO-kampanjer ({{ campaigns | length }})</h2>
+    {% if campaigns %}
+    <div class="space-y-4">
+      {% for cp in campaigns %}
+      <article class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4 space-y-3">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <div class="flex flex-wrap items-center gap-2">
+              <h3 class="font-display text-base font-semibold text-mist-100">{{ cp.get('name') }}</h3>
+              {{ ui.status_badge('info', cp.get('campaign_type') or 'commercial') }}
+              {{ ui.status_badge('neutral', (cp.get('market') or 'no') | upper) }}
+              {% if cp.get('strategy_id') %}
+              <span class="font-mono text-xs text-mist-400">Strategi: {{ cp.get('strategy_id') }}</span>
+              {% endif %}
+            </div>
+            {% if cp.get('objective') %}
+            <p class="az-muted mt-1 text-xs">{{ cp.get('objective') }}</p>
+            {% endif %}
+          </div>
+          <div class="text-right font-mono text-xs text-mist-400">
+            <div>{{ cp.get('campaign_id') }}</div>
+            <div>{{ cp.get('created_at_fmt') or '' }}</div>
+          </div>
+        </div>
+
+        <!-- Keyword / Intent Matrix -->
+        {% set kw_matrix = cp.get('url_keyword_map') or cp.get('keyword_clusters') or cp.get('keyword_matrix') or cp.get('keywords') or cp.get('target_keywords') or [] %}
+        {% if kw_matrix %}
+        <div class="az-table-wrap" tabindex="0" role="region" aria-label="Sökordsmatris">
+          <table class="az-table">
+            <thead>
+              <tr>
+                <th scope="col">Sökord</th>
+                <th scope="col">Intent</th>
+                <th scope="col">Mål-URL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for km in kw_matrix %}
+              <tr>
+                <td class="text-xs font-medium text-mist-100">{{ km.get('primary_keyword') or km.get('keyword') if km is mapping else km }}</td>
+                <td class="text-xs">{{ ui.status_badge('neutral', km.get('intent') or km.get('search_intent') or 'commercial') if km is mapping else ui.status_badge('neutral', cp.get('campaign_type') or 'commercial') }}</td>
+                <td class="font-mono text-xs text-mist-300">{{ km.get('url') or km.get('mapped_url') or km.get('target_url') or '—' if km is mapping else ((cp.get('target_urls') or ['—'])[0]) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+
+        <!-- On-Page Checklist -->
+        {% set checklist = cp.get('on_page_checklist') or cp.get('checklist') or [] %}
+        {% if checklist %}
+        <div class="rounded-lg border border-ink-700/60 bg-ink-900/60 p-3 text-xs">
+          <p class="mb-1.5 font-semibold text-mist-200">On-Page checklista</p>
+          <ul class="list-disc space-y-0.5 pl-4 text-mist-300">
+            {% for item in checklist %}
+            <li>{{ item.get('step') or item.get('task') or item.get('title') if item is mapping else item }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+
+        <!-- KPI Milestones -->
+        {% set milestones = cp.get('kpi_milestones') or [] %}
+        {% if milestones %}
+        <div class="flex flex-wrap gap-2">
+          {% for ms in milestones %}
+          <span class="az-badge az-badge-info">{{ ms.get('horizon') ~ ': ' ~ ms.get('target') if ms is mapping else ms }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga SEO-kampanjer ännu', 'Skapa en SEO-kampanj ovan för att koppla sökord, mål-URL:er och checklista.', icon_name='sliders') }}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

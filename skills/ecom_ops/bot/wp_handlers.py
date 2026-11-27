@@ -12,7 +12,7 @@ from typing import Any
 
 from ecom_ops.bot.actors import ChannelActorDenied, TelegramActorDenied
 from ecom_ops.bot.chat_agent import _provenance
-from ecom_ops.bot.dashboard_links import review_plan_url
+from ecom_ops.bot.dashboard_links import changes_url, review_plan_url
 from ecom_ops.bot.progress_events import ProgressCallback, ProgressEvent, emit_progress
 from ecom_ops.bot.recovery import FOOTER_UNKNOWN_CALLBACK, with_recovery
 from ecom_ops.bot.reply import ActionMarkup, BotReply, bot_reply, wp_review_actions
@@ -29,12 +29,14 @@ def wpreview_stage_actions(
     plan_id: str,
     *,
     review_url: str | None = None,
+    include_stage: bool = True,
     include_push_draft: bool = False,
 ) -> ActionMarkup:
     """Build channel-neutral WP review actions via ``reply.wp_review_actions``."""
     return wp_review_actions(
         plan_id,
         review_url=review_url,
+        include_stage=include_stage,
         include_push_draft=include_push_draft,
     )
 
@@ -328,7 +330,7 @@ def handle_wpreview_callback(
     base_sha, work_sha = pinned
 
     if is_push_draft:
-        return _handle_wpreview_push_draft(
+        reply = _handle_wpreview_push_draft(
             site_id,
             plan_id,
             actor=actor,
@@ -336,6 +338,12 @@ def handle_wpreview_callback(
             work_sha=work_sha,
             on_progress=on_progress,
         )
+        if reply.text.startswith("WordPress-utkast skapat"):
+            hashes = session.get("wp_review_hashes")
+            if isinstance(hashes, dict):
+                hashes.pop(plan_id, None)
+                handler._persist_review_hashes(chat_id, session)
+        return reply
 
     tracker = _ProgressTracker(
         on_progress,
@@ -511,7 +519,21 @@ def handle_wp_plan_command(
         lines.append(f"Granskningssida: /wp/{site_id}/reviews/{plan_id} (kräver inloggning)")
     lines.append("Produktion deployas aldrig från chatten.")
 
-    if ready and can_stage:
+    is_prod_site = str(view.get("environment") or "").lower() == "production"
+    has_page_draft = isinstance(raw_plan.get("page_draft"), dict)
+    already_pushed = isinstance(raw_plan.get("draft_page"), dict) and bool(
+        raw_plan["draft_page"].get("id")
+    )
+    draft_ready = bool(
+        has_page_draft
+        and not already_pushed
+        and raw_plan.get("status") == "tests_passed"
+        and raw_plan.get("risk") != "high"
+        and not raw_plan.get("superseded_by")
+        and plans._require_current_evidence(raw_plan) is None
+    )
+    stage_ready = bool(ready and not is_prod_site)
+    if can_stage and (stage_ready or draft_ready):
         prev = handler.store.get(chat_id) or {}
         session = dict(prev.get("session") or {})
         handler._pin_review_hashes(chat_id, session, actor=actor, plan=raw_plan)
@@ -521,11 +543,298 @@ def handle_wp_plan_command(
             actions=wpreview_stage_actions(
                 plan_id,
                 review_url=url,
-                include_push_draft=isinstance(raw_plan.get("page_draft"), dict),
+                include_stage=stage_ready,
+                include_push_draft=draft_ready,
             ),
         )
-    if ready and not can_stage:
+    if (ready or draft_ready) and not can_stage:
         lines.append("Staging kräver Oscar (WP_OPS_ADMIN + CODE_EDIT).")
+    return BotReply(text="\n".join(lines))
+
+
+def _active_wp_site_id(handler: Any, chat_id: str | int, explicit: str | None = None) -> str | None:
+    if explicit and explicit.strip():
+        return explicit.strip().lower()
+    try:
+        prev = handler.store.get(chat_id) or {}
+        ctx = (prev.get("session") or {}).get("wp_ops_context")
+        if isinstance(ctx, dict) and isinstance(ctx.get("site_id"), str) and ctx["site_id"].strip():
+            return ctx["site_id"].strip().lower()
+    except Exception:
+        return None
+    return None
+
+
+def handle_wp_changes_command(
+    handler: Any, chat_id: str | int, actor: str, parts: list[str]
+) -> BotReply:
+    from ecom_ops.wp_ops import WpOpsService
+
+    explicit_site = parts[1].strip().lower() if len(parts) == 2 and parts[1].strip() else None
+    site_id = _active_wp_site_id(handler, chat_id, explicit_site)
+    svc = WpOpsService()
+    res = svc.list_changes(site_id, actor=actor, limit=10)
+    if not res.ok:
+        return BotReply(text="Du saknar rättighet att läsa ändringsloggen.")
+    rows = list((res.data or {}).get("changes") or [])
+    if not rows:
+        if explicit_site:
+            shown = svc.show_site(explicit_site, actor=actor)
+            if not shown.ok and (shown.data or {}).get("error_class") == "UnknownSite":
+                return BotReply(text=f"Okänd WordPress-sajt: {explicit_site}.")
+        scope = f" för {site_id}" if site_id else ""
+        return BotReply(text=f"Inga inspelade ändringar i Change Vault{scope}.")
+    header = f"Senaste ändringar ({site_id}):" if site_id else "Senaste ändringar (alla sajter):"
+    lines = [header]
+    for row in rows[:10]:
+        cid = str(row.get("change_id") or "")
+        sid = str(row.get("site_id") or "")
+        cat = str(row.get("category") or "")
+        st = str(row.get("status") or "")
+        sm = " ".join(str(row.get("summary") or "").split())[:60]
+        lines.append(f"- {cid} | {sid} | {cat} | {st} | {sm}")
+    link_site = site_id or str(rows[0].get("site_id") or "")
+    url = changes_url(link_site) if link_site else None
+    if url:
+        lines.append(f"Webbpanelet: {url} (kräver inloggning)")
+    elif link_site:
+        lines.append(f"Webbpanel: /wp/{link_site}/changes (kräver inloggning)")
+    lines.append("Förhandsvisa återställning: /wp rollback <change-id>")
+    return BotReply(text="\n".join(lines))
+
+
+def handle_wp_rollback_command(
+    handler: Any, chat_id: str | int, actor: str, parts: list[str]
+) -> BotReply:
+    from ecom_ops.wp_ops import WpOpsService
+    from ecom_ops.wp_ops.change_ledger import ChangeLedger, valid_change_id
+
+    change_id = parts[1].strip().lower()
+    if not valid_change_id(change_id):
+        return BotReply(text="Ange ett giltigt change-id (chg-xxxxxxxxxxxx).")
+    svc = WpOpsService()
+    site_id = _active_wp_site_id(handler, chat_id)
+    row = ChangeLedger(data_dir=svc.data_dir).get_change(site_id, change_id)
+    if row is None and site_id is not None:
+        row = ChangeLedger(data_dir=svc.data_dir).get_change(None, change_id)
+    if row is None:
+        return BotReply(text=f"Okänd ändring: {change_id}.")
+    resolved_site = str(row.get("site_id") or "")
+    preview = svc.preview_change_rollback(resolved_site, change_id, actor=actor)
+    if not preview.get("ok"):
+        err = str(preview.get("error_class") or "PreviewFailed")
+        if err == "AccessDenied":
+            return BotReply(text="Du saknar rättighet att läsa ändringsdetaljer.")
+        return BotReply(text=f"Kunde inte förhandsvisa {change_id} ({err}).")
+    change_row = preview.get("change") if isinstance(preview.get("change"), dict) else row
+    before_sha = str((change_row or {}).get("before_sha256") or "")
+    lines = [
+        f"Återställningsförhandsvisning {change_id} (skrivskyddad)",
+        f"Sajt: {resolved_site} ({row.get('environment')}) · Kategori: {row.get('category')} · Status: {row.get('status')}",
+        f"Mål: {row.get('target_ref')} · Transport: {row.get('transport')}",
+        f"Sammanfattning: {row.get('summary')}",
+        f"Snapshot före (SHA-256): {before_sha[:16]}…" if before_sha else "Snapshot före (SHA-256): saknas",
+    ]
+    can_exec = bool(preview.get("can_rollback"))
+    reason = str(preview.get("block_reason") or "blockerad")
+    lines.append(
+        "Redo i webbpanelen för Oscar." if can_exec else f"Ej återställningsbar nu: {reason}."
+    )
+    url = changes_url(resolved_site, change_id)
+    if url:
+        lines.append(f"Öppna återställning i webbpanelen: {url}")
+    else:
+        lines.append(f"Webbpanel: /wp/{resolved_site}/changes/{change_id} (kräver inloggning)")
+    lines.append("Återställning körs aldrig direkt från textchatt.")
+    return BotReply(text="\n".join(lines))
+
+
+def handle_wp_bridge_command(
+    handler: Any, chat_id: str | int, actor: str, parts: list[str]
+) -> BotReply:
+    from ecom_ops.wp_ops import WpOpsService
+
+    site_id = _active_wp_site_id(handler, chat_id, parts[1] if len(parts) == 2 else None)
+    if not site_id:
+        return BotReply(text="Ange sajt med /wp bridge <site-id> eller välj aktiv sajt med /wp use <site-id>.")
+    svc = WpOpsService()
+    res = svc.bridge_health(site_id, actor=actor)
+    if not res.ok:
+        err = str((res.data or {}).get("error_class") or "BridgeError")
+        if err == "AccessDenied":
+            return BotReply(text="Du saknar rättighet att läsa bridge-hälsa.")
+        return BotReply(text=f"Bridge-hälsa för {site_id} misslyckades ({err}): {res.message}")
+    health = dict((res.data or {}).get("health") or {})
+    mode = "LIVE" if (res.data or {}).get("live_calls") else "MOCK"
+    wp_ver = health.get("wordpress_version") or health.get("wp_version") or "—"
+    woo_ver = health.get("woocommerce_version") or health.get("woo_version") or "—"
+    theme_obj = health.get("theme") if isinstance(health.get("theme"), dict) else {}
+    active_theme = (
+        theme_obj.get("name")
+        or theme_obj.get("stylesheet")
+        or health.get("active_theme")
+        or "—"
+    )
+    lines = [
+        f"Azom Ops Bridge — {site_id} ({mode})",
+        f"WP: {wp_ver} · Woo: {woo_ver} · PHP: {health.get('php_version') or '—'}",
+        f"Tema: {active_theme} · Språkplugin: {health.get('multilingual', 'none')}",
+        f"Underhållsläge: {'PÅ' if health.get('maintenance_active') else 'AV'} · OPcache: {'PÅ' if health.get('opcache_enabled') else 'AV'}",
+    ]
+    return BotReply(text="\n".join(lines))
+
+
+def _plugins_dashboard_url(site_id: str) -> str | None:
+    base_changes = changes_url(site_id)
+    if base_changes and base_changes.endswith("/changes"):
+        return f"{base_changes[:-len('/changes')]}/plugins"
+    return None
+
+
+def handle_wp_plugins_command(
+    handler: Any, chat_id: str | int, actor: str, parts: list[str]
+) -> BotReply:
+    from ecom_ops.wp_ops import WpOpsService
+
+    site_id = _active_wp_site_id(handler, chat_id, parts[1] if len(parts) == 2 else None)
+    if not site_id:
+        return BotReply(
+            text="Ange sajt med /wp plugins <site-id> eller välj aktiv sajt med /wp use <site-id>."
+        )
+    svc = WpOpsService()
+    res = svc.plugin_inventory(site_id, actor=actor, include_updates=True, include_wporg=False)
+    if not res.ok:
+        err = str((res.data or {}).get("error_class") or "PluginInventoryError")
+        if err == "AccessDenied":
+            return BotReply(text="Du saknar rättighet att läsa plugininventering.")
+        if err == "UnknownSite":
+            return BotReply(text=f"Okänd WordPress-sajt: {site_id}.")
+        return BotReply(text=f"Kunde inte läsa plugins för {site_id} ({err}): {res.message}")
+
+    data = dict(res.data or {})
+    inv = data.get("inventory") if isinstance(data.get("inventory"), dict) else data
+    plugins = [p for p in (inv.get("plugins") or []) if isinstance(p, dict)]
+    mu_plugins = [m for m in (inv.get("mu_plugins") or []) if isinstance(m, dict)]
+    dropins = [d for d in (inv.get("dropins") or []) if isinstance(d, dict)]
+    mode = "LIVE" if data.get("live_calls") else "MOCK"
+
+    active_count = sum(1 for p in plugins if p.get("active"))
+    pending = [p for p in plugins if p.get("update_available")]
+    auto_count = sum(1 for p in plugins if p.get("auto_update"))
+    critical_count = sum(1 for p in plugins if p.get("is_critical"))
+
+    lines = [
+        f"Plugins — {site_id} ({mode}, skrivskyddad)",
+        (
+            f"Totalt: {len(plugins)} ({active_count} aktiva) · "
+            f"Väntande uppdateringar: {len(pending)} · Auto-uppdatering: {auto_count} · "
+            f"Kritiska: {critical_count}"
+        ),
+    ]
+    if pending:
+        lines.append("Väntande uppdateringar:")
+        for p in pending[:10]:
+            slug = str(p.get("slug") or p.get("plugin_file") or "?")
+            ver = str(p.get("version") or "?")
+            new_ver = str(p.get("new_version") or "?")
+            tags: list[str] = []
+            if p.get("is_critical"):
+                tags.append("kritisk")
+            if p.get("auto_update"):
+                tags.append("auto")
+            tag_str = f" [{', '.join(tags)}]" if tags else ""
+            lines.append(f"- {slug}: {ver} → {new_ver}{tag_str}")
+        if len(pending) > 10:
+            lines.append(f"- ... och {len(pending) - 10} fler uppdateringar")
+    elif plugins:
+        lines.append("Inga väntande pluginuppdateringar.")
+        for p in plugins[:8]:
+            slug = str(p.get("slug") or p.get("plugin_file") or "?")
+            ver = str(p.get("version") or "?")
+            st = "aktiv" if p.get("active") else "inaktiv"
+            extra: list[str] = [st]
+            if p.get("auto_update"):
+                extra.append("auto")
+            if p.get("is_critical"):
+                extra.append("kritisk")
+            if p.get("is_paused"):
+                extra.append("pausad")
+            lines.append(f"- {slug} ({ver}) [{', '.join(extra)}]")
+
+    if mu_plugins or dropins:
+        lines.append(
+            f"MU-plugins: {len(mu_plugins)} · Drop-ins (skrivskyddade): {len(dropins)} "
+            "(detaljer: /wp mu-plugins)"
+        )
+    url = _plugins_dashboard_url(site_id)
+    if url:
+        lines.append(f"Webbpanel: {url} (kräver inloggning)")
+    else:
+        lines.append(f"Webbpanel: /wp/{site_id}/plugins (kräver inloggning)")
+    lines.append("Pluginuppdateringar och återställning körs via webbpanelen (Oscar HITL) — aldrig direkt från textchatt.")
+    return BotReply(text="\n".join(lines))
+
+
+def handle_wp_mu_plugins_command(
+    handler: Any, chat_id: str | int, actor: str, parts: list[str]
+) -> BotReply:
+    from ecom_ops.wp_ops import WpOpsService
+
+    site_id = _active_wp_site_id(handler, chat_id, parts[1] if len(parts) == 2 else None)
+    if not site_id:
+        return BotReply(
+            text="Ange sajt med /wp mu-plugins <site-id> eller välj aktiv sajt med /wp use <site-id>."
+        )
+    svc = WpOpsService()
+    res = svc.mu_plugins_and_dropins(site_id, actor=actor)
+    if not res.ok:
+        err = str((res.data or {}).get("error_class") or "MuPluginsError")
+        if err == "AccessDenied":
+            return BotReply(text="Du saknar rättighet att läsa MU-plugins och drop-ins.")
+        if err == "UnknownSite":
+            return BotReply(text=f"Okänd WordPress-sajt: {site_id}.")
+        return BotReply(text=f"Kunde inte läsa MU-plugins för {site_id} ({err}): {res.message}")
+
+    data = dict(res.data or {})
+    mu_plugins = [m for m in (data.get("mu_plugins") or []) if isinstance(m, dict)]
+    dropins = [d for d in (data.get("dropins") or []) if isinstance(d, dict)]
+    mode = "LIVE" if data.get("live_calls") else "MOCK"
+
+    lines = [f"MU-plugins & Drop-ins — {site_id} ({mode}, skrivskyddad)"]
+    if mu_plugins:
+        lines.append(f"MU-plugins ({len(mu_plugins)}, laddningsordning):")
+        ordered = sorted(mu_plugins, key=lambda m: (int(m.get("load_order") or 0), str(m.get("file") or "")))
+        for m in ordered[:15]:
+            order = m.get("load_order")
+            order_prefix = f"#{order} " if order is not None else ""
+            fname = str(m.get("file") or m.get("slug") or "?")
+            name = str(m.get("name") or "").strip()
+            ver = str(m.get("version") or "").strip()
+            loader_tag = " [loader]" if m.get("is_loader") else ""
+            label = f"{fname}"
+            if name and name != fname:
+                label = f"{fname} ({name}{f' {ver}' if ver else ''})"
+            elif ver:
+                label = f"{fname} ({ver})"
+            lines.append(f"- {order_prefix}{label}{loader_tag}")
+    else:
+        lines.append("MU-plugins: inga hittades.")
+
+    if dropins:
+        lines.append(f"Drop-ins ({len(dropins)}, endast läsning):")
+        for d in dropins[:10]:
+            fname = str(d.get("file") or "?")
+            name = str(d.get("name") or "").strip()
+            desc = f" — {name}" if name and name != fname else ""
+            lines.append(f"- {fname}{desc} [skrivskyddad]")
+    else:
+        lines.append("Drop-ins: inga hittades.")
+
+    url = _plugins_dashboard_url(site_id)
+    if url:
+        lines.append(f"Webbpanel: {url} (kräver inloggning)")
+    else:
+        lines.append(f"Webbpanel: /wp/{site_id}/plugins (kräver inloggning)")
     return BotReply(text="\n".join(lines))
 
 
@@ -537,7 +846,7 @@ def handle_wp_context_command(
     on_progress: ProgressCallback | None = None,
 ) -> BotReply | None:
     """Minimal user controls for the sticky, actor-scoped WordPress site."""
-    match = re.fullmatch(r"/wp(?:@\w+)?(?:\s+(.*))?", text.strip(), re.I)
+    match = re.fullmatch(r"/wp(?:@\w+)?(?:\s+(.*))?", text.strip(), re.I | re.S)
     if not match:
         return None
     parts = (match.group(1) or "").strip().split()
@@ -550,16 +859,30 @@ def handle_wp_context_command(
         return BotReply(text="WordPress-sajtkontexten är rensad.")
     if action == "help" and len(parts) == 1:
         return BotReply(
-            text="/wp sites · /wp use <site-id> · /wp plans [site-id] · /wp plan <plan-id> · /wp clear"
+            text=(
+                "/wp sites · /wp use <site-id> · /wp plugins [site-id] · "
+                "/wp mu-plugins [site-id] · /wp plans [site-id] · /wp plan <plan-id> · "
+                "/wp changes [site-id] · /wp rollback <change-id> · /wp bridge [site-id] · /wp clear"
+            )
         )
     try:
         actor = handler._resolve_actor(chat_id)
     except (TelegramActorDenied, ChannelActorDenied):
         return handler._deny_actor()
+    if action == "plugins" and len(parts) in {1, 2}:
+        return handle_wp_plugins_command(handler, chat_id, actor, parts)
+    if action == "mu-plugins" and len(parts) in {1, 2}:
+        return handle_wp_mu_plugins_command(handler, chat_id, actor, parts)
     if action == "plans" and len(parts) in {1, 2}:
         return handle_wp_plans_command(actor, parts)
     if action == "plan" and len(parts) == 2:
         return handle_wp_plan_command(handler, chat_id, actor, parts)
+    if action == "changes" and len(parts) in {1, 2}:
+        return handle_wp_changes_command(handler, chat_id, actor, parts)
+    if action == "rollback" and len(parts) == 2:
+        return handle_wp_rollback_command(handler, chat_id, actor, parts)
+    if action == "bridge" and len(parts) in {1, 2}:
+        return handle_wp_bridge_command(handler, chat_id, actor, parts)
 
     tools = WpAgentTools()
     if action == "sites" and len(parts) == 1:
@@ -626,23 +949,47 @@ def handle_wp_context_command(
         if context is None:
             tracker.fail("kunde inte väljas", "WordPress-sajt: kunde inte väljas.")
             return BotReply(text="WordPress-sajten kunde inte väljas.")
-        handler._update_session_atomic(chat_id, session_updates={"wp_ops_context": context})
+        prev = handler.store.get(chat_id) or {}
+        prev_session = dict(prev.get("session") or {})
+        prev_ctx = prev_session.get("wp_ops_context")
+        prev_site = str(prev_ctx.get("site_id") or "").strip() if isinstance(prev_ctx, dict) else ""
+        prev_rev = prev_session.get("active_wp_review")
+        prev_rev_site = str(prev_rev.get("site_id") or "").strip() if isinstance(prev_rev, dict) else ""
+        pop_keys: tuple[str, ...] = ()
+        if (prev_site and prev_site != output.site_id) or (
+            prev_rev_site and prev_rev_site != output.site_id
+        ):
+            pop_keys = ("wp_review_hashes", "active_wp_review")
+        handler._update_session_atomic(
+            chat_id,
+            session_updates={"wp_ops_context": context},
+            pop_session_keys=pop_keys,
+        )
         tracker.complete(f"aktiv sajt: {site_id}", f"Aktiv WordPress-sajt: {site_id}.")
         return BotReply(
             text=f"Aktiv WordPress-sajt: {site_id}. Fråga om status, backup eller uppdateringar."
         )
 
     return BotReply(
-        text="Använd /wp sites, /wp use <site-id>, /wp plans [site-id], /wp plan <plan-id> eller /wp clear."
+        text=(
+            "Använd /wp sites, /wp use <site-id>, /wp plugins [site-id], /wp mu-plugins [site-id], "
+            "/wp plans [site-id], /wp plan <plan-id>, "
+            "/wp changes [site-id], /wp rollback <change-id>, /wp bridge [site-id] eller /wp clear."
+        )
     )
 
 
 __all__ = [
     "format_changed_files",
     "format_check_rows",
+    "handle_wp_bridge_command",
+    "handle_wp_changes_command",
     "handle_wp_context_command",
+    "handle_wp_mu_plugins_command",
     "handle_wp_plan_command",
     "handle_wp_plans_command",
+    "handle_wp_plugins_command",
+    "handle_wp_rollback_command",
     "handle_wpfile_callback",
     "handle_wpreview_callback",
     "review_plan_ready",

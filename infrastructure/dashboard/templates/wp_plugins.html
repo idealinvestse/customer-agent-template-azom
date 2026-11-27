@@ -1,0 +1,685 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}Plugins &amp; MU-plugins – {{ site.display_name if site else 'Webbplats' }} – Azom{% endblock %}
+{% block page_subtitle %}Plugin-livscykel, Auto-uppdatering, MU-plugins &amp; Nödåterställning{% endblock %}
+{% block content %}
+<div class="space-y-6" data-live-calls="{{ 'true' if (posture.bridge_enabled or posture.deploy_ssh_enabled) and not posture.mock_mode else 'false' }}">
+  {% if site %}
+  {{ ui.breadcrumb([
+    {'label': 'Webbplatser', 'href': url_for('wp_sites')},
+    {'label': site.display_name, 'href': url_for('wp_site_detail', site_id=site.id)},
+    {'label': 'Plugins & MU'}
+  ]) }}
+
+  {% call ui.page_header(
+    "Plugins & MU-plugins",
+    site.display_name ~ " · " ~ site.environment ~ " · " ~ active_count ~ " aktiva plugins · " ~ pending_count ~ " väntande uppdateringar · " ~ (mu_plugins | length) ~ " MU-plugins",
+    badge_text="Mock-läge" if posture.mock_mode else "Live-läge",
+    badge_tone="warn" if posture.mock_mode else "info"
+  ) %}{% endcall %}
+
+  <nav aria-label="Webbplatsflikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_site_detail', site_id=site.id) }}">Översikt</a>
+    <a class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200" href="{{ url_for('wp_plugins', site_id=site.id) }}" aria-current="page">Plugins &amp; MU</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_files', site_id=site.id) }}">Tema- och pluginfiler</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_ssh', site_id=site.id) }}">SSH-inställningar</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_changes', site_id=site.id) }}">Ändringar &amp; Återställning</a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo?site={{ site.id }}">SEO Studio</a>
+  </nav>
+
+  {% if posture.kill_switch_active %}
+    {{ ui.flash_banner('error', 'Nödstopp aktivt (AZOM_WP_DEPLOY_KILL / AZOM_WP_PLUGIN_MUTATE_KILL). Alla live-uppdateringar, auto-uppdateringsändringar och karantänåtgärder är spärrade.', dismissible=False) }}
+  {% endif %}
+
+  {% if not can_admin %}
+    {{ ui.info_callout(
+      'info',
+      'Skrivskyddad vy (viewer)',
+      'Du har läsbehörighet (WP_OPS_READ). Pluginuppdateringar, auto-uppdateringspolicyer, diagnostikloggar och SFTP-karantän kräver Oscar-behörighet (WP_OPS_ADMIN / WP_OPS_RESTORE).'
+    ) }}
+  {% endif %}
+
+  {% if inv_error %}
+    {{ ui.flash_banner('warn', inv_error, dismissible=False) }}
+  {% endif %}
+
+  <!-- Säkerhetsstatus & Miljögrindar -->
+  <section class="az-card space-y-4">
+    <h2 class="font-display text-base font-semibold text-mist-100">Grindar &amp; WordPress-konstanter</h2>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Pluginuppdateringar</div>
+        <div>{{ ui.status_badge('ok' if posture.mock_mode or posture.plugin_updates_enabled else 'warn', 'Mock' if posture.mock_mode else ('På' if posture.plugin_updates_enabled else 'Av')) }}</div>
+        <div class="text-mist-400">AZOM_WP_PLUGIN_UPDATES_ENABLED</div>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Auto-uppdateringspolicy</div>
+        <div>{{ ui.status_badge('ok' if posture.mock_mode or posture.autoupdate_write_enabled else 'warn', 'Mock' if posture.mock_mode else ('På' if posture.autoupdate_write_enabled else 'Av')) }}</div>
+        <div class="text-mist-400">AZOM_WP_AUTOUPDATE_WRITE_ENABLED</div>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Återställning &amp; SFTP-karantän</div>
+        <div>{{ ui.status_badge('ok' if posture.mock_mode or posture.restore_enabled else 'warn', 'Mock' if posture.mock_mode else ('På' if posture.restore_enabled else 'Av')) }}</div>
+        <div class="text-mist-400">AZOM_WP_RESTORE_ENABLED · Deploy-SFTP: {{ 'På' if posture.deploy_ssh_enabled else 'Av' }}</div>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">WP-konstanter</div>
+        <div class="flex flex-wrap gap-1">
+          {{ ui.status_badge('warn' if constants.get('disallow_file_mods') else 'neutral', 'DISALLOW_FILE_MODS: ' ~ ('Ja' if constants.get('disallow_file_mods') else 'Nej')) }}
+          {{ ui.status_badge('warn' if constants.get('automatic_updater_disabled') else 'neutral', 'AUTO_UPDATER_OFF: ' ~ ('Ja' if constants.get('automatic_updater_disabled') else 'Nej')) }}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Plugin-inventering -->
+  <section class="az-card space-y-4" data-wp-plugins-inventory="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="font-display text-base font-semibold text-mist-100">Plugin-inventering</h2>
+        <p class="az-muted mt-0.5 text-xs">
+          Visar installerade plugins, uppdateringsstatus, WooCommerce HPOS-kompatibilitet, auto-uppdatering och skyddsklassning.
+          <code class="az-code font-mono">azom-ops-bridge</code> är självskyddat.
+        </p>
+      </div>
+      <span class="text-xs text-mist-400 tabular-nums">{{ plugins | length }} plugins · {{ critical_count }} kritiska</span>
+    </div>
+
+    {% if plugins %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Installerade plugins">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Plugin</th>
+            <th scope="col">Version &amp; Uppdatering</th>
+            <th scope="col">Status</th>
+            <th scope="col">HPOS &amp; Skydd</th>
+            <th scope="col">Auto-uppdatering</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in plugins %}
+          <tr data-plugin-slug="{{ p.slug }}">
+            <td class="text-xs">
+              <div class="font-medium text-mist-100">{{ p.name or p.slug }}</div>
+              <div class="font-mono text-mist-400">{{ p.slug }} · {{ p.plugin_file }}</div>
+              {% if p.requires_plugins %}
+              <div class="text-mist-400 mt-0.5">Kräver: {{ p.requires_plugins | join(', ') }}</div>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap text-xs">
+              <code class="az-code font-mono">{{ p.version or '—' }}</code>
+              {% if p.update_available %}
+              <span class="ml-1">{{ ui.status_badge('warn', '→ ' ~ (p.new_version or 'ny')) }}</span>
+              {% else %}
+              <span class="ml-1">{{ ui.status_badge('ok', 'aktuell') }}</span>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap">
+              <div class="flex flex-wrap gap-1">
+                {{ ui.status_badge('ok' if p.active else 'neutral', 'aktiv' if p.active else 'inaktiv') }}
+                {% if p.network_active %}
+                {{ ui.status_badge('info', 'nätverk') }}
+                {% endif %}
+                {% if p.is_paused %}
+                {{ ui.status_badge('error', 'pausad') }}
+                {% endif %}
+              </div>
+            </td>
+            <td class="whitespace-nowrap">
+              <div class="flex flex-wrap gap-1">
+                {% if p.hpos_compatible is sameas true %}
+                {{ ui.status_badge('ok', 'HPOS ok') }}
+                {% elif p.hpos_compatible is sameas false %}
+                {{ ui.status_badge('error', 'ej HPOS') }}
+                {% else %}
+                {{ ui.status_badge('neutral', 'HPOS —') }}
+                {% endif %}
+                {% if p.is_bridge %}
+                {{ ui.status_badge('oscar', 'Självskyddad') }}
+                {% elif p.is_critical %}
+                {{ ui.status_badge('warn', 'Kritisk') }}
+                {% endif %}
+              </div>
+            </td>
+            <td class="whitespace-nowrap">
+              {{ ui.status_badge('info' if p.auto_update else 'neutral', 'På' if p.auto_update else 'Av') }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Inga plugins rapporterades för den här webbplatsen.</p>
+    {% endif %}
+  </section>
+
+  {% if can_admin %}
+  <!-- Oscar: Planera & Kör Pluginuppdateringar (plu-*) -->
+  <section class="az-card-oscar space-y-4" data-oscar-plugin-updates="true">
+    <div>
+      <h2 class="font-display text-base font-semibold text-oscar-300">Säkra pluginuppdateringar (Oscar HITL)</h2>
+      <p class="az-muted text-xs">
+        Steg 1: Skapa en oföränderlig SHA-256-låst uppdateringsplan (<code class="az-code font-mono">plu-*</code>).
+        Steg 2: Granska batchordning och kör sekventiellt med förhandsbackup + loopback-kontroll.
+      </p>
+    </div>
+
+    <form method="post" action="{{ url_for('wp_plugins_plan_update', site_id=site.id) }}" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div>
+        <label class="az-label" for="plu-mode">Urvalsläge</label>
+        <select id="plu-mode" name="selection_mode" class="az-select text-xs">
+          <option value="policy" selected>policy (rekommenderad)</option>
+          <option value="single">single (ett plugin)</option>
+          <option value="selected">selected (valda slugs)</option>
+          <option value="all">all (alla uppdateringar)</option>
+        </select>
+      </div>
+      <div>
+        <label class="az-label" for="plu-policy">Uppdateringspolicy</label>
+        <select id="plu-policy" name="policy" class="az-select text-xs">
+          <option value="non_critical_only" selected>non_critical_only</option>
+          <option value="security_only">security_only</option>
+          <option value="patch_only">patch_only</option>
+          <option value="minor_safe">minor_safe</option>
+        </select>
+      </div>
+      <div>
+        <label class="az-label" for="plu-slugs">Slugs (kommaseparerat)</label>
+        <input id="plu-slugs" name="slugs_csv" type="text" class="az-input text-xs font-mono" placeholder="t.ex. contact-form-7,yoast-seo" />
+      </div>
+      <div>
+        <label class="az-label" for="plu-exclude">Exkludera slugs</label>
+        <input id="plu-exclude" name="exclude_slugs" type="text" class="az-input text-xs font-mono" placeholder="t.ex. woocommerce" />
+      </div>
+      <div class="sm:col-span-2 flex flex-wrap items-center gap-3">
+        <label class="flex items-center gap-2 text-xs text-mist-200">
+          <input type="checkbox" name="include_critical" value="1" />
+          <span>Tillåt kritiska Woo/betal-plugins i planen</span>
+        </label>
+      </div>
+      <div class="sm:col-span-2 flex flex-wrap justify-end gap-2">
+        <button class="az-btn-oscar az-btn-sm" type="submit" data-busy-label="Planerar...">Skapa uppdateringsplan (plu-*)</button>
+      </div>
+    </form>
+
+    {% if update_plans %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Pluginuppdateringsplaner">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Plan-ID</th>
+            <th scope="col">Läge &amp; Policy</th>
+            <th scope="col">Status &amp; Hash</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for up in update_plans %}
+          <tr data-update-plan="{{ up.plan_id }}">
+            <td class="whitespace-nowrap font-mono text-xs text-mist-100">
+              {{ up.plan_id }}
+              <div class="text-mist-400 tabular-nums">{{ up.created_at_fmt or up.created_at }}</div>
+            </td>
+            <td class="text-xs text-mist-200">
+              <div class="font-mono">{{ up.selection_mode or 'policy' }} · {{ up.policy or 'non_critical_only' }}</div>
+              {% set c_paths = up.canary_paths or (up.execution.get('canary_paths') if up.execution is mapping else []) or [] %}
+              {% if c_paths %}
+              <div class="mt-1 flex flex-wrap items-center gap-1" data-canary-paths="true">
+                <span class="text-mist-400">Canary:</span>
+                {% for cp in c_paths %}
+                <code class="az-code font-mono">{{ cp }}</code>
+                {% endfor %}
+              </div>
+              {% endif %}
+              {% set c_results = up.canary_results or (up.execution.get('canary_results') if up.execution is mapping else []) or [] %}
+              {% if not c_results and up.results is sequence and up.results is not string %}
+                {% set c_ns = namespace(rows=[]) %}
+                {% for r_item in up.results %}
+                  {% if r_item is mapping and r_item.get('canary_results') %}
+                    {% for cr in r_item.get('canary_results') %}
+                      {% set c_ns.rows = c_ns.rows + [cr] %}
+                    {% endfor %}
+                  {% endif %}
+                {% endfor %}
+                {% set c_results = c_ns.rows %}
+              {% endif %}
+              {% if c_results %}
+              <div class="mt-1 flex flex-wrap items-center gap-1" data-canary-results="true">
+                {% for cr in c_results[:8] %}
+                {% set cr_ok = cr.get('ok') and not cr.get('fatal_detected') %}
+                {{ ui.status_badge('ok' if cr_ok else 'error', (cr.get('path') or '/') ~ ' ' ~ (cr.get('status') or ('OK' if cr_ok else 'FEL'))) }}
+                {% endfor %}
+              </div>
+              {% endif %}
+              {% if up.warnings %}
+              <div class="text-warn mt-0.5">{{ up.warnings | join(' · ') }}</div>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap text-xs">
+              {% set up_st = (up.status or 'planned') | lower %}
+              {{ ui.status_badge('ok' if up_st == 'executed' else ('warn' if up_st in ('planned', 'pending') else ('error' if up_st in ('halted_on_failure', 'failed') else 'neutral')), up_st) }}
+              <div class="font-mono text-mist-400 mt-0.5">{{ (up.plan_sha256 or '')[:16] }}…</div>
+            </td>
+            <td class="whitespace-nowrap">
+              {% if up.status in ['pending', 'planned', ''] and up.plan_sha256 %}
+              <form method="post" action="{{ url_for('wp_plugins_execute_update', site_id=site.id) }}" class="flex flex-wrap items-center gap-2">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                <input type="hidden" name="plan_id" value="{{ up.plan_id }}" />
+                <input type="hidden" name="expected_sha256" value="{{ up.plan_sha256 }}" />
+                <label class="flex items-center gap-1 text-xs text-mist-300">
+                  <input type="checkbox" name="allow_critical" value="1" />
+                  <span>Kritiska ok</span>
+                </label>
+                <button
+                  class="az-btn-primary az-btn-sm"
+                  type="submit"
+                  data-confirm="Köra hash-låst pluginuppdateringsplan {{ up.plan_id }} med förhandsbackup och loopback-kontroll?"
+                  data-confirm-title="Bekräfta pluginuppdatering"
+                  data-confirm-ok="Kör plan"
+                  data-busy-label="Uppdaterar..."
+                >Kör uppdatering</button>
+              </form>
+              {% else %}
+              <span class="az-muted text-xs">{{ up.status or 'klar' }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <!-- Auto-uppdateringspolicy & Drift -->
+  <section class="az-card space-y-4" data-wp-autoupdate-section="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="font-display text-base font-semibold text-mist-100">Auto-uppdateringspolicy &amp; Drift</h2>
+        <p class="az-muted mt-0.5 text-xs">Kritiska WooCommerce-, betalningsplugins och <code class="az-code font-mono">azom-ops-bridge</code> nekas auto-uppdatering som standard.</p>
+      </div>
+      {% if autoupdate_drift %}
+      <div>
+        {% if autoupdate_drift.get('in_sync') is sameas true %}
+          {{ ui.status_badge('ok', 'I synk') }}
+        {% elif autoupdate_drift.get('in_sync') is sameas false %}
+          {{ ui.status_badge('warn', 'Drift upptäckt') }}
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="grid gap-3 sm:grid-cols-2 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1.5">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Lagrad policy</div>
+        <div class="text-mist-200">Preset: <code class="az-code font-mono">{{ autoupdate_policy.get('preset') or 'non_critical_only' }}</code></div>
+        {% if autoupdate_policy.get('updated_at') %}
+        <div class="text-mist-400">Uppdaterad: {{ autoupdate_policy.get('updated_at') }}</div>
+        {% endif %}
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1.5">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Filter-overrides &amp; Avvikelser</div>
+        {% if autoupdate_filters %}
+        <div class="text-warn">Aktiva <code class="az-code font-mono">auto_update_plugin</code>-filter: {{ autoupdate_filters | length }}</div>
+        {% else %}
+        <div class="text-mist-400">Inga överstyrande kodfilter rapporterade.</div>
+        {% endif %}
+        {% set drift_items = autoupdate_drift.get('drift_items') or autoupdate_drift.get('drifted') or autoupdate_drift.get('drift') or [] %}
+        {% if drift_items %}
+        <div class="text-warn">Avvikande plugins: {{ drift_items | length }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if can_admin %}
+    <form method="post" action="{{ url_for('wp_plugins_autoupdate_plan', site_id=site.id) }}" class="border-t border-ink-700/80 pt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div>
+        <label class="az-label" for="pau-preset">Ny auto-uppdateringspreset</label>
+        <select id="pau-preset" name="preset" class="az-select text-xs">
+          <option value="non_critical_only" selected>non_critical_only</option>
+          <option value="security_only">security_only</option>
+          <option value="disable_all">disable_all</option>
+          <option value="custom">custom</option>
+        </select>
+      </div>
+      <div class="sm:col-span-2">
+        <label class="az-label" for="pau-changes">Valfria ändringar (JSON, för custom)</label>
+        <input id="pau-changes" name="changes_json" type="text" class="az-input text-xs font-mono" placeholder='[{"plugin_file":"akismet/akismet.php","enabled":true}]' />
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <button class="az-btn-oscar az-btn-sm" type="submit" data-busy-label="Planerar...">Skapa policyplan (pau-*)</button>
+      </div>
+    </form>
+
+    {% if autoupdate_plans %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Auto-uppdateringsplaner">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Plan-ID</th>
+            <th scope="col">Preset &amp; Status</th>
+            <th scope="col">Hash</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ap in autoupdate_plans %}
+          <tr data-autoupdate-plan="{{ ap.plan_id }}">
+            <td class="font-mono text-xs text-mist-100">{{ ap.plan_id }}</td>
+            {% set ap_st = (ap.status or 'planned') | lower %}
+            <td class="text-xs text-mist-200">{{ ap.preset or '—' }} · {{ ui.status_badge('ok' if ap_st == 'executed' else ('warn' if ap_st in ('planned', 'pending') else ('error' if ap_st in ('halted_on_failure', 'failed') else 'neutral')), ap_st) }}</td>
+            <td class="font-mono text-xs text-mist-400">{{ (ap.plan_sha256 or '')[:16] }}…</td>
+            <td class="whitespace-nowrap">
+              {% if ap.status in ['pending', 'planned', ''] and ap.plan_sha256 %}
+              <form method="post" action="{{ url_for('wp_plugins_autoupdate_execute', site_id=site.id) }}">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                <input type="hidden" name="plan_id" value="{{ ap.plan_id }}" />
+                <input type="hidden" name="expected_sha256" value="{{ ap.plan_sha256 }}" />
+                <button
+                  class="az-btn-primary az-btn-sm"
+                  type="submit"
+                  data-confirm="Tillämpa hash-låst auto-uppdateringsplan {{ ap.plan_id }}?"
+                  data-confirm-title="Bekräfta auto-uppdatering"
+                  data-confirm-ok="Tillämpa"
+                  data-busy-label="Tillämpar..."
+                >Tillämpa policy</button>
+              </form>
+              {% else %}
+              <span class="az-muted text-xs">{{ ap.status or 'klar' }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% endif %}
+  </section>
+
+  <!-- MU-plugins & Skrivskyddade Drop-ins -->
+  <div class="grid gap-5 lg:grid-cols-2">
+    <section class="az-card space-y-3" data-wp-mu-plugins-section="true">
+      <div>
+        <h2 class="font-display text-base font-semibold text-mist-100">MU-plugins (<code class="az-code font-mono">wp-content/mu-plugins/</code>)</h2>
+        <p class="az-muted mt-0.5 text-xs">Laddas alfabetiskt före vanliga plugins och teman. Kan inte avaktiveras i WP Admin.</p>
+      </div>
+      {% if mu_plugins %}
+      <div class="az-table-wrap" tabindex="0" role="region" aria-label="MU-plugins">
+        <table class="az-table">
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">Fil &amp; Namn</th>
+              <th scope="col">Typ &amp; SHA-256</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for m in mu_plugins %}
+            <tr data-mu-plugin="{{ m.file or m.slug }}">
+              <td class="font-mono text-xs text-mist-400 tabular-nums">{{ m.load_order if m.load_order is not none else loop.index }}</td>
+              <td class="text-xs">
+                <div class="font-mono text-mist-100">{{ m.file or m.slug }}</div>
+                {% if m.name %}
+                <div class="text-mist-300">{{ m.name }}{% if m.version %} ({{ m.version }}){% endif %}</div>
+                {% endif %}
+              </td>
+              <td class="whitespace-nowrap text-xs">
+                {% if m.is_loader %}
+                {{ ui.status_badge('info', 'loader') }}
+                {% else %}
+                {{ ui.status_badge('neutral', 'single-file') }}
+                {% endif %}
+                {% if m.sha256 %}
+                <span class="font-mono text-mist-400">{{ m.sha256[:12] }}…</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="az-muted text-sm">Inga MU-plugins hittades.</p>
+      {% endif %}
+    </section>
+
+    <section class="az-card space-y-3" data-wp-dropins-section="true">
+      <div>
+        <h2 class="font-display text-base font-semibold text-mist-100">Drop-ins (endast läsning)</h2>
+        <p class="az-muted mt-0.5 text-xs">T.ex. <code class="az-code font-mono">object-cache.php</code> och <code class="az-code font-mono">advanced-cache.php</code>. Redigeras aldrig automatiskt.</p>
+      </div>
+      {% if dropins %}
+      <div class="az-table-wrap" tabindex="0" role="region" aria-label="Drop-ins">
+        <table class="az-table">
+          <thead>
+            <tr>
+              <th scope="col">Fil</th>
+              <th scope="col">Namn &amp; Beskrivning</th>
+              <th scope="col">Läge</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in dropins %}
+            <tr data-dropin-file="{{ d.file }}">
+              <td class="font-mono text-xs text-mist-100">{{ d.file }}</td>
+              <td class="text-xs text-mist-300">
+                <div class="font-medium text-mist-100">{{ d.name or d.file }}</div>
+                {% if d.description %}
+                <div class="text-mist-400">{{ d.description }}</div>
+                {% endif %}
+              </td>
+              <td class="whitespace-nowrap">{{ ui.status_badge('neutral', 'skrivskyddad') }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="az-muted text-sm">Inga drop-ins hittades.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  {% if can_admin %}
+  <!-- Oscar: Diagnostik & Nödåterställning (WSOD / SFTP-karantän / Change Vault) -->
+  <section class="az-card-oscar space-y-4" data-oscar-plugin-recovery="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="font-display text-base font-semibold text-oscar-300">Diagnostik, Rollback &amp; Nödkarantän (Oscar)</h2>
+        <p class="az-muted text-xs">Kör skrubbad PHP-felsökning, skapa hash-låst återställningsplan (<code class="az-code font-mono">plr-*</code>) eller kör out-of-band SFTP-karantän vid WSOD.</p>
+      </div>
+      <form method="post" action="{{ url_for('wp_plugins_diagnostics', site_id=site.id) }}" class="flex flex-wrap items-center gap-2">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="text" name="hooks" class="az-input text-xs font-mono" placeholder="Hooks (valfritt, t.ex. init,plugins_loaded)" />
+        <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Analyserar...">Kör plugindiagnostik</button>
+      </form>
+    </div>
+
+    {% if diagnostics %}
+    <div class="rounded-xl border border-ink-700/70 bg-ink-950/50 p-3.5 text-xs space-y-2" data-plugin-diagnostics="true">
+      <div class="font-semibold text-mist-100">Senaste diagnostik</div>
+      {% set paused = diagnostics.get('paused_plugins') or [] %}
+      <div class="text-mist-300">Pausade plugins: <code class="az-code font-mono">{{ paused | length }}</code> · Tillgängliga plugin-backuper: <code class="az-code font-mono">{{ (diagnostics.get('available_backups') or []) | length }}</code></div>
+      {% set log_tail = diagnostics.get('debug_log_tail') or [] %}
+      {% if log_tail %}
+      <pre class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 font-mono text-xs text-mist-200 break-all">{{ log_tail | join('\n') }}</pre>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if can_restore %}
+    <div class="grid gap-4 lg:grid-cols-2 border-t border-ink-700/80 pt-4">
+      <form method="post" action="{{ url_for('wp_plugins_recovery_plan', site_id=site.id) }}" class="space-y-3">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <h3 class="text-sm font-semibold text-mist-100">Planera återställning (<code class="az-code font-mono">plr-*</code>)</h3>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="plr-slug">Plugin-slug</label>
+            <input id="plr-slug" name="slug" type="text" required class="az-input text-xs font-mono" placeholder="t.ex. broken-plugin" />
+          </div>
+          <div>
+            <label class="az-label" for="plr-action">Åtgärd</label>
+            <select id="plr-action" name="action" class="az-select text-xs">
+              <option value="rollback_snapshot">rollback_snapshot (ZIP-backup)</option>
+              <option value="deactivate">deactivate (via Bridge)</option>
+              <option value="quarantine_sftp">quarantine_sftp (WSOD SFTP)</option>
+              <option value="restore_from_quarantine">restore_from_quarantine</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label class="az-label" for="plr-change">Change Vault ID (valfritt för rollback)</label>
+          <input id="plr-change" name="change_id" type="text" class="az-input text-xs font-mono" placeholder="chg-xxxxxxxxxxxx" />
+        </div>
+        <button class="az-btn-oscar az-btn-sm" type="submit" data-busy-label="Planerar...">Skapa återställningsplan (plr-*)</button>
+      </form>
+
+      <div class="space-y-3">
+        <h3 class="text-sm font-semibold text-mist-100">Direkt out-of-band SFTP-karantän (WSOD-räddning)</h3>
+        <form method="post" action="{{ url_for('wp_plugins_quarantine', site_id=site.id) }}" class="grid gap-2 sm:grid-cols-2">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input name="slug" type="text" required class="az-input text-xs font-mono" placeholder="plugin-slug eller fil.php" />
+          <div class="flex gap-2">
+            <select name="kind" aria-label="Typ" class="az-select text-xs">
+              <option value="plugin">plugin</option>
+              <option value="mu_plugin">mu_plugin</option>
+            </select>
+            <button
+              class="az-btn-danger az-btn-sm shrink-0"
+              type="submit"
+              data-confirm="Flytta plugin till SFTP-karantän utanför WordPress (WSOD-räddning)?"
+              data-confirm-title="Bekräfta SFTP-karantän"
+              data-confirm-ok="Sätt i karantän"
+              data-confirm-danger="1"
+              data-busy-label="Karantän..."
+            >Karantän</button>
+          </div>
+        </form>
+        <form method="post" action="{{ url_for('wp_plugins_unquarantine', site_id=site.id) }}" class="grid gap-2 sm:grid-cols-2">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input name="slug" type="text" required class="az-input text-xs font-mono" placeholder="plugin-slug" />
+          <div class="flex gap-2">
+            <input name="quarantine_name" type="text" class="az-input text-xs font-mono" placeholder="karantännamn (valfritt)" />
+            <select name="kind" aria-label="Typ" class="az-select text-xs">
+              <option value="plugin">plugin</option>
+              <option value="mu_plugin">mu_plugin</option>
+            </select>
+            <button class="az-btn-secondary az-btn-sm shrink-0" type="submit" data-busy-label="Återställer...">Avkarantäna</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    {% if recovery_plans %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Återställningsplaner">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Plan-ID</th>
+            <th scope="col">Mål &amp; Åtgärd</th>
+            <th scope="col">Status &amp; Hash</th>
+            <th scope="col">Utför</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rp in recovery_plans %}
+          <tr data-recovery-plan="{{ rp.plan_id }}">
+            <td class="font-mono text-xs text-mist-100">{{ rp.plan_id }}</td>
+            <td class="font-mono text-xs text-mist-200">{{ rp.slug }} · {{ rp.action }}</td>
+            <td class="whitespace-nowrap text-xs">
+              {% set rp_st = (rp.status or 'planned') | lower %}
+              {{ ui.status_badge('ok' if rp_st == 'executed' else ('warn' if rp_st in ('planned', 'pending') else ('error' if rp_st in ('halted_on_failure', 'failed') else 'neutral')), rp_st) }}
+              <span class="font-mono text-mist-400">{{ (rp.plan_sha256 or '')[:12] }}…</span>
+            </td>
+            <td class="whitespace-nowrap">
+              {% if rp.status in ['pending', 'planned', ''] and rp.plan_sha256 %}
+              <form method="post" action="{{ url_for('wp_plugins_recovery_execute', site_id=site.id) }}">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                <input type="hidden" name="plan_id" value="{{ rp.plan_id }}" />
+                <input type="hidden" name="expected_sha256" value="{{ rp.plan_sha256 }}" />
+                <button
+                  class="az-btn-danger az-btn-sm"
+                  type="submit"
+                  data-confirm="Utföra hash-låst återställningsplan {{ rp.plan_id }} ({{ rp.action }} på {{ rp.slug }})?"
+                  data-confirm-title="Bekräfta återställning"
+                  data-confirm-ok="Utför"
+                  data-confirm-danger="1"
+                  data-busy-label="Utför..."
+                >Kör återställning</button>
+              </form>
+              {% else %}
+              <span class="az-muted text-xs">{{ rp.status or 'klar' }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <!-- Senaste plugin-ändringar i Change Vault -->
+  <section class="az-card space-y-3" data-wp-plugin-changes="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="font-display text-base font-semibold text-mist-100">Senaste plugin-ändringar i Change Vault</h2>
+      <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_changes', site_id=site.id) }}">Alla ändringar</a>
+    </div>
+    {% if plugin_changes %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Plugin-ändringar">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Change-ID</th>
+            <th scope="col">Kategori</th>
+            <th scope="col">Sammanfattning</th>
+            <th scope="col">Status</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ch in plugin_changes %}
+          <tr>
+            <td class="whitespace-nowrap font-mono text-xs">
+              <a class="text-steel-300 hover:underline" href="{{ url_for('wp_change_detail', site_id=site.id, change_id=ch.change_id) }}">{{ ch.change_id }}</a>
+            </td>
+            <td class="whitespace-nowrap font-mono text-xs text-mist-300">{{ ch.category }}</td>
+            <td class="text-xs text-mist-200 max-w-md">
+              <div>{{ ch.summary }}</div>
+              {% set ch_meta = ch.metadata if ch.metadata is mapping else {} %}
+              {% set ch_canaries = ch_meta.get('canary_results') or [] %}
+              {% if ch_canaries %}
+              <div class="mt-1 flex flex-wrap gap-1" data-canary-results="true">
+                {% for cr in ch_canaries[:6] %}
+                {% set cr_ok = cr.get('ok') and not cr.get('fatal_detected') %}
+                {{ ui.status_badge('ok' if cr_ok else 'error', (cr.get('path') or '/') ~ ' ' ~ (cr.get('status') or ('OK' if cr_ok else 'FEL'))) }}
+                {% endfor %}
+              </div>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap">{{ ui.status_badge('ok' if ch.status == 'applied' else 'warn', ch.status) }}</td>
+            <td class="whitespace-nowrap">
+              <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_change_detail', site_id=site.id, change_id=ch.change_id) }}">Detaljer / Rollback</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Inga plugin-ändringar registrerade i Change Vault ännu.</p>
+    {% endif %}
+  </section>
+  {% else %}
+    {{ ui.page_header("Plugins & MU-plugins", "Ingen webbplats hittades.") }}
+  {% endif %}
+</div>
+{% endblock %}

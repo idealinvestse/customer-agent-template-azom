@@ -362,17 +362,41 @@ def execute_product_update(
     from ecom_ops.audit import log_action
     from ecom_ops.integrations.woocommerce import client_from_env
     from ecom_ops.rbac import Permission, require_permission, resolve_actor
+    from ecom_ops.wp_ops.change_ledger import resolve_ledger_site_id, safe_record_change
+    from ecom_ops.wp_ops.config import is_mock_mode
 
+    before_snapshot: dict[str, Any] = {}
     try:
         actor_obj = resolve_actor(actor)
         require_permission(actor_obj, Permission.PRODUCT_DESC_WRITE)
         pid = validate_order_id(product_id)
         clean = _revalidate_product_fields(fields)
         woo = client_from_env(use_mock=None, domain=domain)
+        try:
+            current = woo.get_product(pid)
+            if isinstance(current, dict):
+                before_snapshot = {k: current.get(k) for k in clean}
+                if "stock_quantity" in clean and "manage_stock" in current:
+                    before_snapshot["manage_stock"] = current.get("manage_stock")
+        except Exception:
+            before_snapshot = {}
         updated = woo.update_product(pid, clean)
     except Exception as exc:
         return False, _fail_text(exc)
     name = str((updated or {}).get("name") or pid)
+    after_snapshot = {k: (updated or {}).get(k, clean.get(k)) for k in clean}
+    safe_record_change(
+        site_id=resolve_ledger_site_id(domain=domain),
+        environment="staging" if is_mock_mode() else "production",
+        category="product",
+        transport="woo_rest",
+        actor=actor_obj.name,
+        summary=f"Produkt {pid} ({name}): {', '.join(sorted(clean))}",
+        target_ref=f"product:{pid}",
+        before_data=before_snapshot,
+        after_data=after_snapshot,
+        metadata={"product_id": pid, "domain": domain or "", "fields": sorted(clean)},
+    )
     log_action(
         actor=actor_obj.name,
         action="telegram_product_update",
@@ -394,13 +418,27 @@ def execute_page_update(
     from ecom_ops.audit import log_action
     from ecom_ops.integrations.wordpress import wp_client_from_env
     from ecom_ops.rbac import Permission, require_permission, resolve_actor
+    from ecom_ops.wp_ops.change_ledger import resolve_ledger_site_id, safe_record_change
+    from ecom_ops.wp_ops.config import is_mock_mode
 
+    before_snapshot: dict[str, Any] = {}
     try:
         actor_obj = resolve_actor(actor)
         require_permission(actor_obj, Permission.WP_OPS_OPERATE)
         pid = validate_order_id(page_id)
         clean = _revalidate_page_fields(fields)
         wp = wp_client_from_env(use_mock=None, domain=domain)
+        try:
+            current_page = wp.get_page(pid, context="edit")
+            raw_p = current_page.raw or {}
+            content_obj = raw_p.get("content") if isinstance(raw_p.get("content"), dict) else {}
+            before_snapshot = {
+                "title": current_page.title,
+                "content": str(content_obj.get("raw") or content_obj.get("rendered") or raw_p.get("content") or ""),
+                "status": current_page.status,
+            }
+        except Exception:
+            before_snapshot = {}
         updated = wp.update_page(
             pid,
             title=clean.get("title"),
@@ -409,6 +447,23 @@ def execute_page_update(
         )
     except Exception as exc:
         return False, _fail_text(exc)
+    after_snapshot = {
+        "title": updated.title,
+        "content": clean.get("content", before_snapshot.get("content", "")),
+        "status": updated.status,
+    }
+    safe_record_change(
+        site_id=resolve_ledger_site_id(domain=domain),
+        environment="staging" if is_mock_mode() else "production",
+        category="page",
+        transport="wp_rest",
+        actor=actor_obj.name,
+        summary=f"Sida {updated.id} ({updated.title}): {', '.join(sorted(clean))}",
+        target_ref=f"page:{updated.id}",
+        before_data=before_snapshot,
+        after_data=after_snapshot,
+        metadata={"item_id": str(updated.id), "domain": domain or "", "fields": sorted(clean)},
+    )
     log_action(
         actor=actor_obj.name,
         action="telegram_page_update",
@@ -899,8 +954,16 @@ def _parse_price(value: str) -> str:
     raw = value.strip().lower()
     raw = re.sub(r"\b(?:kr|nok|sek|dkk|eur|€)\b", "", raw)
     raw = raw.replace(" ", "").replace("\u00a0", "")
-    if re.fullmatch(r"\d{1,3}(\.\d{3})+(,\d{1,2})?", raw):
-        raw = raw.replace(".", "").replace(",", ".")
+    raw = re.sub(r":[-–—]?$", "", raw)
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?", raw):
+        # Accept European thousands grouping only when an explicit comma decimal or repeated groups appear;
+        # a single 3-decimal dot value like "1.500" without comma is rejected rather than silently x1000.
+        if "," in raw or raw.count(".") >= 2:
+            raw = raw.replace(".", "").replace(",", ".")
+        else:
+            raise SecurityError("Ogiltigt pris")
+    elif re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?", raw):
+        raw = raw.replace(",", "")
     elif "," in raw and "." not in raw:
         raw = raw.replace(",", ".")
     if not re.fullmatch(r"\d{1,8}(\.\d{1,2})?", raw):

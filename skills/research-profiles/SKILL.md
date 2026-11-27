@@ -1,7 +1,7 @@
 ---
 name: research-profiles
 description: >
-  Goal- and ambition-adaptive catalog of 12 search profiles that act as modular
+  Goal- and ambition-adaptive catalog of 13 search profiles that act as modular
   research skills and starting points, orchestrating Parallel.ai (/v1/search &
   /v1/extract), Exa Search, Brave Search, Tavily, opt-in SearXNG, and the
   DNS-pinned SafePublicHttpClient in failover, ensemble, and staged combinations.
@@ -29,7 +29,7 @@ Every profile in `skills/ecom_ops/research/profiles.py` (merged with `config/res
    - `hybrid`: Uses `ParallelSearchRoute.extract()` on the top 2 highest-scoring URLs and `SafePublicHttpClient.fetch()` for the remaining candidates.
 4. **Skill blueprint metadata:** `goal`, `when_to_use`, `query_templates`, `deliverable_sections`, `output_format_default`, and `recommended_tools`.
 
-## The 12 built-in search profiles
+## The 13 built-in search profiles
 
 | Profile ID | Ambition | Combination | Fetch strategy | Preferred providers | Primary goal |
 |------------|----------|-------------|----------------|---------------------|--------------|
@@ -40,6 +40,7 @@ Every profile in `skills/ecom_ops/research/profiles.py` (merged with `config/res
 | `marketing_intel` | `standard` | `ensemble` (1/2/3) | `direct` | `exa, parallel, brave, tavily` | Google Ads, GA4, Consent Mode v2 updates, seasonality & negative-keyword context. |
 | `product_spec_deep` | `standard` | `ensemble` (1/2/3) | `parallel_extract_first` | `parallel, exa, brave, tavily` | OEM fitment, CarPlay/Android Auto/CAN-bus specs, pinouts & hardware limits. |
 | `seo_content_radar` | `standard` | `ensemble` (1/2/3) | `direct` | `exa, brave, tavily, parallel` | Nordic search intent, buyer FAQs, schema markup & product/category copy gaps. |
+| `seo_vendor_vetting` | `standard` | `staged` (R1-R2) | `direct` | `parallel, brave, exa, tavily` | White-hat Nordic SEO link-shop & PR platform vetting (SE/NO/DK pricing, anti-PBN, disclosure rules). |
 | `competitor_market` | `deep` | `staged` (R1-R3) | `hybrid` | `parallel, exa, brave, tavily` | SE/NO/DK competitor positioning, pricing, warranty norms & USP matrix. |
 | `regulatory_compliance` | `deep` | `staged` (R1-R3) | `direct` | `parallel, brave, tavily, exa, searxng` | Traceable Nordic/EU legal & compliance briefs (Konsumentverket, IMY, Lovdata, EUR-Lex). |
 | `conversion_teardown` | `deep` | `staged` (R1-R3) | `parallel_extract_first` | `exa, parallel, tavily, brave` | Empirical CRO audit combining Exa UX research + Parallel extract + live store benchmarks. |

@@ -34,25 +34,25 @@ def _is_mock() -> bool:
 
 
 def _scrub_error(exc: Exception | str) -> str:
-    """Scrub URLs, bot tokens, bearer tokens, query params, and basic-auth creds."""
+    """Scrub URLs, bot tokens, bearer/basic auth, app passwords, and secret env values."""
     text = str(exc or "")
     text = re.sub(r"(https?://)([^/\s:@]+):([^/\s@]+)@", r"\1***@", text)
     text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", text)
-    text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+", "Bearer ***", text)
+    text = re.sub(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{6,}", r"\1 ***", text)
     text = re.sub(
         r"\b(?:BSA[A-Za-z0-9_-]{12,}|tvly-[A-Za-z0-9_-]{8,}|pplx-[A-Za-z0-9_-]{8,})\b",
         "***",
         text,
     )
+    text = re.sub(r"\b[A-Za-z0-9]{4}(?: [A-Za-z0-9]{4}){5}\b", "***", text)
     text = re.sub(r"https?://[^\s\"'>]+", "[url]", text)
-    text = re.sub(r"\?[^\s\"'>]+", "?***", text)
     try:
-        from ecom_ops.security import redact_secrets
+        from ecom_ops.security import SECRET_ENV_KEYS, redact_secrets
 
         text = str(redact_secrets(text))
     except Exception:
-        pass
-    for key in (
+        SECRET_ENV_KEYS = ()
+    explicit_keys = {
         "TELEGRAM_BOT_TOKEN",
         "OPENROUTER_API_KEY",
         "XAI_API_KEY",
@@ -60,7 +60,9 @@ def _scrub_error(exc: Exception | str) -> str:
         "MESSENGER_APP_SECRET",
         "WOO_CONSUMER_KEY",
         "WOO_CONSUMER_SECRET",
+        "WOO_WEBHOOK_SECRET",
         "WP_APP_PASSWORD",
+        "WORDPRESS_APP_PASSWORD",
         "MAIL_PASSWORD",
         "SMTP_PASSWORD",
         "SSH_PASSWORD",
@@ -70,10 +72,20 @@ def _scrub_error(exc: Exception | str) -> str:
         "BRAVE_SEARCH_API_KEY",
         "TAVILY_API_KEY",
         "SEARXNG_API_KEY",
-    ):
-        val = os.environ.get(key, "").strip()
-        if val and len(val) >= 4 and val in text:
-            text = text.replace(val, "***")
+        *{str(k) for k in SECRET_ENV_KEYS},
+    }
+    for env_key, env_val in os.environ.items():
+        if env_key in explicit_keys or env_key.startswith(
+            ("WP_SECRET_", "WP_BRIDGE_SECRET_", "WOO_CONSUMER_", "WP_APP_PASSWORD_")
+        ):
+            val = str(env_val or "").strip()
+            if val and len(val) >= 4 and val in text:
+                text = text.replace(val, "***")
+    text = re.sub(
+        r"\b((?:WOO_WEBHOOK_SECRET|WOO_CONSUMER_SECRET|WP_APP_PASSWORD|WORDPRESS_APP_PASSWORD|WP_SECRET_[A-Z0-9_]+|WP_BRIDGE_SECRET_[A-Z0-9_]+))\s*=\s*[^\s,;\"']+",
+        r"\1=***",
+        text,
+    )
     return text[:200]
 
 
@@ -82,7 +94,7 @@ def _result(pid: str, label: str, status: str, message: str) -> ProbeResult:
         id=pid,
         label=label,
         status=status,
-        message=_scrub_error(message) if status == "error" else str(message)[:200],
+        message=_scrub_error(message),
         checked_at=_now(),
     )
 
@@ -344,20 +356,52 @@ def probe_gmail_oauth() -> ProbeResult:
 def probe_wordpress() -> ProbeResult:
     """WordPress REST connection probe (V2.1).
 
-    Checks WP_USERNAME + WP_APP_PASSWORD and attempts a lightweight
-    /wp-json/wp/v2/ discovery call.
+    Checks WP_USERNAME/WORDPRESS_USERNAME + WP_APP_PASSWORD/WORDPRESS_APP_PASSWORD
+    and attempts a lightweight /wp-json/wp/v2/ discovery call.
     """
     label = "WordPress"
-    needed = ("WP_USERNAME", "WP_APP_PASSWORD")
-    if not _env(*needed):
-        missing = [k for k in needed if not os.environ.get(k, "").strip()]
+    use_mock = _is_mock()
+    wp_user = (
+        os.environ.get("WP_USERNAME", "").strip()
+        or os.environ.get("WORDPRESS_USERNAME", "").strip()
+    )
+    wp_pass = (
+        os.environ.get("WP_APP_PASSWORD", "").strip()
+        or os.environ.get("WORDPRESS_APP_PASSWORD", "").strip()
+    )
+    if not use_mock and (not wp_user or not wp_pass):
+        missing = []
+        if not wp_user:
+            missing.append("WP_USERNAME")
+        if not wp_pass:
+            missing.append("WP_APP_PASSWORD")
         return _result("wordpress", label, "missing", f"Saknas: {', '.join(missing)}")
     try:
         from ecom_ops.integrations.wordpress import wp_client_from_env
 
-        use_mock = _is_mock()
         client = wp_client_from_env(use_mock=use_mock)
-        # Try listing one post — validates credentials + endpoint reachability
+        if not use_mock:
+            # Verify authenticated access rather than public published posts.
+            try:
+                settings = client.get_settings()
+                title = str((settings or {}).get("title") or "").strip()
+                return _result(
+                    "wordpress",
+                    label,
+                    "ok",
+                    f"API auth ok · site={title or 'WordPress'} (admin)",
+                )
+            except Exception as auth_exc:
+                # Non-admin WP users may get 403 on /settings; check draft posts.
+                if "401" in str(auth_exc):
+                    raise
+                drafts = client.list_posts(per_page=1, status="draft")
+                return _result(
+                    "wordpress",
+                    label,
+                    "ok",
+                    f"API auth ok (begränsad roll) · {len(drafts)} draft(s) visible",
+                )
         posts = client.list_posts(per_page=1)
         if posts:
             post = posts[0]

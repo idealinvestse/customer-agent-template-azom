@@ -21,7 +21,7 @@ ALLOWED_EXTENSIONS = frozenset(
     {".php", ".css", ".scss", ".js", ".json", ".txt", ".md", ".html", ".pot", ".po"}
 )
 MAX_FILE_BYTES = 65536
-COMPONENT_KINDS = frozenset({"theme", "plugin"})
+COMPONENT_KINDS = frozenset({"theme", "plugin", "mu_plugin"})
 PLAN_TTL = timedelta(hours=12)
 SKIP_DIRS = frozenset({"vendor", "node_modules", "cache", "uploads", ".git"})
 SENSITIVE_RE = re.compile(
@@ -113,8 +113,28 @@ def components_parent(root: str, kind: str) -> str:
         raise PathRejected("kind")
     if not files_root_narrow(root):
         raise PathRejected("root")
-    folder = "themes" if kind == "theme" else "plugins"
+    if kind == "theme":
+        folder = "themes"
+    elif kind == "plugin":
+        folder = "plugins"
+    else:
+        folder = "mu-plugins"
     return f"{root}/wp-content/{folder}"
+
+
+def resolve_mu_root_file(root: str, filename: str) -> str:
+    """Return one absolute path directly inside ``wp-content/mu-plugins/``."""
+    base = components_parent(root, "mu_plugin")
+    name = str(filename or "").strip()
+    if not name or "/" in name or "\\" in name or name in {".", ".."}:
+        raise PathRejected("relative")
+    if SEGMENT_RE.fullmatch(name) is None or sensitive_relative(name):
+        raise PathRejected("segment")
+    if name.endswith(".azom-bak"):
+        raise PathRejected("backup")
+    if Path(name).suffix.lower() not in ALLOWED_EXTENSIONS:
+        raise PathRejected("extension")
+    return f"{base}/{name}"
 
 
 def component_dir(root: str, kind: str, slug: str) -> str:
@@ -210,6 +230,7 @@ __all__ = [
     "plan_expired",
     "resolve_dir",
     "resolve_file",
+    "resolve_mu_root_file",
     "sensitive_relative",
     "sha256_digest",
     "transport_message",

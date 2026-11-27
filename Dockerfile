@@ -12,6 +12,7 @@ COPY requirements.txt pyproject.toml README.md ./
 COPY skills ./skills
 COPY config ./config
 COPY bin ./bin
+COPY wordpress-plugin ./wordpress-plugin
 COPY infrastructure ./infrastructure
 
 RUN pip install --no-cache-dir -r requirements.txt \

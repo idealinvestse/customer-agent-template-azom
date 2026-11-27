@@ -32,14 +32,17 @@
 WOO_BASE_URL=https://azom.se
 WOO_CONSUMER_KEY=...
 WOO_CONSUMER_SECRET=...
-# Optional per-domain:
+# Optional per-domain URLs and credentials:
 # WOO_BASE_URL_SE= WOO_BASE_URL_NO= WOO_BASE_URL_DK=
+# WOO_CONSUMER_KEY_SE= WOO_CONSUMER_SECRET_SE= ... (_NO, _DK, _FI)
 
 WP_USERNAME=...
 WP_APP_PASSWORD=...
 # WP_BASE_URL=   # optional; otherwise derived from Woo/convention
+# Optional per-domain WP URL & credentials:
+# WP_BASE_URL_SE= WP_USERNAME_SE= WP_APP_PASSWORD_SE= ... (_NO, _DK, _FI)
 
-WOO_WEBHOOK_SECRET=...   # HMAC for POST /webhooks/woo
+WOO_WEBHOOK_SECRET=...   # HMAC for POST /webhooks/woo (with bounded Delivery-ID dedup)
 ```
 
 Create WP Application Passwords in wp-admin (example authorize URL pattern: `/wp-admin/authorize-application.php`).
@@ -51,7 +54,7 @@ Create WP Application Passwords in wp-admin (example authorize URL pattern: `/wp
 - `get_order`, `list_orders`, `find_orders_by_email`
 - `update_order_status`
 - `get_product`, `list_products`, `update_product_description`
-- `update_product` — allowlisted PUT: `name`, `description`, `short_description`, `regular_price`, `stock_quantity`, `stock_status`, `status`. Other keys, including `sku`, are dropped. Stock quantity also sets `manage_stock`.
+- `update_product` — allowlisted PUT: `name`, `description`, `short_description`, `regular_price`, `stock_quantity`, `stock_status`, `manage_stock`, `status`. Other keys, including `sku`, are dropped. HTTP transport uses `trust_env=False`, `allow_redirects=False`, pinned-DNS validation, and idempotent-only retries (`GET`/`HEAD`, plus `POST` `429` only — never `PUT`/`PATCH`/`DELETE` or `POST` `5xx`).
 
 Auth: HTTP Basic with `WOO_CONSUMER_KEY` / `WOO_CONSUMER_SECRET`.  
 Mock: `InMemoryWooTransport` when `AZOM_USE_MOCK=1`.
@@ -73,12 +76,15 @@ Mock: `InMemoryWooTransport` when `AZOM_USE_MOCK=1`.
 | Resource | Client surface |
 |----------|----------------|
 | Posts | list / get / create / update / delete |
-| Pages | list / get / update (`title`, `content`, `status`). No delete from this client method |
+| Pages | list (`status=` supported) / get (`context=` supported) / create draft (`create_page`, cross-host `domain=` refused) / update (`title`, `content`, `status`). No delete from this client method |
+| Revisions | `list_revisions("posts"|"pages", id)` (`/wp/v2/{posts|pages}/{id}/revisions`) |
 | Media, users, comments | list |
 | Settings | get / update. Telegram site identity writes only `title` and `description` |
 | Themes | list (`stylesheet`, name, status). No switch, install, or file edit |
-| Plugins | list; set status `active` or `inactive` only. No install, update, or delete |
+| Plugins | list; set status `active` or `inactive` only (`%2F` with Apache `/` fallback on 404). No install, update, or delete |
 | Discovery | `discover_namespaces` |
+
+Retry & resilience (`_http_transport.py` / `webhooks.py`): `Retry-After` capped at `30s`; non-idempotent `POST` only retries `429` (not `5xx`/timeouts); error strings scrub secrets; `WebhookReceiver` accepts unsigned WooCommerce `webhook_id=<digits>` activation pings. See [`WP_LIVE_BRIDGE_ARCHITECTURE.md`](WP_LIVE_BRIDGE_ARCHITECTURE.md) for the Change Vault snapshot capture on Woo/WP writes.
 
 Auth: Application Passwords via `WP_USERNAME` + `WP_APP_PASSWORD` (alias `WORDPRESS_USERNAME` accepted).  
 Factory: `wp_client_from_env(domain=)` for multi-site.  

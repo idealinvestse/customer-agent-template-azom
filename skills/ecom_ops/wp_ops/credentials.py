@@ -18,6 +18,7 @@ _URI_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:/\s]+:)[^@/\s]+(@)")
 _AUTH_HEADER_RE = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}")
 _TOKEN_LITERAL_PATTERN = (
     r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}\b|"
+    r"\b(?:ck|cs)_(?:live_|test_)?[A-Za-z0-9]{16,}\b|"
     r"\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b|"
     r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{8,}\b|"
     r"\bxai-[A-Za-z0-9_-]{8,}\b|"

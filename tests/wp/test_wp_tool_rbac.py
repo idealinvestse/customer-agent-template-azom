@@ -29,7 +29,7 @@ def test_tool_schema_registration_and_wp_playbook_rbac(
     monkeypatch: pytest.MonkeyPatch, wp_service_tools, no_openrouter
 ) -> None:
     del no_openrouter
-    assert len(EXTRA_FILE_TOOLS) == 32
+    assert len(EXTRA_FILE_TOOLS) == 49
     assert ALL_FILE_TOOLS == FILE_TOOL_NAMES | EXTRA_FILE_TOOLS
     for name in ALL_FILE_TOOLS:
         if name == "wp_read_theme_plugin_file":
@@ -227,3 +227,124 @@ def test_rbac_boundaries_on_reads_diffs_static_checks_and_woo_copy(
     assert sc_admin.data["ok"] is True
     assert all("excerpt" in f for f in sc_admin.data["findings"])
     assert secret not in json.dumps(sc_admin.data)
+
+
+def test_plugin_lifecycle_tools_rbac_and_preview_only(
+    tmp_path: Path, wp_service_tools
+) -> None:
+    _service, tools = wp_service_tools(mock="1", files_ssh="0", sandbox="0", reset_router=True)
+
+    # Read-only plugin inventory and MU-plugins/drop-ins allowed for viewer (jonatan), operator (agent), admin (oscar)
+    for actor in ("jonatan", "agent", "oscar"):
+        inv = tools.execute("wp_plugin_inventory", {"site_id": "mock-staging"}, actor=actor)
+        assert inv.data["ok"] is True, (actor, inv.data)
+        assert isinstance(inv.data.get("plugins"), list)
+        assert inv.data["dashboard_path"] == "/wp/mock-staging/plugins"
+
+        mu = tools.execute("wp_mu_plugins_and_dropins", {"site_id": "mock-staging"}, actor=actor)
+        assert mu.data["ok"] is True, (actor, mu.data)
+        assert mu.data["dropins_read_only"] is True
+        assert isinstance(mu.data.get("mu_plugins"), list)
+        assert isinstance(mu.data.get("dropins"), list)
+
+    # Admin-only diagnostics, autoupdate plan, and recovery plan deny jonatan and agent
+    for actor in ("jonatan", "agent"):
+        for tool_name, args in (
+            ("wp_plugin_diagnostics", {"site_id": "mock-staging", "log_lines": 20}),
+            ("wp_plan_plugin_autoupdate", {"site_id": "mock-staging", "preset": "non_critical_only"}),
+            (
+                "wp_plan_plugin_recovery",
+                {"site_id": "mock-staging", "slug": "akismet", "action": "deactivate"},
+            ),
+        ):
+            denied = tools.execute(tool_name, args, actor=actor)
+            assert denied.data["ok"] is False, (tool_name, actor)
+            assert denied.data["error_class"] == "AccessDenied", (tool_name, actor)
+
+    # wp_plan_plugin_updates RBAC: viewer denied; operator allowed staging non-critical only, denied prod or critical
+    v_upd = tools.execute(
+        "wp_plan_plugin_updates",
+        {"site_id": "mock-staging", "selection_mode": "policy", "policy": "non_critical_only"},
+        actor="jonatan",
+    )
+    assert v_upd.data["ok"] is False and v_upd.data["error_class"] == "AccessDenied"
+
+    op_staging = tools.execute(
+        "wp_plan_plugin_updates",
+        {"site_id": "mock-staging", "selection_mode": "policy", "policy": "non_critical_only"},
+        actor="agent",
+    )
+    assert op_staging.data["ok"] is True, op_staging.data
+    assert op_staging.data["executed"] is False
+    assert op_staging.data["approval_required"] is True
+    assert str(op_staging.data["plan_id"]).startswith("plu-")
+
+    for denied_args in (
+        {"site_id": "mock-shop", "selection_mode": "policy", "policy": "non_critical_only"},
+        {
+            "site_id": "mock-staging",
+            "selection_mode": "all",
+            "include_critical": True,
+        },
+    ):
+        op_denied = tools.execute("wp_plan_plugin_updates", denied_args, actor="agent")
+        assert op_denied.data["ok"] is False and op_denied.data["error_class"] == "AccessDenied"
+
+    # Oscar (WP_OPS_ADMIN) can run diagnostics and create preview-only plu-*/pau-*/plr-* plans (never executed)
+    diag = tools.execute(
+        "wp_plugin_diagnostics",
+        {"site_id": "mock-staging", "hooks": ["init"], "log_lines": 20},
+        actor="oscar",
+    )
+    assert diag.data["ok"] is True, diag.data
+    assert isinstance(diag.data.get("debug_log_tail"), list)
+
+    plu = tools.execute(
+        "wp_plan_plugin_updates",
+        {"site_id": "mock-shop", "selection_mode": "policy", "policy": "non_critical_only"},
+        actor="oscar",
+    )
+    assert plu.data["ok"] is True and plu.data["executed"] is False and plu.data["approval_required"] is True
+    assert str(plu.data["plan_id"]).startswith("plu-")
+
+    pau = tools.execute(
+        "wp_plan_plugin_autoupdate",
+        {"site_id": "mock-staging", "preset": "non_critical_only"},
+        actor="oscar",
+    )
+    assert pau.data["ok"] is True and pau.data["executed"] is False and pau.data["approval_required"] is True
+    assert str(pau.data["plan_id"]).startswith("pau-")
+
+    plr = tools.execute(
+        "wp_plan_plugin_recovery",
+        {"site_id": "mock-staging", "slug": "akismet", "action": "deactivate"},
+        actor="oscar",
+    )
+    assert plr.data["ok"] is True and plr.data["executed"] is False and plr.data["approval_required"] is True
+    assert str(plr.data["plan_id"]).startswith("plr-")
+
+    # Upgraded wp_plugin_overview fields (requires_plugins, is_critical, hook_priorities, auto_update, update_available)
+    write_plugin_file(
+        tmp_path,
+        "mock-staging",
+        "azom-custom",
+        "azom-custom.php",
+        (
+            "<?php\n/**\n * Plugin Name: Azom Custom\n * Requires Plugins: woocommerce, acf\n"
+            " * WC tested up to: 9.8\n */\n"
+            "defined('ABSPATH') || exit;\n"
+            "add_action('plugins_loaded', 'azom_custom_boot', 20);\n"
+        ),
+    )
+    ov = tools.execute(
+        "wp_plugin_overview",
+        {"site_id": "mock-staging", "slug": "azom-custom"},
+        actor="oscar",
+    )
+    assert ov.data["ok"] is True, ov.data
+    assert ov.data["requires_plugins"] == ["woocommerce", "acf"]
+    assert ov.data["is_critical"] is False
+    assert "auto_update" in ov.data and "update_available" in ov.data and "new_version" in ov.data
+    assert any(
+        hp["hook"] == "plugins_loaded" and hp["priority"] == 20 for hp in ov.data["hook_priorities"]
+    )

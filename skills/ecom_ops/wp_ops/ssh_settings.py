@@ -235,6 +235,21 @@ def save_ssh(
             raise SettingsRejected(_SAVE) from exc
 
 
+def _key_identity_digest(key_data: bytes | str) -> bytes:
+    """Hash parsed public key bytes when valid, falling back to raw key text SHA-256."""
+    raw = key_data.encode("utf-8") if isinstance(key_data, str) else key_data
+    text = raw.decode("utf-8", errors="replace").strip()
+    try:
+        import io
+
+        import paramiko
+
+        pkey = paramiko.PKey.from_private_key(io.StringIO(text))
+        return hashlib.sha256(pkey.asbytes()).digest()
+    except Exception:
+        return hashlib.sha256(text.encode("utf-8")).digest()
+
+
 def _enforce_user_rotation_key_policy(
     key_path: Path,
     *,
@@ -258,10 +273,10 @@ def _enforce_user_rotation_key_policy(
         )
     if saved_key_stat is not None and stat.S_ISREG(saved_key_stat.st_mode):
         try:
-            old_key_digest = hashlib.sha256(key_path.read_bytes().strip()).digest()
+            old_key_digest = _key_identity_digest(key_path.read_bytes())
         except OSError as exc:
             raise SettingsRejected(_KEY_WRITE) from exc
-        new_key_digest = hashlib.sha256(key_text.strip().encode("utf-8")).digest()
+        new_key_digest = _key_identity_digest(key_text)
         if hmac.compare_digest(old_key_digest, new_key_digest):
             raise SettingsRejected(
                 "Använd en annan nyckel än den som var kopplad till det tidigare SSH-kontot."
@@ -281,6 +296,16 @@ def _save_locked(base: Path, site: Site, settings: SshSettingsInput) -> dict[str
     new_user = str(new_row.get("ssh_user", site.ssh_user) or "").strip()
     key_path = stored_key_path(base, site.id)
     _enforce_user_rotation_key_policy(key_path, old_user=old_user, new_user=new_user, key_text=key_text)
+    deploy_key = stored_deploy_key_file(base, site.id)
+    if key_text is not None and (deploy_key.exists() or deploy_key.is_symlink()):
+        try:
+            deploy_digest = _key_identity_digest(deploy_key.read_bytes())
+        except OSError as exc:
+            raise SettingsRejected(_KEY_WRITE) from exc
+        if hmac.compare_digest(deploy_digest, _key_identity_digest(key_text)):
+            raise SettingsRejected(
+                "Läsarnyckeln får inte vara samma nyckel som används av *-wp-deployer."
+            )
     if any(
         str(value or "").strip()
         for value in (settings.global_user, settings.global_port, settings.global_identity_file)
@@ -599,3 +624,207 @@ def _unlink_quiet(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# --------------------------------------------------------------------------- #
+# Separate *-wp-deployer SFTP overlay (AZOM_DATA_DIR/wp_deploy_ssh.json)
+# --------------------------------------------------------------------------- #
+
+
+def deploy_overlay_file(data_dir: Path | None) -> Path:
+    return data_dir_path(data_dir) / "wp_deploy_ssh.json"
+
+
+def stored_deploy_key_file(data_dir: Path | None, site_id: str) -> Path:
+    if not _SITE_ID.fullmatch(site_id):
+        raise SettingsRejected(_KEY_WRITE)
+    root = data_dir_path(data_dir).resolve() / "ssh-deploy-keys"
+    path = root / site_id
+    if path.parent != root:
+        raise SettingsRejected(_KEY_WRITE)
+    return path
+
+
+_DEPLOY_FIELDS = (
+    "deploy_ssh_user",
+    "files_root",
+    "ssh_host",
+    "ssh_port",
+    "host_public_key",
+)
+
+
+def _validate_deploy_user_field(raw: Any, *, strict: bool) -> str | None:
+    if not strict and not isinstance(raw, str):
+        raise ValueError(_ROW)
+    user = str(raw or "").strip()
+    if not user:
+        return None
+    if not user_ok(user) or not user.casefold().endswith("-wp-deployer"):
+        if strict:
+            raise SettingsRejected("Deploy SFTP kräver en dedikerad användare som slutar på -wp-deployer.")
+        raise ValueError(_ROW)
+    return user
+
+
+def _deploy_changes_from_row(site_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    if set(row) - set(_DEPLOY_FIELDS):
+        raise ValueError(_ROW)
+    for key, value in row.items():
+        if key != "ssh_port" and (not isinstance(value, str) or _looks_like_key(value)):
+            raise ValueError(_ROW)
+    validators = (
+        ("deploy_ssh_user", lambda v: _validate_deploy_user_field(v, strict=False)),
+        ("files_root", lambda v: _validate_root_field(v, site_id=site_id, strict=False)),
+        ("ssh_host", lambda v: _validate_host_field(v, site_id=site_id, strict=False)),
+        ("ssh_port", lambda v: _validate_port_field(v, strict=False)),
+        ("host_public_key", lambda v: _validate_host_key_field(v, strict=False)),
+    )
+    cleaned: dict[str, Any] = {}
+    for field_name, validator in validators:
+        if field_name not in row:
+            continue
+        val = validator(row[field_name])
+        if val is not None:
+            cleaned[field_name] = val
+    return cleaned
+
+
+def load_deploy_overlay(data_dir: Path | None) -> dict[str, dict[str, Any]]:
+    path = deploy_overlay_file(data_dir)
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return {}
+    if not isinstance(raw, dict) or set(raw) - {"sites"}:
+        return {}
+    sites = raw.get("sites", {})
+    if not isinstance(sites, dict):
+        return {}
+    cleaned: dict[str, dict[str, Any]] = {}
+    for site_id, row in sites.items():
+        if not isinstance(site_id, str) or _SITE_ID.fullmatch(site_id) is None:
+            continue
+        if not isinstance(row, dict):
+            continue
+        try:
+            parsed_row = _deploy_changes_from_row(site_id, row)
+        except ValueError:
+            continue
+        if parsed_row:
+            cleaned[site_id] = parsed_row
+    return cleaned
+
+
+def describe_deploy_ssh(
+    site: Site,
+    data_dir: Path | None,
+    *,
+    include_paths: bool,
+) -> dict[str, Any]:
+    from ecom_ops.integrations.wp.sftp_deploy_transport import deploy_ssh_enabled
+
+    base = data_dir_path(data_dir)
+    row = load_deploy_overlay(base).get(site.id, {})
+    stored = stored_deploy_key_file(base, site.id).is_file()
+    host_key = str(row.get("host_public_key") or site.host_public_key or "").strip()
+    return {
+        "site_id": site.id,
+        "files_root": str(row.get("files_root") or site.files_root or ""),
+        "ssh_host": str(row.get("ssh_host") or site.ssh_host or ""),
+        "deploy_ssh_user": str(row.get("deploy_ssh_user") or ""),
+        "ssh_port": int(row.get("ssh_port") or site.ssh_port or 22),
+        "deploy_key_stored": stored,
+        "host_key_present": bool(host_key),
+        "host_key_fingerprint": host_key_fingerprint(host_key) if include_paths else "",
+        "deploy_ssh_enabled": deploy_ssh_enabled(),
+    }
+
+
+def save_deploy_ssh(
+    data_dir: Path | None,
+    site: Site,
+    *,
+    deploy_ssh_user: str,
+    files_root: str = "",
+    ssh_host: str = "",
+    ssh_port: str = "",
+    host_public_key: str = "",
+    private_key: str = "",
+    clear_key: bool = False,
+    clear_host_key: bool = False,
+) -> dict[str, Any]:
+    """Validate and save dedicated ``*-wp-deployer`` SFTP settings separately from ``wp_ssh.json``."""
+    base = data_dir_path(data_dir)
+    user = _validate_deploy_user_field(deploy_ssh_user, strict=True)
+    row: dict[str, Any] = {}
+    if user:
+        row["deploy_ssh_user"] = user
+    root = _validate_root_field(files_root, site_id=site.id, strict=True)
+    if root and root != site.files_root:
+        row["files_root"] = root
+    host = _validate_host_field(ssh_host, site_id=site.id, strict=True)
+    if host and host != site.ssh_host:
+        row["ssh_host"] = host
+    port = _validate_port_field(ssh_port, strict=True)
+    if port is not None:
+        row["ssh_port"] = port
+    public = _validate_host_key_field(host_public_key, strict=True)
+    if public:
+        row["host_public_key"] = public
+
+    key_text = _validated_key(private_key, clear_key=clear_key)
+    key_path = stored_deploy_key_file(base, site.id)
+    reader_key = stored_key_path(base, site.id)
+
+    with _PROCESS_LOCK:
+        try:
+            lock_cm = advisory_file_lock(base / "wp_ssh.lock", mode=0o600, raise_on_timeout=True)
+            with lock_cm:
+                if key_text is not None and (reader_key.exists() or reader_key.is_symlink()):
+                    try:
+                        reader_digest = _key_identity_digest(reader_key.read_bytes())
+                    except OSError as exc:
+                        raise SettingsRejected(_KEY_WRITE) from exc
+                    if hmac.compare_digest(reader_digest, _key_identity_digest(key_text)):
+                        raise SettingsRejected(
+                            "Deploy-nyckeln får inte vara samma nyckel som används av *-wp-reader."
+                        )
+                overlay = load_deploy_overlay(base)
+                prev_row = dict(overlay.get(site.id, {}))
+                if (
+                    "host_public_key" not in row
+                    and not clear_host_key
+                    and prev_row.get("host_public_key")
+                ):
+                    row["host_public_key"] = prev_row["host_public_key"]
+                if row:
+                    overlay[site.id] = row
+                else:
+                    overlay.pop(site.id, None)
+                tmp_key: Path | None = None
+                if key_text is not None:
+                    tmp_key = _write_private_temp(key_path, key_text)
+                text = json.dumps({"sites": overlay}, indent=2, sort_keys=True) + "\n"
+                if _looks_like_key(text):
+                    if tmp_key is not None:
+                        _unlink_quiet(tmp_key)
+                    raise SettingsRejected(_KEY)
+                try:
+                    atomic_write_text(deploy_overlay_file(base), text)
+                except Exception:
+                    if tmp_key is not None:
+                        _unlink_quiet(tmp_key)
+                    raise
+                if tmp_key is not None:
+                    _install_private(tmp_key, key_path)
+                elif clear_key and key_path.is_file():
+                    _clear_private(key_path)
+        except SettingsRejected:
+            raise
+        except OSError as exc:
+            raise SettingsRejected(_SAVE) from exc
+
+    return {"saved": True, "deploy_key_stored": key_path.is_file()}

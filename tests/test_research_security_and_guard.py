@@ -129,7 +129,7 @@ def test_research_config_fail_closed_gates_and_profiles(monkeypatch: pytest.Monk
     monkeypatch.setenv("AZOM_SEARCH_ALLOWED_DOMAINS", "baymard.com,nngroup.com")
     assert effective_allowlist_domains(cfg) == ("baymard.com", "nngroup.com")
 
-    # 12 profiles & canonical ID format
+    # 13 profiles & canonical ID format
     profiles = {p.id for p in list_profiles()}
     assert profiles == {
         "design_inspiration",
@@ -141,6 +141,7 @@ def test_research_config_fail_closed_gates_and_profiles(monkeypatch: pytest.Monk
         "quick_pulse",
         "product_spec_deep",
         "seo_content_radar",
+        "seo_vendor_vetting",
         "regulatory_compliance",
         "conversion_teardown",
         "metasearch_triangulation",

@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -119,12 +120,13 @@ class WebhookReceiver:
         self._topic_handlers: dict[str, list[HandlerFn]] = {}
         self._resource_handlers: dict[str, list[HandlerFn]] = {}
         self._async = async_dispatch
+        self._seen_lock = threading.Lock()
+        self._seen_deliveries: dict[str, float] = {}
         if async_dispatch:
             import atexit
             import queue
-            import threading
 
-            self._queue: queue.Queue = queue.Queue()
+            self._queue: queue.Queue = queue.Queue(maxsize=1000)
             self._worker = threading.Thread(target=self._worker_loop, daemon=True)
             self._worker.start()
             atexit.register(self._drain)
@@ -160,33 +162,80 @@ class WebhookReceiver:
     def handle_request(self, request: Any) -> bool:
         """Handle a Flask/Django-style request object.
 
-        Expects ``request.data`` (raw bytes), ``request.headers`` (dict-like
-        with ``X-WC-Webhook-Signature`` and ``X-WC-Webhook-Topic``).
+        Expects ``request.get_data(cache=True)`` or ``request.data`` (raw bytes),
+        ``request.headers`` (dict-like with ``X-WC-Webhook-Signature`` and
+        ``X-WC-Webhook-Topic``).
 
-        Returns True if signature verified (handlers run), False otherwise.
+        Returns True if signature verified (handlers run) or valid Woo activation ping.
         """
-        raw_body = getattr(request, "data", None) or b""
+        get_data = getattr(request, "get_data", None)
+        if callable(get_data):
+            raw_body = get_data(cache=True) or b""
+        else:
+            raw_body = getattr(request, "data", None) or b""
         if isinstance(raw_body, str):
             raw_body = raw_body.encode("utf-8")
         headers = getattr(request, "headers", {}) or {}
         signature = headers.get("X-WC-Webhook-Signature", "")
         topic = headers.get("X-WC-Webhook-Topic", "")
-        return self.handle_raw(raw_body, signature, topic)
+        delivery_id = str(headers.get("X-WC-Webhook-Delivery-ID", "") or "").strip()
+        if not signature and not topic and self.is_activation_ping(raw_body):
+            return True
+        return self.handle_raw(raw_body, signature, topic, delivery_id=delivery_id or None)
+
+    @staticmethod
+    def is_activation_ping(raw_body: bytes) -> bool:
+        """True for WooCommerce's initial ``webhook_id=<digits>`` activation ping."""
+        try:
+            text = raw_body.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            return False
+        if not text.startswith("webhook_id="):
+            return False
+        val = text.split("=", 1)[1].strip()
+        return val.isdigit() and len(val) <= 20
+
+    def _is_replay_delivery(self, delivery_id: str | None) -> bool:
+        did = str(delivery_id or "").strip()
+        if not did:
+            return False
+        import time
+
+        now = time.monotonic()
+        with self._seen_lock:
+            expired = [k for k, ts in self._seen_deliveries.items() if (now - ts) > 3600.0]
+            for k in expired:
+                self._seen_deliveries.pop(k, None)
+            if did in self._seen_deliveries:
+                return True
+            if len(self._seen_deliveries) >= 2048:
+                oldest = min(self._seen_deliveries.items(), key=lambda item: item[1])[0]
+                self._seen_deliveries.pop(oldest, None)
+            self._seen_deliveries[did] = now
+        return False
 
     def handle_raw(
         self,
         raw_body: bytes,
         signature: str,
         topic: str,
+        *,
+        delivery_id: str | None = None,
     ) -> bool:
         """Verify + parse + dispatch. Returns True if signature valid."""
         if not verify_webhook_signature(raw_body, signature, self.secret):
             logger.warning("Woo webhook signature mismatch (topic=%s)", topic)
             return False
+        if self._is_replay_delivery(delivery_id):
+            logger.info("Ignoring replayed Woo webhook delivery_id=%s", delivery_id)
+            return True
         try:
             payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             logger.warning("Woo webhook body parse error: %s", exc)
+            return False
+        if not isinstance(payload, dict):
+            logger.warning("Woo webhook expected JSON object payload (got %s)", type(payload).__name__)
             return False
         event = self._build_event(topic, payload)
         self._dispatch(event)
@@ -210,7 +259,12 @@ class WebhookReceiver:
     def _dispatch(self, event: WebhookEvent) -> None:
         """Dispatch event — async (queued) or sync based on config (P2.5)."""
         if self._async:
-            self._queue.put(event)
+            import queue as _q
+
+            try:
+                self._queue.put_nowait(event)
+            except _q.Full:
+                logger.warning("Woo webhook queue full; dropping event topic=%s", event.topic)
             return
         self._run_handlers(event)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -54,9 +55,76 @@ def _load_edit_source(path: str) -> tuple[str | None, str | None]:
 
 def _print(result: Any) -> int:
     data = result.to_dict() if hasattr(result, "to_dict") else result
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    print(json.dumps(data, ensure_ascii=False, indent=2, default=str))
     if isinstance(data, dict):
         return 0 if data.get("ok", True) else 1
+    return 0
+
+
+def _use_table_format(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "table", False)) or (
+        str(getattr(args, "output_format", "json") or "json").lower() == "table"
+    )
+
+
+def _add_table_args(subparser: argparse.ArgumentParser) -> None:
+    subparser.add_argument(
+        "--table",
+        action="store_true",
+        help="Render compact human-readable table instead of JSON",
+    )
+    subparser.add_argument(
+        "--format",
+        default="json",
+        choices=("json", "table"),
+        dest="output_format",
+        help="Output format (json or table)",
+    )
+
+
+def _format_table(rows: list[dict[str, Any]], columns: list[tuple[str, str]]) -> str:
+    headers = [label for _, label in columns]
+    matrix: list[list[str]] = []
+    for row in rows:
+        vals: list[str] = []
+        for key, _label in columns:
+            raw = row.get(key) if isinstance(row, dict) else ""
+            if isinstance(raw, list):
+                text = str(len(raw))
+            elif raw is None:
+                text = "-"
+            else:
+                text = str(raw).replace("\r", " ").replace("\n", " ").strip()
+            if len(text) > 56:
+                text = text[:53] + "..."
+            vals.append(text or "-")
+        matrix.append(vals)
+    widths = [len(h) for h in headers]
+    for r in matrix:
+        for idx, cell in enumerate(r):
+            if len(cell) > widths[idx]:
+                widths[idx] = len(cell)
+    lines = [
+        "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)),
+        "  ".join("-" * widths[i] for i in range(len(headers))),
+    ]
+    for r in matrix:
+        lines.append("  ".join(r[i].ljust(widths[i]) for i in range(len(headers))))
+    if not matrix:
+        lines.append("(inga poster)")
+    return "\n".join(lines)
+
+
+def _print_or_table(
+    payload: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    rows: list[dict[str, Any]],
+    columns: list[tuple[str, str]],
+) -> int:
+    if not payload.get("ok", True) or not _use_table_format(args):
+        return _print(payload)
+    print(_format_table(rows, columns))
     return 0
 
 
@@ -374,7 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     wp_sub = p_wp.add_subparsers(dest="wp_command", required=True)
     wp_sub.add_parser("sites", help="List registered sites")
     p_wp_show = wp_sub.add_parser("show", help="Show one site and its latest checks")
-    p_wp_show.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_show.add_argument("--id", default=None, dest="wp_site_id")
     wp_sub.add_parser("status", help="Health summary for every registered site")
     p_wp_check = wp_sub.add_parser("check", help="Run read-only health checks")
     p_wp_check.add_argument("--id", dest="wp_site_id")
@@ -384,22 +452,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run checks whose interval has elapsed",
     )
     p_wp_backup = wp_sub.add_parser("backup", help="Create a local mock backup manifest")
-    p_wp_backup.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_backup.add_argument("--id", default=None, dest="wp_site_id")
     p_wp_backups = wp_sub.add_parser("backups", help="List local mock backup manifests")
-    p_wp_backups.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_backups.add_argument("--id", default=None, dest="wp_site_id")
     p_wp_drill = wp_sub.add_parser("restore-drill", help="Record a staging restore drill")
     p_wp_drill.add_argument("--backup", required=True, dest="backup_id")
     p_wp_drill.add_argument("--target", required=True, dest="target_site_id")
     p_wp_files = wp_sub.add_parser("files", help="List themes, plugins, or files in one component")
-    p_wp_files.add_argument("--id", required=True, dest="wp_site_id")
-    p_wp_files.add_argument("--kind", required=True, choices=("theme", "plugin"))
+    p_wp_files.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_files.add_argument("--kind", required=True, choices=("theme", "plugin", "mu_plugin"))
     p_wp_files.add_argument("--slug", default="")
     p_wp_propose = wp_sub.add_parser(
         "file-propose",
         help="Propose a typed edit of one existing theme or plugin file",
     )
-    p_wp_propose.add_argument("--id", required=True, dest="wp_site_id")
-    p_wp_propose.add_argument("--kind", required=True, choices=("theme", "plugin"))
+    p_wp_propose.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_propose.add_argument("--kind", required=True, choices=("theme", "plugin", "mu_plugin"))
     p_wp_propose.add_argument("--slug", required=True)
     p_wp_propose.add_argument("--path", required=True, dest="relative_path")
     p_wp_propose.add_argument("--from", required=True, dest="from_file")
@@ -407,9 +475,206 @@ def build_parser() -> argparse.ArgumentParser:
         "file-apply",
         help="Apply a pending typed edit when the file text still matches",
     )
-    p_wp_apply.add_argument("--id", required=True, dest="wp_site_id")
+    p_wp_apply.add_argument("--id", default=None, dest="wp_site_id")
     p_wp_apply.add_argument("--plan", required=True, dest="plan_id")
     p_wp_apply.add_argument("--from", required=True, dest="from_file")
+    p_wp_changes = wp_sub.add_parser(
+        "changes",
+        help="List recorded WP/Woo changes and snapshots from Change Vault",
+    )
+    p_wp_changes.add_argument("--id", dest="wp_site_id", default=None)
+    p_wp_changes.add_argument("--limit", type=int, default=20)
+    p_wp_changes.add_argument("--category", default=None)
+    p_wp_changes.add_argument("--status", default=None)
+    p_wp_changes.add_argument("--batch", default=None, dest="batch_id")
+    _add_table_args(p_wp_changes)
+    p_wp_change_show = wp_sub.add_parser(
+        "change-show",
+        help="Preview snapshot verification and rollback readiness for one change",
+    )
+    p_wp_change_show.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_change_show.add_argument("--change", required=True, dest="change_id")
+    p_wp_rollback = wp_sub.add_parser(
+        "rollback",
+        help="Preview or execute verified rollback of one Change Vault entry",
+    )
+    p_wp_rollback.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_rollback.add_argument("--change", required=True, dest="change_id")
+    p_wp_rollback.add_argument(
+        "--execute",
+        action="store_true",
+        help="Execute rollback (requires Oscar, AZOM_WP_RESTORE_ENABLED=1 in live, and --expected-sha256)",
+    )
+    p_wp_rollback.add_argument("--expected-sha256", dest="expected_sha256", default="")
+    p_wp_rb_batch = wp_sub.add_parser(
+        "rollback-batch",
+        help="Preview or execute verified rollback of all Change Vault entries in a batch_id",
+    )
+    p_wp_rb_batch.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_rb_batch.add_argument("--batch", required=True, dest="batch_id")
+    p_wp_rb_batch.add_argument(
+        "--execute",
+        action="store_true",
+        help="Execute batch rollback (requires Oscar WP_OPS_RESTORE + WP_OPS_ADMIN)",
+    )
+    p_wp_rb_batch.add_argument("--confirm-batch-id", dest="confirm_batch_id", default="")
+    p_wp_bridge_health = wp_sub.add_parser(
+        "bridge-health",
+        help="Read companion plugin (azom-ops-bridge) health and multilingual info",
+    )
+    p_wp_bridge_health.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_cache_flush = wp_sub.add_parser(
+        "cache-flush",
+        help="Flush WordPress object/page caches via companion plugin",
+    )
+    p_wp_cache_flush.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_bridge_maint = wp_sub.add_parser(
+        "bridge-maintenance",
+        help="Toggle timed maintenance mode via companion plugin",
+    )
+    p_wp_bridge_maint.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_bridge_maint.add_argument("--enabled", required=True, choices=("1", "0", "on", "off"))
+    p_wp_bridge_maint.add_argument("--duration", type=int, default=300)
+    p_wp_bridge_trans = wp_sub.add_parser(
+        "bridge-translations",
+        help="Inspect multilingual status/translations via companion plugin",
+    )
+    p_wp_bridge_trans.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_bridge_trans.add_argument("--post-id", type=int, default=None)
+    p_wp_deploy_live = wp_sub.add_parser(
+        "deploy-live",
+        help="Deploy a verified wr-* plan via Bridge or *-wp-deployer SFTP with Change Vault snapshot",
+    )
+    p_wp_deploy_live.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_deploy_live.add_argument("--plan", required=True, dest="plan_id")
+    p_wp_deploy_live.add_argument("--base-sha256", required=True, dest="base_sha256")
+    p_wp_deploy_live.add_argument("--work-sha256", required=True, dest="work_sha256")
+    p_wp_deploy_live.add_argument(
+        "--transport", default="auto", choices=("auto", "bridge", "sftp_deploy")
+    )
+    p_wp_plugins_inv = wp_sub.add_parser(
+        "plugins-inventory",
+        help="Read full plugin inventory, pending updates, MU-plugins, and drop-ins",
+    )
+    p_wp_plugins_inv.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_inv.add_argument(
+        "--wporg",
+        action="store_true",
+        help="Include opt-in WordPress.org metadata enrichment",
+    )
+    p_wp_plugins_mu = wp_sub.add_parser(
+        "plugins-mu",
+        help="Inspect MU-plugins (load order) and read-only drop-ins",
+    )
+    p_wp_plugins_mu.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_plans = wp_sub.add_parser(
+        "plugins-plans",
+        help="List stored plugin update plans (plu-*) with canary paths and statuses",
+    )
+    p_wp_plugins_plans.add_argument("--id", default=None, dest="wp_site_id")
+    _add_table_args(p_wp_plugins_plans)
+    p_wp_plugins_plan = wp_sub.add_parser(
+        "plugins-plan-update",
+        help="Create a hash-pinned plugin update plan (plu-*); never executes",
+    )
+    p_wp_plugins_plan.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_plan.add_argument(
+        "--mode",
+        default="policy",
+        choices=("single", "selected", "all", "policy"),
+    )
+    p_wp_plugins_plan.add_argument("--slugs", default="", help="Comma-separated plugin slugs")
+    p_wp_plugins_plan.add_argument(
+        "--policy",
+        default="non_critical_only",
+        choices=("security_only", "patch_only", "minor_safe", "non_critical_only"),
+    )
+    p_wp_plugins_plan.add_argument("--exclude", default="", help="Comma-separated slugs to exclude")
+    p_wp_plugins_plan.add_argument(
+        "--include-critical",
+        action="store_true",
+        dest="include_critical",
+        help="Allow critical WooCommerce/payment plugins in plan (Oscar only)",
+    )
+    p_wp_plugins_upd = wp_sub.add_parser(
+        "plugins-update",
+        help="Execute a hash-pinned plugin update plan (plu-*) with canary stop-on-fail",
+    )
+    p_wp_plugins_upd.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_upd.add_argument("--plan", required=True, dest="plan_id")
+    p_wp_plugins_upd.add_argument("--expected-sha256", required=True, dest="expected_sha256")
+    p_wp_plugins_upd.add_argument(
+        "--allow-critical",
+        action="store_true",
+        dest="allow_critical",
+        help="Explicitly confirm critical plugin updates",
+    )
+    p_wp_plugins_auto = wp_sub.add_parser(
+        "plugins-autoupdate",
+        help="Inspect policy/drift, plan (pau-*), or execute plugin auto-update changes",
+    )
+    p_wp_plugins_auto.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_auto.add_argument("--show", action="store_true", help="Show stored auto-update policy")
+    p_wp_plugins_auto.add_argument("--drift", action="store_true", help="Check auto-update drift vs live site")
+    p_wp_plugins_auto.add_argument(
+        "--plan",
+        nargs="?",
+        const="__CREATE__",
+        default=None,
+        dest="autoupdate_plan",
+        help="Create a pau-* plan (flag only) or specify pau-* ID with --execute",
+    )
+    p_wp_plugins_auto.add_argument(
+        "--preset",
+        default=None,
+        choices=("disable_all", "non_critical_only", "security_only", "custom"),
+    )
+    p_wp_plugins_auto.add_argument(
+        "--changes-json",
+        default="",
+        dest="changes_json",
+        help="Optional JSON list of {plugin_file, enabled} overrides for custom preset",
+    )
+    p_wp_plugins_auto.add_argument("--allow-critical", action="store_true", dest="allow_critical")
+    p_wp_plugins_auto.add_argument("--execute", action="store_true", help="Execute a hash-pinned pau-* plan")
+    p_wp_plugins_auto.add_argument("--expected-sha256", default="", dest="expected_sha256")
+    p_wp_plugins_diag = wp_sub.add_parser(
+        "plugins-diagnostics",
+        help="Inspect paused plugins, scrubbed debug.log tail, hook map, and plugin backups",
+    )
+    p_wp_plugins_diag.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_diag.add_argument("--hooks", default="", help="Comma-separated WP hook names")
+    p_wp_plugins_diag.add_argument("--log-lines", type=int, default=80, dest="log_lines")
+    p_wp_plugins_quar = wp_sub.add_parser(
+        "plugins-quarantine",
+        help="Out-of-band SFTP quarantine of a broken plugin or MU-plugin (Oscar)",
+    )
+    p_wp_plugins_quar.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_quar.add_argument("--slug", required=True)
+    p_wp_plugins_quar.add_argument("--kind", default="plugin", choices=("plugin", "mu_plugin"))
+    p_wp_plugins_unquar = wp_sub.add_parser(
+        "plugins-unquarantine",
+        help="Restore a quarantined plugin or MU-plugin via out-of-band SFTP (Oscar)",
+    )
+    p_wp_plugins_unquar.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_unquar.add_argument("--slug", required=True)
+    p_wp_plugins_unquar.add_argument("--quarantine-name", default="", dest="quarantine_name")
+    p_wp_plugins_unquar.add_argument("--kind", default="plugin", choices=("plugin", "mu_plugin"))
+    p_wp_plugins_rec = wp_sub.add_parser(
+        "plugins-recovery",
+        help="Plan (plr-*) or execute hash-pinned plugin recovery (rollback/deactivate/quarantine)",
+    )
+    p_wp_plugins_rec.add_argument("--id", default=None, dest="wp_site_id")
+    p_wp_plugins_rec.add_argument("--slug", default="")
+    p_wp_plugins_rec.add_argument(
+        "--action",
+        default="",
+        choices=("", "rollback_snapshot", "deactivate", "quarantine_sftp", "restore_from_quarantine"),
+    )
+    p_wp_plugins_rec.add_argument("--change", default=None, dest="change_id")
+    p_wp_plugins_rec.add_argument("--execute", action="store_true")
+    p_wp_plugins_rec.add_argument("--plan", default="", dest="plan_id")
+    p_wp_plugins_rec.add_argument("--expected-sha256", default="", dest="expected_sha256")
 
     p_ops = sub.add_parser(
         "ops",
@@ -527,6 +792,250 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=("quick", "standard", "deep"),
     )
+
+    p_seo = sub.add_parser(
+        "seo",
+        help="SEO Studio: audits, hash-pinned SEO fix plans, strategies, campaigns & link packages",
+    )
+    seo_sub = p_seo.add_subparsers(dest="seo_command", required=True)
+
+    p_seo_audit = seo_sub.add_parser("audit", help="Run read-only SEO audit")
+    p_seo_audit.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_audit.add_argument(
+        "--scope",
+        default="site",
+        choices=(
+            "site",
+            "technical",
+            "page",
+            "product",
+            "media",
+            "links",
+            "cannibalization",
+            "gsc",
+            "parity",
+            "deep_crawl",
+        ),
+    )
+    p_seo_audit.add_argument("--market", default="no", choices=("no", "se", "dk"))
+    p_seo_audit.add_argument("--path", default="/")
+    p_seo_audit.add_argument("--target-id", default=None, dest="target_id")
+    p_seo_audit.add_argument("--limit", type=int, default=50)
+
+    p_seo_audits = seo_sub.add_parser("audits", help="List persisted SEO audits (seoa-*)")
+    p_seo_audits.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_audits.add_argument("--limit", type=int, default=20)
+    _add_table_args(p_seo_audits)
+
+    p_seo_fixes = seo_sub.add_parser("fixes", help="List persisted SEO fix plans (seom-*)")
+    p_seo_fixes.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_fixes.add_argument("--status", default=None)
+    p_seo_fixes.add_argument("--limit", type=int, default=30)
+    _add_table_args(p_seo_fixes)
+
+    p_seo_batches = seo_sub.add_parser("batches", help="List persisted SEO batch fix plans (seob-*)")
+    p_seo_batches.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_batches.add_argument("--limit", type=int, default=20)
+    _add_table_args(p_seo_batches)
+
+    p_seo_batch_prop = seo_sub.add_parser(
+        "batch-propose",
+        help="Propose a SHA-256-pinned batch fix plan (seob-*) from an SEO audit",
+    )
+    p_seo_batch_prop.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_batch_prop.add_argument("--audit", required=True, dest="audit_id")
+    p_seo_batch_prop.add_argument(
+        "--scope", default="all", choices=("all", "media_alt", "seo_meta")
+    )
+    p_seo_batch_prop.add_argument("--limit", type=int, default=20)
+
+    p_seo_batch_apply = seo_sub.add_parser(
+        "batch-apply",
+        help="Apply a SHA-256-pinned batch fix plan (seob-*) (Oscar WP_OPS_ADMIN only)",
+    )
+    p_seo_batch_apply.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_batch_apply.add_argument("--batch", required=True, dest="batch_id")
+    p_seo_batch_apply.add_argument("--expected-sha256", required=True, dest="expected_sha256")
+
+    p_seo_gsc = seo_sub.add_parser("gsc", help="Read-only GSC strike-distance quick-wins")
+    p_seo_gsc.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_gsc.add_argument("--days", type=int, default=28)
+    _add_table_args(p_seo_gsc)
+
+    p_seo_parity = seo_sub.add_parser(
+        "parity", help="Run Nordic SE/NO/DK hreflang and localization parity check"
+    )
+    p_seo_parity.add_argument("--site", default=None, dest="seo_site_id")
+    _add_table_args(p_seo_parity)
+
+    p_seo_diff = seo_sub.add_parser("diff", help="Diff latest vs previous SEO audit trend")
+    p_seo_diff.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_diff.add_argument("--latest", default=None, dest="latest_audit_id")
+    p_seo_diff.add_argument("--previous", default=None, dest="previous_audit_id")
+
+    p_seo_digest = seo_sub.add_parser(
+        "digest", help="Weekly SEO & plugin drift digest (JSON or --markdown)"
+    )
+    p_seo_digest.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_digest.add_argument("--days", type=int, default=7)
+    p_seo_digest.add_argument("--markdown", action="store_true", help="Print Swedish Markdown brief")
+
+    p_seo_propose = seo_sub.add_parser(
+        "fix-propose", help="Create a reviewable hash-pinned SEO fix plan (seom-*); never executes"
+    )
+    p_seo_propose.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_propose.add_argument(
+        "--fix-type",
+        required=True,
+        dest="fix_type",
+        choices=("seo_meta", "media_alt", "product_seo", "page_seo", "schema_jsonld"),
+    )
+    p_seo_propose.add_argument(
+        "--target-type",
+        required=True,
+        dest="target_type",
+        choices=("product", "page", "post", "media", "category", "site"),
+    )
+    p_seo_propose.add_argument("--target-id", required=True, dest="target_id")
+    p_seo_propose.add_argument("--json-fields", required=True, dest="json_fields")
+    p_seo_propose.add_argument("--summary", default="")
+    p_seo_propose.add_argument("--market", default="no", choices=("no", "se", "dk"))
+
+    p_seo_apply = seo_sub.add_parser(
+        "fix-apply", help="Apply a hash-pinned SEO fix plan (Oscar WP_OPS_ADMIN only)"
+    )
+    p_seo_apply.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_apply.add_argument("--plan", required=True, dest="plan_id")
+    p_seo_apply.add_argument("--expected-sha256", required=True, dest="expected_sha256")
+
+    p_seo_strat = seo_sub.add_parser("strategy", help="Generate a Nordic SEO strategy (seos-*)")
+    p_seo_strat.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_strat.add_argument("--title", required=True)
+    p_seo_strat.add_argument("--market", default="no", choices=("no", "se", "dk"))
+    p_seo_strat.add_argument("--topics", default="", help="Comma-separated focus topics")
+    p_seo_strat.add_argument("--goals", default="")
+    p_seo_strat.add_argument("--research-brief", default=None, dest="research_brief_id")
+
+    p_seo_camp = seo_sub.add_parser("campaign", help="Generate an SEO campaign (seoc-*)")
+    p_seo_camp.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_camp.add_argument("--name", required=True)
+    p_seo_camp.add_argument("--market", default="no", choices=("no", "se", "dk"))
+    p_seo_camp.add_argument("--strategy-id", default=None, dest="strategy_id")
+    p_seo_camp.add_argument("--keywords", default="", help="Comma-separated target keywords")
+    p_seo_camp.add_argument("--urls", default="", help="Comma-separated target URLs")
+    p_seo_camp.add_argument(
+        "--campaign-type",
+        default="commercial",
+        dest="campaign_type",
+        choices=(
+            "commercial",
+            "seasonal",
+            "product_launch",
+            "content_hub",
+            "technical_sprint",
+            "category",
+            "informational",
+            "technical",
+        ),
+    )
+    p_seo_camp.add_argument("--objective", default="")
+    p_seo_camp.add_argument("--research-brief", default=None, dest="research_brief_id")
+
+    p_seo_lp = seo_sub.add_parser(
+        "link-pack", help="Design a link-package order brief (seol-*) with anchor guardrails"
+    )
+    p_seo_lp.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_lp.add_argument("--name", required=True)
+    p_seo_lp.add_argument("--market", default="no", choices=("no", "se", "dk"))
+    p_seo_lp.add_argument("--campaign-id", default=None, dest="campaign_id")
+    p_seo_lp.add_argument("--budget", type=float, default=15000.0, dest="budget_sek")
+    p_seo_lp.add_argument("--links", type=int, default=6, dest="link_count")
+    p_seo_lp.add_argument(
+        "--targets-json",
+        default="",
+        dest="targets_json",
+        help="Optional JSON list of target dicts ({target_url, keyword, anchor_type, anchor_text})",
+    )
+    p_seo_lp.add_argument("--notes", default="")
+    p_seo_lp.add_argument("--export", default=None, choices=("md", "json", "csv"), dest="export_fmt")
+
+    p_seo_lp_status = seo_sub.add_parser(
+        "link-pack-status", help="Transition link-package HITL status (Oscar approves/orders)"
+    )
+    p_seo_lp_status.add_argument("--id", required=True, dest="package_id")
+    p_seo_lp_status.add_argument(
+        "--status",
+        required=True,
+        dest="new_status",
+        choices=(
+            "draft",
+            "ready_for_review",
+            "approved_for_manual_order",
+            "ordered_external",
+            "delivered",
+            "cancelled",
+        ),
+    )
+    p_seo_lp_status.add_argument("--note", default="")
+
+    p_seo_lps = seo_sub.add_parser("link-packs", help="List persisted link packages (seol-*)")
+    p_seo_lps.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_lps.add_argument("--limit", type=int, default=20)
+    _add_table_args(p_seo_lps)
+
+    p_seo_lp_edit = seo_sub.add_parser(
+        "link-pack-edit", help="Edit a draft link package in-place and re-evaluate anchor guardrails"
+    )
+    p_seo_lp_edit.add_argument("--id", required=True, dest="package_id")
+    p_seo_lp_edit.add_argument("--name", default=None)
+    p_seo_lp_edit.add_argument("--budget", type=float, default=None, dest="budget_sek")
+    p_seo_lp_edit.add_argument("--targets-json", default="", dest="targets_json")
+    p_seo_lp_edit.add_argument("--notes", default=None)
+
+    p_seo_lp_verify = seo_sub.add_parser(
+        "link-pack-verify", help="Verify delivered backlink placements (HTTP, indexability, anchor, rel)"
+    )
+    p_seo_lp_verify.add_argument("--id", required=True, dest="package_id")
+    _add_table_args(p_seo_lp_verify)
+
+    p_seo_vendors = seo_sub.add_parser(
+        "vendors",
+        help="Vet and rank white-hat Nordic SEO link-shops (SE/NO/DK) for a market & budget",
+    )
+    p_seo_vendors.add_argument("--market", default="no", choices=("no", "se", "dk"))
+    p_seo_vendors.add_argument("--budget", type=float, default=15000.0, dest="budget_sek")
+    p_seo_vendors.add_argument("--links", type=int, default=6, dest="link_count")
+    p_seo_vendors.add_argument("--goal", default="organic_growth")
+    p_seo_vendors.add_argument(
+        "--no-web-research",
+        action="store_true",
+        dest="no_web_research",
+        help="Skip web-search vendor vetting signals and use curated rubric only",
+    )
+    _add_table_args(p_seo_vendors)
+
+    p_seo_autopilot = seo_sub.add_parser(
+        "autopilot",
+        help="Run autonomous HITL SEO pipeline (audit -> research -> strategy -> campaign -> vetted shop -> draft link-pack)",
+    )
+    p_seo_autopilot.add_argument("--site", default=None, dest="seo_site_id")
+    p_seo_autopilot.add_argument("--topic", default="")
+    p_seo_autopilot.add_argument("--market", default=None, choices=("no", "se", "dk"))
+    p_seo_autopilot.add_argument("--budget", type=float, default=15000.0, dest="budget_sek")
+    p_seo_autopilot.add_argument("--links", type=int, default=6, dest="link_count")
+    p_seo_autopilot.add_argument(
+        "--no-web-research",
+        action="store_true",
+        dest="no_web_research",
+        help="Skip SERP & vendor web-research enrichment",
+    )
+    p_seo_autopilot.add_argument(
+        "--with-batch",
+        action="store_true",
+        dest="with_batch",
+        help="Also generate a reviewable non-executed seob-* batch fix preview",
+    )
+    _add_table_args(p_seo_autopilot)
 
     return parser
 
@@ -1065,12 +1574,13 @@ def _run_cli_command(
 
         wp = WpOpsService()
         cmd = args.wp_command
+        site_arg = getattr(args, "wp_site_id", None) or getattr(args, "site", None)
         if cmd == "sites":
             return _print(wp.list_sites(actor=args.actor))
         if cmd == "status":
             return _print(wp.list_sites(actor=args.actor))
         if cmd == "show":
-            return _print(wp.show_site(args.wp_site_id, actor=args.actor))
+            return _print(wp.show_site(site_arg, actor=args.actor))
         if cmd == "check":
             if args.due and args.wp_site_id:
                 parser.error("wp check accepts --id or --due, not both")
@@ -1082,9 +1592,9 @@ def _run_cli_command(
                 return 2
             return _print(wp.run_checks(args.wp_site_id, actor=args.actor))
         if cmd == "backup":
-            return _print(wp.create_backup(args.wp_site_id, actor=args.actor))
+            return _print(wp.create_backup(site_arg, actor=args.actor))
         if cmd == "backups":
-            return _print(wp.list_backups(args.wp_site_id, actor=args.actor))
+            return _print(wp.list_backups(site_arg, actor=args.actor))
         if cmd == "restore-drill":
             return _print(
                 wp.restore_drill(args.backup_id, target_site_id=args.target_site_id, actor=args.actor)
@@ -1092,9 +1602,9 @@ def _run_cli_command(
         if cmd == "files":
             if args.slug:
                 return _print(
-                    wp.list_files(args.wp_site_id, args.kind, args.slug, actor=args.actor)
+                    wp.list_files(site_arg, args.kind, args.slug, actor=args.actor)
                 )
-            return _print(wp.list_components(args.wp_site_id, args.kind, actor=args.actor))
+            return _print(wp.list_components(site_arg, args.kind, actor=args.actor))
         if cmd in {"file-propose", "file-apply"}:
             text, error_class = _load_edit_source(args.from_file)
             if text is None:
@@ -1104,7 +1614,7 @@ def _run_cli_command(
             if cmd == "file-propose":
                 return _print(
                     wp.propose_file(
-                        args.wp_site_id,
+                        site_arg,
                         args.kind,
                         args.slug,
                         args.relative_path,
@@ -1112,7 +1622,301 @@ def _run_cli_command(
                         actor=args.actor,
                     )
                 )
-            return _print(wp.apply_file(args.wp_site_id, args.plan_id, text, actor=args.actor))
+            return _print(wp.apply_file(site_arg, args.plan_id, text, actor=args.actor))
+        if cmd == "changes":
+            import inspect
+
+            batch_filter = getattr(args, "batch_id", None)
+            params = inspect.signature(wp.list_changes).parameters
+            if batch_filter and "batch_id" in params:
+                res = wp.list_changes(
+                    args.wp_site_id,
+                    actor=args.actor,
+                    category=args.category,
+                    status=args.status,
+                    batch_id=batch_filter,
+                    limit=args.limit,
+                )
+            else:
+                res = wp.list_changes(
+                    args.wp_site_id,
+                    actor=args.actor,
+                    category=args.category,
+                    status=args.status,
+                    limit=200 if batch_filter else args.limit,
+                )
+                if batch_filter and res.ok and isinstance(res.data, dict):
+                    rows_all = list(res.data.get("changes") or [])
+                    res.data["changes"] = [
+                        r
+                        for r in rows_all
+                        if isinstance(r, dict)
+                        and (
+                            str(r.get("batch_id") or "") == batch_filter
+                            or str((r.get("metadata") or {}).get("batch_id") or "") == batch_filter
+                        )
+                    ][: args.limit]
+            payload = res.to_dict() if hasattr(res, "to_dict") else res
+            rows = list((payload.get("data") or {}).get("changes") or []) if isinstance(payload, dict) else []
+            return _print_or_table(
+                payload,
+                args=args,
+                rows=rows,
+                columns=[
+                    ("change_id", "CHANGE_ID"),
+                    ("category", "CATEGORY"),
+                    ("batch_id", "BATCH_ID"),
+                    ("status", "STATUS"),
+                    ("summary", "SUMMARY"),
+                ],
+            )
+        if cmd == "change-show":
+            return _print(
+                wp.preview_change_rollback(site_arg, args.change_id, actor=args.actor)
+            )
+        if cmd == "rollback":
+            if args.execute:
+                if not args.expected_sha256:
+                    parser.error("wp rollback --execute requires --expected-sha256")
+                    return 2
+                return _print(
+                    wp.execute_change_rollback(
+                        site_arg,
+                        args.change_id,
+                        actor=args.actor,
+                        expected_before_sha256=args.expected_sha256,
+                    )
+                )
+            return _print(
+                wp.preview_change_rollback(site_arg, args.change_id, actor=args.actor)
+            )
+        if cmd == "rollback-batch":
+            from ecom_ops.wp_ops.rollback_service import ChangeRollbackService
+
+            rsvc = ChangeRollbackService(
+                data_dir=wp.data_dir, registry_path=wp.registry_path
+            )
+            if args.execute:
+                fn = getattr(rsvc, "execute_batch_rollback", None)
+                if not callable(fn):
+                    return _print(
+                        _WpCliError("NotImplemented", "Batch rollback is not available.")
+                    )
+                confirm = (args.confirm_batch_id or args.batch_id).strip()
+                return _print(
+                    fn(
+                        site_arg,
+                        args.batch_id,
+                        actor=args.actor,
+                        confirm_batch_id=confirm,
+                    )
+                )
+            fn = getattr(rsvc, "preview_batch_rollback", None)
+            if not callable(fn):
+                return _print(
+                    _WpCliError("NotImplemented", "Batch rollback preview is not available.")
+                )
+            return _print(fn(site_arg, args.batch_id, actor=args.actor))
+        if cmd == "bridge-health":
+            return _print(wp.bridge_health(site_arg, actor=args.actor))
+        if cmd == "cache-flush":
+            return _print(wp.bridge_cache_flush(site_arg, actor=args.actor))
+        if cmd == "bridge-maintenance":
+            return _print(
+                wp.bridge_maintenance(
+                    site_arg,
+                    enabled=args.enabled in {"1", "on"},
+                    duration_seconds=args.duration,
+                    actor=args.actor,
+                )
+            )
+        if cmd == "bridge-translations":
+            return _print(
+                wp.bridge_translations(site_arg, post_id=args.post_id, actor=args.actor)
+            )
+        if cmd == "deploy-live":
+            from ecom_ops.wp_ops.deploy_orchestrator import DeployOrchestrator
+
+            return _print(
+                DeployOrchestrator(
+                    data_dir=wp.data_dir, registry_path=wp.registry_path
+                ).deploy_workspace(
+                    site_arg,
+                    args.plan_id,
+                    actor=args.actor,
+                    base_sha256=args.base_sha256,
+                    work_sha256=args.work_sha256,
+                    transport_mode=args.transport,
+                )
+            )
+        if cmd == "plugins-inventory":
+            return _print(
+                wp.plugin_inventory(
+                    site_arg,
+                    actor=args.actor,
+                    include_updates=True,
+                    include_wporg=bool(args.wporg),
+                )
+            )
+        if cmd == "plugins-mu":
+            return _print(wp.mu_plugins_and_dropins(site_arg, actor=args.actor))
+        if cmd == "plugins-plans":
+            res = wp.list_plugin_update_plans(site_arg, actor=args.actor)
+            payload = res.to_dict() if hasattr(res, "to_dict") else res
+            rows = list((payload.get("data") or {}).get("plans") or []) if isinstance(payload, dict) else []
+            return _print_or_table(
+                payload,
+                args=args,
+                rows=rows,
+                columns=[
+                    ("plan_id", "PLAN_ID"),
+                    ("selection_mode", "MODE"),
+                    ("policy", "POLICY"),
+                    ("status", "STATUS"),
+                    ("created_at", "CREATED_AT"),
+                ],
+            )
+        if cmd == "plugins-plan-update":
+            slugs = [s.strip() for s in str(args.slugs or "").split(",") if s.strip()] or None
+            exclude = [s.strip() for s in str(args.exclude or "").split(",") if s.strip()] or None
+            return _print(
+                wp.plan_plugin_updates(
+                    site_arg,
+                    actor=args.actor,
+                    selection_mode=args.mode,
+                    slugs=slugs,
+                    policy=args.policy,
+                    exclude_slugs=exclude,
+                    include_critical=bool(args.include_critical),
+                )
+            )
+        if cmd == "plugins-update":
+            return _print(
+                wp.execute_plugin_update_plan(
+                    site_arg,
+                    args.plan_id,
+                    actor=args.actor,
+                    expected_sha256=args.expected_sha256,
+                    allow_critical=bool(args.allow_critical),
+                )
+            )
+        if cmd == "plugins-autoupdate":
+            if args.execute:
+                plan_id = (
+                    args.autoupdate_plan
+                    if isinstance(args.autoupdate_plan, str)
+                    and args.autoupdate_plan != "__CREATE__"
+                    else ""
+                )
+                if not plan_id or not args.expected_sha256:
+                    parser.error(
+                        "wp plugins-autoupdate --execute requires --plan <pau-...> and --expected-sha256"
+                    )
+                    return 2
+                return _print(
+                    wp.execute_plugin_autoupdate_plan(
+                        site_arg,
+                        plan_id,
+                        actor=args.actor,
+                        expected_sha256=args.expected_sha256,
+                    )
+                )
+            if args.autoupdate_plan is not None and args.autoupdate_plan != "__CREATE__":
+                parser.error(
+                    "wp plugins-autoupdate --plan <pau-...> requires --execute and --expected-sha256"
+                )
+                return 2
+            if args.autoupdate_plan == "__CREATE__":
+                changes: list[dict[str, Any]] | None = None
+                if str(args.changes_json or "").strip():
+                    try:
+                        parsed = json.loads(args.changes_json)
+                    except json.JSONDecodeError:
+                        return _print(
+                            _WpCliError("InvalidInput", "Invalid --changes-json payload.")
+                        )
+                    if not isinstance(parsed, list):
+                        return _print(
+                            _WpCliError("InvalidInput", "--changes-json must be a JSON list.")
+                        )
+                    changes = parsed
+                return _print(
+                    wp.plan_plugin_autoupdate(
+                        site_arg,
+                        actor=args.actor,
+                        preset=args.preset or "non_critical_only",
+                        changes=changes,
+                        allow_critical=bool(args.allow_critical),
+                    )
+                )
+            if (
+                args.preset is not None
+                or str(args.changes_json or "").strip()
+                or args.allow_critical
+            ):
+                parser.error(
+                    "wp plugins-autoupdate --preset/--changes-json/--allow-critical requires --plan"
+                )
+                return 2
+            if args.drift:
+                return _print(wp.check_autoupdate_drift(site_arg, actor=args.actor))
+            return _print(wp.get_autoupdate_policy(site_arg, actor=args.actor))
+        if cmd == "plugins-diagnostics":
+            hooks = [h.strip() for h in str(args.hooks or "").split(",") if h.strip()] or None
+            return _print(
+                wp.plugin_diagnostics(
+                    site_arg,
+                    actor=args.actor,
+                    hooks=hooks,
+                    log_lines=int(args.log_lines),
+                )
+            )
+        if cmd == "plugins-quarantine":
+            return _print(
+                wp.quarantine_plugin(
+                    site_arg,
+                    args.slug,
+                    actor=args.actor,
+                    kind=args.kind,
+                )
+            )
+        if cmd == "plugins-unquarantine":
+            return _print(
+                wp.unquarantine_plugin(
+                    site_arg,
+                    args.slug,
+                    actor=args.actor,
+                    quarantine_name=args.quarantine_name,
+                    kind=args.kind,
+                )
+            )
+        if cmd == "plugins-recovery":
+            if args.execute:
+                if not args.plan_id or not args.expected_sha256:
+                    parser.error(
+                        "wp plugins-recovery --execute requires --plan <plr-...> and --expected-sha256"
+                    )
+                    return 2
+                return _print(
+                    wp.execute_plugin_recovery_plan(
+                        site_arg,
+                        args.plan_id,
+                        actor=args.actor,
+                        expected_sha256=args.expected_sha256,
+                    )
+                )
+            if not args.slug or not args.action:
+                parser.error("wp plugins-recovery requires --slug and --action (or --execute --plan --expected-sha256)")
+                return 2
+            return _print(
+                wp.plan_plugin_recovery(
+                    site_arg,
+                    actor=args.actor,
+                    slug=args.slug,
+                    action=args.action,
+                    change_id=args.change_id,
+                )
+            )
         parser.error(f"Unknown wp command: {cmd}")
         return 2
 
@@ -1357,6 +2161,587 @@ def _run_cli_command(
         except (AccessDenied, SearchRouteError, SearchPolicyError, KeyError, ValueError) as exc:
             return _cli_error_result(exc)
         parser.error(f"Unknown research command: {rcmd}")
+        return 2
+
+    if args.command == "seo":
+        from ecom_ops.rbac import AccessDenied
+        from ecom_ops.seo.service import SeoStudioService
+
+        svc = SeoStudioService()
+        scmd = args.seo_command
+        seo_site = getattr(args, "seo_site_id", None) or args.site
+        try:
+            if scmd == "audit":
+                res = svc.run_audit(
+                    site_id=seo_site,
+                    actor=args.actor,
+                    scope=args.scope,
+                    target_id=args.target_id,
+                    path=args.path,
+                    market=args.market,
+                    limit=args.limit,
+                )
+                return _print(res)
+            if scmd == "audits":
+                from ecom_ops.seo.policy import require_seo_read
+
+                require_seo_read(args.actor)
+                site_filter = getattr(args, "seo_site_id", None)
+                audits = svc.list_audits(site_id=site_filter, limit=args.limit)
+                payload = {"ok": True, "count": len(audits), "audits": audits}
+                return _print_or_table(
+                    payload,
+                    args=args,
+                    rows=audits,
+                    columns=[
+                        ("audit_id", "AUDIT_ID"),
+                        ("site_id", "SITE"),
+                        ("market", "MARKET"),
+                        ("scope", "SCOPE"),
+                        ("score", "SCORE"),
+                        ("grade", "GRADE"),
+                        ("created_at", "CREATED_AT"),
+                    ],
+                )
+            if scmd == "fixes":
+                from ecom_ops.seo.policy import require_seo_read
+
+                require_seo_read(args.actor)
+                site_filter = getattr(args, "seo_site_id", None)
+                status_filter = (getattr(args, "status", None) or "").strip().lower()
+                fixes = svc.list_fix_plans(
+                    site_id=site_filter,
+                    limit=max(args.limit, 100) if status_filter else args.limit,
+                )
+                if status_filter:
+                    fixes = [
+                        fp
+                        for fp in fixes
+                        if isinstance(fp, dict)
+                        and str(fp.get("status") or "").lower() == status_filter
+                    ][: args.limit]
+                payload = {"ok": True, "count": len(fixes), "fix_plans": fixes}
+                return _print_or_table(
+                    payload,
+                    args=args,
+                    rows=fixes,
+                    columns=[
+                        ("plan_id", "PLAN_ID"),
+                        ("site_id", "SITE"),
+                        ("fix_type", "TYPE"),
+                        ("target_type", "TARGET"),
+                        ("target_id", "ID"),
+                        ("status", "STATUS"),
+                        ("summary", "SUMMARY"),
+                    ],
+                )
+            if scmd == "batches":
+                from ecom_ops.seo.policy import require_seo_read
+
+                require_seo_read(args.actor)
+                site_filter = getattr(args, "seo_site_id", None)
+                fn = getattr(svc, "list_fix_batches", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "Fix batches unavailable."})
+                batches = fn(site_id=site_filter, limit=args.limit)
+                payload = {"ok": True, "count": len(batches), "batches": batches}
+                return _print_or_table(
+                    payload,
+                    args=args,
+                    rows=batches,
+                    columns=[
+                        ("batch_id", "BATCH_ID"),
+                        ("site_id", "SITE"),
+                        ("scope", "SCOPE"),
+                        ("items", "ITEMS"),
+                        ("status", "STATUS"),
+                        ("created_at", "CREATED_AT"),
+                    ],
+                )
+            if scmd == "batch-propose":
+                fn = getattr(svc, "propose_batch_from_audit", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "Batch propose unavailable."})
+                res = fn(
+                    site_id=seo_site,
+                    audit_id=args.audit_id,
+                    scope=args.scope,
+                    limit=args.limit,
+                    actor=args.actor,
+                )
+                return _print(res)
+            if scmd == "batch-apply":
+                fn = getattr(svc, "apply_batch", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "Batch apply unavailable."})
+                res = fn(
+                    site_id=seo_site,
+                    batch_id=args.batch_id,
+                    expected_sha256=args.expected_sha256,
+                    actor=args.actor,
+                )
+                return _print(res)
+            if scmd == "gsc":
+                fn = getattr(svc, "get_gsc_quick_wins", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "GSC quick-wins unavailable."})
+                res = fn(site_id=seo_site, days=args.days, actor=args.actor)
+                rows = list(res.get("strike_distance") or []) if isinstance(res, dict) else []
+                return _print_or_table(
+                    res,
+                    args=args,
+                    rows=rows,
+                    columns=[
+                        ("query", "QUERY"),
+                        ("page", "PAGE"),
+                        ("position", "POS"),
+                        ("impressions", "IMPR"),
+                        ("clicks", "CLICKS"),
+                        ("ctr", "CTR"),
+                    ],
+                )
+            if scmd == "parity":
+                fn = getattr(svc, "run_nordic_parity", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "Nordic parity unavailable."})
+                res = fn(site_id=seo_site, actor=args.actor)
+                rows = list(res.get("issues") or []) if isinstance(res, dict) else []
+                return _print_or_table(
+                    res,
+                    args=args,
+                    rows=rows,
+                    columns=[
+                        ("severity", "SEV"),
+                        ("market", "MARKET"),
+                        ("code", "CODE"),
+                        ("title", "TITLE"),
+                    ],
+                )
+            if scmd == "diff":
+                fn = getattr(svc, "diff_audits", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "Audit diff unavailable."})
+                res = fn(
+                    site_id=seo_site,
+                    latest_audit_id=args.latest_audit_id,
+                    previous_audit_id=args.previous_audit_id,
+                    actor=args.actor,
+                )
+                return _print(res)
+            if scmd == "digest":
+                from ecom_ops.seo.digest import build_seo_plugin_drift_digest
+
+                res = build_seo_plugin_drift_digest(
+                    seo_site, actor=args.actor, days=args.days
+                )
+                if getattr(args, "markdown", False) and isinstance(res, dict) and res.get("ok"):
+                    print(str(res.get("markdown") or ""))
+                    return 0
+                return _print(res)
+            if scmd == "fix-propose":
+                try:
+                    proposed = json.loads(args.json_fields)
+                except json.JSONDecodeError as exc:
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidJson",
+                            "message": f"Invalid --json-fields JSON: {exc}",
+                        }
+                    )
+                if not isinstance(proposed, dict) or not proposed:
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidInput",
+                            "message": "--json-fields must be a non-empty JSON object",
+                        }
+                    )
+                res = svc.propose_fix(
+                    site_id=seo_site,
+                    actor=args.actor,
+                    fix_type=args.fix_type,
+                    target_type=args.target_type,
+                    target_id=args.target_id,
+                    proposed=proposed,
+                    summary=args.summary,
+                    market=args.market,
+                )
+                return _print(res)
+            if scmd == "fix-apply":
+                res = svc.apply_fix(
+                    site_id=seo_site,
+                    plan_id=args.plan_id,
+                    actor=args.actor,
+                    expected_sha256=args.expected_sha256,
+                )
+                return _print(res)
+            if scmd == "strategy":
+                topics = [t.strip() for t in (args.topics or "").split(",") if t.strip()]
+                res = svc.create_strategy(
+                    site_id=seo_site,
+                    actor=args.actor,
+                    title=args.title,
+                    market=args.market,
+                    focus_topics=topics or None,
+                    goals=args.goals,
+                    research_brief_id=args.research_brief_id,
+                )
+                return _print(res)
+            if scmd == "campaign":
+                keywords = [k.strip() for k in (args.keywords or "").split(",") if k.strip()]
+                urls = [u.strip() for u in (args.urls or "").split(",") if u.strip()]
+                res = svc.create_campaign(
+                    site_id=seo_site,
+                    actor=args.actor,
+                    name=args.name,
+                    market=args.market,
+                    strategy_id=args.strategy_id,
+                    target_keywords=keywords or None,
+                    target_urls=urls or None,
+                    campaign_type=args.campaign_type,
+                    objective=args.objective,
+                    research_brief_id=args.research_brief_id,
+                )
+                return _print(res)
+            if scmd == "link-pack":
+                if (
+                    not math.isfinite(args.budget_sek)
+                    or args.budget_sek < 1000.0
+                    or args.budget_sek > 500000.0
+                ):
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidInput",
+                            "message": "--budget must be a finite number between 1000 and 500000 SEK",
+                        }
+                    )
+                if args.link_count < 1 or args.link_count > 50:
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidInput",
+                            "message": "--links must be an integer between 1 and 50",
+                        }
+                    )
+                targets: list[dict[str, Any]] | None = None
+                raw_targets = str(getattr(args, "targets_json", "") or "").strip()
+                if raw_targets:
+                    try:
+                        parsed_targets = json.loads(raw_targets)
+                    except json.JSONDecodeError as exc:
+                        return _print(
+                            {
+                                "ok": False,
+                                "error_class": "InvalidJson",
+                                "message": f"Invalid --targets-json JSON: {exc}",
+                            }
+                        )
+                    if not isinstance(parsed_targets, list) or not all(
+                        isinstance(item, dict) for item in parsed_targets
+                    ):
+                        return _print(
+                            {
+                                "ok": False,
+                                "error_class": "InvalidInput",
+                                "message": "--targets-json must be a JSON list of target objects",
+                            }
+                        )
+                    targets = parsed_targets
+                res = svc.create_link_package(
+                    site_id=seo_site,
+                    actor=args.actor,
+                    name=args.name,
+                    market=args.market,
+                    campaign_id=args.campaign_id,
+                    budget_sek=args.budget_sek,
+                    link_count=args.link_count,
+                    targets=targets,
+                    notes=args.notes,
+                )
+                if args.export_fmt and res.get("ok"):
+                    pkg_id = str((res.get("package") or {}).get("package_id") or "")
+                    if pkg_id:
+                        filename, mimetype, content = svc.export_link_package(
+                            pkg_id, fmt=args.export_fmt
+                        )
+                        res = dict(res)
+                        res["export"] = {
+                            "format": args.export_fmt,
+                            "mimetype": mimetype,
+                            "filename": filename,
+                            "content": content,
+                        }
+                return _print(res)
+            if scmd == "link-pack-status":
+                res = svc.transition_link_package(
+                    package_id=args.package_id,
+                    actor=args.actor,
+                    new_status=args.new_status,
+                    note=args.note,
+                )
+                return _print(res)
+            if scmd == "link-packs":
+                from ecom_ops.seo.policy import require_seo_read
+
+                require_seo_read(args.actor)
+                site_filter = getattr(args, "seo_site_id", None)
+                pkgs = svc.list_link_packages(site_id=site_filter, limit=args.limit)
+                payload = {"ok": True, "count": len(pkgs), "link_packages": pkgs}
+                return _print_or_table(
+                    payload,
+                    args=args,
+                    rows=pkgs,
+                    columns=[
+                        ("package_id", "PACKAGE_ID"),
+                        ("site_id", "SITE"),
+                        ("market", "MARKET"),
+                        ("budget_sek", "BUDGET_SEK"),
+                        ("link_count", "LINKS"),
+                        ("status", "STATUS"),
+                        ("name", "NAME"),
+                    ],
+                )
+            if scmd == "link-pack-edit":
+                fn = getattr(svc, "update_link_package_draft", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "Link-pack edit unavailable."})
+                if args.budget_sek is not None and (
+                    not math.isfinite(args.budget_sek)
+                    or args.budget_sek < 1000.0
+                    or args.budget_sek > 500000.0
+                ):
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidInput",
+                            "message": "--budget must be a finite number between 1000 and 500000 SEK",
+                        }
+                    )
+                targets_edit: list[dict[str, Any]] | None = None
+                raw_tj = str(getattr(args, "targets_json", "") or "").strip()
+                if raw_tj:
+                    try:
+                        parsed_t = json.loads(raw_tj)
+                    except json.JSONDecodeError as exc:
+                        return _print(
+                            {
+                                "ok": False,
+                                "error_class": "InvalidJson",
+                                "message": f"Invalid --targets-json JSON: {exc}",
+                            }
+                        )
+                    if not isinstance(parsed_t, list) or not all(
+                        isinstance(x, dict) for x in parsed_t
+                    ):
+                        return _print(
+                            {
+                                "ok": False,
+                                "error_class": "InvalidInput",
+                                "message": "--targets-json must be a JSON list of target objects",
+                            }
+                        )
+                    targets_edit = parsed_t
+                res = fn(
+                    args.package_id,
+                    name=args.name,
+                    budget_sek=args.budget_sek,
+                    targets=targets_edit,
+                    notes=args.notes,
+                    actor=args.actor,
+                )
+                return _print(res)
+            if scmd == "link-pack-verify":
+                fn = getattr(svc, "verify_link_package", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "Link-pack verify unavailable."})
+                res = fn(args.package_id, actor=args.actor)
+                rows = list(res.get("results") or []) if isinstance(res, dict) else []
+                return _print_or_table(
+                    res,
+                    args=args,
+                    rows=rows,
+                    columns=[
+                        ("published_url", "PUBLISHED_URL"),
+                        ("http_status", "HTTP"),
+                        ("indexable", "INDEXABLE"),
+                        ("anchor_match", "ANCHOR_OK"),
+                        ("rel_type", "REL"),
+                    ],
+                )
+            if scmd == "vendors":
+                fn = getattr(svc, "vet_link_vendors", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "Vendor vetting unavailable."})
+                if (
+                    not math.isfinite(args.budget_sek)
+                    or args.budget_sek < 1000.0
+                    or args.budget_sek > 500000.0
+                ):
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidInput",
+                            "message": "--budget must be a finite number between 1000 and 500000 SEK",
+                        }
+                    )
+                if args.link_count < 1 or args.link_count > 50:
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidInput",
+                            "message": "--links must be an integer between 1 and 50",
+                        }
+                    )
+                res = fn(
+                    market=args.market,
+                    budget_sek=args.budget_sek,
+                    link_count=args.link_count,
+                    goal=args.goal,
+                    include_web_research=not bool(getattr(args, "no_web_research", False)),
+                    actor=args.actor,
+                )
+                candidates = list(res.get("candidates") or []) if isinstance(res, dict) else []
+                table_rows: list[dict[str, Any]] = []
+                for idx, cand in enumerate(candidates, start=1):
+                    if not isinstance(cand, dict):
+                        continue
+                    unit_rng = cand.get("estimated_unit_sek_range")
+                    if isinstance(unit_rng, (list, tuple)) and len(unit_rng) == 2:
+                        est_range = f"{unit_rng[0]}-{unit_rng[1]} SEK/link"
+                    else:
+                        est_range = str(
+                            cand.get("estimated_sek_range")
+                            or cand.get("price_range_sek")
+                            or "-"
+                        )
+                    table_rows.append(
+                        {
+                            "rank": f"#{idx}",
+                            "vendor_id": cand.get("vendor_id") or "",
+                            "name": cand.get("name") or cand.get("vendor_id") or "",
+                            "domain": cand.get("domain") or "",
+                            "vetting_score": cand.get("vetting_score") if cand.get("vetting_score") is not None else cand.get("score", ""),
+                            "vetting_status": cand.get("vetting_status") or cand.get("status") or "",
+                            "tier": cand.get("business_model") or cand.get("archetype") or cand.get("tier") or res.get("recommended_tier") or "",
+                            "est_sek": est_range or "-",
+                        }
+                    )
+                return _print_or_table(
+                    res,
+                    args=args,
+                    rows=table_rows,
+                    columns=[
+                        ("rank", "RANK"),
+                        ("vendor_id", "VENDOR_ID"),
+                        ("name", "SHOP"),
+                        ("domain", "DOMAIN"),
+                        ("vetting_score", "SCORE"),
+                        ("vetting_status", "STATUS"),
+                        ("tier", "TIER"),
+                        ("est_sek", "EST_SEK"),
+                    ],
+                )
+            if scmd == "autopilot":
+                fn = getattr(svc, "run_seo_autopilot", None)
+                if not callable(fn):
+                    return _print({"ok": False, "error_class": "NotImplemented", "message": "SEO autopilot unavailable."})
+                if (
+                    not math.isfinite(args.budget_sek)
+                    or args.budget_sek < 1000.0
+                    or args.budget_sek > 500000.0
+                ):
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidInput",
+                            "message": "--budget must be a finite number between 1000 and 500000 SEK",
+                        }
+                    )
+                if args.link_count < 1 or args.link_count > 50:
+                    return _print(
+                        {
+                            "ok": False,
+                            "error_class": "InvalidInput",
+                            "message": "--links must be an integer between 1 and 50",
+                        }
+                    )
+                res = fn(
+                    seo_site,
+                    topic=args.topic,
+                    market=args.market,
+                    budget_sek=args.budget_sek,
+                    link_count=args.link_count,
+                    include_web_research=not bool(getattr(args, "no_web_research", False)),
+                    include_vendor_vetting=True,
+                    include_batch_fixes=bool(getattr(args, "with_batch", False)),
+                    actor=args.actor,
+                )
+                if isinstance(res, dict) and res.get("ok"):
+                    audit = res.get("audit") or {}
+                    strat = res.get("strategy") or {}
+                    camp = res.get("campaign") or {}
+                    vsel = res.get("vendor_selection") or {}
+                    pkg = res.get("link_package") or {}
+                    batch = res.get("batch_fix") or {}
+                    stage_rows = [
+                        {
+                            "stage": "audit",
+                            "artifact_id": audit.get("audit_id") or "-",
+                            "status": f"score={audit.get('score', '-')}",
+                            "detail": f"site={res.get('site_id')} market={res.get('market')}",
+                        },
+                        {
+                            "stage": "strategy",
+                            "artifact_id": strat.get("strategy_id") or "-",
+                            "status": "draft",
+                            "detail": strat.get("title") or res.get("topic") or "-",
+                        },
+                        {
+                            "stage": "campaign",
+                            "artifact_id": camp.get("campaign_id") or "-",
+                            "status": camp.get("campaign_type") or "commercial",
+                            "detail": camp.get("name") or "-",
+                        },
+                        {
+                            "stage": "vendor",
+                            "artifact_id": vsel.get("selected_vendor_id") or pkg.get("selected_vendor_id") or "-",
+                            "status": vsel.get("recommended_tier") or "-",
+                            "detail": f"{len(vsel.get('candidates') or [])} vetted shops (HITL)",
+                        },
+                        {
+                            "stage": "link_package",
+                            "artifact_id": pkg.get("package_id") or "-",
+                            "status": pkg.get("status") or "draft",
+                            "detail": f"{int(pkg.get('budget_sek') or args.budget_sek)} SEK / {pkg.get('link_count') or args.link_count} links",
+                        },
+                    ]
+                    if isinstance(batch, dict) and batch.get("batch_id"):
+                        stage_rows.append(
+                            {
+                                "stage": "batch_fix",
+                                "artifact_id": batch.get("batch_id") or "-",
+                                "status": batch.get("status") or "pending",
+                                "detail": f"{len(batch.get('items') or [])} preview items (not executed)",
+                            }
+                        )
+                else:
+                    stage_rows = []
+                return _print_or_table(
+                    res,
+                    args=args,
+                    rows=stage_rows,
+                    columns=[
+                        ("stage", "STAGE"),
+                        ("artifact_id", "ARTIFACT_ID"),
+                        ("status", "STATUS"),
+                        ("detail", "DETAIL"),
+                    ],
+                )
+        except (AccessDenied, KeyError, ValueError) as exc:
+            return _cli_error_result(exc)
+        parser.error(f"Unknown seo command: {scmd}")
         return 2
 
     parser.error(f"Unknown command: {args.command}")

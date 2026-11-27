@@ -17,6 +17,7 @@ from typing import Any
 
 from ecom_ops.audit import log_action
 from ecom_ops.rbac import AccessDenied, Permission, resolve_actor
+from ecom_ops.runtime_env import env_flag
 from ecom_ops.wp_ops.backup import BackupProvider, BackupService, MockBackup
 from ecom_ops.wp_ops.config import data_dir_path
 from ecom_ops.wp_ops.connectors import MockRest, MockUptime, RestConnector, UptimeConnector
@@ -29,7 +30,13 @@ from ecom_ops.wp_ops.models import Site, WpOpsResult
 from ecom_ops.wp_ops.policy import WpOpsPolicy
 from ecom_ops.wp_ops.registry import load_sites, site_by_id
 from ecom_ops.wp_ops.review_plan import ReviewPlans
-from ecom_ops.wp_ops.ssh_settings import SettingsRejected, describe_ssh, save_ssh
+from ecom_ops.wp_ops.ssh_settings import (
+    SettingsRejected,
+    describe_deploy_ssh,
+    describe_ssh,
+    save_deploy_ssh,
+    save_ssh,
+)
 from ecom_ops.wp_ops.store import WpOpsStore
 
 __all__ = ["WpOpsResult", "WpOpsService", "_site_lock"]
@@ -54,11 +61,15 @@ class WpOpsService:
         backup: BackupProvider | None = None,
         clock: Callable[[], datetime] | None = None,
         files_factory: Callable[[Site], Any] | None = None,
+        bridge_factory: Callable[[Site], Any] | None = None,
+        deploy_transport_factory: Callable[[Site], Any] | None = None,
     ) -> None:
         self.registry_path = registry_path
         base = data_dir_path(data_dir)
         self.data_dir = base
         self.files_factory = files_factory
+        self.bridge_factory = bridge_factory
+        self.deploy_transport_factory = deploy_transport_factory
         self.store = WpOpsStore(base / "wp_ops_state.json")
         self.uptime = uptime or MockUptime()
         self.rest = rest or MockRest()
@@ -635,4 +646,469 @@ class WpOpsService:
             ok=False,
             message=message,
             data={"error_class": "ConfigInvalid", "live_calls": False},
+        )
+
+    # --- Change ledger, rollback, deploy SSH & bridge facades ------------ #
+
+    def list_changes(
+        self,
+        site_id: str | None = None,
+        *,
+        actor: str,
+        category: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> WpOpsResult:
+        denied = self._policy().require(actor, Permission.WP_OPS_READ, action="wp_ops_changes_list")
+        if denied is not None:
+            return denied
+        from ecom_ops.wp_ops.change_ledger import ChangeLedger
+
+        rows = ChangeLedger(data_dir=self.data_dir).list_changes(
+            site_id, category=category, status=status, limit=limit
+        )
+        return WpOpsResult(ok=True, message="changes", data={"changes": rows, "live_calls": False})
+
+    def preview_change_rollback(
+        self, site_id: str, change_id: str, *, actor: str
+    ) -> dict[str, Any]:
+        from ecom_ops.wp_ops.rollback_service import ChangeRollbackService
+
+        return ChangeRollbackService(
+            data_dir=self.data_dir, registry_path=self.registry_path
+        ).preview_rollback(site_id, change_id, actor=actor)
+
+    def execute_change_rollback(
+        self,
+        site_id: str,
+        change_id: str,
+        *,
+        actor: str,
+        expected_before_sha256: str,
+        dry_run: bool = False,
+    ) -> WpOpsResult:
+        from ecom_ops.wp_ops.rollback_service import ChangeRollbackService
+
+        return ChangeRollbackService(
+            data_dir=self.data_dir, registry_path=self.registry_path
+        ).execute_rollback(
+            site_id,
+            change_id,
+            actor=actor,
+            expected_before_sha256=expected_before_sha256,
+            dry_run=dry_run,
+        )
+
+    def deploy_ssh_settings(self, site_id: str, *, actor: str) -> WpOpsResult:
+        denied = self._policy().require(actor, Permission.WP_OPS_READ, action="wp_ops_ssh_settings")
+        if denied is not None:
+            return denied
+        _reg, site, failed = self._ssh_site(site_id)
+        if failed is not None or site is None:
+            return failed or self._config_error("Unknown site")
+        view = describe_deploy_ssh(site, self.data_dir, include_paths=self._ssh_admin(actor))
+        return WpOpsResult(ok=True, message="deploy ssh settings", data={"deploy_ssh": view, "live_calls": False})
+
+    def save_deploy_ssh_settings(
+        self,
+        site_id: str,
+        *,
+        actor: str,
+        deploy_ssh_user: str,
+        files_root: str = "",
+        ssh_host: str = "",
+        ssh_port: str = "",
+        host_public_key: str = "",
+        private_key: str = "",
+        clear_key: bool = False,
+    ) -> WpOpsResult:
+        denied = self._policy().require(actor, Permission.WP_OPS_ADMIN, action="wp_ops_ssh_settings")
+        if denied is not None:
+            return denied
+        registry_site, _site, failed = self._ssh_site(site_id)
+        if failed is not None or registry_site is None:
+            return failed or self._config_error("Unknown site")
+        try:
+            saved = save_deploy_ssh(
+                self.data_dir,
+                registry_site,
+                deploy_ssh_user=deploy_ssh_user,
+                files_root=files_root,
+                ssh_host=ssh_host,
+                ssh_port=ssh_port,
+                host_public_key=host_public_key,
+                private_key=private_key,
+                clear_key=clear_key,
+            )
+        except SettingsRejected as exc:
+            return WpOpsResult(
+                ok=False,
+                message=str(exc),
+                data={"error_class": "ConfigInvalid", "live_calls": False},
+            )
+        self._audit_raw(
+            actor,
+            action="wp_ops_deploy_ssh_settings",
+            target_id=site_id,
+            success=True,
+            details={"deploy_key_stored": bool(saved.get("deploy_key_stored")), "live_calls": False},
+        )
+        return WpOpsResult(
+            ok=True,
+            message="Deploy-SSH-inställningar sparade",
+            data={**saved, "live_calls": False},
+        )
+
+    def _bridge_client_for_site(self, site: Site) -> Any:
+        if self.bridge_factory is not None:
+            return self.bridge_factory(site)
+        from ecom_ops.integrations.wp.bridge_client import bridge_client_for_site
+
+        return bridge_client_for_site(site)
+
+    def bridge_health(self, site_id: str, *, actor: str) -> WpOpsResult:
+        denied = self._policy().require(actor, Permission.WP_OPS_READ, action="wp_ops_bridge_health")
+        if denied is not None:
+            return denied
+        sites, config_err = self._policy().load_all_sites()
+        if config_err is not None:
+            return config_err
+        site = site_by_id(sites, site_id)
+        if site is None:
+            return WpOpsResult(ok=False, message="Unknown site", data={"error_class": "UnknownSite"})
+
+        client = self._bridge_client_for_site(site)
+        if client is None:
+            return WpOpsResult(
+                ok=False,
+                message="Azom Ops Bridge är inte aktiverad eller saknar hemlighet.",
+                data={"error_class": "BridgeUnconfigured", "live_calls": False},
+            )
+        try:
+            health = client.health()
+        except Exception as exc:
+            return WpOpsResult(
+                ok=False,
+                message=f"Bridge-hälsokontroll misslyckades: {str(exc)[:160]}",
+                data={"error_class": "BridgeError", "live_calls": client.is_live},
+            )
+        return WpOpsResult(
+            ok=True,
+            message="Bridge-hälsokontroll klar",
+            data={"health": health, "site_id": site.id, "live_calls": client.is_live},
+        )
+
+    def bridge_translations(
+        self, site_id: str, *, post_id: int | None = None, actor: str
+    ) -> WpOpsResult:
+        denied = self._policy().require(
+            actor, Permission.WP_OPS_READ, action="wp_ops_bridge_translations"
+        )
+        if denied is not None:
+            return denied
+        sites, config_err = self._policy().load_all_sites()
+        if config_err is not None:
+            return config_err
+        site = site_by_id(sites, site_id)
+        if site is None:
+            return WpOpsResult(ok=False, message="Unknown site", data={"error_class": "UnknownSite"})
+
+        client = self._bridge_client_for_site(site)
+        if client is None:
+            return WpOpsResult(
+                ok=False,
+                message="Azom Ops Bridge är inte aktiverad eller saknar hemlighet.",
+                data={"error_class": "BridgeUnconfigured", "live_calls": False},
+            )
+        try:
+            payload = client.translations(post_id=post_id)
+        except Exception as exc:
+            return WpOpsResult(
+                ok=False,
+                message=f"Översättningsläsning misslyckades: {str(exc)[:160]}",
+                data={"error_class": "BridgeError", "live_calls": client.is_live},
+            )
+        return WpOpsResult(
+            ok=True,
+            message="Översättningar hämtade",
+            data={"translations": payload, "site_id": site.id, "live_calls": client.is_live},
+        )
+
+    def bridge_cache_flush(self, site_id: str, *, actor: str) -> WpOpsResult:
+        if env_flag("AZOM_WP_DEPLOY_KILL"):
+            return WpOpsResult(
+                ok=False,
+                message="Nödstopp (AZOM_WP_DEPLOY_KILL) är aktivt.",
+                data={"error_class": "DeployKillSwitchActive", "live_calls": False},
+            )
+        denied = self._policy().require(actor, Permission.WP_OPS_ADMIN, action="wp_ops_bridge_cache")
+        if denied is not None:
+            return denied
+        sites, config_err = self._policy().load_all_sites()
+        if config_err is not None:
+            return config_err
+        site = site_by_id(sites, site_id)
+        if site is None:
+            return WpOpsResult(ok=False, message="Unknown site", data={"error_class": "UnknownSite"})
+        from ecom_ops.wp_ops.change_ledger import safe_record_change
+
+        client = self._bridge_client_for_site(site)
+        if client is None:
+            return WpOpsResult(
+                ok=False,
+                message="Azom Ops Bridge är inte aktiverad eller saknar hemlighet.",
+                data={"error_class": "BridgeUnconfigured", "live_calls": False},
+            )
+        try:
+            res = client.flush_cache()
+        except Exception as exc:
+            return WpOpsResult(
+                ok=False,
+                message=f"Cache-rensning misslyckades: {str(exc)[:160]}",
+                data={"error_class": "BridgeError", "live_calls": client.is_live},
+            )
+        safe_record_change(
+            data_dir=self.data_dir,
+            site_id=site.id,
+            environment=site.environment,
+            category="cache_flush",
+            transport="bridge",
+            actor=actor,
+            summary=f"Cache rensad ({', '.join(res.get('flushed') or [])})",
+            target_ref=f"cache:{site.id}",
+            before_data={"flushed": False},
+            after_data=res,
+        )
+        return WpOpsResult(
+            ok=True,
+            message="Cache rensad via Azom Ops Bridge.",
+            data={"result": res, "live_calls": client.is_live},
+        )
+
+    def bridge_maintenance(
+        self, site_id: str, *, enabled: bool, duration_seconds: int = 300, actor: str
+    ) -> WpOpsResult:
+        if env_flag("AZOM_WP_DEPLOY_KILL"):
+            return WpOpsResult(
+                ok=False,
+                message="Nödstopp (AZOM_WP_DEPLOY_KILL) är aktivt.",
+                data={"error_class": "DeployKillSwitchActive", "live_calls": False},
+            )
+        denied = self._policy().require(actor, Permission.WP_OPS_ADMIN, action="wp_ops_bridge_maint")
+        if denied is not None:
+            return denied
+        sites, config_err = self._policy().load_all_sites()
+        if config_err is not None:
+            return config_err
+        site = site_by_id(sites, site_id)
+        if site is None:
+            return WpOpsResult(ok=False, message="Unknown site", data={"error_class": "UnknownSite"})
+        from ecom_ops.wp_ops.change_ledger import safe_record_change
+
+        client = self._bridge_client_for_site(site)
+        if client is None:
+            return WpOpsResult(
+                ok=False,
+                message="Azom Ops Bridge är inte aktiverad eller saknar hemlighet.",
+                data={"error_class": "BridgeUnconfigured", "live_calls": False},
+            )
+        try:
+            res = client.set_maintenance(enabled=enabled, duration_seconds=duration_seconds)
+        except Exception as exc:
+            return WpOpsResult(
+                ok=False,
+                message=f"Underhållsläge misslyckades: {str(exc)[:160]}",
+                data={"error_class": "BridgeError", "live_calls": client.is_live},
+            )
+        safe_record_change(
+            data_dir=self.data_dir,
+            site_id=site.id,
+            environment=site.environment,
+            category="maintenance",
+            transport="bridge",
+            actor=actor,
+            summary=f"Underhållsläge {'PÅ' if enabled else 'AV'}",
+            target_ref=f"maintenance:{site.id}",
+            before_data={"enabled": not enabled},
+            after_data=res,
+        )
+        return WpOpsResult(
+            ok=True,
+            message=f"Underhållsläge {'aktiverat' if enabled else 'avaktiverat'}.",
+            data={"result": res, "live_calls": client.is_live},
+        )
+
+    # --- Plugin lifecycle, policy, auto-updates, diagnostics & recovery -- #
+
+    def _plugin_service(self) -> Any:
+        from ecom_ops.wp_ops.plugin_service import PluginOpsService
+
+        return PluginOpsService(
+            data_dir=self.data_dir,
+            registry_path=self.registry_path,
+            clock=self.clock,
+            bridge_factory=self.bridge_factory,
+            deploy_transport_factory=self.deploy_transport_factory,
+            files_factory=self.files_factory,
+        )
+
+    def plugin_inventory(
+        self,
+        site_id: str,
+        *,
+        actor: str,
+        include_updates: bool = True,
+        include_wporg: bool = False,
+    ) -> WpOpsResult:
+        return self._plugin_service().plugin_inventory(
+            site_id,
+            actor=actor,
+            include_updates=include_updates,
+            include_wporg=include_wporg,
+        )
+
+    def mu_plugins_and_dropins(self, site_id: str, *, actor: str) -> WpOpsResult:
+        return self._plugin_service().mu_plugins_and_dropins(site_id, actor=actor)
+
+    def plugin_diagnostics(
+        self,
+        site_id: str,
+        *,
+        actor: str,
+        hooks: list[str] | None = None,
+        log_lines: int = 80,
+    ) -> WpOpsResult:
+        return self._plugin_service().plugin_diagnostics(
+            site_id, actor=actor, hooks=hooks, log_lines=log_lines
+        )
+
+    def plan_plugin_updates(
+        self,
+        site_id: str,
+        *,
+        actor: str,
+        selection_mode: str = "policy",
+        slugs: list[str] | None = None,
+        policy: str = "non_critical_only",
+        exclude_slugs: list[str] | None = None,
+        include_critical: bool = False,
+        canary: bool = True,
+    ) -> WpOpsResult:
+        return self._plugin_service().plan_plugin_updates(
+            site_id,
+            actor=actor,
+            selection_mode=selection_mode,
+            slugs=slugs,
+            policy=policy,
+            exclude_slugs=exclude_slugs,
+            include_critical=include_critical,
+            canary=canary,
+        )
+
+    def execute_plugin_update_plan(
+        self,
+        site_id: str,
+        plan_id: str,
+        *,
+        actor: str,
+        expected_sha256: str,
+        allow_critical: bool = False,
+    ) -> WpOpsResult:
+        return self._plugin_service().execute_plugin_update_plan(
+            site_id,
+            plan_id,
+            actor=actor,
+            expected_sha256=expected_sha256,
+            allow_critical=allow_critical,
+        )
+
+    def list_plugin_update_plans(self, site_id: str, *, actor: str) -> WpOpsResult:
+        return self._plugin_service().list_plugin_update_plans(site_id, actor=actor)
+
+    def get_autoupdate_policy(self, site_id: str, *, actor: str) -> WpOpsResult:
+        return self._plugin_service().get_autoupdate_policy(site_id, actor=actor)
+
+    def save_autoupdate_policy(
+        self, site_id: str, *, actor: str, policy: dict[str, Any]
+    ) -> WpOpsResult:
+        return self._plugin_service().save_autoupdate_policy(site_id, actor=actor, policy=policy)
+
+    def check_autoupdate_drift(self, site_id: str, *, actor: str) -> WpOpsResult:
+        return self._plugin_service().check_autoupdate_drift(site_id, actor=actor)
+
+    def plan_plugin_autoupdate(
+        self,
+        site_id: str,
+        *,
+        actor: str,
+        preset: str = "non_critical_only",
+        changes: list[dict[str, Any]] | None = None,
+        allow_critical: bool = False,
+    ) -> WpOpsResult:
+        return self._plugin_service().plan_plugin_autoupdate(
+            site_id,
+            actor=actor,
+            preset=preset,
+            changes=changes,
+            allow_critical=allow_critical,
+        )
+
+    def execute_plugin_autoupdate_plan(
+        self,
+        site_id: str,
+        plan_id: str,
+        *,
+        actor: str,
+        expected_sha256: str,
+    ) -> WpOpsResult:
+        return self._plugin_service().execute_plugin_autoupdate_plan(
+            site_id, plan_id, actor=actor, expected_sha256=expected_sha256
+        )
+
+    def plan_plugin_recovery(
+        self,
+        site_id: str,
+        *,
+        actor: str,
+        slug: str,
+        action: str,
+        change_id: str | None = None,
+    ) -> WpOpsResult:
+        return self._plugin_service().plan_plugin_recovery(
+            site_id, actor=actor, slug=slug, action=action, change_id=change_id
+        )
+
+    def execute_plugin_recovery_plan(
+        self,
+        site_id: str,
+        plan_id: str,
+        *,
+        actor: str,
+        expected_sha256: str,
+    ) -> WpOpsResult:
+        return self._plugin_service().execute_plugin_recovery_plan(
+            site_id, plan_id, actor=actor, expected_sha256=expected_sha256
+        )
+
+    def quarantine_plugin(
+        self,
+        site_id: str,
+        slug: str,
+        *,
+        actor: str,
+        kind: str = "plugin",
+    ) -> WpOpsResult:
+        return self._plugin_service().quarantine_plugin(site_id, slug, actor=actor, kind=kind)
+
+    def unquarantine_plugin(
+        self,
+        site_id: str,
+        slug: str,
+        *,
+        actor: str,
+        quarantine_name: str = "",
+        kind: str = "plugin",
+    ) -> WpOpsResult:
+        return self._plugin_service().unquarantine_plugin(
+            site_id, slug, actor=actor, quarantine_name=quarantine_name, kind=kind
         )

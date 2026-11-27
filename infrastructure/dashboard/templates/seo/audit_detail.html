@@ -1,0 +1,590 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}SEO-audit {{ audit.get('audit_id') }} – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Detaljerad SEO-rapport{% endblock %}
+{% block content %}
+{% set tech = audit.get('technical') if audit.get('technical') is mapping else {} %}
+{% set on_page = audit.get('on_page') if audit.get('on_page') is mapping else {} %}
+{% set media = audit.get('media') if audit.get('media') is mapping else {} %}
+{% set links = audit.get('links') if audit.get('links') is mapping else {} %}
+{% set cannib = audit.get('cannibalization') if audit.get('cannibalization') is sequence and audit.get('cannibalization') is not string else [] %}
+{% set issues = audit.get('issues') if audit.get('issues') is sequence and audit.get('issues') is not string else [] %}
+{% set score = audit.get('score', 0) %}
+
+<div class="space-y-5" data-seo-studio="true" data-seo-page="audit_detail">
+  {{ ui.breadcrumb([
+    {'label': 'SEO Studio', 'href': '/seo'},
+    {'label': audit.get('audit_id') or 'Audit'}
+  ]) }}
+
+  {% call ui.page_header(
+    "SEO-audit " ~ (audit.get('audit_id') or ''),
+    "Webbplats: " ~ (audit.get('site_id') or '') ~ " · Marknad: " ~ ((audit.get('market') or 'no') | upper) ~ " · Omfattning: " ~ (audit.get('scope') or 'site'),
+    badge_text=(score ~ '/100 · ' ~ (audit.get('grade') or '')),
+    badge_tone='ok' if score >= 80 else ('warn' if score >= 60 else 'error')
+  ) %}
+    {% if can_propose_fix %}
+    <form method="post" action="/seo/batches/from-audit">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="site_id" value="{{ audit.get('site_id') or selected_site }}" />
+      <input type="hidden" name="audit_id" value="{{ audit.get('audit_id') }}" />
+      <input type="hidden" name="scope" value="media_alt" />
+      <input type="hidden" name="next_url" value="/seo/audit/{{ audit.get('audit_id') }}" />
+      <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Bygger batch...">
+        {{ icon('plus', 'xs') }}
+        <span>Skapa bulk-alt-batch</span>
+      </button>
+    </form>
+    <form method="post" action="/seo/batches/from-audit">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="site_id" value="{{ audit.get('site_id') or selected_site }}" />
+      <input type="hidden" name="audit_id" value="{{ audit.get('audit_id') }}" />
+      <input type="hidden" name="scope" value="seo_meta" />
+      <input type="hidden" name="next_url" value="/seo/audit/{{ audit.get('audit_id') }}" />
+      <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Bygger batch...">
+        {{ icon('plus', 'xs') }}
+        <span>Skapa meta-batch</span>
+      </button>
+    </form>
+    {% endif %}
+    <a class="az-btn-secondary az-btn-sm" href="#seo-fix-propose-section">
+      {{ icon('plus', 'xs') }}
+      <span>Skapa fixplan</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/wp/{{ audit.get('site_id') }}/changes">
+      {{ icon('clipboard-list', 'xs') }}
+      <span>Change Vault</span>
+    </a>
+  {% endcall %}
+
+  {% set diff = audit_diff | default({}) %}
+  {% if diff and diff.get('ok') and diff.get('has_previous') %}
+  <section class="az-card p-3.5" data-seo-audit-diff="true">
+    <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-semibold text-mist-100">Jämförelse mot föregående audit ({{ diff.get('previous_id') }}):</span>
+        {% set delta = diff.get('score_delta', 0) %}
+        {{ ui.status_badge('ok' if delta > 0 else ('error' if delta < 0 else 'neutral'), ('+' ~ delta if delta > 0 else delta) ~ ' poäng') }}
+        <span class="text-mist-300">Nya fynd: <strong class="text-mist-100">{{ (diff.get('new_issues') or []) | length }}</strong></span>
+        <span class="text-mist-300">Lösta fynd: <strong class="text-mist-100">{{ (diff.get('resolved_issues') or []) | length }}</strong></span>
+      </div>
+      {% if diff.get('previous_id') %}
+      <a class="az-btn-secondary az-btn-sm" href="/seo/audit/{{ diff.get('previous_id') }}">Öppna föregående</a>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if audit.get('gsc_note') %}
+    {{ ui.info_callout('info', 'Datakällor & GSC', audit.get('gsc_note')) }}
+  {% endif %}
+
+  <!-- Summary KPIs -->
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {{ ui.kpi_card('Total SEO-poäng', score ~ '/100', hint='Betyg: ' ~ (audit.get('grade') or '—'), tone='ok' if score >= 80 else ('warn' if score >= 60 else 'danger'), icon_name='activity') }}
+    {{ ui.kpi_card('Identifierade fynd', issues | length, hint='Teknisk, on-page, media & länkar', tone='warn' if (issues | length) > 0 else 'ok', icon_name='alert-triangle') }}
+    {{ ui.kpi_card('Saknade alt-texter', media.get('missing_alt_count', 0), hint='Av ' ~ media.get('total_media', media.get('total', 0)) ~ ' granskade media', tone='warn' if media.get('missing_alt_count', 0) > 0 else 'ok', icon_name='search') }}
+    {{ ui.kpi_card('Kannibaliseringsgrupper', cannib | length, hint='Konkurrerande URL:er på samma sökord', tone='danger' if (cannib | length) > 0 else 'ok', icon_name='globe') }}
+  </div>
+
+  <!-- 1. Teknisk SEO -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0">Teknisk SEO (Robots, Sitemap, Canonical, Hreflang &amp; JSON-LD)</h2>
+      {% if audit.get('data_sources') %}
+      <div class="flex flex-wrap gap-1.5">
+        {% for src in audit.get('data_sources') %}
+          {{ ui.status_badge('neutral', src) }}
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    {% set html_tech = tech.get('html') if tech.get('html') is mapping else {} %}
+    {% set robots_tech = tech.get('robots') if tech.get('robots') is mapping else {} %}
+    {% set sitemap_tech = tech.get('sitemap') if tech.get('sitemap') is mapping else {} %}
+    {% set hreflang_tech = tech.get('hreflang') if tech.get('hreflang') is mapping else {} %}
+    {% set robots_ok = (not robots_tech.get('blocks_entire_site') and not robots_tech.get('blocks_products') and not robots_tech.get('issues')) if robots_tech else tech.get('robots_ok', true) %}
+    <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 space-y-1">
+        <dt class="text-mist-400">SEO-plugin &amp; Indexering</dt>
+        <dd class="font-mono text-sm text-mist-100">{{ tech.get('seo_plugin') or 'okänd' }}</dd>
+        <dd class="text-mist-300">blog_public: {{ fmt_sv_bool(tech.get('blog_public')) }}</dd>
+      </div>
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 space-y-1">
+        <dt class="text-mist-400">Robots.txt &amp; Sitemap</dt>
+        <dd>{{ ui.status_badge('ok' if robots_ok else 'error', 'robots.txt ' ~ ('OK' if robots_ok else 'Problem')) }}</dd>
+        <dd class="text-mist-300">Sitemap-URL:er: {{ sitemap_tech.get('url_count', (sitemap_tech.get('urls') or tech.get('sitemap_urls') or []) | length) }}</dd>
+      </div>
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 space-y-1">
+        <dt class="text-mist-400">Canonical &amp; Meta Robots</dt>
+        <dd class="truncate font-mono text-mist-200" title="{{ html_tech.get('canonical') or tech.get('canonical') or '' }}">{{ html_tech.get('canonical') or tech.get('canonical') or '—' }}</dd>
+        <dd class="text-mist-300">Robots: {{ html_tech.get('meta_robots') or tech.get('meta_robots') or 'index, follow' }}</dd>
+      </div>
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 space-y-1">
+        <dt class="text-mist-400">Hreflang (SE/NO/DK) &amp; JSON-LD</dt>
+        <dd class="text-mist-200">Hreflang-taggar: {{ (html_tech.get('hreflang') or html_tech.get('hreflangs') or tech.get('hreflangs') or []) | length }}</dd>
+        <dd class="text-mist-300">Schema-typer: {{ (html_tech.get('json_ld_types') or html_tech.get('schema_types') or tech.get('schema_types') or []) | join(', ') or 'inga' }}</dd>
+      </div>
+    </dl>
+
+    {% set hl_issues = hreflang_tech.get('issues') or tech.get('hreflang_issues') or [] %}
+    {% if hl_issues %}
+    <div class="space-y-1">
+      <p class="text-xs font-semibold text-warn">Hreflang-anmärkningar (SE/NO/DK)</p>
+      <ul class="list-disc space-y-0.5 pl-4 text-xs text-mist-300">
+        {% for hi in hl_issues %}
+        <li>{{ hi.get('title') or hi.get('detail') if hi is mapping else hi }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </section>
+
+  <!-- 2. Alla SEO-fynd (med interaktiva filter & snabbknapp till Fixplan) -->
+  <section class="az-card space-y-4" data-seo-issues-panel="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0">Prioriterade fynd (<span id="seo-issue-count">{{ issues | length }}</span> / {{ issues | length }})</h2>
+      {% if issues and can_propose_fix %}
+      <button type="button" id="seo-next-issue-btn" class="az-btn-primary az-btn-sm" data-seo-next-issue="1">
+        {{ icon('arrow-right', 'xs') }}
+        <span>Nästa olösta fynd</span>
+      </button>
+      {% endif %}
+    </div>
+    {% if issues %}
+    <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-ink-700/70 bg-ink-950/50 p-3">
+      <div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filtrera SEO-fynd">
+        {% for f_val, f_lbl in [
+          ('all', 'Alla'),
+          ('critical', 'critical'),
+          ('high', 'high'),
+          ('media', 'media'),
+          ('on_page', 'on_page'),
+          ('technical', 'technical'),
+          ('cannibalization', 'cannibalization')
+        ] %}
+        <button
+          type="button"
+          class="az-btn-secondary az-btn-sm {{ 'bg-ink-800 ring-1 ring-steel-500/35 text-steel-200' if f_val == 'all' else '' }}"
+          data-seo-issue-filter="{{ f_val }}"
+          aria-pressed="{{ 'true' if f_val == 'all' else 'false' }}"
+        >{{ f_lbl }}</button>
+        {% endfor %}
+      </div>
+      <div class="w-full max-w-md">
+        <label class="sr-only" for="seo-issue-search">Sök i SEO-fynd</label>
+        <input
+          id="seo-issue-search"
+          type="search"
+          class="az-input text-xs"
+          data-seo-issue-search="1"
+          placeholder="Sök i fynd, URL eller kategori..."
+        />
+      </div>
+    </div>
+
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="SEO-fynd">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Allvar</th>
+            <th scope="col">Kategori</th>
+            <th scope="col">Beskrivning &amp; Rekommendation</th>
+            <th scope="col">Mål</th>
+            <th scope="col">Fixplan</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for iss in issues %}
+          {% set sev = (iss.get('severity') or 'info') | lower %}
+          {% set cat = (iss.get('category') or iss.get('code') or 'seo') | lower %}
+          <tr
+            data-seo-issue-row="1"
+            data-severity="{{ sev }}"
+            data-category="{{ cat }}"
+            data-issue-text="{{ (sev ~ ' ' ~ cat ~ ' ' ~ (iss.get('title') or iss.get('message') or '') ~ ' ' ~ (iss.get('detail') or '') ~ ' ' ~ (iss.get('url') or '') ~ ' ' ~ (iss.get('target_id') or '')) | lower }}"
+          >
+            <td>
+              {{ ui.status_badge('error' if sev in ('critical', 'high', 'error') else ('warn' if sev in ('medium', 'warn', 'warning') else 'info'), sev) }}
+            </td>
+            <td class="font-mono text-xs text-mist-300">{{ iss.get('category') or iss.get('code') or 'seo' }}</td>
+            <td class="text-xs">
+              <div class="font-medium text-mist-100">{{ iss.get('title') or iss.get('message') }}</div>
+              {% if iss.get('detail') %}
+              <div class="mt-0.5 text-mist-300">{{ iss.get('detail') }}</div>
+              {% endif %}
+              {% if iss.get('suggestion') or iss.get('recommendation') %}
+              <div class="mt-0.5 text-mist-400">{{ iss.get('suggestion') or iss.get('recommendation') }}</div>
+              {% endif %}
+            </td>
+            <td class="font-mono text-xs text-mist-300">
+              {{ iss.get('target_type') or 'page' }}{% if iss.get('target_id') %} #{{ iss.get('target_id') }}{% endif %}
+              {% if iss.get('url') %}<div class="truncate text-mist-500">{{ iss.get('url') }}</div>{% endif %}
+            </td>
+            <td>
+              {% if can_propose_fix %}
+              {% set iss_target_type = (iss.get('target_type') or 'site') | lower %}
+              <button
+                type="button"
+                class="az-btn-secondary az-btn-sm"
+                data-seo-fix-prefill="1"
+                data-fix-type="{{ iss.get('fix_type') or iss.get('suggested_fix_type') or ('media_alt' if (iss.get('category') == 'media' or iss_target_type == 'media') else 'seo_meta') }}"
+                data-target-type="{{ iss_target_type }}"
+                data-target-id="{{ iss.get('target_id') or ('site' if iss_target_type == 'site' else '') }}"
+                data-fix-summary="{{ iss.get('title') or iss.get('message') or '' }}"
+                data-proposed-json="{{ fmt_json(iss.get('proposed_fields')) if iss.get('proposed_fields') else '' }}"
+              >Förbered fixplan</button>
+              {% else %}
+              <span class="text-xs text-mist-500">Läsläge</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga fynd registrerade', 'Denna audit hittade inga öppna SEO-problem.', icon_name='check-circle') }}
+    {% endif %}
+  </section>
+
+  <!-- 3. On-Page & 4. Bild-/Media-SEO -->
+  <div class="grid gap-5 lg:grid-cols-2">
+    <section class="az-card space-y-3">
+      {% set on_page_items = on_page.get('items') or on_page.get('entities') or [] %}
+      {% set op_ns = namespace(missing_desc=0, missing_kw=0) %}
+      {% for _ent in on_page_items %}
+        {% if _ent is mapping %}
+          {% if not (_ent.get('meta_description') or '') | trim %}{% set op_ns.missing_desc = op_ns.missing_desc + 1 %}{% endif %}
+          {% if not (_ent.get('focus_keyphrase') or '') | trim %}{% set op_ns.missing_kw = op_ns.missing_kw + 1 %}{% endif %}
+        {% endif %}
+      {% endfor %}
+      {% set missing_desc_count = on_page.get('missing_meta_description') if on_page.get('missing_meta_description') is not none else op_ns.missing_desc %}
+      {% set missing_kw_count = on_page.get('missing_focus_keyphrase') if on_page.get('missing_focus_keyphrase') is not none else op_ns.missing_kw %}
+      <h2 class="az-section-title mb-0">On-Page SEO (Produkter, Sidor &amp; Poster)</h2>
+      <dl class="grid grid-cols-2 gap-3 text-xs">
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Granskade objekt</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ on_page.get('entities_audited', on_page.get('entities_checked', on_page_items | length)) }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Saknar meta-beskrivning</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ missing_desc_count }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Saknar fokusnyckelord</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ missing_kw_count }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Tunt innehåll</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ on_page.get('thin_content_count', 0) }}</dd>
+        </div>
+      </dl>
+      {% if on_page_items %}
+      <div class="az-table-wrap" tabindex="0" role="region" aria-label="On-page objekt">
+        <table class="az-table">
+          <thead>
+            <tr>
+              <th scope="col">Objekt</th>
+              <th scope="col">Meta-titel</th>
+              <th scope="col">Ord</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ent in on_page_items[:12] %}
+            <tr>
+              <td class="text-xs">
+                <span class="font-mono text-mist-400">{{ ent.get('object_type') }}#{{ ent.get('object_id') }}</span>
+                <div class="font-medium text-mist-100">{{ ent.get('title') or ent.get('slug') }}</div>
+              </td>
+              <td class="text-xs text-mist-300">{{ ent.get('meta_title') or 'Saknas' }}</td>
+              <td class="font-mono text-xs tabular-nums text-mist-300">{{ ent.get('word_count', 0) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="az-card space-y-3">
+      <h2 class="az-section-title mb-0">Bild- &amp; Media-SEO</h2>
+      <dl class="grid grid-cols-2 gap-3 text-xs">
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Totalt media</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ media.get('total_media', media.get('total', 0)) }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Saknar alt-text</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ media.get('missing_alt_count', 0) }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Svaga filnamn</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ media.get('generic_filename_count', 0) }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Stora / saknar dimensioner</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ media.get('oversized_count', 0) }}</dd>
+        </div>
+      </dl>
+      {% set media_rows = media.get('items') or media.get('issues') or [] %}
+      {% if media_rows %}
+      <div class="az-table-wrap" tabindex="0" role="region" aria-label="Media-SEO">
+        <table class="az-table">
+          <thead>
+            <tr>
+              <th scope="col">Media-ID &amp; Fil</th>
+              <th scope="col">Alt-text</th>
+              <th scope="col">Storlek</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for m in media_rows[:12] %}
+            <tr>
+              <td class="font-mono text-xs">#{{ m.get('media_id') or m.get('id') }} {{ m.get('filename') or '' }}</td>
+              <td class="text-xs">{{ m.get('alt_text') or 'Saknas' }}</td>
+              <td class="font-mono text-xs tabular-nums text-mist-400">{{ m.get('width', 0) }}×{{ m.get('height', 0) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </section>
+  </div>
+
+  <!-- 5. Internlänkgraf & Kannibaliseringsmatris -->
+  <div class="grid gap-5 lg:grid-cols-2">
+    <section class="az-card space-y-3">
+      <h2 class="az-section-title mb-0">Internlänkgraf &amp; Föräldralösa sidor</h2>
+      <dl class="grid grid-cols-3 gap-3 text-xs">
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Noder</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ links.get('total_nodes', links.get('total_pages', links.get('nodes_count', 0))) }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Interna länkar</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ links.get('total_internal_links', links.get('edges_count', 0)) }}</dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+          <dt class="text-mist-400">Föräldralösa</dt>
+          <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ (links.get('orphan_pages') or links.get('orphans') or []) | length }}</dd>
+        </div>
+      </dl>
+      {% set orphans = links.get('orphan_pages') or links.get('orphans') or [] %}
+      {% if orphans %}
+      <ul class="space-y-1 text-xs">
+        {% for op in orphans[:10] %}
+        <li class="rounded border border-ink-700/60 bg-ink-950/60 px-2.5 py-1.5 font-mono text-mist-200">
+          {{ op.get('url') or op.get('slug') or op if op is mapping else op }}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="az-muted text-xs">Inga föräldralösa sidor hittades i denna skanning.</p>
+      {% endif %}
+    </section>
+
+    <section class="az-card space-y-3">
+      <h2 class="az-section-title mb-0">Kannibaliseringsmatris</h2>
+      {% if cannib %}
+      <div class="az-table-wrap" tabindex="0" role="region" aria-label="Kannibaliseringsmatris">
+        <table class="az-table">
+          <thead>
+            <tr>
+              <th scope="col">Sökord / Tema</th>
+              <th scope="col">Konkurrerande URL:er</th>
+              <th scope="col">Risk</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in cannib %}
+            <tr>
+              <td class="font-medium text-xs text-mist-100">{{ row.get('keyword') or row.get('term') }}</td>
+              <td class="font-mono text-xs text-mist-300">
+                {% for u in (row.get('competing_urls') or row.get('urls') or row.get('pages') or []) %}
+                <div>{{ u.get('url') or u.get('slug') if u is mapping else u }}</div>
+                {% endfor %}
+              </td>
+              <td>{{ ui.status_badge('warn' if (row.get('severity') or 'medium') != 'high' else 'error', row.get('severity') or 'medium') }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="az-muted text-xs">Ingen sökordskannibalisering upptäcktes i granskade sidor/produkter.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <!-- 6. Direct Fix Plan Proposal Form -->
+  {% if can_propose_fix %}
+  <section id="seo-fix-propose-section" class="az-card space-y-4">
+    <div>
+      <h2 class="az-section-title mb-1">Skapa granskningsbar SEO-fixplan (<code class="az-code">seom-*</code>)</h2>
+      <p class="az-muted text-xs">Skapar endast en hash-pinnad plan (exekveras aldrig automatiskt). Oscar godkänner och applicerar med Change Vault-snapshot.</p>
+    </div>
+
+    <form method="post" action="/seo/fixes/propose" class="space-y-4">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="site_id" value="{{ audit.get('site_id') or selected_site }}" />
+      <input type="hidden" name="market" value="{{ audit.get('market') or 'no' }}" />
+      <input type="hidden" name="next_url" value="/seo/audit/{{ audit.get('audit_id') }}" />
+
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <label class="az-label" for="seo-fix-type">Fix-typ</label>
+          <select id="seo-fix-type" name="fix_type" class="az-select">
+            <option value="seo_meta">seo_meta (Meta titel/beskrivning/keyphrase)</option>
+            <option value="media_alt">media_alt (Bild alt-text/titel)</option>
+            <option value="product_seo">product_seo (Produkt-SEO)</option>
+            <option value="page_seo">page_seo (Sid-SEO)</option>
+            <option value="schema_jsonld">schema_jsonld (Strukturerad data)</option>
+          </select>
+        </div>
+        <div>
+          <label class="az-label" for="seo-fix-target-type">Objekttyp</label>
+          <select id="seo-fix-target-type" name="target_type" class="az-select">
+            <option value="product">product</option>
+            <option value="page">page</option>
+            <option value="post">post</option>
+            <option value="media">media</option>
+            <option value="category">category</option>
+            <option value="site">site</option>
+          </select>
+        </div>
+        <div>
+          <label class="az-label" for="seo-fix-target-id">Objekt-ID</label>
+          <input id="seo-fix-target-id" name="target_id" type="text" required class="az-input" placeholder="T.ex. 101" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-fix-summary">Sammanfattning</label>
+          <input id="seo-fix-summary" name="summary" type="text" class="az-input" maxlength="240" placeholder="Kort motivering för granskning" />
+        </div>
+      </div>
+
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div>
+          <label class="az-label" for="seo-fix-meta-title">Meta-titel (<= 60 tecken)</label>
+          <input id="seo-fix-meta-title" name="meta_title" type="text" class="az-input" maxlength="120" data-char-count="#seo-title-count" />
+          <span id="seo-title-count" class="text-xs text-mist-500"></span>
+        </div>
+        <div>
+          <label class="az-label" for="seo-fix-focus">Fokusnyckelord</label>
+          <input id="seo-fix-focus" name="focus_keyphrase" type="text" class="az-input" maxlength="120" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-fix-alt">Alt-text (för media_alt)</label>
+          <input id="seo-fix-alt" name="alt_text" type="text" class="az-input" maxlength="200" />
+        </div>
+      </div>
+
+      <div>
+        <label class="az-label" for="seo-fix-meta-desc">Meta-beskrivning (&lt;= 158 tecken)</label>
+        <textarea id="seo-fix-meta-desc" name="meta_description" rows="2" class="az-textarea" maxlength="320" data-char-count="#seo-desc-count"></textarea>
+        <span id="seo-desc-count" class="text-xs text-mist-500"></span>
+      </div>
+
+      <!-- Live Google SERP Desktop/Mobile Preview (CSP-safe, updated via dashboard.js) -->
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3.5 space-y-2" data-serp-preview="1">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span class="font-semibold text-mist-200">Google SERP förhandsvisning</span>
+          <div class="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200"
+              data-serp-mode="desktop"
+              aria-pressed="true"
+            >Desktop</button>
+            <button
+              type="button"
+              class="az-btn-secondary az-btn-sm"
+              data-serp-mode="mobile"
+              aria-pressed="false"
+            >Mobil</button>
+          </div>
+        </div>
+        <div id="seo-serp-card" class="rounded border border-ink-700/60 bg-ink-900 p-3 space-y-1">
+          <div id="seo-serp-url" class="truncate font-mono text-xs text-mist-400">https://{{ site_domain | default(audit.get('site_id') or 'azom.example') }}/</div>
+          <div id="seo-serp-title" class="text-base font-medium text-steel-300">Skriv en meta-titel för att förhandsvisa Google-resultatet</div>
+          <div id="seo-serp-desc" class="text-xs text-mist-300">Skriv en meta-beskrivning (rekommenderat upp till 158 tecken) för att se utdraget i sökresultatet.</div>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 text-xs">
+          <span id="seo-serp-title-meter" class="font-mono text-mist-400">Titel: 0 / 60 tecken</span>
+          <span id="seo-serp-desc-meter" class="font-mono text-mist-400">Beskrivning: 0 / 158 tecken</span>
+        </div>
+      </div>
+
+      <details class="rounded-lg border border-ink-700/70 bg-ink-950/50 p-3 text-xs">
+        <summary class="cursor-pointer font-medium text-steel-300">Avancerat: ange föreslagna fält som JSON (ersätter fälten ovan)</summary>
+        <div class="mt-2">
+          <textarea id="seo-fix-proposed-json" name="proposed_json" rows="3" class="az-textarea font-mono text-xs" placeholder='{"meta_title": "...", "meta_description": "...", "canonical": "..."}'></textarea>
+        </div>
+      </details>
+
+      <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Skapar plan...">
+        {{ icon('plus', 'xs') }}
+        <span>Skapa granskningsbar fixplan</span>
+      </button>
+    </form>
+  </section>
+  {% endif %}
+
+  <!-- 7. Pending Fix Plans & Batches (Före vs. Föreslaget) -->
+  {% set pending_plans = fix_plans | default([]) %}
+  {% set pending_batches = fix_batches | default([]) %}
+  {% if pending_plans or pending_batches %}
+  <section class="az-card space-y-4" data-seo-audit-pending-plans="true">
+    <h2 class="az-section-title mb-0">Aktuella fixplaner &amp; batcher (Före vs. Föreslaget)</h2>
+    {% if pending_batches %}
+    <div class="space-y-2">
+      <p class="text-xs font-semibold uppercase tracking-wider text-mist-400">Batch-planer (seob-*)</p>
+      {% for fb in pending_batches[:5] %}
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 text-xs space-y-2">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="font-mono font-semibold text-mist-100">{{ fb.get('batch_id') }} · {{ fb.get('scope') or 'all' }} ({{ fb.get('item_count', (fb.get('items') or []) | length) }} objekt)</span>
+          {{ ui.status_badge('ok' if fb.get('status') == 'applied' else 'warn', fb.get('status') or 'pending') }}
+        </div>
+        {% for it in (fb.get('items') or [])[:5] %}
+        <div class="rounded border border-ink-700/60 p-2 space-y-1">
+          <div class="font-mono text-mist-300">{{ it.get('fix_type') }} · {{ it.get('target_type') }} #{{ it.get('target_id') }}</div>
+          {% for dr in (it.get('diff_rows') or []) %}
+          <div class="grid grid-cols-3 gap-2">
+            <span class="font-mono text-mist-400">{{ dr.field }}</span>
+            <span class="text-mist-400">Före: {{ dr.before }}</span>
+            <span class="text-teal-400">Efter: {{ dr.after }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if pending_plans %}
+    <div class="space-y-2">
+      <p class="text-xs font-semibold uppercase tracking-wider text-mist-400">Enskilda fixplaner (seom-*)</p>
+      {% for fp in pending_plans[:6] %}
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 text-xs space-y-1.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="font-mono text-mist-100">{{ fp.get('plan_id') }} · {{ fp.get('fix_type') }} · {{ fp.get('target_type') }} #{{ fp.get('target_id') }}</span>
+          {{ ui.status_badge('ok' if fp.get('status') == 'applied' else 'warn', fp.get('status') or 'pending') }}
+        </div>
+        {% for dr in (fp.get('diff_rows') or []) %}
+        <div class="grid grid-cols-3 gap-2 border-t border-ink-700/60 pt-1">
+          <span class="font-mono text-mist-400">{{ dr.field }}</span>
+          <span class="text-mist-400">Före: {{ dr.before }}</span>
+          <span class="text-teal-400">Efter: {{ dr.after }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

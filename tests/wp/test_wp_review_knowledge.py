@@ -470,7 +470,7 @@ def test_theme_json_operations_v3_and_rejections() -> None:
 
 
 def test_playbooks_topics_selection_and_formatting() -> None:
-    assert len(PLAYBOOK_TOPICS) == 12
+    assert len(PLAYBOOK_TOPICS) == 20
     for topic in PLAYBOOK_TOPICS:
         pb = get_playbook(topic)
         assert pb["ok"] is True
@@ -500,6 +500,54 @@ def test_playbooks_topics_selection_and_formatting() -> None:
     assert (
         select_playbooks("Finjustera köpknappen med wp_inspect_element och A/B-variant")[0]["topic"]
         == "live_overlay_ui_iteration"
+    )
+    assert (
+        select_playbooks("Uppdatera plugins med non_critical_only policy och kanarie")[0]["topic"]
+        == "plugin_safe_updates"
+    )
+    assert (
+        select_playbooks("Ändra autouppdatering för plugins och kontrollera AUTOMATIC_UPDATER_DISABLED")[0]["topic"]
+        == "plugin_autoupdate_policy"
+    )
+    assert (
+        select_playbooks("Sajten fick WSOD av ett trasigt plugin — sätt i karantän")[0]["topic"]
+        == "plugin_emergency_recovery"
+    )
+    assert (
+        select_playbooks("Inspektera mu-plugins och object-cache.php drop-in laddningsordning")[0]["topic"]
+        == "mu_plugins_and_dropins"
+    )
+    assert (
+        select_playbooks("Kör en teknisk SEO-audit av hreflang, canonical och internlänkar")[0]["topic"]
+        == "seo_technical_and_onpage"
+    )
+    assert (
+        select_playbooks("Optimera bild-SEO, alt-text och Yoast meta-titel på produktbilder")[0]["topic"]
+        == "seo_product_and_media"
+    )
+    assert (
+        select_playbooks("Skapa nordisk SEO-strategi och SEO-kampanj med seo_content_radar")[0]["topic"]
+        == "seo_strategy_and_campaigns"
+    )
+    assert (
+        select_playbooks("Bygg ett länkpaket med naturlig ankartextmix och drip plan")[0]["topic"]
+        == "seo_link_packages"
+    )
+    assert (
+        select_playbooks("Jämför nordiska länkleverantörer och SEO-butiker med seo_vendor_vetting")[0]["topic"]
+        == "seo_link_packages"
+    )
+    assert (
+        select_playbooks("Kör SEO-autopilot och autonom SEO-strategi för Norge")[0]["topic"]
+        == "seo_strategy_and_campaigns"
+    )
+    assert (
+        select_playbooks("Skapa en seo-batch seob-0123456789ab för alt-text på produktbilder")[0]["topic"]
+        == "seo_product_and_media"
+    )
+    assert (
+        select_playbooks("Kör GSC quick-wins, nordisk paritet och wp_seo_drift_digest")[0]["topic"]
+        == "seo_technical_and_onpage"
     )
     assert select_playbooks("Hur många öppna ärenden har vi i supporten?") == []
     assert select_playbooks("Kolla order 1001") == []

@@ -82,8 +82,17 @@ def parse_tool_call(content: str) -> tuple[str, dict[str, Any]] | None:
     return payload["name"], arguments
 
 
-def error_payload(error_class: str) -> dict[str, Any]:
-    return {"ok": False, "status": "unknown", "error_class": error_class, "live_calls": False}
+def error_payload(error_class: str, *, site_id: str | None = None) -> dict[str, Any]:
+    safe_cls = error_class_token(error_class) or "OperationUnavailable"
+    payload: dict[str, Any] = {
+        "ok": False,
+        "status": "denied" if safe_cls == "AccessDenied" else "unknown",
+        "error_class": safe_cls,
+        "live_calls": False,
+    }
+    if isinstance(site_id, str) and site_id.strip():
+        payload["site_id"] = site_id.strip()
+    return payload
 
 
 def error_class_token(value: Any) -> str | None:
@@ -115,10 +124,16 @@ def result_token(value: Any) -> str:
     return value if value in {"ok", "fail", "unknown", "verified"} else "unknown"
 
 
+_SHORT_TEXT_STRIP_RE = re.compile(
+    r"(?i)[\x00-\x1f\x7f]|</?(?:tool_call|clarify)\b[^>]*>|<<<(?:END_)?UNTRUSTED_[^>\r\n]{0,120}>>>|<<<(?:END_)?UNTRUSTED_"
+)
+
+
 def short_text(value: Any, max_length: int) -> str | None:
     if value is None:
         return None
-    return str(value)[:max_length]
+    cleaned = " ".join(_SHORT_TEXT_STRIP_RE.sub(" ", str(value)).split())
+    return cleaned[:max_length]
 
 
 def safe_operation_id(value: Any) -> bool:

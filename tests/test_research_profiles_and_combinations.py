@@ -45,7 +45,7 @@ def _enable_live_search(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
 def test_twelve_builtin_profiles_metadata_and_skill_docs() -> None:
     profs = list_profiles()
-    assert len(profs) == 12
+    assert len(profs) == 13
     for prof in profs:
         assert prof.title
         assert prof.goal
@@ -443,6 +443,7 @@ def test_clarifier_cli_and_dashboard_expose_12_profiles(
         "quick_pulse",
         "product_spec_deep",
         "seo_content_radar",
+        "seo_vendor_vetting",
         "regulatory_compliance",
         "conversion_teardown",
         "metasearch_triangulation",

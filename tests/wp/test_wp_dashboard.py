@@ -963,3 +963,216 @@ def test_dashboard_review_artifact_and_template(
     for bad_name in ("evil.php", "..", "other.png", "base-mobile.png", "work-mobile.png"):
         bad_resp = client.get(f"/wp/mock-staging/reviews/{plan_id}/artifact/{bad_name}", headers=oscar)
         assert bad_resp.status_code == 404
+
+
+def test_wave4_draft_already_pushed_and_bot_rollback_preview_and_bridge_health(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json as _json
+    from typing import Any
+
+    from ecom_ops.bot.wp_handlers import handle_wp_plan_command, handle_wp_rollback_command
+    from ecom_ops.rbac import clear_rbac_cache
+    from ecom_ops.wp_ops.change_ledger import ChangeLedger
+    from ecom_ops.wp_ops.review_plan import ReviewPlans
+    from ecom_ops.wp_ops.service import WpOpsService
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-dashboard-secret")
+    monkeypatch.setenv("WP_SECRET_MOCK_SHOP", "secret-shop")
+    monkeypatch.setenv("WP_SECRET_MOCK_STAGING", "secret-staging")
+    clear_dashboard_password_env(monkeypatch)
+    clear_rbac_cache()
+
+    plans = ReviewPlans(data_dir=tmp_path, registry_path=ROOT / "config" / "wp_sites.mock.yaml")
+    p1 = plans.open("mock-shop", "plugin", "", actor="oscar").data
+    plan_id = p1["plan_id"]
+
+    plan_file = tmp_path / "wp_review_plans.json"
+    stored = _json.loads(plan_file.read_text(encoding="utf-8"))
+    p1_base_sha = ""
+    p1_work_sha = ""
+    for p in stored["plans"]:
+        if p["plan_id"] == plan_id:
+            p["status"] = "production_review"
+            p1_base_sha = str(p.get("base_sha256") or "")
+            p1_work_sha = str(p.get("work_sha256") or "")
+            p["page_draft"] = {
+                "title": "Ny kampanj",
+                "content": "<!-- wp:paragraph --><p>Hej</p><!-- /wp:paragraph -->",
+                "slug": "ny-kampanj",
+                "shell_path": "/ny-kampanj/",
+            }
+            p["draft_page"] = {
+                "id": 88,
+                "status": "draft",
+                "edit_url": "https://shop.example.test/wp-admin/post.php?post=88&action=edit",
+            }
+    plan_file.write_text(_json.dumps(stored), encoding="utf-8")
+
+    # V-29: duplicate push-draft returns DraftAlreadyPushed instead of creating a second WP page
+    app = _load_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    oscar = _auth(client, "oscar")
+    dup = client.post(
+        f"/wp/mock-shop/reviews/{plan_id}/push-draft",
+        headers=oscar,
+        data={
+            "_csrf": oscar["X-CSRF-Token"],
+            "base_sha256": p1_base_sha,
+            "work_sha256": p1_work_sha,
+        },
+    )
+    assert dup.status_code == 200, dup.get_data(as_text=True)
+    assert 'data-review-error="DraftAlreadyPushed"' in dup.get_data(as_text=True)
+
+    # V-26: /wp plan for production plan with unpushed page_draft shows push-draft button
+    from _helpers import passing_catalog
+
+    from ecom_ops.wp_ops.review import checks as review_checks
+    from ecom_ops.wp_ops.review_workspace import workspace_root
+
+    p2 = plans.open("mock-shop", "plugin", "", actor="oscar").data
+    plan_id_2 = p2["plan_id"]
+    ws2 = workspace_root(tmp_path, "mock-shop", plan_id_2)
+    files_2 = [
+        (
+            str(fp.relative_to(ws2 / "work")).replace("\\", "/"),
+            fp.read_text(encoding="utf-8", errors="replace"),
+        )
+        for fp in sorted((ws2 / "work").rglob("*"))
+        if fp.is_file()
+    ]
+    pol2 = review_checks.requirements("plugin", files_2, "low")
+    chk2 = passing_catalog("plugin", files_2, "low")
+    stored2 = _json.loads(plan_file.read_text(encoding="utf-8"))
+    for p in stored2["plans"]:
+        if p["plan_id"] == plan_id_2:
+            run2 = {
+                "run_id": "chk-p2draft01",
+                "site_id": "mock-shop",
+                "plan_id": plan_id_2,
+                "base_sha256": str(p.get("base_sha256") or ""),
+                "work_sha256": str(p.get("work_sha256") or ""),
+                "profile": review_checks.PROFILE,
+                "profile_version": review_checks.PROFILE_VERSION,
+                "policy": pol2,
+                "published": True,
+            }
+            for c in chk2:
+                if pol2.get(str(c.get("job") or "")) == "required":
+                    c.update(
+                        {
+                            "run_id": "chk-p2draft01",
+                            "policy": "required",
+                            "site_id": "mock-shop",
+                            "plan_id": plan_id_2,
+                            "base_sha256": run2["base_sha256"],
+                            "work_sha256": run2["work_sha256"],
+                            "profile": review_checks.PROFILE,
+                            "profile_version": review_checks.PROFILE_VERSION,
+                        }
+                    )
+            p["status"] = "tests_passed"
+            p["checks"] = chk2
+            p["check_run"] = run2
+            p["page_draft"] = {
+                "title": "Prod utkast",
+                "content": "<p>Text</p>",
+                "slug": "prod-utkast",
+            }
+    plan_file.write_text(_json.dumps(stored2), encoding="utf-8")
+
+    class _Handler:
+        def __init__(self) -> None:
+            self.data_dir = tmp_path
+            self.store: dict[str, Any] = {}
+
+        def wp_ops_context_status(self, chat_id: str, actor: str = "") -> dict[str, Any]:
+            del chat_id, actor
+            return {"site_id": "mock-shop"}
+
+        def _pin_review_hashes(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def _persist_review_hashes(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+    handler = _Handler()
+    plan_reply = handle_wp_plan_command(handler, "chat:1", "oscar", ["plan", plan_id_2])
+    payloads = [btn.payload for row in plan_reply.actions.rows for btn in row] if plan_reply.actions else []
+    assert any(f"wpreview:push_draft:{plan_id_2}" in p for p in payloads)
+
+    # V-28: /wp rollback preview shows target/before hash cleanly
+    ledger = ChangeLedger(data_dir=tmp_path)
+    chg = ledger.record_change(
+        site_id="mock-staging",
+        environment="staging",
+        category="wp_page",
+        transport="wp_rest",
+        actor="oscar",
+        summary="Uppdaterade Om oss",
+        target_ref="2",
+        before_data={"id": 2, "title": "Före"},
+        after_data={"id": 2, "title": "Efter"},
+    )
+    rb_reply = handle_wp_rollback_command(handler, "chat:1", "oscar", ["rollback", chg["change_id"]])
+    assert chg["change_id"] in rb_reply.text
+    assert chg["before_sha256"][:12] in rb_reply.text
+
+    # V-27: bridge_health returns wordpress_version & woocommerce_version keys
+    health = WpOpsService(data_dir=tmp_path).bridge_health("mock-staging", actor="oscar")
+    assert health.ok is True
+    assert health.data["health"]["wordpress_version"]
+    assert health.data["health"]["woocommerce_version"]
+
+
+def test_wp_templates_stage2_hygiene_badges_and_tab_navigation(tmp_path, monkeypatch):
+    """Regressions for U1-15 (no inline style in wp_review, dynamic wp_sites badge, rollback badge) and U1-16 (WP tabs + SEO link)."""
+    from ecom_ops.wp_ops.review_plan import ReviewPlans, VerifiedTheme
+
+    client = _setup_dashboard_env(tmp_path, monkeypatch)
+    plans = ReviewPlans(data_dir=tmp_path)
+    opened = plans.open(
+        "mock-staging",
+        "theme",
+        actor="oscar",
+        verified_theme=VerifiedTheme("twentytwentyfive", "twentytwentyfive"),
+    )
+    assert opened.ok
+    plan_id = opened.data["plan_id"]
+    oscar = _auth(client, "oscar")
+
+    # U1-15: wp_review has zero inline style= on disabled deploy-live button and updated rollback badge
+    rev_html = client.get(f"/wp/mock-staging/reviews/{plan_id}", headers=oscar).get_data(as_text=True)
+    assert 'style="opacity: 0.5;"' not in rev_html
+    assert "Restore: Ej i MVP" not in rev_html
+    assert "Rollback: Change Vault (snapshot)" in rev_html
+
+    # U1-15: wp_sites badge tracks runtime.mock_mode (mock vs live)
+    sites_mock_html = client.get("/wp", headers=oscar).get_data(as_text=True)
+    assert "Mock / Ej live" in sites_mock_html
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "test-jon-pw")
+    monkeypatch.setenv("DASHBOARD_OSCAR_PASSWORD", "test-osc-pw")
+    oscar_live = {
+        "Authorization": "Basic "
+        + base64.b64encode(b"oscar:test-osc-pw").decode("ascii"),
+    }
+    sites_live_resp = client.get("/wp", headers=oscar_live)
+    assert sites_live_resp.status_code == 200
+    sites_live_html = sites_live_resp.get_data(as_text=True)
+    assert "Live-läge" in sites_live_html
+    assert "Mock / Ej live" not in sites_live_html
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
+    monkeypatch.delenv("DASHBOARD_OSCAR_PASSWORD", raising=False)
+
+    # U1-16: wp_files and wp_ssh include Plugins & MU and SEO Studio tabs
+    for path in ("/wp/mock-staging/files", "/wp/mock-staging/ssh"):
+        html = client.get(path, headers=oscar).get_data(as_text=True)
+        assert "/wp/mock-staging/plugins" in html
+        assert "/seo?site=mock-staging" in html

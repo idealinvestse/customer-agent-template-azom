@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from flask import Flask
 
+from .changes_routes import register_changes_routes
 from .files_routes import register_files_routes
+from .plugins_routes import register_plugins_routes
 from .preview_routes import register_preview_routes
 from .review_routes import register_review_routes
 from .sites_routes import register_sites_routes
@@ -18,6 +20,8 @@ def register_wp_routes(app: Flask) -> None:
     register_files_routes(app)
     register_review_routes(app)
     register_preview_routes(app)
+    register_changes_routes(app)
+    register_plugins_routes(app)
 
 
 __all__ = ["register_wp_routes"]

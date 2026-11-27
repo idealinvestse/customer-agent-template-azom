@@ -66,9 +66,14 @@ def page_review_client(site_id: str, actor: str) -> Any | None:
             return client
         if component_rest_source(site.canonical_url) != "live":
             return None
+        from urllib.parse import urlparse
+
         from ecom_ops.integrations.wordpress import wp_client_from_env
 
-        return wp_client_from_env(use_mock=False)
+        host = (urlparse(str(site.canonical_url or "")).hostname or "").lower()
+        tail = host.rsplit(".", 1)[-1] if "." in host else ""
+        dom = tail if tail in {"no", "se", "dk", "fi"} else None
+        return wp_client_from_env(base_url=site.canonical_url, use_mock=False, domain=dom)
     except Exception:
         return None
 

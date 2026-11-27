@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Ändringar &amp; Återställning – {{ site.display_name if site else 'Webbplats' }} – Azom{% endblock %}
+{% block page_subtitle %}Ändringshistorik &amp; Återställning{% endblock %}
+{% block content %}
+<div class="space-y-6" data-live-calls="{{ 'true' if (posture.bridge_enabled or posture.deploy_ssh_enabled) and not posture.mock_mode else 'false' }}">
+  {% if site %}
+  {{ ui.breadcrumb([
+    {'label': 'Webbplatser', 'href': url_for('wp_sites')},
+    {'label': site.display_name, 'href': url_for('wp_site_detail', site_id=site.id)},
+    {'label': 'Ändringar & Återställning'}
+  ]) }}
+
+  {% call ui.page_header(
+    "Ändringar & Återställning",
+    "Varje förändring i produktkatalog, sidor, inställningar, plugins och tema-/pluginfiler sparas med SHA-256-verifierat före/efter-snapshot för snabb återställning.",
+    badge_text="Mock-läge" if posture.mock_mode else "Live-läge",
+    badge_tone="warn" if posture.mock_mode else "info"
+  ) %}
+    {% if can_admin %}
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_bridge_download_zip', site_id=site.id) }}">
+      {{ icon('download', 'xs') }}<span>Ladda ner azom-ops-bridge.zip</span>
+    </a>
+    {% endif %}
+  {% endcall %}
+
+  <nav aria-label="Webbplatsflikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_site_detail', site_id=site.id) }}">Översikt</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_plugins', site_id=site.id) }}">Plugins &amp; MU</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_files', site_id=site.id) }}">Tema- och pluginfiler</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_ssh', site_id=site.id) }}">SSH-inställningar</a>
+    <a class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200" href="{{ url_for('wp_changes', site_id=site.id) }}" aria-current="page">Ändringar &amp; Återställning</a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo?site={{ site.id }}">SEO Studio</a>
+  </nav>
+
+  {% if posture.kill_switch_active %}
+    {{ ui.flash_banner('error', 'Nödstopp (AZOM_WP_DEPLOY_KILL=1) är aktivt. Alla live-deploys och återställningar är spärrade.', dismissible=False) }}
+  {% endif %}
+
+  <!-- Transport- & Beredskapsstatus -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="font-display text-base font-semibold text-mist-100">Transport- &amp; Beredskapsstatus</h2>
+      {% if can_operate %}
+      <form method="post" action="{{ url_for('wp_bridge_health', site_id=site.id) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button class="az-btn-primary az-btn-sm" type="submit" data-busy-label="Kontrollerar...">Kör Bridge-hälsokontroll</button>
+      </form>
+      {% endif %}
+    </div>
+
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Läs-SFTP (*-wp-reader)</div>
+        <div>{{ ui.status_badge('ok' if posture.read_ssh_enabled else 'neutral', 'Aktiv' if posture.read_ssh_enabled else 'Avstängd') }}</div>
+        <div class="text-mist-400">Endast läsning (AZOM_WP_FILES_SSH)</div>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Deploy-SFTP (*-wp-deployer)</div>
+        <div>{{ ui.status_badge('ok' if posture.deploy_ssh_enabled else 'neutral', 'Aktiv' if posture.deploy_ssh_enabled else 'Avstängd') }}</div>
+        <div class="text-mist-400">Nyckel: {{ 'lagrad' if posture.deploy_ssh.get('deploy_key_stored') else 'saknas' }}</div>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Azom Ops Bridge (Plugin)</div>
+        <div>{{ ui.status_badge('ok' if (posture.bridge_enabled and posture.bridge_secret_present) or posture.mock_mode else 'neutral', 'Mock / Redo' if posture.mock_mode else ('Aktiv' if posture.bridge_enabled and posture.bridge_secret_present else 'Avstängd')) }}</div>
+        <div class="text-mist-400">HMAC-hemlighet: {{ 'konfigurerad' if posture.bridge_secret_present else 'saknas i env' }}</div>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 space-y-1">
+        <div class="font-semibold uppercase tracking-wider text-mist-400">Live Deploy &amp; Rollback</div>
+        <div class="flex flex-wrap gap-1">
+          {{ ui.status_badge('ok' if posture.live_deploy_enabled or posture.mock_mode else 'warn', 'Deploy: ' ~ ('Mock' if posture.mock_mode else ('På' if posture.live_deploy_enabled else 'Av'))) }}
+          {{ ui.status_badge('ok' if posture.restore_enabled or posture.mock_mode else 'warn', 'Restore: ' ~ ('Mock' if posture.mock_mode else ('På' if posture.restore_enabled else 'Av'))) }}
+        </div>
+      </div>
+    </div>
+
+    {% if bridge_health %}
+    <div class="rounded-xl border border-ink-700/70 bg-ink-950/50 p-3.5 text-xs space-y-1.5" data-bridge-health="true">
+      <div class="font-semibold text-mist-100">Senaste Bridge-hälsa</div>
+      <div class="flex flex-wrap gap-3 text-mist-300">
+        <span>WP: <code class="az-code font-mono">{{ bridge_health.get('wordpress_version') or '—' }}</code></span>
+        <span>PHP: <code class="az-code font-mono">{{ bridge_health.get('php_version') or '—' }}</code></span>
+        <span>Woo: <code class="az-code font-mono">{{ bridge_health.get('woocommerce_version') or '—' }}</code></span>
+        <span>HPOS: <code class="az-code font-mono">{{ 'Ja' if bridge_health.get('hpos_enabled') else 'Nej' }}</code></span>
+        <span>Språk: <code class="az-code font-mono">{{ bridge_health.get('multilingual') or 'none' }}</code></span>
+        <span>Cache: <code class="az-code font-mono">{{ (bridge_health.get('cache_plugins') or []) | join(', ') or 'ingen' }}</code></span>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
+  {% if can_admin %}
+  <!-- Oscar Smart Ops Panel -->
+  <section class="az-card-oscar space-y-4">
+    <h2 class="font-display text-base font-semibold text-oscar-300">Snabbåtgärder (Oscar)</h2>
+    <div class="flex flex-wrap items-center gap-3">
+      <form method="post" action="{{ url_for('wp_bridge_cache_flush', site_id=site.id) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <button
+          class="az-btn-oscar az-btn-sm"
+          type="submit"
+          data-confirm="Rensa alla WordPress-, WooCommerce- och sidcacher via Azom Ops Bridge?"
+          data-confirm-title="Rensa cache"
+          data-confirm-ok="Rensa cache"
+          data-busy-label="Rensar..."
+        >Rensa cache</button>
+      </form>
+
+      <form method="post" action="{{ url_for('wp_bridge_maintenance', site_id=site.id) }}" class="flex items-center gap-2">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="enabled" value="1" />
+        <input type="hidden" name="duration_seconds" value="300" />
+        <button
+          class="az-btn-secondary az-btn-sm border-warn/40 text-warn"
+          type="submit"
+          data-confirm="Aktivera tidsbegränsat underhållsläge i 5 minuter (går automatiskt ut efter 300s)?"
+          data-confirm-title="Aktivera underhållsläge"
+          data-confirm-ok="Aktivera 5 min"
+          data-busy-label="Aktiverar..."
+        >Underhållsläge PÅ (5 min)</button>
+      </form>
+
+      <form method="post" action="{{ url_for('wp_bridge_maintenance', site_id=site.id) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="enabled" value="0" />
+        <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Stänger av...">Underhållsläge AV</button>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- Ändringshistorik & Per-ändringsbackup -->
+  <section class="az-card space-y-4" data-changes-ledger="true">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 class="font-display text-base font-semibold text-mist-100">Ändringshistorik &amp; Snapshots</h2>
+        <p class="az-muted text-xs">Filtrera efter kategori eller status och återställ säkert med hash-pinning.</p>
+      </div>
+      <form method="get" action="{{ url_for('wp_changes', site_id=site.id) }}" class="flex flex-wrap items-center gap-2">
+        <select name="category" aria-label="Kategori" class="az-select text-xs">
+          <option value="" {% if not filter_category %}selected{% endif %}>Alla kategorier</option>
+          <option value="workspace_deploy" {% if filter_category == 'workspace_deploy' %}selected{% endif %}>workspace_deploy</option>
+          <option value="file_edit" {% if filter_category == 'file_edit' %}selected{% endif %}>file_edit</option>
+          <option value="product" {% if filter_category == 'product' %}selected{% endif %}>product</option>
+          <option value="order" {% if filter_category == 'order' %}selected{% endif %}>order</option>
+          <option value="page" {% if filter_category == 'page' %}selected{% endif %}>page</option>
+          <option value="page_draft" {% if filter_category == 'page_draft' %}selected{% endif %}>page_draft</option>
+          <option value="post" {% if filter_category == 'post' %}selected{% endif %}>post</option>
+          <option value="settings" {% if filter_category == 'settings' %}selected{% endif %}>settings</option>
+          <option value="plugin_toggle" {% if filter_category == 'plugin_toggle' %}selected{% endif %}>plugin_toggle</option>
+          <option value="plugin_update" {% if filter_category == 'plugin_update' %}selected{% endif %}>plugin_update</option>
+          <option value="plugin_autoupdate" {% if filter_category == 'plugin_autoupdate' %}selected{% endif %}>plugin_autoupdate</option>
+          <option value="plugin_quarantine" {% if filter_category == 'plugin_quarantine' %}selected{% endif %}>plugin_quarantine</option>
+          <option value="plugin_rollback" {% if filter_category == 'plugin_rollback' %}selected{% endif %}>plugin_rollback</option>
+          <option value="mu_plugin_deploy" {% if filter_category == 'mu_plugin_deploy' %}selected{% endif %}>mu_plugin_deploy</option>
+          <option value="seo_meta" {% if filter_category == 'seo_meta' %}selected{% endif %}>seo_meta</option>
+          <option value="media_alt" {% if filter_category == 'media_alt' %}selected{% endif %}>media_alt</option>
+          <option value="cache_flush" {% if filter_category == 'cache_flush' %}selected{% endif %}>cache_flush</option>
+          <option value="maintenance" {% if filter_category == 'maintenance' %}selected{% endif %}>maintenance</option>
+        </select>
+        <select name="status" aria-label="Status" class="az-select text-xs">
+          <option value="" {% if not filter_status %}selected{% endif %}>Alla statusar</option>
+          <option value="applied" {% if filter_status == 'applied' %}selected{% endif %}>applied</option>
+          <option value="rolled_back" {% if filter_status == 'rolled_back' %}selected{% endif %}>rolled_back</option>
+        </select>
+        <input
+          type="text"
+          name="batch_id"
+          aria-label="Batch-ID"
+          class="az-input text-xs font-mono"
+          value="{{ filter_batch_id | default('') }}"
+          placeholder="batch_id (t.ex. seob-...)"
+        />
+        <button class="az-btn-secondary az-btn-sm" type="submit">Filtrera</button>
+      </form>
+    </div>
+
+    {% if filter_batch_id %}
+    {% set bp = batch_preview | default({}) %}
+    <div class="rounded-xl border border-warn/35 bg-ink-950/60 p-3.5 text-xs space-y-2" data-wp-batch-rollback="true">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="space-y-0.5">
+          <div class="font-semibold text-mist-100">Batch-filter aktivt: <code class="az-code font-mono">{{ filter_batch_id }}</code></div>
+          <div class="text-mist-400">
+            {{ changes | length }} ändring(ar) visade{% if bp.get('rollbackable_count') is not none %} · {{ bp.get('rollbackable_count') }} återställningsbara{% endif %}.
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_changes', site_id=site.id) }}">Rensa filter</a>
+          {% if can_restore and changes %}
+          <form method="post" action="{{ url_for('wp_changes_batch_rollback', site_id=site.id, batch_id=filter_batch_id) }}">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input type="hidden" name="confirm_batch_id" value="{{ filter_batch_id }}" />
+            <button
+              type="submit"
+              class="az-btn-danger az-btn-sm"
+              data-confirm="Återställa hela batch {{ filter_batch_id }} ({{ changes | length }} ändringar) till före-snapshots i Change Vault?"
+              data-confirm-title="Bekräfta batch-återställning (Oscar)"
+              data-confirm-ok="Återställ hela batchen"
+              data-confirm-danger="1"
+              data-busy-label="Återställer batch..."
+            >Återställ hela batchen (Oscar)</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if changes %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Ändringshistorik">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">ID &amp; Tid</th>
+            <th scope="col">Kategori &amp; Transport</th>
+            <th scope="col">Sammanfattning</th>
+            <th scope="col">Snapshot &amp; Status</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in changes %}
+          <tr data-change-row="{{ item.change_id }}">
+            <td class="whitespace-nowrap">
+              <a class="font-mono text-xs text-steel-300 hover:underline" href="{{ url_for('wp_change_detail', site_id=site.id, change_id=item.change_id) }}">{{ item.change_id }}</a>
+              <div class="text-xs text-mist-400 tabular-nums">{{ item.created_at_fmt or item.created_at }}</div>
+            </td>
+            <td class="whitespace-nowrap text-xs">
+              <div class="font-mono text-mist-100">{{ item.category }}</div>
+              <div class="text-mist-400">{{ item.transport }} · {{ item.actor }}</div>
+            </td>
+            <td class="text-xs text-mist-200 max-w-md">
+              <div class="font-medium text-mist-100">{{ item.summary }}</div>
+              <div class="font-mono text-mist-400">{{ item.target_ref }}</div>
+              {% set item_batch = item.batch_id or (item.metadata.get('batch_id') if item.metadata is mapping else '') %}
+              {% if item_batch %}
+              <div class="text-mist-400">Batch: <a class="text-steel-300 hover:underline font-mono" href="{{ url_for('wp_changes', site_id=site.id) }}?batch_id={{ item_batch }}">{{ item_batch }}</a></div>
+              {% endif %}
+              {% if item.parent_change_id %}
+              <div class="text-mist-400">Återställning av <a class="text-steel-300 hover:underline font-mono" href="{{ url_for('wp_change_detail', site_id=site.id, change_id=item.parent_change_id) }}">{{ item.parent_change_id }}</a></div>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap">
+              <div class="flex flex-wrap gap-1.5">
+                {{ ui.status_badge('ok' if item.status == 'applied' else ('warn' if item.status == 'rolled_back' else 'neutral'), item.status) }}
+                {{ ui.status_badge('ok' if item.snapshot_verified else 'error', 'SHA-256 ok' if item.snapshot_verified else 'ej verifierad') }}
+              </div>
+              {% if item.rolled_back_by %}
+              <div class="text-xs text-mist-400 mt-1">Återställd av <a class="text-steel-300 hover:underline font-mono" href="{{ url_for('wp_change_detail', site_id=site.id, change_id=item.rolled_back_by) }}">{{ item.rolled_back_by }}</a></div>
+              {% endif %}
+            </td>
+            <td class="whitespace-nowrap">
+              <div class="flex flex-wrap items-center gap-2">
+                <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_change_detail', site_id=site.id, change_id=item.change_id) }}">Detaljer</a>
+                {% if can_restore and item.snapshot_verified and item.status != 'rolled_back' and not item.rolled_back_by and item.category not in ['cache_flush', 'maintenance', 'page_draft'] %}
+                <form method="post" action="{{ url_for('wp_change_rollback', site_id=site.id, change_id=item.change_id) }}">
+                  <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                  <input type="hidden" name="expected_before_sha256" value="{{ item.before_sha256 }}" />
+                  <button
+                    class="az-btn-danger az-btn-sm"
+                    type="submit"
+                    data-confirm="Återställa ändring {{ item.change_id }} ({{ item.summary }}) till exakt före-snapshot?"
+                    data-confirm-title="Bekräfta återställning"
+                    data-confirm-ok="Återställ nu"
+                    data-confirm-danger="1"
+                    data-busy-label="Återställer..."
+                  >Återställ</button>
+                </form>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Inga ändringar registrerade i ändringsloggen ännu.</p>
+    {% endif %}
+  </section>
+
+  <!-- Enfils-ändringsplaner (fe-*) -->
+  <section class="az-card space-y-3" data-fe-plans-section="true">
+    <h2 class="font-display text-base font-semibold text-mist-100">Enfils-ändringsplaner (<code class="az-code font-mono">fe-*</code>)</h2>
+    {% if fe_plans %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Enfilsplaner">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Plan-ID</th>
+            <th scope="col">Komponent &amp; Sökväg</th>
+            <th scope="col">Status &amp; Risk</th>
+            <th scope="col">Skapad</th>
+            <th scope="col">Länk</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for fp in fe_plans %}
+          <tr>
+            <td class="font-mono text-xs text-mist-100">{{ fp.id }}</td>
+            <td class="font-mono text-xs text-mist-300">{{ fp.kind }}/{{ fp.slug }}/{{ fp.relative_path }}</td>
+            <td>{{ ui.status_badge('info', fp.status or '—') }}</td>
+            <td class="text-xs text-mist-400 tabular-nums">{{ fp.created_at_fmt or fp.created_at }}</td>
+            <td>
+              {% if can_admin %}
+              <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_file_plan', site_id=site.id, plan_id=fp.id) }}">Öppna</a>
+              {% else %}
+              <span class="az-muted text-xs">Oscar-vy</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Inga enfilsplaner registrerade för den här webbplatsen.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

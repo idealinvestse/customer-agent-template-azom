@@ -274,6 +274,7 @@ class ProductDescService:
         features: str = "",
         language: str = "sv",
         site: str = "azom",
+        domain: str | None = None,
         publish: bool = False,
         actor: Actor | str | None = None,
         allow_llm: bool = True,
@@ -289,6 +290,11 @@ class ProductDescService:
         site = validate_site(site)
         actor_obj = actor if isinstance(actor, Actor) else resolve_actor(actor)
         lang = re.sub(r"[^a-z]", "", language.lower())[:5] or "sv"
+        woo_client = self.woo
+        if domain and woo_client is not None and getattr(woo_client, "domain", None) != domain:
+            from ecom_ops.integrations.woocommerce import client_from_env
+
+            woo_client = client_from_env(use_mock=None, domain=domain)
 
         try:
             require_permission(actor_obj, Permission.PRODUCT_DESC_WRITE)
@@ -301,7 +307,7 @@ class ProductDescService:
             sku = ""
             if product_id is not None:
                 pid = validate_order_id(product_id)
-                product = self.woo.get_product(pid)
+                product = woo_client.get_product(pid)
                 product_name = product_name or str(product.get("name") or f"Product {pid}")
                 if isinstance(product, dict):
                     sku = str(product.get("sku") or "").strip()
@@ -340,11 +346,35 @@ class ProductDescService:
             )
 
             published = False
+            before_desc_snap: dict[str, Any] = {}
             if publish:
                 if pid is None:
                     raise SecurityError("publish=True requires product_id")
-                self.woo.update_product_description(
+                if isinstance(locals().get("product"), dict):
+                    before_desc_snap = {
+                        "description": product.get("description", ""),
+                        "short_description": product.get("short_description", ""),
+                    }
+                woo_client.update_product_description(
                     pid, description=long_desc, short_description=short
+                )
+                from ecom_ops.wp_ops.change_ledger import resolve_ledger_site_id, safe_record_change
+                from ecom_ops.wp_ops.config import is_mock_mode
+
+                woo_domain = domain or getattr(woo_client, "domain", None)
+                if not woo_domain and site in {"azom.no", "azom.se", "azom.dk", "no", "se", "dk"}:
+                    woo_domain = site.removeprefix("azom.")
+                safe_record_change(
+                    site_id=resolve_ledger_site_id(domain=woo_domain),
+                    environment="staging" if is_mock_mode() else "production",
+                    category="product",
+                    transport="woo_rest",
+                    actor=actor_obj.name,
+                    summary=f"Produktbeskrivning {pid} ({product_name})",
+                    target_ref=f"product:{pid}",
+                    before_data=before_desc_snap,
+                    after_data={"description": long_desc, "short_description": short},
+                    metadata={"product_id": pid, "language": lang},
                 )
                 published = True
 

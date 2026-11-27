@@ -8,8 +8,8 @@
   {{ ui.page_header(
     "Webbplatser",
     "Lägesbild för registrerade WordPress-sajter. Okänd och fel är inte gröna. Det här är inte managed hosting: en verifierad mock-backup är inte off-site, och checksumma, uppdatering samt produktionsåterställning ingår inte.",
-    badge_text="Mock / Ej live",
-    badge_tone="warn"
+    badge_text="Mock / Ej live" if runtime.mock_mode else "Live-läge",
+    badge_tone="warn" if runtime.mock_mode else "info"
   ) }}
 
   {% if error %}

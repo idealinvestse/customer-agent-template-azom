@@ -27,7 +27,7 @@ from ecom_ops.security import SecurityError, get_env, sanitize_text
 
 _PAGE_STATUSES = frozenset({"draft", "publish", "private", "pending"})
 _PLUGIN_STATUSES = frozenset({"active", "inactive"})
-_PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*(?:/[a-z0-9][a-z0-9_-]*)?$")
+_PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)?(?:\.php)?$")
 
 # --------------------------------------------------------------------------- #
 # Data models
@@ -84,6 +84,16 @@ class InMemoryWpTransport:
                 "source_url": "https://azom.no/wp-content/uploads/logo.png",
                 "mime_type": "image/png",
                 "title": {"rendered": "logo"},
+                "alt_text": "",
+                "caption": {"rendered": ""},
+                "description": {"rendered": ""},
+                "post": 2,
+                "media_details": {
+                    "width": 512,
+                    "height": 128,
+                    "filesize": 24576,
+                    "file": "2026/07/logo.png",
+                },
             }
         }
         self.users: dict[int, dict[str, Any]] = {
@@ -182,7 +192,42 @@ class InMemoryWpTransport:
             return self._handle_collection(method.upper(), collection, store, json=json, params=params)
 
         # Item-level
+        if len(parts) == 3 and parts[2] == "revisions" and collection in {"posts", "pages"}:
+            return self._handle_revisions(
+                method.upper(), collection, store, parts[1], params=params
+            )
         return self._handle_item(method.upper(), collection, store, parts[1], json=json, params=params)
+
+    def _handle_revisions(
+        self,
+        verb: str,
+        collection: str,
+        store: dict[int, dict[str, Any]],
+        item_id: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        if verb != "GET":
+            raise SecurityError(f"Unhandled WP revisions op: {verb}")
+        iid = int(item_id)
+        if iid not in store:
+            raise SecurityError(f"WP API error 404: {collection}/{item_id}")
+        row = store[iid]
+        rows = [
+            {
+                "id": iid * 100 + 1,
+                "parent": iid,
+                "author": row.get("author", 1),
+                "modified_gmt": row.get("modified_gmt", "2026-11-27T00:00:00"),
+                "title": row.get("title", {"rendered": ""}),
+                "content": row.get("content", {"rendered": ""}),
+            }
+        ]
+        query = params or {}
+        page = max(1, int(query.get("page") or 1))
+        per_page = max(1, int(query.get("per_page") or 20))
+        start = (page - 1) * per_page
+        return rows[start : start + per_page]
 
     def _handle_collection(
         self,
@@ -268,6 +313,12 @@ class InMemoryWpTransport:
             store[iid] = {**store[iid], **(json or {})}
             if json and "title" in json and not isinstance(store[iid]["title"], dict):
                 store[iid]["title"] = {"rendered": str(json["title"])}
+            if collection == "media" and json:
+                for rich_field in ("caption", "description"):
+                    if rich_field in json and not isinstance(store[iid][rich_field], dict):
+                        store[iid][rich_field] = {"rendered": str(json[rich_field])}
+            if collection in {"posts", "pages"} and json and "excerpt" in json and not isinstance(store[iid]["excerpt"], dict):
+                store[iid]["excerpt"] = {"rendered": str(json["excerpt"])}
             return store[iid]
         if verb == "DELETE":
             removed = store.pop(iid, None)
@@ -346,8 +397,29 @@ class WordPressClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.domain = domain
-        self.username = username or get_env("WP_USERNAME", "") or get_env("WORDPRESS_USERNAME", "")
-        self.app_password = app_password or get_env("WP_APP_PASSWORD", "")
+        dom_tag = str(domain or "").strip().lower().lstrip(".").rsplit(".", 1)[-1].upper()
+        dom_user = (
+            (get_env(f"WP_USERNAME_{dom_tag}", "") or get_env(f"WORDPRESS_USERNAME_{dom_tag}", ""))
+            if dom_tag
+            else ""
+        )
+        dom_pass = (
+            (
+                get_env(f"WP_APP_PASSWORD_{dom_tag}", "")
+                or get_env(f"WORDPRESS_APP_PASSWORD_{dom_tag}", "")
+            )
+            if dom_tag
+            else ""
+        )
+        self.username = (
+            username or dom_user or get_env("WP_USERNAME", "") or get_env("WORDPRESS_USERNAME", "")
+        )
+        self.app_password = (
+            app_password
+            or dom_pass
+            or get_env("WP_APP_PASSWORD", "")
+            or get_env("WORDPRESS_APP_PASSWORD", "")
+        )
         self.transport = transport or _make_live_transport(timeout)
         self.timeout = float(timeout)
         if getattr(self.transport, "requires_auth", True):
@@ -392,12 +464,14 @@ class WordPressClient:
         )
         return self._to_posts(data) if isinstance(data, list) else []
 
-    def get_post(self, post_id: str | int) -> WpPost:
+    def get_post(self, post_id: str | int, *, context: str | None = None) -> WpPost:
         pid = _validate_int_id(post_id)
+        params = {"context": "edit"} if context == "edit" else None
         data = self.transport.request(
             "GET",
             self._url(f"/wp-json/wp/v2/posts/{pid}"),
             auth=self._auth(),
+            params=params,
             timeout=self.timeout,
         )
         return self._to_post(data)
@@ -435,13 +509,26 @@ class WordPressClient:
         title: str | None = None,
         content: str | None = None,
         status: str | None = None,
+        excerpt: str | None = None,
+        slug: str | None = None,
+        allow_empty: bool = False,
+        max_content_len: int = 8000,
     ) -> WpPost:
         eid = _validate_int_id(entry_id)
         payload: dict[str, Any] = {}
         if title is not None:
-            payload["title"] = sanitize_text(title, max_len=300)
+            payload["title"] = sanitize_text(title, max_len=300, allow_empty=allow_empty)
         if content is not None:
-            payload["content"] = sanitize_text(content, max_len=8000)
+            payload["content"] = sanitize_text(
+                content, max_len=max_content_len, allow_empty=allow_empty
+            )
+        if excerpt is not None:
+            payload["excerpt"] = sanitize_text(excerpt, max_len=600, allow_empty=allow_empty)
+        if slug is not None:
+            clean_slug = re.sub(r"[^a-z0-9-]+", "-", str(slug).strip().lower()).strip("-")[:120]
+            if not clean_slug and not allow_empty:
+                raise SecurityError(f"Invalid {label} slug: {slug}")
+            payload["slug"] = clean_slug
         if status is not None:
             normalized = str(status).strip().lower()
             if normalized not in _PAGE_STATUSES:
@@ -465,9 +552,22 @@ class WordPressClient:
         title: str | None = None,
         content: str | None = None,
         status: str | None = None,
+        excerpt: str | None = None,
+        slug: str | None = None,
+        allow_empty: bool = False,
+        max_content_len: int = 8000,
     ) -> WpPost:
         return self._update_entry(
-            "posts", "post", post_id, title=title, content=content, status=status
+            "posts",
+            "post",
+            post_id,
+            title=title,
+            content=content,
+            status=status,
+            excerpt=excerpt,
+            slug=slug,
+            allow_empty=allow_empty,
+            max_content_len=max_content_len,
         )
 
     def delete_post(self, post_id: str | int) -> dict[str, Any]:
@@ -483,7 +583,12 @@ class WordPressClient:
     # --- pages ------------------------------------------------------------ #
 
     def list_pages(
-        self, *, per_page: int = 10, page: int = 1, search: str | None = None
+        self,
+        *,
+        per_page: int = 10,
+        page: int = 1,
+        search: str | None = None,
+        status: str | None = None,
     ) -> list[WpPost]:
         params: dict[str, Any] = {
             "per_page": max(1, min(int(per_page), 100)),
@@ -491,6 +596,8 @@ class WordPressClient:
         }
         if search:
             params["search"] = search
+        if status:
+            params["status"] = status
         data = self.transport.request(
             "GET",
             self._url("/wp-json/wp/v2/pages"),
@@ -499,6 +606,32 @@ class WordPressClient:
             timeout=self.timeout,
         )
         return self._to_posts(data) if isinstance(data, list) else []
+
+    def list_revisions(
+        self,
+        collection: str,
+        item_id: str | int,
+        *,
+        per_page: int = 20,
+        page: int = 1,
+    ) -> list[dict[str, Any]]:
+        """List WordPress revisions for a post or page."""
+        col = str(collection or "").strip().lower()
+        if col not in {"posts", "pages"}:
+            raise SecurityError(f"Unsupported revisions collection: {collection}")
+        iid = _validate_int_id(item_id)
+        data = self.transport.request(
+            "GET",
+            self._url(f"/wp-json/wp/v2/{col}/{iid}/revisions"),
+            auth=self._auth(),
+            params={
+                "per_page": max(1, min(int(per_page), 100)),
+                "page": max(1, int(page)),
+                "context": "edit",
+            },
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
 
     def get_page(self, page_id: str | int, *, context: str | None = None) -> WpPost:
         pid = _validate_int_id(page_id)
@@ -536,10 +669,18 @@ class WordPressClient:
 
         target_base = self.base_url
         if domain and getattr(self.transport, "requires_auth", True):
+            from urllib.parse import urlparse
+
             from ecom_ops.config import woo_base_url_for_domain
 
             resolved = woo_base_url_for_domain(domain)
             if resolved:
+                base_host = (urlparse(self.base_url).hostname or "").strip().lower()
+                resolved_host = (urlparse(resolved).hostname or "").strip().lower()
+                if base_host and resolved_host and base_host != resolved_host:
+                    raise ValueError(
+                        "Cross-host domain override is not permitted with existing credentials"
+                    )
                 target_base = resolved.rstrip("/")
 
         payload: dict[str, Any] = {
@@ -588,10 +729,23 @@ class WordPressClient:
         title: str | None = None,
         content: str | None = None,
         status: str | None = None,
+        excerpt: str | None = None,
+        slug: str | None = None,
+        allow_empty: bool = False,
+        max_content_len: int = 8000,
     ) -> WpPost:
         """Update one page over the REST API. Does not delete or create."""
         return self._update_entry(
-            "pages", "page", page_id, title=title, content=content, status=status
+            "pages",
+            "page",
+            page_id,
+            title=title,
+            content=content,
+            status=status,
+            excerpt=excerpt,
+            slug=slug,
+            allow_empty=allow_empty,
+            max_content_len=max_content_len,
         )
 
     # --- media                                                            #
@@ -610,6 +764,56 @@ class WordPressClient:
             timeout=self.timeout,
         )
         return data if isinstance(data, list) else []
+
+    def get_media(
+        self,
+        media_id: str | int,
+        *,
+        context: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch one media attachment by id."""
+        mid = _validate_int_id(media_id)
+        params = {"context": "edit"} if context == "edit" else None
+        data = self.transport.request(
+            "GET",
+            self._url(f"/wp-json/wp/v2/media/{mid}"),
+            auth=self._auth(),
+            params=params,
+            timeout=self.timeout,
+        )
+        return data if isinstance(data, dict) else {}
+
+    def update_media(
+        self,
+        media_id: str | int,
+        *,
+        alt_text: str | None = None,
+        title: str | None = None,
+        caption: str | None = None,
+        description: str | None = None,
+        allow_empty: bool = False,
+    ) -> dict[str, Any]:
+        """Update media metadata (alt_text, title, caption, description)."""
+        mid = _validate_int_id(media_id)
+        payload: dict[str, Any] = {}
+        if alt_text is not None:
+            payload["alt_text"] = sanitize_text(str(alt_text), max_len=300, allow_empty=True)
+        if title is not None:
+            payload["title"] = sanitize_text(str(title), max_len=300, allow_empty=allow_empty)
+        if caption is not None:
+            payload["caption"] = sanitize_text(str(caption), max_len=1000, allow_empty=True)
+        if description is not None:
+            payload["description"] = sanitize_text(str(description), max_len=4000, allow_empty=True)
+        if not payload:
+            raise SecurityError("No media fields to update")
+        data = self.transport.request(
+            "POST",
+            self._url(f"/wp-json/wp/v2/media/{mid}"),
+            auth=self._auth(),
+            json=payload,
+            timeout=self.timeout,
+        )
+        return data if isinstance(data, dict) else {}
 
     # --- users ------------------------------------------------------------ #
 
@@ -712,13 +916,28 @@ class WordPressClient:
         if normalized not in _PLUGIN_STATUSES:
             raise SecurityError(f"Invalid plugin status: {status}")
         encoded = quote(plugin_id, safe="")
-        data = self.transport.request(
-            "POST",
-            self._url(f"/wp-json/wp/v2/plugins/{encoded}"),
-            auth=self._auth(),
-            json={"status": normalized},
-            timeout=self.timeout,
-        )
+        try:
+            data = self.transport.request(
+                "POST",
+                self._url(f"/wp-json/wp/v2/plugins/{encoded}"),
+                auth=self._auth(),
+                json={"status": normalized},
+                timeout=self.timeout,
+            )
+        except SecurityError as exc:
+            # Apache AllowEncodedSlashes=Off rejects %2F with 404 before WP runs.
+            status_m = re.search(r"\b(?:API\s+error|HTTP|status)\s+(\d{3})\b", str(exc))
+            if "/" in plugin_id and status_m and status_m.group(1) == "404":
+                unencoded_path = "/".join(quote(seg, safe="") for seg in plugin_id.split("/"))
+                data = self.transport.request(
+                    "POST",
+                    self._url(f"/wp-json/wp/v2/plugins/{unencoded_path}"),
+                    auth=self._auth(),
+                    json={"status": normalized},
+                    timeout=self.timeout,
+                )
+            else:
+                raise
         return data if isinstance(data, dict) else {}
 
     # --- discovery -------------------------------------------------------- #
@@ -743,7 +962,7 @@ class WordPressClient:
     def _to_post(data: dict[str, Any]) -> WpPost:
         title = data.get("title")
         if isinstance(title, dict):
-            title = title.get("rendered") or ""
+            title = title.get("raw") or title.get("rendered") or ""
         return WpPost(
             id=int(data.get("id") or 0),
             type=str(data.get("type") or "post"),
@@ -764,7 +983,7 @@ class WordPressClient:
 
 
 def _validate_plugin_id(value: str) -> str:
-    plugin_id = str(value or "").strip().lower()
+    plugin_id = str(value or "").strip()
     if not _PLUGIN_ID_RE.fullmatch(plugin_id):
         raise SecurityError(f"Invalid plugin id: {value}")
     return plugin_id
@@ -810,9 +1029,11 @@ def wp_client_from_env(
         )
     if base_url is None:
         if domain:
-            from ecom_ops.config import woo_base_url_for_domain
+            from ecom_ops.config import _normalize_market_domain, woo_base_url_for_domain
 
-            base_url = woo_base_url_for_domain(domain)
+            dom_tag = _normalize_market_domain(domain).upper()
+            dom_url = get_env(f"WP_BASE_URL_{dom_tag}", "") if dom_tag else ""
+            base_url = dom_url.rstrip("/") if dom_url else woo_base_url_for_domain(domain)
         else:
             base_url = (
                 get_env("WP_BASE_URL", "")

@@ -25,7 +25,12 @@ from ecom_ops.wp_ops.review import (
 )
 from ecom_ops.wp_ops.review.risk import text_is_review_approval, tree_risk
 from ecom_ops.wp_ops.review.runner import SandboxGate
-from ecom_ops.wp_ops.review.scaffolds import child_skeleton, plugin_skeleton, scaffold_work
+from ecom_ops.wp_ops.review.scaffolds import (
+    child_skeleton,
+    mu_plugin_skeleton,
+    plugin_skeleton,
+    scaffold_work,
+)
 from ecom_ops.wp_ops.review.store import (
     _FORK_BLOCKED_STATUSES,
     _MAX_RESEARCH_IDS,
@@ -189,7 +194,7 @@ class ReviewPlans:
         site, missing = self._site(site_id)
         if missing is not None or site is None:
             return missing if missing is not None else _fail("UnknownSite", "Okänd webbplats.")
-        if kind not in {"theme", "plugin"}:
+        if kind not in {"theme", "plugin", "mu_plugin"}:
             return _fail("InvalidTarget", "Ogiltig komponent.")
         try:
             clean_vg = _clean_variant_group(variant_group)
@@ -1626,11 +1631,33 @@ class ReviewPlans:
     ) -> dict[str, Any]:
         if kind == "plugin":
             return self._prepare_plugin(site, slug, verified_plugin)
+        if kind == "mu_plugin":
+            return self._prepare_mu_plugin(site, slug)
         return self._prepare_theme(site, slug, verified_theme)
+
+    def _prepare_mu_plugin(self, site: Site, slug: str) -> dict[str, Any]:
+        from ecom_ops.wp_ops.plugin_policy import is_bridge_plugin
+        from ecom_ops.wp_ops.review.component_reader import read_site_component
+
+        default_slug = f"azom-mu-{site.id}"
+        chosen = slug or default_slug
+        if not SLUG.fullmatch(chosen):
+            raise ReviewError("SlugRejected")
+        if chosen == "woocommerce":
+            return _prepared([], "rejected", "unknown", "WooCoreRefused", chosen)
+        if is_bridge_plugin(chosen):
+            return _prepared([], "rejected", "unknown", "BridgeSelfProtectionRefused", chosen)
+        files = read_site_component(self._transport(site), site.files_root, "mu_plugin", chosen)
+        if files:
+            return _prepared(files, "validated", "mu_plugin", "", chosen)
+        if chosen.startswith("azom-"):
+            return _prepared(mu_plugin_skeleton(chosen), "validated", "mu_plugin", "", chosen)
+        return _prepared([], "fork_not_approved", "unknown", "ThirdPartyPluginRefused", chosen)
 
     def _prepare_plugin(
         self, site: Site, slug: str, verified: VerifiedPlugin | None
     ) -> dict[str, Any]:
+        from ecom_ops.wp_ops.plugin_policy import is_bridge_plugin
         from ecom_ops.wp_ops.review.component_reader import read_site_component
 
         reserved = site_plugin_slug(site.id)
@@ -1639,6 +1666,8 @@ class ReviewPlans:
             raise ReviewError("SlugRejected")
         if chosen == "woocommerce":
             return _prepared([], "rejected", "unknown", "WooCoreRefused", chosen)
+        if is_bridge_plugin(chosen):
+            return _prepared([], "rejected", "unknown", "BridgeSelfProtectionRefused", chosen)
         if verified is not None:
             if not SLUG.fullmatch(verified.slug) or verified.slug != chosen:
                 return _prepared([], "rejected", "unknown", "PluginNotVerified", chosen)
@@ -1646,9 +1675,14 @@ class ReviewPlans:
             if not files:
                 return _prepared([], "draft", "existing_plugin", "ComponentMissing", chosen)
             return _prepared(files, "validated", "existing_plugin", "", chosen)
-        if chosen != reserved:
-            return _prepared([], "fork_not_approved", "unknown", "ThirdPartyPluginRefused", chosen)
-        return _prepared(plugin_skeleton(reserved), "validated", "site_plugin", "", reserved)
+        if chosen == reserved:
+            return _prepared(plugin_skeleton(reserved), "validated", "site_plugin", "", reserved)
+        if chosen.startswith("azom-"):
+            files = read_site_component(self._transport(site), site.files_root, "plugin", chosen)
+            if files:
+                return _prepared(files, "validated", "site_plugin", "", chosen)
+            return _prepared(plugin_skeleton(chosen), "validated", "site_plugin", "", chosen)
+        return _prepared([], "fork_not_approved", "unknown", "ThirdPartyPluginRefused", chosen)
 
     def _prepare_theme(self, site: Site, slug: str, verified: VerifiedTheme | None) -> dict[str, Any]:
         from ecom_ops.wp_ops.review.component_reader import read_site_component

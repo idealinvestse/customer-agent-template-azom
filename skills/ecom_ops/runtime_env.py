@@ -28,6 +28,14 @@ PROTECTED_OVERLAY_KEYS = frozenset(
         "MESSENGER_ACTOR_MAP",
         "DASHBOARD_SECRET_KEY",
         "AZOM_WP_FILES_SSH",
+        "AZOM_WP_DEPLOY_SSH",
+        "AZOM_WP_BRIDGE_ENABLED",
+        "AZOM_WP_LIVE_DEPLOY_ENABLED",
+        "AZOM_WP_RESTORE_ENABLED",
+        "AZOM_WP_DEPLOY_KILL",
+        "AZOM_WP_PLUGIN_UPDATES_ENABLED",
+        "AZOM_WP_AUTOUPDATE_WRITE_ENABLED",
+        "AZOM_WP_PLUGIN_MUTATE_KILL",
         "AZOM_WP_SANDBOX",
         "AZOM_WP_RUNTIME_DIR",
         "AZOM_WP_LIVE_PREVIEW",
@@ -39,6 +47,10 @@ PROTECTED_OVERLAY_KEYS = frozenset(
         "AZOM_RESEARCH_KILL",
         "AZOM_SEARCH_ALLOWED_DOMAINS",
         "SEARXNG_BASE_URL",
+        "AZOM_SEO_WRITE_ENABLED",
+        "AZOM_SEO_KILL",
+        "AZOM_GSC_ENABLED",
+        "AZOM_GSC_KILL",
     }
 )
 
@@ -47,6 +59,7 @@ _ALLOW_PREFIXES = (
     "MAIL_",
     "WOO_",
     "WP_",
+    "WP_BRIDGE_SECRET_",
     "GRAPH_",
     "SSH_",
     "OPENROUTER_",
@@ -55,6 +68,8 @@ _ALLOW_PREFIXES = (
     "GA4_",
     "AZOM_GA4_",
     "AZOM_GADS_",
+    "AZOM_GSC_",
+    "GSC_",
     "SMTP_",
     "IMAP_",
 )

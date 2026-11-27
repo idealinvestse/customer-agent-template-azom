@@ -80,6 +80,7 @@ from ecom_ops.bot.reply import (
     triage_cases_actions,
     yes_no_actions,
 )
+from ecom_ops.bot.seo_handlers import SEO_INTENT_RE, handle_seo_command
 from ecom_ops.bot.site_content import (
     execute_plugin_status,
     execute_post_update,
@@ -195,8 +196,12 @@ _OFFLINE_READ_OPTION_PROMPTS: dict[str, str] = {
 }
 
 
-def _is_unrelated_lookup(text: str, *, dialog_kind: str = "change") -> bool:
+def _is_unrelated_lookup(
+    text: str, *, dialog_kind: str = "change", has_images: bool = False
+) -> bool:
     """Return True if ``text`` is a standalone read/lookup unrelated to clarification."""
+    if has_images:
+        return False
     raw = (text or "").strip()
     if not raw:
         return False
@@ -210,6 +215,7 @@ def _is_unrelated_lookup(text: str, *, dialog_kind: str = "change") -> bool:
     return bool(
         CASES_INTENT_RE.search(raw)
         or MARKETING_INTENT_RE.search(raw)
+        or SEO_INTENT_RE.search(raw)
         or RECENT_ORDERS_RE.search(raw)
         or OPS_INTENT_RE.search(raw)
         or CAPABILITIES_RE.search(raw)
@@ -939,6 +945,10 @@ class BotHandler:
         if wp_command is not None:
             return wp_command
 
+        seo_command = handle_seo_command(self, chat_id, raw, on_progress=on_progress)
+        if seo_command is not None:
+            return seo_command
+
         # OpenClaw slash commands first
         oc = self._dispatch_oc_with_progress(
             chat_id, raw, on_progress=on_progress
@@ -1396,6 +1406,7 @@ class BotHandler:
                             "product_id": resolved_pid if resolved_pid != "0" else "",
                             "publish": flag == "1",
                             "language": "sv",
+                            "domain": self._session_market(chat_id),
                         },
                     ),
                     on_progress=on_progress,
@@ -1621,7 +1632,9 @@ class BotHandler:
                             f"Välj 1–{len(proposal.options)}, skriv med egna ord eller avbryt.",
                             actions=actions,
                         )
-                if _is_unrelated_lookup(text, dialog_kind=active_dialog_kind):
+                if _is_unrelated_lookup(
+                    text, dialog_kind=active_dialog_kind, has_images=bool(image_paths)
+                ):
                     return self._clarify_lookup_breakout(
                         chat_id,
                         text,
@@ -1694,7 +1707,9 @@ class BotHandler:
                         on_checkpoint=on_checkpoint,
                         task_id=task_id,
                     )
-                if _is_unrelated_lookup(text, dialog_kind=active_dialog_kind):
+                if _is_unrelated_lookup(
+                    text, dialog_kind=active_dialog_kind, has_images=bool(image_paths)
+                ):
                     return self._clarify_lookup_breakout(
                         chat_id,
                         text,
@@ -1731,7 +1746,9 @@ class BotHandler:
                 )
 
             if step == "await_other_text":
-                if _is_unrelated_lookup(text, dialog_kind=active_dialog_kind):
+                if _is_unrelated_lookup(
+                    text, dialog_kind=active_dialog_kind, has_images=bool(image_paths)
+                ):
                     return self._clarify_lookup_breakout(
                         chat_id,
                         text,
@@ -2234,12 +2251,26 @@ class BotHandler:
                 if ok and pending.payload.get("order_id"):
                     self._touch_session_order(chat_id, str(pending.payload["order_id"]))
             elif pending.kind == "product_desc":
-                ok, msg = execute_product_desc(
-                    product_id=str(pending.payload.get("product_id") or ""),
-                    language=str(pending.payload.get("language") or "sv"),
-                    publish=bool(pending.payload.get("publish")),
-                    actor=actor,
-                )
+                import inspect
+
+                domain = pending.payload.get("domain") or self._session_market(chat_id)
+                pd_kwargs: dict[str, Any] = {
+                    "product_id": str(pending.payload.get("product_id") or ""),
+                    "language": str(pending.payload.get("language") or "sv"),
+                    "publish": bool(pending.payload.get("publish")),
+                    "actor": actor,
+                }
+                try:
+                    sig = inspect.signature(execute_product_desc)
+                    accepts_domain = "domain" in sig.parameters or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in sig.parameters.values()
+                    )
+                except (TypeError, ValueError):
+                    accepts_domain = False
+                if domain and accepts_domain:
+                    pd_kwargs["domain"] = str(domain)
+                ok, msg = execute_product_desc(**pd_kwargs)
             elif pending.kind == "product_update":
                 domain = pending.payload.get("domain") or self._session_market(chat_id)
                 ok, msg = execute_product_update(
@@ -2962,13 +2993,26 @@ class BotHandler:
                 )
             except Exception:
                 can_push_draft = False
+            is_prod_site = (
+                isinstance(review_plan_row, dict)
+                and str(review_plan_row.get("environment") or "").lower() == "production"
+            )
+            include_stage = not is_prod_site
+            include_push = has_page_draft and can_push_draft
+            if include_stage or include_push:
+                return bot_reply(
+                    text,
+                    actions=_wpreview_stage_actions(
+                        review_plan_id,
+                        review_url=url,
+                        include_stage=include_stage,
+                        include_push_draft=include_push,
+                    ),
+                    needs_typing=True,
+                    **attachment_kwargs,
+                )
             return bot_reply(
-                text,
-                actions=_wpreview_stage_actions(
-                    review_plan_id,
-                    review_url=url,
-                    include_push_draft=has_page_draft and can_push_draft,
-                ),
+                text + (f"\n\nGranskning: {url}" if url else ""),
                 needs_typing=True,
                 **attachment_kwargs,
             )

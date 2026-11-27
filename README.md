@@ -150,6 +150,7 @@ Full table + coverage matrix: [`docs/README.md`](docs/README.md)
 | [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md) | Telegram (SV) |
 | [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) | Woo/WP (EN) |
 | [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md) | WordPress site ops, Phase 1–2 mock and typed file edit (EN) |
+| [`docs/WP_LIVE_BRIDGE_ARCHITECTURE.md`](docs/WP_LIVE_BRIDGE_ARCHITECTURE.md) | Live REST fixes, `azom-ops-bridge`, deploy SFTP & Change Vault rollback (EN) |
 | [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md) | Model router (EN) |
 | [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md) | Web search & Deep Research (EN) |
 | [`docs/TEMPLATE_GUIDE.md`](docs/TEMPLATE_GUIDE.md) | Fork / instantiate checklist (EN) |

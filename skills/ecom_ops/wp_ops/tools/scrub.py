@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ecom_ops.wp_ops.credentials import bind_credential, redact_secret_text
 from ecom_ops.wp_ops.models import Site
 from ecom_ops.wp_ops.tools.validation import utf8_window
+
+_CONTROL_OR_TAG_RE = re.compile(
+    r"(?i)[\x00-\x1f\x7f]|</?(?:tool_call|clarify)\b[^>]*>|<<<(?:END_)?UNTRUSTED_[^>\r\n]{0,120}>>>|<<<(?:END_)?UNTRUSTED_"
+)
 
 
 def site_bound_secrets(site_obj: Site | None) -> list[str]:
@@ -26,6 +31,7 @@ def scrub_bounded(site_obj: Site | None, text: Any, *, max_len: int) -> str:
     extra = site_bound_secrets(site_obj)
     cleaned = redact_secret_text(raw, extra)
     cleaned = redact_secret_text(cleaned, redact_whole_lines=True)
+    cleaned = _CONTROL_OR_TAG_RE.sub(" ", cleaned)
     collapsed = " ".join(cleaned.splitlines()).strip()
     if len(collapsed) > max_len:
         return collapsed[: max_len - 3] + "..."

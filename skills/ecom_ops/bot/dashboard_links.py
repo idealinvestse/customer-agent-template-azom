@@ -62,6 +62,48 @@ def review_plan_url(site_id: str, plan_id: str) -> str | None:
     return dashboard_url(f"/wp/{site}/reviews/{plan}")
 
 
+def changes_url(
+    site_id: str,
+    change_id: str | None = None,
+    *,
+    category: str | None = None,
+    batch_id: str | None = None,
+) -> str | None:
+    """Build an authenticated change ledger / rollback URL from a strict HTTPS origin."""
+    site = str(site_id or "")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", site):
+        return None
+    if not _https_dashboard_origin():
+        return None
+    if change_id is not None:
+        cid = str(change_id or "").strip().lower()
+        if not re.fullmatch(r"chg-[a-f0-9]{12}", cid):
+            return None
+        return dashboard_url(f"/wp/{site}/changes/{cid}")
+    query: dict[str, str] = {}
+    if category is not None:
+        cat = str(category or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{0,39}", cat):
+            return None
+        query["category"] = cat
+    if batch_id is not None:
+        bid = str(batch_id or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{2,40}", bid):
+            return None
+        query["batch_id"] = bid
+    return dashboard_url(f"/wp/{site}/changes", query=query or None)
+
+
+def wp_plugins_url(site_id: str) -> str | None:
+    """Build an authenticated WordPress plugins console URL from a strict HTTPS origin."""
+    site = str(site_id or "")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", site):
+        return None
+    if not _https_dashboard_origin():
+        return None
+    return dashboard_url(f"/wp/{site}/plugins")
+
+
 def research_brief_url(research_id: str) -> str | None:
     """Build an authenticated research brief URL only from a configured HTTPS origin."""
     rid = str(research_id or "")
@@ -70,6 +112,71 @@ def research_brief_url(research_id: str) -> str | None:
     if not _https_dashboard_origin():
         return None
     return dashboard_url(f"/research/{rid}")
+
+
+def seo_dashboard_url(
+    site_id: str | None = None,
+    *,
+    section: str | None = None,
+) -> str | None:
+    """Build an authenticated SEO Studio URL only from a configured HTTPS origin."""
+    if not _https_dashboard_origin():
+        return None
+    sec = str(section or "").strip().lower()
+    if sec in {"strategies", "campaigns", "link-packages", "parity", "digest", "vendors"}:
+        path = f"/seo/{sec}"
+    else:
+        path = "/seo"
+    query: dict[str, str] | None = None
+    if site_id is not None:
+        site = str(site_id or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", site):
+            return None
+        query = {"site_id": site}
+    return dashboard_url(path, query=query)
+
+
+def seo_vendors_url(market: str | None = None) -> str | None:
+    """Build an authenticated SEO Studio vetted vendors URL from a strict HTTPS origin."""
+    if not _https_dashboard_origin():
+        return None
+    query: dict[str, str] | None = None
+    if market is not None:
+        mkt = str(market or "").strip().lower()
+        if mkt not in {"se", "no", "dk"}:
+            return None
+        query = {"market": mkt}
+    return dashboard_url("/seo/vendors", query=query)
+
+
+def seo_parity_url(site_id: str | None = None) -> str | None:
+    """Build an authenticated SEO Studio Nordic parity URL from a strict HTTPS origin."""
+    return seo_dashboard_url(site_id, section="parity")
+
+
+def seo_digest_url(site_id: str | None = None) -> str | None:
+    """Build an authenticated SEO + plugin drift digest URL from a strict HTTPS origin."""
+    return seo_dashboard_url(site_id, section="digest")
+
+
+def seo_plan_url(plan_id: str) -> str | None:
+    """Build an authenticated SEO Studio entity/plan URL from a strict HTTPS origin."""
+    pid = str(plan_id or "").strip().lower()
+    if not _https_dashboard_origin():
+        return None
+    if re.fullmatch(r"seoa-[a-f0-9]{12}", pid):
+        return dashboard_url(f"/seo/audit/{pid}")
+    if re.fullmatch(r"seol-[a-f0-9]{12}", pid):
+        return dashboard_url(f"/seo/link-packages/{pid}")
+    if re.fullmatch(r"seos-[a-f0-9]{12}", pid):
+        return dashboard_url("/seo/strategies", query={"id": pid})
+    if re.fullmatch(r"seoc-[a-f0-9]{12}", pid):
+        return dashboard_url("/seo/campaigns", query={"id": pid})
+    if re.fullmatch(r"seom-[a-f0-9]{12}", pid):
+        return dashboard_url("/seo", query={"plan_id": pid})
+    if re.fullmatch(r"seob-[a-f0-9]{12}", pid):
+        return dashboard_url("/seo", query={"batch_id": pid})
+    return None
 
 
 def sandbox_preview_url(site_id: str, plan_id: str) -> str | None:

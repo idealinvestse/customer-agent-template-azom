@@ -16,8 +16,9 @@
    - CLI: [`docs/CLI_REFERENCE.md`](docs/CLI_REFERENCE.md)
    - Mail: [`docs/MAIL_PROVIDERS.md`](docs/MAIL_PROVIDERS.md)
    - Woo/WP: [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md)
-   - WordPress site ops: [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md)
+   - WordPress site ops: [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md) · Live Bridge & Change Vault: [`docs/WP_LIVE_BRIDGE_ARCHITECTURE.md`](docs/WP_LIVE_BRIDGE_ARCHITECTURE.md)
    - Marketing Google (Ads+GA4): [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md)
+   - SEO Studio (SE/NO/DK): [`docs/SEO_STUDIO.md`](docs/SEO_STUDIO.md) · Skill: [`skills/wordpress-seo/SKILL.md`](skills/wordpress-seo/SKILL.md)
    - Model router: [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md)
    - Web search & research: [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md)
    - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
@@ -141,7 +142,8 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 - **V2.3:** robustness (thread reopen, OAuth expiry, probe fail-closed); **ops next = Oscar A1 live soak**
 - **Marketing Google (Ads+GA4):** mock-first ledger + HITL rails — [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md); live **reads** shipped (GA4 runReport + Ads GAQL); mutate/MP still refused
 - **Model router:** ChatGPT OAuth (Azom-owned refresh) + opt-in xAI Grok Build + xAI API key + OpenRouter fallback — [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md). Direct xAI OAuth is not implemented. Live SIWC connect is Oscar-owned.
-- **Web Search & Async Deep Research:** Fail-closed mock-first (`AZOM_USE_MOCK=1` offline fixtures; live egress gated by `AZOM_USE_MOCK=0` + process-env `AZOM_WEB_SEARCH_ENABLED=1` / `AZOM_WEB_FETCH_ENABLED=1` / `AZOM_RESEARCH_ENABLED=1` and kill-switches unset). Parallel, Exa, Brave, Tavily, opt-in SearXNG; `OutboundQueryFirewall` zero-PII/SSRF/nonce framing; 6 profiles; `<clarify>` scoping; lazy `ResearchWorkerPool`; Dashboard `/research`; CLI `search`/`fetch-url`/`research`; isolated from OpenRouter `$100` cap (`cost_usd=0.0`, `monthly_external_usd_cap: 25.0`) — [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md).
+- **Web Search & Async Deep Research:** Fail-closed mock-first (`AZOM_USE_MOCK=1` offline fixtures; live egress gated by `AZOM_USE_MOCK=0` + process-env `AZOM_WEB_SEARCH_ENABLED=1` / `AZOM_WEB_FETCH_ENABLED=1` / `AZOM_RESEARCH_ENABLED=1` and kill-switches unset). Parallel, Exa, Brave, Tavily, opt-in SearXNG; `OutboundQueryFirewall` zero-PII/SSRF/nonce framing; 13 profiles (incl. `seo_content_radar` & `seo_vendor_vetting`); `<clarify>` scoping; lazy `ResearchWorkerPool`; Dashboard `/research`; CLI `search`/`fetch-url`/`research`; isolated from OpenRouter `$100` cap (`cost_usd=0.0`, `monthly_external_usd_cap: 25.0`) — [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md).
+- **SEO Studio (SE/NO/DK):** Mock-first WordPress/WooCommerce SEO Studio (`azom-ops-bridge` v1.2.0 `class-seo.php` + WooCommerce funnel canary paths `/`, `/shop/`, `/cart/`, `/checkout/` in `class-plugins.php`, read-only GSC `integrations/gsc.py` gated by `AZOM_GSC_ENABLED` / `AZOM_GSC_KILL`, `skills/ecom_ops/seo/` incl. `vendors.py`, `research_bridge.py` & `digest.py`, SQLite WAL `seo_studio.sqlite3`, Change Vault `seo_meta`/`media_alt` single + `batch_id` rollback for `seob-*`, Dashboard `/seo` + `/seo/vendors` + `/seo/parity` + `/seo/digest` with Autopilot/filter/SERP/Change Vault UX, CLI `seo ...` incl. `vendors` & `autopilot`, Bot `/seo ...` incl. `batch|gsc|parity|diff|digest|verify|vendors|autopilot`, 8 `wp_seo_*` tools in `TOOL_REGISTRY=77` incl. `wp_seo_autopilot` & `wp_seo_link_package(mode="vendors")`, 4 SEO playbooks in `PLAYBOOK_TOPICS=20`, `skills/wordpress-seo/SKILL.md`). Live writes gated by `AZOM_USE_MOCK=0` + `AZOM_SEO_WRITE_ENABLED=1` (`AZOM_SEO_KILL` unset) + Oscar `WP_OPS_ADMIN` SHA-256 HITL; link packages (`seol-*`) match vetted Nordic white-hat SEO shops, support draft edit, delivery tracking, read-only verification, and cumulative anchor-mix guardrails, export MD/JSON/CSV briefs, require Oscar `MARKETING_MUTATE`, and never buy links externally — [`docs/SEO_STUDIO.md`](docs/SEO_STUDIO.md).
 
 ## Cases quick CLI
 
@@ -182,6 +184,16 @@ bash bin/mock-marketing-azom.sh
 python -m ecom_ops --mock search --query "WooCommerce HPOS hooks" --profile technical_docs
 python -m ecom_ops --mock research start --topic "Nordisk CarPlay marknadsanalys" --depth quick --wait
 python -m ecom_ops --mock research list
+```
+
+## SEO Studio CLI (mock)
+
+```bash
+python -m ecom_ops --mock --actor jonatan seo audit --site mock-shop
+python -m ecom_ops --mock --actor jonatan seo audit --site mock-shop --scope media
+python -m ecom_ops --mock --actor jonatan seo vendors --market no --budget 15000 --links 6 --table
+python -m ecom_ops --mock --actor jonatan seo autopilot --site mock-shop --topic "Trådlös CarPlay Volvo & BMW" --market no --budget 15000 --links 6 --table
+python -m ecom_ops --mock --actor jonatan seo link-pack --site mock-shop --name "NO CarPlay Q2" --market no --budget 15000 --links 6 --export md
 ```
 
 ## Telegram / Messenger env (prod)

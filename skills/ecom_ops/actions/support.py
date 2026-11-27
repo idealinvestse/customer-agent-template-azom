@@ -11,7 +11,11 @@ from typing import Any
 from ecom_ops.cases.suggest import is_suggest_approve_eligible
 from ecom_ops.escalation import EscalationReason, EscalationService, Severity, default_escalation
 from ecom_ops.llm import classify_support_with_llm, draft_support_with_llm
-from ecom_ops.order_context import resolve_order_context, resolve_order_id_from_email
+from ecom_ops.order_context import (
+    resolve_order_context,
+    resolve_order_id_from_email,
+    woo_domain_from_market,
+)
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.security import SecurityError, sanitize_text, validate_email, validate_site
 from ecom_ops.telemetry import Telemetry, default_telemetry
@@ -590,6 +594,7 @@ class SupportService:
         customer_name: str | None = None,
         language: str = "sv",
         site: str = "azom",
+        domain: str | None = None,
         actor: Actor | str | None = None,
         use_mock: bool | None = None,
         order_context: str | None = None,
@@ -637,16 +642,19 @@ class SupportService:
                 confidence = _KEYWORD_CONFIDENCE
                 classify_method = "keyword"
             order_id = extract_order_id(text)
+            domain_hint = woo_domain_from_market(domain or site)
             # SB2: only when text lacks id and email maps to exactly one Woo order
             if not order_id and customer_email:
                 order_id = resolve_order_id_from_email(
-                    customer_email, use_mock=use_mock
+                    customer_email, use_mock=use_mock, domain=domain_hint
                 )
             resolved_context = order_context
             if resolved_context is None and order_context_getter is not None:
                 resolved_context = order_context_getter()
             if resolved_context is None and order_id:
-                resolved_context = resolve_order_context(order_id, use_mock=use_mock)
+                resolved_context = resolve_order_context(
+                    order_id, use_mock=use_mock, domain=domain_hint
+                )
 
             if category == SupportCategory.ABUSE:
                 ticket = self.escalation.escalate(

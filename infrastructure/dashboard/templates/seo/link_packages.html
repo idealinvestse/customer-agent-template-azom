@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Länkpaket-studio – SEO Studio – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Länkpaket &amp; Anti-spam-guardrails{% endblock %}
+{% block content %}
+<div class="space-y-5" data-seo-studio="true" data-seo-page="link_packages">
+  {{ ui.breadcrumb([
+    {'label': 'SEO Studio', 'href': '/seo'},
+    {'label': 'Länkpaket-studio'}
+  ]) }}
+
+  {% call ui.page_header(
+    "Länkpaket-studio (Off-Page Briefs)",
+    "Designa säkra, naturliga nordiska länkpaket med automatisk ankartext-mix, droppplan, anti-PBN-krav och exporterbart leverantörsunderlag."
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/seo/campaigns">
+      {{ icon('sliders', 'xs') }}
+      <span>SEO-kampanjer</span>
+    </a>
+  {% endcall %}
+
+  <nav aria-label="SEO Studio flikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
+    <a class="az-btn-secondary az-btn-sm" href="/seo">
+      {{ icon('activity', 'xs') }}
+      <span>Översikt &amp; Audit</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/strategies">
+      {{ icon('trending-up', 'xs') }}
+      <span>Strategier</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/campaigns">
+      {{ icon('sliders', 'xs') }}
+      <span>Kampanjer</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200" href="/seo/link-packages" aria-current="page">
+      {{ icon('globe', 'xs') }}
+      <span>Länkpaket ({{ packages | length }})</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/vendors?site={{ selected_site }}">
+      {{ icon('shield', 'xs') }}
+      <span>Kvalitetssäkrade SEO-butiker</span>
+    </a>
+  </nav>
+
+  <!-- Strict Zero Auto-Purchase Warning -->
+  {{ ui.info_callout(
+    'warn',
+    'Inga automatiska externa köp (strikt HITL)',
+    'Länkpaket-studion skickar aldrig betalningar eller order till externa leverantörer. Jonatan kan skapa utkast och skicka till granskning (ready_for_review). Endast Oscar (MARKETING_MUTATE) kan godkänna underlaget för manuell beställning (approved_for_manual_order) och markera leveransstatus.'
+  ) }}
+
+  <!-- Cumulative Site Anchor Profile Banner -->
+  {% set cum = cumulative_anchor_mix | default({}) %}
+  {% if cum and (cum.get('total_links') is not none or cum.get('percentages') or cum.get('anchor_mix')) %}
+  {% set cum_pct = cum.get('percentages') if cum.get('percentages') is mapping else (cum.get('anchor_mix') if cum.get('anchor_mix') is mapping else {}) %}
+  {% set cum_blocked = cum.get('blocked') or cum.get('guardrail_blocked') %}
+  {% set cum_warns = cum.get('warnings') or cum.get('guardrail_warnings') or [] %}
+  {% set cum_exact = cum.get('exact_match_pct') if cum.get('exact_match_pct') is not none else cum_pct.get('exact', cum_pct.get('exact_match', 0)) %}
+  {% set cum_natural = cum.get('brand_url_generic_pct') if cum.get('brand_url_generic_pct') is not none else cum.get('natural_pct') %}
+  <section class="az-card p-3.5 space-y-2" data-seo-cumulative-anchor="true">
+    <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-semibold text-mist-100">Kumulativ ankarprofil ({{ selected_site }}):</span>
+        <span class="font-mono text-mist-300">{{ cum.get('total_links', 0) }} totala länkar</span>
+        <span class="font-mono text-mist-300">Exact: {{ cum_exact }}%</span>
+        {% if cum_natural is not none %}
+        <span class="font-mono text-mist-300">Naturlig andel: {{ cum_natural }}%</span>
+        {% endif %}
+      </div>
+      {{ ui.status_badge('error' if cum_blocked else ('warn' if cum_warns else 'ok'), 'Blockerad' if cum_blocked else ('Varning' if cum_warns else 'Naturlig sajtprofil')) }}
+    </div>
+    {% if cum_warns %}
+    <ul class="list-disc pl-4 text-xs text-warn">
+      {% for cw in cum_warns[:3] %}
+      <li>{{ cw }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <!-- Link Package Builder Form -->
+  {% if can_suggest %}
+  <section class="az-card space-y-4">
+    <div>
+      <h2 class="az-section-title mb-1">Designa nytt länkpaket (<code class="az-code">seol-*</code>)</h2>
+      <p class="az-muted text-xs">Guardrails kräver naturlig ankartext-mix (varumärke + naken URL + generisk &gt;= 60%, exact-match &lt;= 10% (varning &gt; 10%, blockering &gt; 20%)).</p>
+    </div>
+
+    <form method="post" action="/seo/link-packages" class="space-y-4">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <label class="az-label" for="seo-lp-site">Webbplats</label>
+          <select id="seo-lp-site" name="site_id" class="az-select">
+            {% for s in sites %}
+            <option value="{{ s.id }}" {% if s.id == selected_site %}selected{% endif %}>{{ s.display_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="az-label" for="seo-lp-market">Marknad</label>
+          {% set pm = prefill_market | default('no') %}
+          <select id="seo-lp-market" name="market" class="az-select">
+            <option value="no" {% if pm == 'no' %}selected{% endif %}>NO (Norge · .no)</option>
+            <option value="se" {% if pm == 'se' %}selected{% endif %}>SE (Sverige · .se)</option>
+            <option value="dk" {% if pm == 'dk' %}selected{% endif %}>DK (Danmark · .dk)</option>
+          </select>
+        </div>
+        <div>
+          <label class="az-label" for="seo-lp-budget">Budget (SEK)</label>
+          <input id="seo-lp-budget" name="budget_sek" type="number" min="1000" max="500000" step="500" value="{{ prefill_budget | default(15000) }}" class="az-input" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-lp-links">Antal länkar</label>
+          <input id="seo-lp-links" name="link_count" type="number" min="1" max="50" value="{{ prefill_links | default(6) }}" class="az-input" />
+        </div>
+      </div>
+
+      {% set vs = vendor_selection | default({}) %}
+      {% set vcands = vs.get('candidates') if vs.get('candidates') is sequence and vs.get('candidates') is not string else [] %}
+      <div class="grid gap-3 sm:grid-cols-3">
+        <div>
+          <label class="az-label" for="seo-lp-name">Paketnamn</label>
+          <input id="seo-lp-name" name="name" type="text" required maxlength="180" class="az-input" placeholder="T.ex. NO Q3 CarPlay &amp; Bilteknik Länkpaket" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-lp-campaign">Koppla till SEO-kampanj (valfritt)</label>
+          <select id="seo-lp-campaign" name="campaign_id" class="az-select">
+            <option value="">Ingen kampanj vald</option>
+            {% for cp in campaigns %}
+            <option value="{{ cp.get('campaign_id') }}">{{ cp.get('campaign_id') }} — {{ cp.get('name') }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="az-label" for="seo-lp-vendor">Kvalitetssäkrad SEO-butik (valfritt)</label>
+          <select id="seo-lp-vendor" name="selected_vendor_id" class="az-select">
+            <option value="">Automatisk rekommendation (#1)</option>
+            {% for vc in vcands %}
+            {% set vcid = vc.get('vendor_id') or '' %}
+            <option value="{{ vcid }}" {% if vcid and vcid == prefill_vendor %}selected{% endif %}>{{ vc.get('name') or vcid }} ({{ vc.get('vetting_score') if vc.get('vetting_score') is not none else vc.get('score', '—') }}/100)</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <label class="az-label" for="seo-link-targets-raw">Valfria mål-rader (en per rad: <code class="az-code">URL | sökord | ankartyp | ankartext</code>)</label>
+        <textarea
+          id="seo-link-targets-raw"
+          name="targets_raw"
+          rows="4"
+          class="az-textarea font-mono text-xs"
+          placeholder="/ | bilstereo carplay | brand | Azom&#10;/produkt/carplay-volvo/ | carplay volvo | partial | trådlös CarPlay för Volvo&#10;/guide/montering/ | montera backkamera | generic | läs vår installationsguide"
+        ></textarea>
+        <p id="seo-link-mix-preview" class="mt-1 text-xs text-mist-400">
+          Lämna tomt för automatisk naturlig ankarprofil (60%+ varumärke/URL/generisk, &lt;=10% exact).
+        </p>
+      </div>
+
+      <div>
+        <label class="az-label" for="seo-lp-notes">Anteckningar / redaktionella krav till leverantör</label>
+        <textarea id="seo-lp-notes" name="notes" rows="2" class="az-textarea" maxlength="600" placeholder="Endast redaktionella motor-, teknik- och bilportaler på målspråket. Inga PBN eller länkfarmar."></textarea>
+      </div>
+
+      <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Bygger länkpaket...">
+        {{ icon('plus', 'xs') }}
+        <span>Skapa länkpaket (utkast)</span>
+      </button>
+    </form>
+  </section>
+  {% endif %}
+
+  <!-- Vetted Nordic SEO Shop Quick Comparison -->
+  {% set vs_top = vendor_selection | default({}) %}
+  {% set vs_cands = vs_top.get('candidates') if vs_top.get('candidates') is sequence and vs_top.get('candidates') is not string else [] %}
+  {% if vs_cands %}
+  <section class="az-card space-y-3" data-seo-vendors-summary="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-0">Topp {{ vs_cands[:3] | length }} kvalitetssäkrade SEO-butiker ({{ (prefill_market | default('no')) | upper }})</h2>
+        <p class="az-muted text-xs">Förhandsvalda efter 0–100 white-hat vetting, anti-PBN-kontroll och nordisk reklammarkering (Annons/Annonse/Annonce).</p>
+      </div>
+      <a class="az-btn-secondary az-btn-sm" href="/seo/vendors?site={{ selected_site }}&amp;market={{ prefill_market | default('no') }}&amp;budget={{ prefill_budget | default(15000) }}&amp;links={{ prefill_links | default(6) }}">
+        {{ icon('shield', 'xs') }}
+        <span>Öppna hela butiksmatrisen</span>
+      </a>
+    </div>
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Rekommenderade SEO-butiker">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">SEO-butik</th>
+            <th scope="col">Poäng</th>
+            <th scope="col">Nivå</th>
+            <th scope="col">Est. SEK</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for vc in vs_cands[:3] %}
+          {% set vscore = vc.get('vetting_score') if vc.get('vetting_score') is not none else (vc.get('score') or 0) %}
+          {% set u_rng = vc.get('estimated_unit_sek_range') if vc.get('estimated_unit_sek_range') is sequence and vc.get('estimated_unit_sek_range') is not string else [] %}
+          {% set vest = (u_rng[0] ~ '–' ~ u_rng[1] ~ ' SEK/länk') if (u_rng | length) == 2 else (vc.get('estimated_sek_range') or vc.get('price_range_sek') or '—') %}
+          <tr>
+            <td class="text-xs">
+              <span class="font-medium text-mist-100">{{ vc.get('name') or vc.get('vendor_id') }}</span>
+              <span class="font-mono text-mist-400"> · {{ vc.get('domain') or vc.get('vendor_id') }}</span>
+            </td>
+            <td class="font-mono text-xs tabular-nums">{{ ui.status_badge('ok' if vscore >= 85 else 'warn', vscore ~ '/100') }}</td>
+            <td class="font-mono text-xs text-mist-300">{{ vc.get('business_model') or vc.get('archetype') or vc.get('tier') or vs_top.get('recommended_tier') or '—' }}</td>
+            <td class="font-mono text-xs tabular-nums text-mist-200">{{ vest }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- Existing Link Packages Table -->
+  <section class="az-card space-y-4">
+    <h2 class="az-section-title mb-0">Länkpaket ({{ packages | length }})</h2>
+    {% if packages %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Länkpaket">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Paket-ID</th>
+            <th scope="col">Namn &amp; Marknad</th>
+            <th scope="col">Budget &amp; Länkar</th>
+            <th scope="col">Guardrail</th>
+            <th scope="col">HITL-status</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for lp in packages %}
+          {% set st = (lp.get('status') or 'draft') | lower %}
+          {% set blocked = lp.get('guardrail_blocked') %}
+          {% set warns = lp.get('guardrail_warnings') or [] %}
+          <tr>
+            <td class="font-mono text-xs">{{ lp.get('package_id') }}</td>
+            <td>
+              <div class="font-medium text-mist-100">{{ lp.get('name') }}</div>
+              <div class="flex flex-wrap items-center gap-1.5 text-xs text-mist-400">
+                <span>{{ lp.get('site_id') }} · {{ (lp.get('market') or 'no') | upper }}</span>
+                {% if lp.get('selected_vendor_id') %}
+                {{ ui.status_badge('info', 'Butik: ' ~ lp.get('selected_vendor_id')) }}
+                {% endif %}
+              </div>
+            </td>
+            <td class="font-mono text-xs tabular-nums text-mist-200">
+              {% set _raw_b = lp.get('budget_sek_int') if lp.get('budget_sek_int') is not none else lp.get('budget_sek', 0) %}
+              {% set _safe_b = (_raw_b | int) if (_raw_b is number and -1000000000000 < _raw_b < 1000000000000) else 0 %}
+              {{ _safe_b }} SEK · {{ lp.get('link_count', 0) }} länkar
+            </td>
+            <td>
+              {% if blocked %}
+                {{ ui.status_badge('error', 'Blockerad', show_icon=True) }}
+              {% elif warns %}
+                {{ ui.status_badge('warn', (warns | length) ~ ' varning(ar)', show_icon=True) }}
+              {% else %}
+                {{ ui.status_badge('ok', 'Naturlig mix', show_icon=True) }}
+              {% endif %}
+            </td>
+            <td>
+              {{ ui.status_badge('ok' if st in ('approved_for_manual_order', 'ordered_external', 'delivered') else ('warn' if st == 'ready_for_review' else ('error' if st == 'cancelled' else 'info')), st) }}
+            </td>
+            <td class="flex flex-wrap gap-1.5">
+              <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages/{{ lp.get('package_id') }}">Öppna brief</a>
+              <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages/{{ lp.get('package_id') }}/export.md">MD</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga länkpaket ännu', 'Designa ditt första nordiska länkpaket med formuläret ovan.', icon_name='globe') }}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -235,12 +235,14 @@ def execute_product_desc(
     language: str = "sv",
     publish: bool = False,
     actor: str,
+    domain: str | None = None,
 ) -> tuple[bool, str]:
     from ecom_ops.actions.product_desc import ProductDescService
 
     result = ProductDescService().generate(
         product_id=product_id or None,
         language=language or "sv",
+        domain=domain,
         publish=publish,
         actor=actor,
     )

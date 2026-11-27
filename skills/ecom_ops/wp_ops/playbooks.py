@@ -23,6 +23,14 @@ PLAYBOOK_TOPICS: tuple[str, ...] = (
     "component_intel_and_audit",
     "new_page_and_sample_data",
     "live_overlay_ui_iteration",
+    "plugin_safe_updates",
+    "plugin_autoupdate_policy",
+    "plugin_emergency_recovery",
+    "mu_plugins_and_dropins",
+    "seo_technical_and_onpage",
+    "seo_product_and_media",
+    "seo_strategy_and_campaigns",
+    "seo_link_packages",
 )
 
 PLAYBOOKS: dict[str, dict[str, Any]] = {
@@ -91,14 +99,12 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         ),
         "steps": [
             "Kör wp_template_hierarchy för att få serverns verifierade kandidatordning för aktivt tema.",
-            "Starta sidgranskning ('granska startsidans källkod' eller 'granska sidan <slug|id> källkod', som kör wp_page_review_home, wp_page_review_content, wp_page_review_sources och wp_page_review_preview) för att se databastilldelning och Site Editor-mallar.",
+            "För databastilldelning och Site Editor-mallar: be användaren starta den separata sidgranskningsloopen ('granska startsidans källkod' eller 'granska sidan <slug|id> källkod', som kör wp_page_review_home, wp_page_review_content, wp_page_review_sources och wp_page_review_preview — dessa anropas inte direkt som <tool_call> i filverktygsloopen).",
             "Kontrollera hooked styrning med wp_code_index (t.ex. template_include, template_redirect, pre_get_posts).",
             "Skilj strikt på databaslager (content.raw), källfilslager (source_file) och renderad DOM.",
         ],
         "tools": [
             "wp_template_hierarchy",
-            "wp_page_review_home",
-            "wp_page_review_sources",
             "wp_theme_overview",
             "wp_code_index",
             "wp_read_theme_plugin_file",
@@ -142,14 +148,14 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "topic": "plugin_hooks_and_compat",
         "title": "Plugin-hooks, tredjepartsgränser och Woo HPOS",
         "summary": (
-            "Inspektera tredjepartsplugins skrivskyddat, upptäck hooks med wp_code_index "
-            "och lägg anpassningar i sajtplugin eller barntema med HPOS-stöd."
+            "Inspektera tredjepartsplugins skrivskyddat, upptäck hooks och prioriteter med "
+            "wp_plugin_overview/wp_code_index och lägg anpassningar i sajtplugin eller MU-plugin med HPOS-stöd."
         ),
         "steps": [
-            "Inspektera tredjepartspluginet skrivskyddat med wp_plugin_overview (Oscar) och wp_code_index (add_action/add_filter/REST/block).",
-            "Placera nya kopplingar och affärslogik i sajtpluginet azom-site-<site_id> eller i barntemats hooks.",
-            "Säkerställ WooCommerce HPOS-kompatibilitet (woo_compat_declaration för custom_order_tables och wc_get_order i stället för shop_order).",
-            "Kör wp_workspace_static_checks för att fånga saknad nonce, capability-kontroll, escaping eller HPOS-varningar.",
+            "Inspektera tredjepartspluginet skrivskyddat med wp_plugin_overview (Oscar) och wp_code_index (add_action/add_filter/REST/block och hook-prioriteter).",
+            "Placera nya kopplingar och tredjepartstillägg i sajtpluginet azom-site-<site_id> med mallen plugin_hook_extension (eller ett modulärt plugin med custom_plugin_full) — eller i barntemats hooks för ren presentation.",
+            "Säkerställ WooCommerce HPOS-kompatibilitet (woo_compat_declaration för custom_order_tables och wc_get_order i stället för shop_order) samt class_exists-skydd vid plugins_loaded.",
+            "Kör wp_workspace_static_checks för att fånga saknad nonce, capability-kontroll, escaping, unguarded Woo-anrop eller HPOS-varningar.",
         ],
         "tools": [
             "wp_plugin_overview",
@@ -160,23 +166,23 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
             "wp_workspace_static_checks",
         ],
         "anti_patterns": [
-            "Redigera eller forka aldrig tredjepartsplugins eller WooCommerce core direkt.",
+            "Redigera eller forka aldrig tredjepartsplugins, WooCommerce core eller azom-ops-bridge direkt.",
             "Använd inte direkta shop_order-postantaganden när HPOS används.",
             "Utelämna aldrig current_user_can, nonce-verifiering eller context-escaping på skrivande endpoints/formulär.",
         ],
     },
     "site_plugin_scaffold": {
         "topic": "site_plugin_scaffold",
-        "title": "Skapa sajtplugin eller barntemagrund (scaffold)",
+        "title": "Skapa sajtplugin, MU-plugin eller modulärt plugin (scaffold)",
         "summary": (
-            "Använd wp_workspace_scaffold för att lägga återanvändbar sajtlogik i ett litet "
-            "sajtplugin (azom-site-<site_id>) i stället för att överbelasta functions.php."
+            "Använd wp_workspace_scaffold för att lägga återanvändbar sajtlogik i ett "
+            "sajtplugin (azom-site-<site_id>), ett MU-plugin eller ett modulärt custom-plugin i stället för functions.php."
         ),
         "steps": [
-            "Avgör om behovet är presentation (barntema) eller funktionalitet/integration/hooks (sajtplugin azom-site-<site_id>).",
-            "Öppna en wr-*-arbetsyta med wp_open_review_workspace.",
-            "Kör wp_workspace_scaffold med lämplig mall: child_theme_basics, site_plugin_basics eller woo_compat_declaration.",
-            "Komplettera filer med wp_workspace_create_file/wp_workspace_patch_file och kontrollera med wp_workspace_static_checks.",
+            "Avgör rätt mål: barntema (child_theme_basics), sajtplugin azom-site-<site_id> (site_plugin_basics / plugin_hook_extension / woo_compat_declaration), MU-plugin (mu_plugin_basics / mu_plugin_loader) eller komplett modulärt plugin (custom_plugin_full).",
+            "Öppna en wr-*-arbetsyta med wp_open_review_workspace(kind='theme'|'plugin'|'mu_plugin').",
+            "Kör wp_workspace_scaffold med vald mall och komplettera filer med wp_workspace_create_file eller wp_workspace_patch_file.",
+            "Kör wp_workspace_static_checks och wp_workspace_run_checks före staging-begäran.",
         ],
         "tools": [
             "wp_open_review_workspace",
@@ -187,7 +193,8 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
             "wp_workspace_run_checks",
         ],
         "anti_patterns": [
-            "Lägg inte CPT-registrering, Woo-integrationer eller affärsregler i functions.php när de hör hemma i azom-site-<site_id>.",
+            "Lägg inte CPT-registrering, Woo-integrationer eller affärsregler i functions.php när de hör hemma i azom-site-<site_id> eller ett eget plugin.",
+            "Använd aldrig register_activation_hook i ett MU-plugin (det körs aldrig i wp-content/mu-plugins/).",
             "Skapa inga fristående filer i produktions- eller stagingträdet direkt utanför wr-*-arbetsytan.",
         ],
     },
@@ -229,7 +236,7 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
         "steps": [
             "Granska arbetsytans ändringar med wp_workspace_status och wp_workspace_diff.",
             "Kör wp_workspace_static_checks för snabb säkerhets-, PHP-syntax-, Woo- och JSON-lint.",
-            "Kör wp_workspace_run_checks för att köra check-katalogen (och sandbox/smoke när aktiverat) och bind ev. page_review.",
+            "Kör wp_workspace_run_checks för att köra check-katalogen (och sandbox/smoke när aktiverat); separat sidgranskning (wp_page_review_home, wp_page_review_content, wp_page_review_sources, wp_page_review_preview) körs via sidgranskningsloopen, inte direkt i filverktygsloopen.",
             "Kontrollera att check_run.published är true för aktuell hash innan staging begärs.",
         ],
         "tools": [
@@ -237,10 +244,6 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
             "wp_workspace_diff",
             "wp_workspace_static_checks",
             "wp_workspace_run_checks",
-            "wp_page_review_home",
-            "wp_page_review_content",
-            "wp_page_review_sources",
-            "wp_page_review_preview",
         ],
         "anti_patterns": [
             "Påstå aldrig att en check med status unavailable, not_run eller simulated har passerat.",
@@ -348,6 +351,214 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Gissa aldrig CSS-selektorer blint utan att först kontrollera verklig DOM/CSS med wp_inspect_element eller wp_search_component.",
         ],
     },
+    "plugin_safe_updates": {
+        "topic": "plugin_safe_updates",
+        "title": "Säkra pluginuppdateringar (urval, policy och kanariekörning)",
+        "summary": (
+            "Inventera väntande uppdateringar, kompatibilitet och Woo-overrides först, "
+            "skapa en låst SHA-256-plan (plu-*) med kanarieordning och låt Oscar godkänna."
+        ),
+        "steps": [
+            "Kör wp_plugin_inventory för att se versioner, update_available, requires_wp/requires_php, HPOS-status, kritiska plugins och DISALLOW_FILE_MODS.",
+            "Vid WooCommerce eller betalningsplugins: kör wc_template_overrides_audit och wp_plugin_overview (Oscar) för att fånga malldrift och hook-risker.",
+            "Skapa en oföränderlig förhandsvisningsplan med wp_plan_plugin_updates (single, selected, all eller policy som non_critical_only/patch_only/minor_safe/security_only och canary=True; Woo/kritiska/tema-berörande uppdateringar verifierar även funnel-kanarier på /, /shop/, /cart/, /checkout/ med canary_results).",
+            "Redovisa plan_id (plu-*), plan_sha256, batchordning, överhoppade kritiska plugins och länk till /wp/<site_id>/plugins (samt wp_change_history och wp_seo_drift_digest för återställnings- och driftberedskap).",
+        ],
+        "tools": [
+            "wp_plugin_inventory",
+            "wp_plugin_overview",
+            "wc_template_overrides_audit",
+            "wp_plan_plugin_updates",
+            "wp_change_history",
+            "wp_seo_drift_digest",
+        ],
+        "anti_patterns": [
+            "Kör aldrig pluginuppdateringar från fri text och påstå aldrig att en plu-*-plan har utförts.",
+            "Inkludera aldrig kritiska e-handelsplugins (woocommerce, betalningsgateways) eller azom-ops-bridge i standard-bulkuppdatering utan Oscars explicita godkännande.",
+        ],
+    },
+    "plugin_autoupdate_policy": {
+        "topic": "plugin_autoupdate_policy",
+        "title": "Autouppdateringspolicy och driftkontroll för plugins",
+        "summary": (
+            "Granska aktuella autouppdateringsflaggor, WordPress-konstanter och filterkrokar "
+            "innan du skapar en låst pau-*-plan för Oscar."
+        ),
+        "steps": [
+            "Kör wp_plugin_inventory och wp_bridge_health för att kontrollera auto_update per plugin, AUTOMATIC_UPDATER_DISABLED, DISALLOW_FILE_MODS, WP_AUTO_UPDATE_CORE och registrerade auto_update_plugin-filter.",
+            "Skapa en låst policyplan med wp_plan_plugin_autoupdate (preset disable_all, non_critical_only, security_only eller custom).",
+            "Lyft tydligt eventuella filtervarningar (kodfilter som kör över databasoptionen) och redovisa plan_id (pau-*) + plan_sha256 till Oscar.",
+        ],
+        "tools": [
+            "wp_plugin_inventory",
+            "wp_plan_plugin_autoupdate",
+            "wp_bridge_health",
+        ],
+        "anti_patterns": [
+            "Slå aldrig på autouppdatering för woocommerce, betalningsgateways eller azom-ops-bridge utan Oscars explicita åsidosättning (azom-ops-bridge vägras alltid).",
+            "Ändra aldrig autouppdateringsoptioner direkt från chatt utan hash-låst pau-*-plan.",
+        ],
+    },
+    "plugin_emergency_recovery": {
+        "topic": "plugin_emergency_recovery",
+        "title": "Nödåterställning av trasigt plugin och WSOD-räddning",
+        "summary": (
+            "Diagnostisera snabbt via Bridge-hälsa, pausade plugins, debug.log och Change Vault "
+            "och välj rätt återställningsväg (Bridge-rollback eller out-of-band SFTP-karantän)."
+        ),
+        "steps": [
+            "Kör wp_bridge_health, wp_plugin_diagnostics (Oscar: pausade plugins, hemlighetsrensad wp-content/debug.log-svans, hook-prioriteter och tillgängliga pbackup-zippar) samt wp_change_history.",
+            "Om WordPress/Bridge fortfarande svarar: planera rollback_snapshot (med verifierat change_id) eller deactivate via wp_plan_plugin_recovery.",
+            "Om sidan har PHP-krasch/WSOD (HTTP 500): planera out-of-band quarantine_sftp via *-wp-deployer (och senare restore_from_quarantine) med wp_plan_plugin_recovery.",
+            "Lämna plan_id (plr-*), plan_sha256, verifierad snapshotstatus och exakt dashboard-/CLI-steg till Oscar för HITL-exekvering.",
+        ],
+        "tools": [
+            "wp_plugin_diagnostics",
+            "wp_change_history",
+            "wp_bridge_health",
+            "wp_plan_plugin_recovery",
+            "wp_plugin_inventory",
+        ],
+        "anti_patterns": [
+            "Försök aldrig karantänsätta eller inaktivera azom-ops-bridge.",
+            "Förlita dig aldrig på att read-only *-wp-reader kan skriva eller flytta filer — out-of-band karantän kräver *-wp-deployer och Oscars explicita godkännande.",
+        ],
+    },
+    "mu_plugins_and_dropins": {
+        "topic": "mu_plugins_and_dropins",
+        "title": "MU-plugins (wp-content/mu-plugins/), laddningsordning och drop-ins",
+        "summary": (
+            "Inspektera MU-plugins och skrivskyddade drop-ins, beakta laddningsordningen "
+            "mu-plugins -> plugins -> theme och bygg MU-plugins säkert i isolerad wr-*-arbetsyta."
+        ),
+        "steps": [
+            "Kör wp_mu_plugins_and_dropins och wp_list_components(kind='mu_plugin') för att kartlägga alfabetisk laddningsordning, loader-filer och skrivskyddade drop-ins (object-cache.php, advanced-cache.php, db.php).",
+            "Inspektera hooks och konflikter med wp_code_index (kind='mu_plugin') innan ändring.",
+            "Öppna en isolerad arbetsyta med wp_open_review_workspace(kind='mu_plugin') och välj wp_workspace_scaffold med mu_plugin_basics (en fil) eller mu_plugin_loader (loader + underkatalog).",
+            "Kör wp_workspace_static_checks för att fånga förbjudna aktiveringskrokar (register_activation_hook) och oskyddade WooCommerce-anrop före staging/deploy.",
+        ],
+        "tools": [
+            "wp_mu_plugins_and_dropins",
+            "wp_list_components",
+            "wp_code_index",
+            "wp_open_review_workspace",
+            "wp_workspace_scaffold",
+            "wp_workspace_static_checks",
+        ],
+        "anti_patterns": [
+            "Försök aldrig redigera eller deploya wp-content/-drop-ins (object-cache.php, advanced-cache.php, db.php) — de är strikt skrivskyddad inspektion.",
+            "Lägg aldrig register_activation_hook i ett MU-plugin och anropa aldrig WC() utan class_exists/plugins_loaded-skydd.",
+        ],
+    },
+    "seo_technical_and_onpage": {
+        "topic": "seo_technical_and_onpage",
+        "title": "Teknisk SEO, on-page, hreflang, schema, GSC, paritet och internlänkar",
+        "summary": (
+            "Granska crawlbarhet, robots.txt, sitemaps, canonical, nordisk hreflang-paritet (SE/NO/DK), "
+            "deep crawl, JSON-LD, valfria read-only GSC quick-wins, audit-diff och internlänkar via "
+            "wp_seo_audit och wp_seo_drift_digest innan låsta seom-*/seob-*-planer skapas."
+        ),
+        "steps": [
+            "Kör wp_seo_audit(scope='site'|'technical'|'links'|'cannibalization'|'gsc'|'parity'|'deep_crawl', include_diff=True) samt vid behov wp_seo_drift_digest, wp_list_translations och wp_fetch_page_html.",
+            "Identifiera indexeringshinder (noindex, blog_public=0, trasig canonical, saknad self-ref/x-default hreflang, nordiska paritetsluckor, föräldralösa sidor och sökordskannibalisering).",
+            "Förbered godkännandebundna meta-/schema-ändringar med wp_seo_plan_meta (seom-*) eller batchplaner med wp_seo_batch_plan (seob-* med Change Vault batch_id-återställning — aldrig direkt skrivning i chatt).",
+            "Redovisa audit_id (seoa-*), poäng och diff-trend, prioriterade fynd, GSC-status/gsc_note (valfri read-only AZOM_GSC_ENABLED=1) och länk till /seo, /seo/parity och Change Vault.",
+        ],
+        "tools": [
+            "wp_seo_audit",
+            "wp_seo_plan_meta",
+            "wp_seo_batch_plan",
+            "wp_seo_drift_digest",
+            "wp_fetch_page_html",
+            "wp_list_translations",
+            "wp_change_history",
+        ],
+        "anti_patterns": [
+            "Ändra aldrig SEO-meta, canonical eller robots direkt från chatt; all skrivning kräver låst seom-*/seob-*-plan och Oscars HITL-godkännande i /seo.",
+            "Gissa aldrig att live Google Search Console-data finns när AZOM_GSC_ENABLED=0; ange alltid exakt vilka datakällor (Bridge/WP/Woo/GSC/GA4/Ads/Research/Mock) som använts.",
+        ],
+    },
+    "seo_product_and_media": {
+        "topic": "seo_product_and_media",
+        "title": "Produkt-, sid- och bild-SEO (Yoast/RankMath/AIOSEO/SEOPress, alt-texter & batch)",
+        "summary": (
+            "Optimera WooCommerce-produkter, landningssidor och mediabibliotekets alt-texter med "
+            "verklig katalogfakta och SHA-256-låsta seom-*/seob-*-förslag (Change Vault batch_id rollback)."
+        ),
+        "steps": [
+            "Kör wp_seo_audit(scope='product'|'page'|'media') samt wp_get_product eller wp_get_page för att hämta aktuell titel, meta, fokusfras, bilder och produktfakta.",
+            "Föreslå förbättrad SEO-titel (50–60 tecken), metabeskrivning (135–155 tecken), beskrivande alt-text utan nyckelordsspammande samt Product/FAQ JSON-LD via wp_seo_plan_meta (seom-*) eller samla flera fynd i en batch via wp_seo_batch_plan (seob-*).",
+            "Säkerställ att fordonskompatibilitet, priser och specifikationer alltid kommer från verifierad produktdata (aldrig påhittade specar).",
+            "Lämna plan_id (seom-*) eller batch_id (seob-*), plan_sha256, före/efter-diff och länk till /seo + Change Vault för Oscars godkännande (sparas med batch_id-märkta Change Vault snapshots för återställning).",
+        ],
+        "tools": [
+            "wp_seo_audit",
+            "wp_seo_plan_meta",
+            "wp_seo_batch_plan",
+            "wp_list_products",
+            "wp_get_product",
+            "wp_list_pages",
+            "wp_get_page",
+        ],
+        "anti_patterns": [
+            "Skriv aldrig över vanlig post-titel/produktnamn när användaren enbart vill ändra SEO-titel i Yoast/RankMath/AIOSEO/SEOPress.",
+            "Skapa aldrig generiska eller duplicerade alt-texter (t.ex. IMG_1234) och hitta aldrig på bilmodeller eller garantiutfästelser.",
+        ],
+    },
+    "seo_strategy_and_campaigns": {
+        "topic": "seo_strategy_and_campaigns",
+        "title": "Nordisk SEO-strategi, SEO-kampanjer & autonom SEO-pipeline (SE/NO/DK)",
+        "summary": (
+            "Bygg datadrivna nordiska SEO-strategier (seos-*), kampanjer (seoc-*) eller kör hela "
+            "autopilot-pipelinen (wp_seo_autopilot) med sajt-audit, seo_content_radar SERP-research, "
+            "kvalitetssäkrade SEO-butiker och länkpaket-utkast (seol-*) — alltid HITL-styrt."
+        ),
+        "steps": [
+            "Samla nuläge via wp_seo_audit och extern sökords-/konkurrentinsikt med web_search eller web_research_start (profil seo_content_radar), eller kör hela kedjan direkt via wp_seo_autopilot.",
+            "Bygg och spara en marknadsanpassad strategi (SE/NO/DK, pillar/kluster-arkitektur, SERP-luckor och 30/60/90-dagarsplan) via wp_seo_strategy -> seos-*.",
+            "Bryt ned strategin i konkreta kampanjer med målsökord, mål-URL:er, sidtyp och KPI:er via wp_seo_campaign -> seoc-*.",
+            "Länka till /seo/strategies, /seo/campaigns, /seo/vendors och /seo/link-packages/<id> och redovisa datakällor samt att inga ändringar eller inköp körs utan Oscars godkännande.",
+        ],
+        "tools": [
+            "wp_seo_audit",
+            "wp_seo_autopilot",
+            "wp_seo_strategy",
+            "wp_seo_campaign",
+            "web_search",
+            "web_research_start",
+            "web_research_get",
+        ],
+        "anti_patterns": [
+            "Blanda inte ihop betalda Google Ads-kampanjer med organiska SEO-kampanjer — redovisa separata mål och KPI:er.",
+            "Bygg inte SEO-strategier med delade svenska texter på norska/danska domäner utan lokal språk- och hreflang-plan.",
+        ],
+    },
+    "seo_link_packages": {
+        "topic": "seo_link_packages",
+        "title": "Länkpaket-beställning, kvalitetssäkrade nordiska SEO-butiker, verifiering & anti-spam-guardrails",
+        "summary": (
+            "Granska och välj kvalitetssäkrade nordiska white-hat SEO-butiker (seo_vendor_vetting, 0–100-rubrik, "
+            "anti-PBN), skapa leverantörsklara beställningsunderlag (seol-*), kontrollera kumulativ ankartextmix "
+            "och verifiera levererade länkar (read-only) — köper aldrig externt."
+        ),
+        "steps": [
+            "Granska kvalitetssäkrade nordiska SEO-butiker via wp_seo_link_package(mode='vendors') (eller wp_seo_autopilot): tillämpa 0–100-rubrik, 7 hårda anti-PBN-avslag, SEK-golv (SE/DK >= 1 200 SEK/länk, NO >= 1 800 SEK/länk — sänk hellre antal länkar än kvalitet) och nordiska märkningsregler (Annons/Annonse/Annonce).",
+            "Kontrollera befintlig sajt-profil med wp_seo_link_package(mode='cumulative') och skapa ett strukturerat länkpaket-utkast via wp_seo_link_package(mode='create') -> seol-* (alltid status='draft', executed=false, external_order_placed=false).",
+            "Kontrollera automatiska ankartext-guardrails (både per paket och kumulativt): varumärke + naken URL + generisk >= 60%, partial <= 25%, exact-match <= 10% (varning > 10%, blockeras > 20%), ingen enskild icke-startsida över 50% vid >= 4 länkar, och strikt anti-PBN/marknadsrelevans (SE/NO/DK).",
+            "Lämna package_id (seol-*), topp 2–3 granskade SEO-butiker med poäng, vald leverantör, ankartextfördelning, guardrail-varningar och länkar till /seo/vendors och /seo/link-packages/<id> för utkastredigering, export (MD/JSON/CSV) och Oscars godkännande; verifiera levererade länkar read-only med wp_seo_link_package(mode='verify', package_id=...).",
+        ],
+        "tools": [
+            "wp_seo_link_package",
+            "wp_seo_autopilot",
+            "wp_seo_campaign",
+            "wp_seo_audit",
+        ],
+        "anti_patterns": [
+            "Utlova eller utför aldrig automatiskt inköp av länkar hos externa leverantörer — systemet granskar, bygger, verifierar och exporterar endast beställningsunderlag.",
+            "Rekommendera aldrig blinda länkbuntar, PBN-nätverk, '#1-garantier', kasino/lånegrannar eller oredigerad maskinöversättning — sänk hellre antal länkar vid låg budget än att sänka kvalitetskraven.",
+            "Skicka aldrig ett länkpaket vidare med överoptimerad exact-match-andel (>20%), PBN-domäner eller fel marknadsspråk.",
+        ],
+    },
 }
 
 _MIN_MATCH_SCORE = 2
@@ -381,15 +592,15 @@ _TOPIC_RULES: dict[str, tuple[tuple[re.Pattern[str], int], ...]] = {
         (re.compile(r"\b(?:checkout|kassan?|cart|varukorg)\b", re.I), 1),
     ),
     "plugin_hooks_and_compat": (
-        (re.compile(r"\b(?:hpos|custom_order_tables|woo_compat_declaration)\b", re.I), 5),
+        (re.compile(r"\b(?:hpos|custom_order_tables|woo_compat_declaration|plugin_hook_extension)\b", re.I), 5),
         (re.compile(r"\b(?:add_action|add_filter|do_action|apply_filters|register_rest_route|register_block_type)\b", re.I), 4),
         (re.compile(r"\b(?:tredjepartsplugin|third[\s_-]?party\s+plugin|pluginkonflikt|plugin\s+conflict|wp_code_index)\b", re.I), 4),
         (re.compile(r"\b(?:hooks?|kompatibilitet|compatibility)\b", re.I), 3),
     ),
     "site_plugin_scaffold": (
-        (re.compile(r"\b(?:wp_workspace_scaffold|site_plugin_basics|child_theme_basics)\b", re.I), 5),
+        (re.compile(r"\b(?:wp_workspace_scaffold|site_plugin_basics|child_theme_basics|mu_plugin_basics|mu_plugin_loader|plugin_hook_extension|custom_plugin_full)\b", re.I), 5),
         (re.compile(r"\b(?:site[\s_-]?plugin|sajtplugin|azom-site-|scaffold|skapa\s+(?:ett\s+)?(?:nytt\s+)?plugin)\b", re.I), 4),
-        (re.compile(r"\b(?:ist[äa]llet\s+f[öo]r\s+functions\.php|egen\s+plugin|nytt\s+barntema)\b", re.I), 4),
+        (re.compile(r"\b(?:ist[äa]llet\s+f[öo]r\s+functions\.php|egen\s+plugin|nytt\s+barntema|custom\s+plugin)\b", re.I), 4),
     ),
     "bulk_refactor": (
         (re.compile(r"wp_workspace_bulk_replace|wp_workspace_apply_changes|wp_workspace_diff", re.I), 5),
@@ -416,7 +627,7 @@ _TOPIC_RULES: dict[str, tuple[tuple[re.Pattern[str], int], ...]] = {
     ),
     "new_page_and_sample_data": (
         (re.compile(r"wp_workspace_page_draft|wp_build_sample_data|page_draft\.json", re.I), 5),
-        (re.compile(r"\b(?:tacksida|tack-?sida|thank[\s_-]?you[\s_-]?page|order[\s_-]?confirmation|orderbekr[äa]ftelse)\b", re.I), 5),
+        (re.compile(r"\b(?:tacksida|tack-?sida|thank[\s_-]?you[\s_-]?page|order[\s_-]?confirmation[\s_-]?page|orderbekr[äa]ftelse-?sid(?:a|an))\b", re.I), 5),
         (re.compile(r"\b(?:ny\s+(?:sida|landningssida|kampanjsida)|skapa\s+en\s+ny\s+sida|designa\s+en\s+ny\s+sida|landing[\s_-]?page)\b", re.I), 4),
         (re.compile(r"\b(?:exempeldata|syntetisk\s+data|sample[\s_-]?data|standalone[\s_-]?page)\b", re.I), 3),
     ),
@@ -425,6 +636,49 @@ _TOPIC_RULES: dict[str, tuple[tuple[re.Pattern[str], int], ...]] = {
         (re.compile(r"\b(?:a/b-?variant|tv[åa]\s+varianter|f[öo]rslag\s+b|f[öo]ljdjustering|finjustera\s+(?:knapp|knappen|färg|marginal))\b", re.I), 4),
         (re.compile(r"\b(?:k[öo]pknapp(?:en)?|l[äa]gg\s+i\s+varukorg|add[\s_-]?to[\s_-]?cart|cta-?knapp(?:en)?)\b", re.I), 3),
         (re.compile(r"\b(?:f[öo]rhandsvisning|live[\s_-]?overlay|computed[\s_-]?styles?|visual_health)\b", re.I), 3),
+    ),
+    "plugin_safe_updates": (
+        (re.compile(r"wp_plugin_inventory|wp_plan_plugin_updates|\bplu-[a-f0-9]{4,12}\b", re.I), 5),
+        (re.compile(r"\b(?:uppdatera\s+(?:alla\s+|utvalda\s+|ett\s+)?plugins?|pluginuppdatering\w*|update\s+plugins?|plugin\s+updates?)\b", re.I), 5),
+        (re.compile(r"\b(?:non_critical_only|patch_only|minor_safe|security_only|canary|kanarie)\b", re.I), 4),
+        (re.compile(r"\b(?:v[äa]ntande\s+uppdateringar|pending\s+updates?)\b", re.I), 3),
+    ),
+    "plugin_autoupdate_policy": (
+        (re.compile(r"wp_plan_plugin_autoupdate|\bpau-[a-f0-9]{4,12}\b|auto_update_plugins?", re.I), 5),
+        (re.compile(r"\b(?:autouppdater\w*|auto-?update\w*|automatisk(?:a)?\s+uppdatering(?:ar)?)\b", re.I), 5),
+        (re.compile(r"\b(?:AUTOMATIC_UPDATER_DISABLED|DISALLOW_FILE_MODS|WP_AUTO_UPDATE_CORE|disable_all)\b", re.I), 4),
+    ),
+    "plugin_emergency_recovery": (
+        (re.compile(r"wp_plugin_diagnostics|wp_plan_plugin_recovery|\bplr-[a-f0-9]{4,12}\b", re.I), 5),
+        (re.compile(r"\b(?:wsod|white\s+screen|vit\s+sk[äa]rm|karant[äa]n\w*|quarantine|quarantine_sftp|trasig(?:t|a)?\s+plugin|broken\s+plugin)\b", re.I), 5),
+        (re.compile(r"\b(?:fatal\s+error|php\s+fatal|debug\.log|pausade\s+plugins|paused\s+plugins|rulla\s+tillbaka\s+plugin|rollback_snapshot)\b", re.I), 4),
+    ),
+    "mu_plugins_and_dropins": (
+        (re.compile(r"wp_mu_plugins_and_dropins|\bmu_plugin\b|\bmu-plugins?\b", re.I), 5),
+        (re.compile(r"\b(?:drop-?ins?|object-cache\.php|advanced-cache\.php|db\.php|fatal-error-handler\.php|sunrise\.php)\b", re.I), 5),
+        (re.compile(r"\b(?:must-?use\s+plugin|laddningsordning|load\s+order|mu_plugin_basics|mu_plugin_loader)\b", re.I), 4),
+    ),
+    "seo_technical_and_onpage": (
+        (re.compile(r"wp_seo_audit|wp_seo_drift_digest|\bseoa-[a-f0-9]{4,12}\b", re.I), 5),
+        (re.compile(r"\b(?:teknisk\s+seo|technical\s+seo|seo-?audit|seo-?analys|seo-?genomg[åa]ng|s[öo]kmotoroptimering|deep[\s_-]?crawl|nordisk\s+paritet|search\s+console|\bgsc\b)\b", re.I), 5),
+        (re.compile(r"\b(?:hreflang|canonical|sitemap|robots\.txt|json-?ld|strukturerad\s+data|internl[äa]nk\w*|kannibaliser\w*|orphan\s+pages?|drift-?digest)\b", re.I), 4),
+        (re.compile(r"\b(?:seo|noindex|indexering)\b", re.I), 2),
+    ),
+    "seo_product_and_media": (
+        (re.compile(r"wp_seo_plan_meta|wp_seo_batch_plan|\bseom-[a-f0-9]{4,12}\b|\bseob-[a-f0-9]{4,12}\b", re.I), 5),
+        (re.compile(r"\b(?:bild-?seo|image\s+seo|alt-?text\w*|meta-?titel|meta-?beskrivning|focus\s+keyphrase|fokusfras|seo-?batch)\b", re.I), 5),
+        (re.compile(r"\b(?:yoast|rank\s*math|aioseo|seopress|produkt-?seo|sid-?seo)\b", re.I), 4),
+        (re.compile(r"\b(?:mediabibliotek\w*|produktbilder)\b", re.I), 3),
+    ),
+    "seo_strategy_and_campaigns": (
+        (re.compile(r"wp_seo_strategy|wp_seo_campaign|wp_seo_autopilot|\bseos-[a-f0-9]{4,12}\b|\bseoc-[a-f0-9]{4,12}\b", re.I), 5),
+        (re.compile(r"\b(?:seo-?strategi\w*|seo-?kampanj\w*|seo-?autopilot|autonom\w*\s+seo|seo\s+strategy|seo\s+campaign|s[öo]kordsstrategi|klusterstrategi)\b", re.I), 5),
+        (re.compile(r"\b(?:seo_content_radar|inneh[åa]llsluck\w*|organisk\s+tillv[äa]xt|pillar\s+page|topic\s+cluster)\b", re.I), 4),
+    ),
+    "seo_link_packages": (
+        (re.compile(r"wp_seo_link_package|seo_vendor_vetting|\bseol-[a-f0-9]{4,12}\b", re.I), 5),
+        (re.compile(r"\b(?:l[äa]nkpaket\w*|l[äa]nkbygge|l[äa]nkleverant[öo]r\w*|l[äa]nkshop\w*|seo-?butik\w*|link\s+package|link\s+building|backlinks?|in-?l[äa]nkar)\b", re.I), 5),
+        (re.compile(r"\b(?:ankartext\w*|anchor\s+(?:text|mix)|dofollow|nofollow|drip\s+plan|leverant[öo]rsbrief)\b", re.I), 4),
     ),
 }
 

@@ -13,6 +13,8 @@ from flask import Flask, Response, jsonify, request
 
 _woo_webhook_receiver: object | None = None
 _woo_webhook_secret_hash: str | None = None
+_woo_receiver_lock = threading.Lock()
+_MAX_WEBHOOK_BODY_BYTES = 1_048_576
 _messenger_stores_lock = threading.Lock()
 _messenger_stores: dict[str, Any] = {}
 _messenger_proposal_stores_lock = threading.Lock()
@@ -125,9 +127,10 @@ class _MessengerImageHandlerProxy:
         text: str,
         *args: Any,
         image_paths: list[str] | None = None,
+        image_urls: list[str] | None = None,
         **kwargs: Any,
     ) -> Any:
-        urls = _pop_pending_images(str(chat_id), text)
+        urls = list(image_urls[:4]) if image_urls else _pop_pending_images(str(chat_id), text)
         resolved_paths = list(image_paths) if image_paths else []
         if urls and not resolved_paths and _messenger_peer_authorized(str(chat_id)):
             from ecom_ops.bot import messenger_adapter
@@ -159,17 +162,23 @@ def _get_woo_webhook_receiver(secret: str) -> Any:
     global _woo_webhook_receiver, _woo_webhook_secret_hash
 
     secret_hash = hashlib.sha256(secret.encode()).hexdigest()
-    if _woo_webhook_receiver is None or _woo_webhook_secret_hash != secret_hash:
-        from ecom_ops.integrations.webhooks import WebhookReceiver
+    with _woo_receiver_lock:
+        if _woo_webhook_receiver is None or _woo_webhook_secret_hash != secret_hash:
+            from ecom_ops.integrations.webhooks import WebhookReceiver
 
-        _woo_webhook_receiver = WebhookReceiver(secret=secret)
-        _woo_webhook_secret_hash = secret_hash
-    return _woo_webhook_receiver
+            _woo_webhook_receiver = WebhookReceiver(secret=secret)
+            _woo_webhook_secret_hash = secret_hash
+        return _woo_webhook_receiver
 
 
 def register_webhook_routes(app: Flask) -> None:
     @app.route("/webhooks/woo", methods=["POST"])
     def woo_webhook():
+        if request.content_length and request.content_length > _MAX_WEBHOOK_BODY_BYTES:
+            return jsonify({"ok": False, "error": "Payload too large"}), 413
+        raw_check = request.get_data(cache=True) or b""
+        if len(raw_check) > _MAX_WEBHOOK_BODY_BYTES:
+            return jsonify({"ok": False, "error": "Payload too large"}), 413
         secret = os.environ.get("WOO_WEBHOOK_SECRET", "")
         if not secret:
             return jsonify({"ok": False, "error": "WOO_WEBHOOK_SECRET not configured"}), 503
@@ -199,7 +208,11 @@ def register_webhook_routes(app: Flask) -> None:
                 return "Forbidden", 403
             return Response(challenge, mimetype="text/plain")
 
+        if request.content_length and request.content_length > _MAX_WEBHOOK_BODY_BYTES:
+            return jsonify({"ok": False, "error": "Payload too large"}), 413
         raw = request.get_data() or b""
+        if len(raw) > _MAX_WEBHOOK_BODY_BYTES:
+            return jsonify({"ok": False, "error": "Payload too large"}), 413
         if not verify_signature(raw, request.headers.get("X-Hub-Signature-256")):
             return jsonify({"ok": False, "error": "Invalid signature"}), 401
 
@@ -231,7 +244,8 @@ def register_webhook_routes(app: Flask) -> None:
                 queued += 1
                 if not getattr(ev, "postback", None) and _messenger_peer_authorized(str(ev.peer_id)):
                     img_urls = _extract_event_image_urls(ev)
-                    _enqueue_pending_images(str(ev.peer_id), str(ev.text or ""), img_urls)
+                    if img_urls:
+                        _enqueue_pending_images(str(ev.peer_id), str(ev.text or ""), img_urls)
             else:
                 skipped += 1
 
