@@ -202,8 +202,8 @@ def test_prompt_sync_and_budget_invariants(monkeypatch: pytest.MonkeyPatch) -> N
     prompts_yaml = yaml.safe_load((REPO_ROOT / "config" / "prompts.yaml").read_text(encoding="utf-8"))
     assert len(prompts_yaml) == 7
     assert set(prompts_yaml) == set(_BUILTIN) == set(_PROMPT_NAMES)
-    assert prompts_yaml["chat"]["version"] == "1.6"
-    assert prompts_yaml["wp_coder"]["version"] == "1.5"
+    assert prompts_yaml["chat"]["version"] == "1.7"
+    assert prompts_yaml["wp_coder"]["version"] == "1.6"
     for key in _PROMPT_NAMES:
         assert str(prompts_yaml[key]["system"]).strip() == str(_BUILTIN[key]["system"]).strip()
         sys_txt, ver = get_prompt(key)
@@ -212,15 +212,15 @@ def test_prompt_sync_and_budget_invariants(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert len(WP_TOOL_GUIDE) <= 7000
     full_wp_prompt, ver = _build_system_prompt(mode="chat_wp_file", include_web_research=True)
-    assert ver == "1.5"
-    assert len(full_wp_prompt) < 12986
+    assert ver == "1.6"
+    assert len(full_wp_prompt) < 13300
     assert "wp_seo_audit" in full_wp_prompt
     assert "wp_seo_batch_plan" in full_wp_prompt
     assert "wp_seo_drift_digest" in full_wp_prompt
     assert "wp_seo_link_package" in full_wp_prompt
     assert "wp_seo_autopilot" in full_wp_prompt
     assert "vendors" in full_wp_prompt
-    assert len(PLAYBOOK_TOPICS) == 20
+    assert len(PLAYBOOK_TOPICS) == 22
     assert select_playbooks("länkpaket ankartext")[0]["topic"] == "seo_link_packages"
 
 

@@ -34,14 +34,14 @@ from ecom_ops.wp_ops.tools.registry import (
 
 
 def test_registry_completeness_and_derived_sets() -> None:
-    assert len(TOOL_REGISTRY) == 77
-    assert len(WP_TOOL_SCHEMAS) == 8
-    assert len(WP_TOOL_NAMES) == 8
+    assert len(TOOL_REGISTRY) == 81
+    assert len(WP_TOOL_SCHEMAS) == 11
+    assert len(WP_TOOL_NAMES) == 11
     assert FILE_TOOL_NAMES == LEGACY_FILE_TOOL_NAMES
     assert len(FILE_TOOL_NAMES) == 21
-    assert len(EXTRA_FILE_TOOLS) == 49
-    assert len(ALL_FILE_TOOLS) == 70
-    assert len(FILE_TOOL_SCHEMAS) == 69
+    assert len(EXTRA_FILE_TOOLS) == 53
+    assert len(ALL_FILE_TOOLS) == 74
+    assert len(FILE_TOOL_SCHEMAS) == 73
     assert WP_TOOL_NAMES | ALL_FILE_TOOLS == frozenset(TOOL_REGISTRY)
     assert ALL_FILE_TOOLS - set(FILE_TOOL_SCHEMAS) == {"wp_read_theme_plugin_file"}
     assert len(FE_PLAN_TOOLS) == 6
@@ -111,12 +111,18 @@ def test_registry_completeness_and_derived_sets() -> None:
         "wp_workspace_attach_research",
     }
     assert set(TOOL_CAPABILITIES["seo"]) == seo_tools
+    assert set(TOOL_CAPABILITIES["shop_intel"]) == {
+        "wp_shop_intel_run",
+        "wp_shop_intel_status",
+        "wp_shop_intel_query",
+        "wp_shop_intel_security_audit",
+    }
 
-    # Capability groups cover all 77 tools without duplicates
+    # Capability groups cover all 81 tools without duplicates
     cap_union: list[str] = []
     for tools_in_group in TOOL_CAPABILITIES.values():
         cap_union.extend(tools_in_group)
-    assert len(cap_union) == len(set(cap_union)) == 77
+    assert len(cap_union) == len(set(cap_union)) == 81
 
     # Upgraded schemas: mu_plugin kind + 7 scaffold templates
     for tool_name in (

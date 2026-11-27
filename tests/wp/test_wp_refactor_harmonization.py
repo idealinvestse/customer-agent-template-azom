@@ -206,7 +206,7 @@ def test_wp_module_graph_acyclic_and_all_exports_resolve() -> None:
 
 def test_cross_surface_single_source_of_truth_and_packaging() -> None:
     expected_all = set(tools_registry.WP_TOOL_NAMES) | set(tools_registry.ALL_FILE_TOOLS)
-    assert len(expected_all) == 77
+    assert len(expected_all) == 81
     assert file_changes.FILE_TOOL_NAMES == file_paths.FILE_TOOL_NAMES
     assert set(file_changes.FILE_TOOL_NAMES) == set(tools_registry.FILE_TOOL_NAMES)
     assert agent_tools.WP_TOOL_SCHEMAS == tools_registry.WP_TOOL_SCHEMAS
