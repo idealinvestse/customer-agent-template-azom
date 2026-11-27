@@ -4,7 +4,7 @@
 **Audience:** Coding agents, developers, and internal operators (Jonatan & Oscar).  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`DOC_STYLE.md`](DOC_STYLE.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md), [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md).
 
-**Document status:** Designed for package `3.0.0` (fail-closed mock-first). Offline mock fixtures (`AZOM_USE_MOCK=1`) run deterministic 7-domain learning with zero network calls. Live store learning requires `AZOM_USE_MOCK=0`, process-env `AZOM_SHOP_INTEL_LIVE_ENABLED=1`, and `AZOM_SHOP_INTEL_KILL` unset/`0`.
+**Document status:** Shipped in package `3.0.0` (fail-closed mock-first). Offline mock fixtures (`AZOM_USE_MOCK=1`) run deterministic 7-domain learning with zero network calls. Live store learning requires `AZOM_USE_MOCK=0`, process-env `AZOM_SHOP_INTEL_LIVE_ENABLED=1`, and `AZOM_SHOP_INTEL_KILL` unset/`0`.
 
 ## Glossary
 
@@ -53,11 +53,18 @@ All external transport calls stay in existing client layers (`WooCommerceClient`
 
 ```text
 config/
+├── prompts.yaml                             # Versioned chat (1.7) & wp_coder (1.6) prompts
 └── shop_intel.yaml                          # Fail-closed defaults, sample caps, retention, budgets, domain toggles
 
 skills/ecom_ops/
+├── bot/shop_intel_handlers.py               # /shop-intel & /store-learn commands + SHOP_INTEL_INTENT_RE routing
+├── cli.py                                   # shop-intel CLI (9 subcommands)
 ├── integrations/woocommerce.py              # Read-only Woo REST v3 settings/zones/gateways/tax/attributes + mock fixtures
+├── ops_gc.py                                # prune_shop_intel_runs() baseline-preserving retention pruning
 ├── runtime_env.py                           # PROTECTED_OVERLAY_KEYS incl. AZOM_SHOP_INTEL_LIVE_ENABLED, AZOM_SHOP_INTEL_KILL
+├── wp_ops/
+│   ├── playbooks.py                         # 2 Shop Intel playbooks (PLAYBOOK_TOPICS=22)
+│   └── tools/shop_intel.py                  # 4 wp_shop_intel_* tools (TOOL_REGISTRY=81, capability_group="shop_intel")
 └── shop_intel/
     ├── __init__.py                          # Package exports & get_shop_intel_service()
     ├── models.py                            # Regexes, VALID_DOMAINS, VALID_MODES, VALID_PURPOSES, SHOP_INTEL_INTENT_RE
@@ -67,6 +74,10 @@ skills/ecom_ops/
     ├── analyzer.py                          # Cross-run diffing (sid-*), security/drift findings (sif-*), security_score
     ├── context_builder.py                   # build_tailored_context() + SHOP_INTEL_CONTEXT nonce framing
     └── service.py                           # ShopIntelService (RBAC, runs, queries, diffs, security, exports, schedules)
+
+infrastructure/
+├── dashboard/shop_intel_routes.py           # /shop-intel Blueprint (5 routes) + CSP templates
+└── systemd/azom-shop-intel.{service,timer}  # Daily scheduled run via bin/shop-intel.sh
 ```
 
 ### Configuration defaults (`config/shop_intel.yaml`)
@@ -108,8 +119,8 @@ Note the runtime data directory split: `/var/lib/azom` for Ubuntu systemd deploy
 
 - **Run modes (`VALID_MODES`):**
   - `full`: collects all 7 domains, computes diff against previous snapshot, updates security posture/score, and writes `latest.{json,md}`.
-  - `quick`: fast refresh of core platform rules, plugin ecosystem, and baseline security posture.
-  - `security`: focused `security_posture` & cross-run drift verification pass.
+  - `quick`: fast refresh across `platform_rules`, `catalog_pricing`, `brand_voice_copy`, `policies_legal`, `plugins_ecosystem`, and `security_posture` (skips `theme_architecture`).
+  - `security`: focused security & drift pass across `platform_rules`, `theme_architecture`, `policies_legal`, `plugins_ecosystem`, and `security_posture`.
 - **Finding IDs (`sif-<12hex>`) & severities:** `critical`, `high`, `medium`, `low`, `info`, contributing to a `0–100` `security_score`.
 - **Cross-run drift detection (`sid-<12hex>`):**
   - **High:** payment gateway change, shipping rule/threshold change, active theme change.
@@ -131,9 +142,9 @@ Note the runtime data directory split: `/var/lib/azom` for Ubuntu systemd deploy
 
 | Operation | Required permission(s) | Jonatan (`viewer`) | Agent (`operator`) | Oscar (`full_admin`) |
 |-----------|------------------------|--------------------|--------------------|----------------------|
-| `status`, `show`, `query`, `diff`, `security`, `export` | `WP_OPS_READ` or `READ` | Yes (`theme_architecture` SFTP skipped) | Yes | Yes |
-| `run_learning` (`run`) | `WP_OPS_READ` + (`RESEARCH_RUN` or `WP_OPS_OPERATE` or `WP_OPS_ADMIN`) | Yes (`sftp_source: "skipped_rbac"`) | Yes | Yes |
-| `configure_schedule` (`schedule`) | `WP_OPS_ADMIN` or `RESEARCH_ADMIN` | No | No | **Yes (Oscar only)** |
+| `status`, `get_run` (`si-*`), `query`, `diff`, `security`, `context`, `export` | `WP_OPS_READ` or `READ` | Yes (`theme_architecture` SFTP skipped) | Yes | Yes |
+| `run_learning` (`run`, `schedule-run`) | `WP_OPS_READ` + (`RESEARCH_RUN` or `WP_OPS_OPERATE` or `WP_OPS_ADMIN`) | Yes (`sftp_source: "skipped_rbac"`) | Yes | Yes |
+| `configure_schedule` (`schedule-set`, `POST /shop-intel/schedule`) | `WP_OPS_ADMIN` or `RESEARCH_ADMIN` (Dashboard also checks `is_oscar`) | No | No | **Yes (Oscar only)** |
 
 ### Tailored context injection (`build_tailored_context`)
 
@@ -147,36 +158,55 @@ Note the runtime data directory split: `/var/lib/azom` for Ubuntu systemd deploy
 
 ### CLI (`python -m ecom_ops shop-intel ...`)
 
+9 subcommands in `skills/ecom_ops/cli.py`: `status`, `run`, `query`, `security`, `diff`, `context`, `export`, `schedule-set`, `schedule-run`.
+
 ```bash
 # cwd: repository root (dev) or /opt/azom-agent (prod)
 # env: AZOM_USE_MOCK=1
 python -m ecom_ops --mock --actor jonatan shop-intel status --site mock-shop
-python -m ecom_ops --mock --actor jonatan shop-intel run --site mock-shop --mode full
-python -m ecom_ops --mock --actor jonatan shop-intel show --site mock-shop
-python -m ecom_ops --mock --actor jonatan shop-intel query --site mock-shop --domain policies_legal
-python -m ecom_ops --mock --actor jonatan shop-intel diff --site mock-shop
-python -m ecom_ops --mock --actor jonatan shop-intel security --site mock-shop
+python -m ecom_ops --mock --actor jonatan shop-intel run --site mock-shop --mode full --domains platform_rules,policies_legal
+python -m ecom_ops --mock --actor jonatan shop-intel query --site mock-shop --domain policies_legal --query retur --purpose support_draft --max-chars 1800
+python -m ecom_ops --mock --actor jonatan shop-intel security --site mock-shop --severity high --limit 25
+python -m ecom_ops --mock --actor jonatan shop-intel diff --site mock-shop --limit 20
+python -m ecom_ops --mock --actor jonatan shop-intel context --site mock-shop --purpose support_draft --max-chars 1800
 python -m ecom_ops --mock --actor jonatan shop-intel export --site mock-shop --format md
-python -m ecom_ops --mock --actor oscar shop-intel schedule --site mock-shop --enabled --interval-hours 24
-python -m ecom_ops --mock --actor agent shop-intel schedule-run
-# expect: JSON payload with ok: true, provenance: "mock", and si-*/sid-*/sif-* IDs
+python -m ecom_ops --mock --actor oscar shop-intel schedule-set --site mock-shop --enabled --interval-hours 24 --mode full
+python -m ecom_ops --mock --actor agent shop-intel schedule-run --site mock-shop
+# expect: JSON payload with ok: true, provenance: "mock", and si-*/sid-*/sif-* IDs (or SHOP_INTEL_CONTEXT for context)
 ```
 
-### Bot (`/shop-intel` in Messenger & Telegram)
+### Bot (`/shop-intel` and `/store-learn` in Messenger & Telegram)
 
-- `/shop-intel` or `/shop-intel status [site-id]` — current snapshot summary, `security_score`, and `/shop-intel` dashboard link.
+- `/shop-intel` or `/store-learn` (and `help` / `?`) — command summary and read-only `/shop-intel` dashboard button (`shop_intel_url()`).
 - `/shop-intel run [site-id] [full|quick|security]` — trigger a learning run (respects RBAC and fail-closed live gates).
-- `/shop-intel query [site-id] <domain>` — inspect learned facts for one of the 7 `VALID_DOMAINS`.
-- `/shop-intel diff [site-id]` · `/shop-intel security [site-id]` — inspect latest drift (`sid-*`) and security findings (`sif-*`).
+- `/shop-intel status [site-id]` — current snapshot summary, `security_score`, schedule, gates (`mock`/`live`/`live-blockerad`), and dashboard link.
+- `/shop-intel query [site-id] <domain|keyword>` — inspect learned facts for one of the 7 `VALID_DOMAINS` or keyword match (also accepts `site=<site-id>`).
+- `/shop-intel security [site-id] [critical|high|medium|low|info]` · `/shop-intel diff [site-id]` — inspect latest security findings (`sif-*`) and drift diffs (`sid-*`).
+- `/shop-intel <si-<12hex>>` — inspect a specific historical run by ID.
 - Natural-language routing uses `SHOP_INTEL_INTENT_RE` (avoiding collisions with order, case, SEO, and Google Ads intents).
 
 ### Dashboard (`/shop-intel`)
 
-- `/shop-intel` renders per-site overview, 7-domain dossier explorer, security score & `sif-*` findings, `sid-*` drift diffs, Markdown/JSON dossier export, manual run trigger (`RESEARCH_RUN`/`WP_OPS_OPERATE`), and Oscar-only (`WP_OPS_ADMIN`/`RESEARCH_ADMIN`) schedule configuration.
+Blueprint `shop_intel_bp` (`infrastructure/dashboard/shop_intel_routes.py`) exposes 5 `@_auth_required` routes (strict CSP, CSRF on POST):
 
-### WP agent tools (`wp_shop_intel_*`)
+| Route | Permission | Purpose |
+|-------|------------|---------|
+| `GET /shop-intel` | `WP_OPS_READ` or `READ` | Per-site overview, 7-domain dossier explorer, `?site_id=&domain=&q=&severity=` filters, `sif-*` findings, `sid-*` drift diffs, recent runs |
+| `POST /shop-intel/run` | `WP_OPS_READ` + (`RESEARCH_RUN` / `WP_OPS_OPERATE` / `WP_OPS_ADMIN`) | Trigger `full` / `quick` / `security` learning pass |
+| `GET /shop-intel/runs/<run_id>` | `WP_OPS_READ` or `READ` | Inspect a single `si-<12hex>` run, domain facts, findings, diffs, and `SHOP_INTEL_CONTEXT` previews |
+| `GET /shop-intel/export` | `WP_OPS_READ` or `READ` | Download `latest.md` or `latest.json` (`?site_id=...&format=md|json`) |
+| `POST /shop-intel/schedule` | Oscar (`is_oscar` + `WP_OPS_ADMIN` / `RESEARCH_ADMIN`) | Configure recurring per-site schedule (`enabled`, `interval_hours` `1..720`, `mode`) |
 
-Read-only tools exposed to bounded WP/chat tool loops for inspecting stored dossiers, querying domain facts, comparing `sid-*` diffs, and reviewing `sif-*` security findings without triggering external calls or bypassing HITL.
+### WP agent tools (`wp_shop_intel_*`), playbooks, and prompt adaptation
+
+- **4 WP tools** (`skills/ecom_ops/wp_ops/tools/shop_intel.py`, `capability_group="shop_intel"`, `TOOL_REGISTRY=81`, all `untrusted_output=True`):
+  - `wp_shop_intel_run` (`site_id`, `mode`, `domains`) — requires `WP_OPS_READ` + (`RESEARCH_RUN` / `WP_OPS_OPERATE` / `WP_OPS_ADMIN`)
+  - `wp_shop_intel_status` (`site_id`) — requires `WP_OPS_READ` / `READ`
+  - `wp_shop_intel_query` (`site_id`, `domain`, `query`, `purpose`, `max_chars`) — requires `WP_OPS_READ` / `READ`
+  - `wp_shop_intel_security_audit` (`site_id`, `severity`, `limit`) — requires `WP_OPS_READ` / `READ`
+- **2 playbooks** (`skills/ecom_ops/wp_ops/playbooks.py`, `PLAYBOOK_TOPICS=22`): `shop_intel_learning`, `shop_intel_security_drift`.
+- **No-op-when-absent prompt injection:** `wp_turn.py`, `chat_agent.py`, `cases/drafting.py`, `actions/support.py`, and `actions/product_desc.py` call `build_tailored_context()` (returning `None` unless a snapshot exists and `AZOM_SHOP_INTEL_INJECT!=0`), guided by `config/prompts.yaml` (`chat` v1.7, `wp_coder` v1.6).
+- **Retention GC (`ops_gc.py`):** `prune_shop_intel_runs()` preserves each site's latest baseline run and prunes older runs past `max_runs_per_site` / `retention_days` (reported under `purged_shop_intel_runs`).
 
 ### Systemd scheduling (`bin/shop-intel.sh`)
 

@@ -22,6 +22,7 @@
    - SEO Studio (SE/NO/DK): [`docs/SEO_STUDIO.md`](docs/SEO_STUDIO.md) · Skill: [`skills/wordpress-seo/SKILL.md`](skills/wordpress-seo/SKILL.md)
    - Model router: [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md)
    - Web search & research: [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md)
+   - Webshop Intelligence (`shop_intel`): [`docs/SHOP_INTEL.md`](docs/SHOP_INTEL.md) · Skill: [`skills/webshop-intelligence/SKILL.md`](skills/webshop-intelligence/SKILL.md)
    - Messenger: [`docs/MESSENGER_OPENCLAW.md`](docs/MESSENGER_OPENCLAW.md)
    - Telegram: [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md)
 5. Skill card: [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md)
@@ -145,6 +146,7 @@ Detail: [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md).
 - **Model router:** ChatGPT OAuth (Azom-owned refresh) + opt-in xAI Grok Build + xAI API key + OpenRouter fallback — [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md). Direct xAI OAuth is not implemented. Live SIWC connect is Oscar-owned.
 - **Web Search & Async Deep Research:** Fail-closed mock-first (`AZOM_USE_MOCK=1` offline fixtures; live egress gated by `AZOM_USE_MOCK=0` + process-env `AZOM_WEB_SEARCH_ENABLED=1` / `AZOM_WEB_FETCH_ENABLED=1` / `AZOM_RESEARCH_ENABLED=1` and kill-switches unset). Parallel, Exa, Brave, Tavily, opt-in SearXNG; `OutboundQueryFirewall` zero-PII/SSRF/nonce framing; 13 profiles (incl. `seo_content_radar` & `seo_vendor_vetting`); `<clarify>` scoping; lazy `ResearchWorkerPool`; Dashboard `/research`; CLI `search`/`fetch-url`/`research`; isolated from OpenRouter `$100` cap (`cost_usd=0.0`, `monthly_external_usd_cap: 25.0`) — [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md).
 - **SEO Studio (SE/NO/DK):** Mock-first WordPress/WooCommerce SEO Studio (`azom-ops-bridge` v1.2.0 `class-seo.php` + WooCommerce funnel canary paths `/`, `/shop/`, `/cart/`, `/checkout/` in `class-plugins.php`, read-only GSC `integrations/gsc.py` gated by `AZOM_GSC_ENABLED` / `AZOM_GSC_KILL`, `skills/ecom_ops/seo/` incl. `vendors.py`, `research_bridge.py` & `digest.py`, SQLite WAL `seo_studio.sqlite3`, Change Vault `seo_meta`/`media_alt` single + `batch_id` rollback for `seob-*`, Dashboard `/seo` + `/seo/vendors` + `/seo/parity` + `/seo/digest` with Autopilot/filter/SERP/Change Vault UX, CLI `seo ...` incl. `vendors` & `autopilot`, Bot `/seo ...` incl. `batch|gsc|parity|diff|digest|verify|vendors|autopilot`, 8 `wp_seo_*` tools in `TOOL_REGISTRY=77` incl. `wp_seo_autopilot` & `wp_seo_link_package(mode="vendors")`, 4 SEO playbooks in `PLAYBOOK_TOPICS=20`, `skills/wordpress-seo/SKILL.md`). Live writes gated by `AZOM_USE_MOCK=0` + `AZOM_SEO_WRITE_ENABLED=1` (`AZOM_SEO_KILL` unset) + Oscar `WP_OPS_ADMIN` SHA-256 HITL; link packages (`seol-*`) match vetted Nordic white-hat SEO shops, support draft edit, delivery tracking, read-only verification, and cumulative anchor-mix guardrails, export MD/JSON/CSV briefs, require Oscar `MARKETING_MUTATE`, and never buy links externally — [`docs/SEO_STUDIO.md`](docs/SEO_STUDIO.md).
+- **Webshop Intelligence (`shop_intel`):** Fail-closed, zero-PII store learning across 7 domains (`platform_rules`, `catalog_pricing`, `theme_architecture`, `brand_voice_copy`, `policies_legal`, `plugins_ecosystem`, `security_posture`) in `skills/ecom_ops/shop_intel/`, `config/shop_intel.yaml`, and read-only WooCommerce REST v3 endpoints (`integrations/woocommerce.py`). Stores SQLite WAL `shop_intel.sqlite3` (`si-*`/`sid-*`/`sif-*`, `security_score` `0–100`) and atomic `shop_intel_artifacts/<site_id>/latest.{json,md}` dossiers with zero LLM spend (`cost_usd=0.0`). Live egress gated by `AZOM_USE_MOCK=0` + process-env `AZOM_SHOP_INTEL_LIVE_ENABLED=1` (`AZOM_SHOP_INTEL_KILL` unset/`0`, both in `PROTECTED_OVERLAY_KEYS`); `AZOM_SHOP_INTEL_INJECT=0` disables nonce-framed `SHOP_INTEL_CONTEXT` injection (`wp_turn.py`, `chat_agent.py`, `cases/drafting.py`, `actions/support.py`, `actions/product_desc.py`, no-op when absent). Exposes 9 CLI `shop-intel` subcommands, Bot `/shop-intel` & `/store-learn` + `SHOP_INTEL_INTENT_RE`, Dashboard `/shop-intel` (5 routes, Oscar-only schedule), 4 read-only `wp_shop_intel_*` tools (`TOOL_REGISTRY=81`), 2 playbooks (`PLAYBOOK_TOPICS=22`), `prompts.yaml` `chat` v1.7 / `wp_coder` v1.6, `skills/webshop-intelligence/SKILL.md`, `ops_gc.prune_shop_intel_runs()`, and `azom-shop-intel.{service,timer}` via `bin/shop-intel.sh` — [`docs/SHOP_INTEL.md`](docs/SHOP_INTEL.md).
 
 ## Cases quick CLI
 
@@ -195,6 +197,20 @@ python -m ecom_ops --mock --actor jonatan seo audit --site mock-shop --scope med
 python -m ecom_ops --mock --actor jonatan seo vendors --market no --budget 15000 --links 6 --table
 python -m ecom_ops --mock --actor jonatan seo autopilot --site mock-shop --topic "Trådlös CarPlay Volvo & BMW" --market no --budget 15000 --links 6 --table
 python -m ecom_ops --mock --actor jonatan seo link-pack --site mock-shop --name "NO CarPlay Q2" --market no --budget 15000 --links 6 --export md
+```
+
+## Webshop Intelligence CLI (mock)
+
+```bash
+python -m ecom_ops --mock --actor jonatan shop-intel status --site mock-shop
+python -m ecom_ops --mock --actor jonatan shop-intel run --site mock-shop --mode full
+python -m ecom_ops --mock --actor jonatan shop-intel query --site mock-shop --domain policies_legal
+python -m ecom_ops --mock --actor jonatan shop-intel security --site mock-shop
+python -m ecom_ops --mock --actor jonatan shop-intel diff --site mock-shop
+python -m ecom_ops --mock --actor jonatan shop-intel context --site mock-shop --purpose support_draft
+python -m ecom_ops --mock --actor jonatan shop-intel export --site mock-shop --format md
+python -m ecom_ops --mock --actor oscar shop-intel schedule-set --site mock-shop --enabled --interval-hours 24
+python -m ecom_ops --mock --actor agent shop-intel schedule-run --site mock-shop
 ```
 
 ## Telegram / Messenger env (prod)

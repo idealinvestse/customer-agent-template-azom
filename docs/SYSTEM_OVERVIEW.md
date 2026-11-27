@@ -45,7 +45,7 @@
 | Skill metadata | `skills/ecom-ops/SKILL.md` | Moss/agent skill card |
 | Config (ro in Docker) | `config/*.yaml`, `customer.json` | sites, rbac, mailboxes, limits, cases_ai |
 | Data (rw) | `AZOM_DATA_DIR` | cases.db, oauth, secrets.env, telemetry, probes |
-| Dashboard | `infrastructure/dashboard/` | Thin `app.py` factory + `auth.py` / `core_routes.py` / `cases_routes.py` / `oscar_routes.py` / `marketing_routes.py` / `research_routes.py` / `wp_routes.py` / `oauth_routes.py` / `webhooks.py` / `health_routes.py` |
+| Dashboard | `infrastructure/dashboard/` | Thin `app.py` factory + `auth.py` / `core_routes.py` / `cases_routes.py` / `oscar_routes.py` / `marketing_routes.py` / `research_routes.py` / `seo_routes.py` / `shop_intel_routes.py` / `wp_routes.py` / `oauth_routes.py` / `webhooks.py` / `health_routes.py` |
 | Deploy | `bin/install*.sh`, `infrastructure/systemd/`, Docker | One-shot + services |
 
 **Surface roles:**
@@ -92,6 +92,7 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 | **Woo / WP** | `integrations/woocommerce.py`, `wordpress.py` | Content and store API — [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
 | **WordPress site ops** | `wp_ops/` | Mock health/backups, a separate theme/plugin file turn (windowed read, tree, literal search, named diff, web sub-budget + `wp_workspace_attach_research`), a separate homepage source review (four site-bound reads; fixed `php -l` runs when PHP exists, while browser/runtime remain unavailable), local-tree staging only after a plan-id button, production deploy still `BackupNotVerified`, key-only read-only SFTP with no remote shell, and immutable non-executable update/restore previews — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
 | **Web search & research** | `integrations/search/`, `research/*` | Fail-closed mock-first search (`parallel`, `exa`, `brave`, `tavily`, opt-in `searxng`, `mock`), `OutboundQueryFirewall`, DNS-pinned `_http_guard.py`, async `ResearchWorkerPool` (`res-*`), `<clarify>` scoping — [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
+| **Webshop Intelligence** | `shop_intel/` | Fail-closed mock-first 7-domain store learning (`si-*`), security & drift audit (`sif-*`/`sid-*`), zero-PII nonce-framed `SHOP_INTEL_CONTEXT` injection — [`SHOP_INTEL.md`](SHOP_INTEL.md) |
 | **smoke / readiness** | `smoke.py`, `ops_status.py` | Opt-in live smoke; `/health` poll age |
 
 ## 4. Cases 2.0 + Path B (AI)
@@ -144,6 +145,9 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/cases/poll` | POST | Manual poll |
 | `/marketing` | J/O | Ads+GA4 digest + suggest HITL |
 | `/research`, `/research/<res_id>` | `WEB_SEARCH` / `RESEARCH_RUN` | Research Hub (quick search, async jobs, status polling, steer, cancel, md/json export) |
+| `/shop-intel`, `/shop-intel/runs/<run_id>`, `/shop-intel/export` | `WP_OPS_READ` / `READ` | Webshop Intelligence dossier explorer, run detail (`si-*`), MD/JSON export |
+| `POST /shop-intel/run` | `WP_OPS_READ` + (`RESEARCH_RUN` \| `WP_OPS_OPERATE` \| `WP_OPS_ADMIN`) | Trigger Shop Intel learning pass (`full` \| `quick` \| `security`) |
+| `POST /shop-intel/schedule` | Oscar (`WP_OPS_ADMIN` \| `RESEARCH_ADMIN`) | Configure recurring per-site Shop Intel schedule |
 | `/wp`, `/wp/<id>` | `WP_OPS_READ` | WordPress site status. Unknown and mock-verified backups are not green |
 | `GET /wp/<id>/ssh` | `WP_OPS_READ` | Site root and SSH login. The private key is not shown. A viewer does not see the identity path |
 | `POST /wp/<id>/ssh` | `WP_OPS_ADMIN` | Save root, host, user, port, key, and a public host key. Does not open SSH |
@@ -201,6 +205,7 @@ python -m ecom_ops --actor oscar cases retention-purge [--dry-run]
 python -m ecom_ops --mock marketing digest|health|suggests|…
 python -m ecom_ops --mock wp sites|status|show|check|backup|backups|restore-drill|files|file-propose|file-apply|changes|change-show|rollback|rollback-batch|bridge-health|cache-flush|plugins-inventory|...
 python -m ecom_ops --mock seo audit|fix-propose|fix-apply|batch-propose|batch-apply|gsc|parity|deep-crawl|diff|digest|strategy|campaign|vendors|autopilot|link-pack|link-pack-status|link-verify|...
+python -m ecom_ops --mock shop-intel status|run|query|security|diff|context|export|schedule-run|schedule-set ...
 python -m ecom_ops --mock search|fetch-url|research ...
 python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends|soak-preflight
 python -m ecom_ops.bot
@@ -223,6 +228,7 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `config/marketing.yaml` | Ads/GA4 allowlists, mutate defaults, kill env names |
 | `config/wp_sites.yaml` | Live Azom production target; mock mode uses `config/wp_sites.mock.yaml`. Secret refs only |
 | `config/research.yaml` | Web search & Deep Research defaults, providers, budgets, egress, cache, 6 profiles |
+| `config/shop_intel.yaml` | Webshop Intelligence defaults, 7 domains, sample caps, retention, `SHOP_INTEL_CONTEXT` budgets |
 | `config/integrations.yaml` | mail presets; Google flags are **non-gating reserved** |
 | `config/dashboard.yaml` | reserved UI flags — **not loaded** by Python |
 | `config/customer.json` | customer metadata / KPIs |
@@ -250,6 +256,8 @@ Oscar connection probes are dashboard-only (`/oscar/secrets/test`), not CLI.
 | `AZOM_ADS_MUTATE_KILL` / `AZOM_GA_MUTATE_KILL` / `AZOM_MP_KILL` | Marketing mutate kills (`GA` reserved until admin mutate exists) |
 | `AZOM_WEB_SEARCH_ENABLED` / `AZOM_WEB_FETCH_ENABLED` / `AZOM_RESEARCH_ENABLED` | Process-env live gates for web search, page fetch, and async Deep Research (default `0`; protected overlay keys) |
 | `AZOM_WEB_SEARCH_KILL` / `AZOM_RESEARCH_KILL` | Emergency kill-switches for web search and Deep Research (protected overlay keys) |
+| `AZOM_SHOP_INTEL_LIVE_ENABLED` / `AZOM_SHOP_INTEL_KILL` | Process-env live gate (default `0`) and emergency kill-switch for Webshop Intelligence (protected overlay keys) |
+| `AZOM_SHOP_INTEL_INJECT` | Toggle `SHOP_INTEL_CONTEXT` prompt injection (default `1`; set `0` to disable while keeping dossiers) |
 | `PARALLEL_API_KEY` / `EXA_API_KEY` / `BRAVE_SEARCH_API_KEY` / `TAVILY_API_KEY` | Search provider API keys (Oscar-owned secrets) |
 | `AZOM_LIVE_SMOKE`, `AZOM_POLL_STALE_SEC` | Ops |
 | `METRICS_SCRAPE_TOKEN` | Required Bearer for `/metrics` (empty = 403) |
@@ -268,6 +276,7 @@ Docker data path: `/app/.azom-data` (see [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CON
 | `azom-daily-brief.timer` | Daily KPI brief |
 | `azom-backup.timer` | Data backup |
 | `azom-retention-purge.timer` | GDPR retention purge |
+| `azom-shop-intel.timer` | Daily Webshop Intelligence learning & drift check via `bin/shop-intel.sh` |
 
 Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md) · Docker: [`DOCKER_CONFIG_OVERLAY.md`](DOCKER_CONFIG_OVERLAY.md).
 
@@ -287,6 +296,7 @@ Install: [`AUTO_INSTALL.md`](AUTO_INSTALL.md) · Hetzner: [`DEPLOY_UBUNTU24_HETZ
 | `probe_last.json` | Last Oscar probe results |
 | `research_jobs.sqlite3`, `web_search_cache.sqlite3`, `research_artifacts/` | Deep Research jobs (`res-*`), `target_ref`, cached searches, exported briefs/sources |
 | `search_router_health.json` | Cross-process web search circuit breaker state (`0600`) |
+| `shop_intel.sqlite3`, `shop_intel_artifacts/` | Webshop Intelligence runs/facts/diffs/findings/schedules (`si-*`/`sid-*`/`sif-*`) and atomic zero-PII `latest.{json,md}` dossiers |
 
 ## 11. Security model
 
@@ -332,6 +342,7 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md). Per-surface code a
 | Model router (ChatGPT OAuth, optional xAI, OpenRouter fallback) | Shipped — live SIWC connect is Oscar's step — [`MODEL_ROUTER.md`](MODEL_ROUTER.md) |
 | WordPress site ops + theme/plugin toolbox | Shipped in repo — production write and restore stay refused — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
 | Dashboard (Tailwind, Alpine CSP, cases, marketing, `/wp`, Oscar models) | Shipped |
+| Webshop Intelligence (`shop_intel`) | Shipped — mock-first 7-domain learning + drift/security; live gated by `AZOM_SHOP_INTEL_LIVE_ENABLED` — [`SHOP_INTEL.md`](SHOP_INTEL.md) |
 | Telegram jobs + Messenger queue | Shipped in repo — production acceptance remains human |
 | Multi-tenant SaaS / FAQ / Meta ads | Deferred / parked |
 
@@ -347,4 +358,5 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md). Per-surface code a
 | Marketing Google (EN) | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Woo/WP (EN) | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |
 | Web search & research (EN) | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
+| Webshop Intelligence (EN) | [`SHOP_INTEL.md`](SHOP_INTEL.md) |
 | CLI (EN) | [`CLI_REFERENCE.md`](CLI_REFERENCE.md) |
