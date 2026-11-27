@@ -121,11 +121,46 @@ def load_app_config() -> AppConfig:
     )
 
 
+def _normalize_market_domain(domain: str) -> str:
+    raw = str(domain or "").strip().lower().lstrip(".")
+    if not raw:
+        return ""
+    if "://" in raw:
+        from urllib.parse import urlparse
+
+        raw = (urlparse(raw).hostname or "").strip().lower()
+    raw = raw.split("/", 1)[0].strip().rstrip(".")
+    if raw.startswith("azom.") and raw.count(".") == 1:
+        raw = raw.split(".", 1)[1]
+    elif "." in raw:
+        tail = raw.rsplit(".", 1)[-1]
+        if tail in {"no", "se", "dk", "fi"}:
+            raw = tail
+    return raw
+
+
 def woo_base_url_for_domain(domain: str) -> str:
     """Resolve WooCommerce base URL from env or convention."""
-    key = f"WOO_BASE_URL_{domain.upper()}"
-    env_url = os.environ.get(key) or os.environ.get("WOO_BASE_URL")
-    if env_url:
-        return env_url.rstrip("/")
+    clean = _normalize_market_domain(domain)
+    if clean:
+        for env_key in (
+            f"WOO_BASE_URL_{clean.upper()}",
+            f"WOO_{clean.upper()}_BASE_URL",
+        ):
+            domain_url = os.environ.get(env_key, "").strip()
+            if domain_url:
+                return domain_url.rstrip("/")
+
+    fallback_url = os.environ.get("WOO_BASE_URL", "").strip()
+    if fallback_url:
+        # Never route an explicit Nordic market (se/no/dk/fi) to a different market's host.
+        if clean in {"no", "se", "dk", "fi"}:
+            from urllib.parse import urlparse
+
+            host = (urlparse(fallback_url).hostname or "").lower()
+            other_markets = {"no", "se", "dk", "fi"} - {clean}
+            if any(host.endswith(f".{m}") for m in other_markets) or not host.endswith(f".{clean}"):
+                return f"https://azom.{clean}"
+        return fallback_url.rstrip("/")
     # Convention for multi-site pilot; override via env in production
-    return f"https://azom.{domain}"
+    return f"https://azom.{clean}" if clean else "https://azom.no"

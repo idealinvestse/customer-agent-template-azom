@@ -60,6 +60,24 @@ _NONCE_CHECK_RE = re.compile(
 )
 _CAPABILITY_CHECK_RE = re.compile(r"\bcurrent_user_can\s*\(")
 _ABSPATH_RE = re.compile(r"\b(?:ABSPATH|WP_UNINSTALL_PLUGIN|WPINC)\b")
+_MU_LIFECYCLE_HOOK_RE = re.compile(
+    r"(?<![A-Za-z0-9_>-])\b(register_(?:activation|deactivation|uninstall)_hook)\s*\("
+)
+_WOO_CALL_RE = re.compile(
+    r"(?<![A-Za-z0-9_>-])\b(WC|wc_get_order|wc_get_orders|wc_get_product|wc_get_products|"
+    r"wc_add_notice|wc_get_cart_url)\s*\("
+)
+_WOO_GUARD_RE = re.compile(
+    r"(?:class_exists\s*\(\s*['\"]\\?WooCommerce['\"]|"
+    r"function_exists\s*\(\s*['\"](?:WC|wc_get_order|wc_get_orders|wc_get_product|wc_get_products|wc_add_notice|wc_get_cart_url)['\"]|"
+    r"['\"](?:woocommerce_loaded|before_woocommerce_init|woocommerce_init)['\"]|"
+    r"Requires\s+Plugins\s*:[^\r\n]*\bwoocommerce\b)",
+    re.I,
+)
+_WOO_ORDER_TOUCH_RE = re.compile(
+    r"(?<![A-Za-z0-9_>-])\b(?:wc_get_order|wc_get_orders|WC_Order|woocommerce_order_|woocommerce_new_order)\b"
+)
+_HPOS_DECL_RE = re.compile(r"declare_compatibility\s*\([^)]*custom_order_tables", re.S)
 
 _DEPRECATED_WOO_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
@@ -401,13 +419,123 @@ def _check_json_file(path: str, content: str) -> list[dict[str, Any]]:
     return []
 
 
+def _is_mu_plugin_file(path: str, raw_content: str, component_kind: str | None) -> bool:
+    if component_kind == "mu_plugin":
+        return True
+    lower = path.lower().replace("\\", "/")
+    base = lower.rsplit("/", 1)[-1]
+    if "mu-plugins/" in lower or base.startswith(("mu-", "mu_")):
+        return True
+    return "muplugins_loaded" in raw_content or "must-use" in raw_content.lower()
+
+
+def _check_mu_activation_hooks(
+    path: str,
+    stripped: str,
+    in_string: list[bool],
+    raw_lines: list[str],
+    raw_content: str,
+    component_kind: str | None,
+) -> list[dict[str, Any]]:
+    if not _is_mu_plugin_file(path, raw_content, component_kind):
+        return []
+    findings: list[dict[str, Any]] = []
+    for match in _MU_LIFECYCLE_HOOK_RE.finditer(stripped):
+        pos = match.start()
+        if in_string[pos]:
+            continue
+        line_no = line_number(stripped, pos)
+        findings.append(
+            _finding(
+                "medium",
+                "mu_activation_hook_noop",
+                path,
+                line_no,
+                f"{match.group(1)}() never fires in MU-plugins; use muplugins_loaded or versioned options instead.",
+                _excerpt_at(raw_lines, line_no),
+            )
+        )
+    return findings
+
+
+def _check_unguarded_woo_calls(
+    path: str,
+    stripped: str,
+    in_string: list[bool],
+    raw_lines: list[str],
+    raw_content: str,
+) -> list[dict[str, Any]]:
+    lower = path.lower().replace("\\", "/")
+    if any(lower.startswith(prefix) or f"/{prefix}" in lower for prefix in _TEMPLATE_PREFIXES):
+        return []
+    if _WOO_GUARD_RE.search(raw_content):
+        return []
+    for match in _WOO_CALL_RE.finditer(stripped):
+        pos = match.start()
+        if in_string[pos]:
+            continue
+        line_no = line_number(stripped, pos)
+        return [
+            _finding(
+                "medium",
+                "unguarded_woo_call",
+                path,
+                line_no,
+                f"Unguarded WooCommerce call {match.group(1)}() without class_exists('WooCommerce') or function_exists() guard.",
+                _excerpt_at(raw_lines, line_no),
+            )
+        ]
+    return []
+
+
+def _check_missing_hpos_declaration(
+    path: str,
+    stripped: str,
+    in_string: list[bool],
+    raw_lines: list[str],
+    *,
+    bundle_has_hpos: bool,
+    component_kind: str | None,
+) -> list[dict[str, Any]]:
+    if bundle_has_hpos or component_kind == "theme":
+        return []
+    lower = path.lower().replace("\\", "/")
+    if lower == "functions.php" or any(
+        lower.startswith(prefix) or f"/{prefix}" in lower for prefix in _TEMPLATE_PREFIXES
+    ):
+        return []
+    for match in _WOO_ORDER_TOUCH_RE.finditer(stripped):
+        pos = match.start()
+        if in_string[pos]:
+            continue
+        line_no = line_number(stripped, pos)
+        return [
+            _finding(
+                "medium",
+                "missing_hpos_declaration",
+                path,
+                line_no,
+                "Plugin interacts with WooCommerce orders without declaring HPOS (custom_order_tables) compatibility.",
+                _excerpt_at(raw_lines, line_no),
+            )
+        ]
+    return []
+
+
 def run_static_checks(
     files: dict[str, str] | list[tuple[str, str]],
     max_findings: int = 40,
+    *,
+    component_kind: str | None = None,
 ) -> dict[str, Any]:
     """Run pure-Python security and WordPress/WooCommerce quality checks."""
     normalized_files = iter_source_files(files)
     all_findings: list[dict[str, Any]] = []
+    bundle_has_hpos = any(
+        bool(_HPOS_DECL_RE.search(content))
+        for path, content in normalized_files
+        if any(path.lower().endswith(ext) for ext in _PHP_EXTENSIONS)
+    )
 
     for path, content in normalized_files:
         lower = path.lower()
@@ -426,6 +554,22 @@ def run_static_checks(
         all_findings.extend(_check_dangerous_exec(path, stripped, in_string, raw_lines))
         all_findings.extend(_check_ajax_and_post_guards(path, stripped, raw_lines))
         all_findings.extend(_check_deprecated_woo(path, stripped, in_string, raw_lines))
+        all_findings.extend(
+            _check_mu_activation_hooks(path, stripped, in_string, raw_lines, content, component_kind)
+        )
+        all_findings.extend(
+            _check_unguarded_woo_calls(path, stripped, in_string, raw_lines, content)
+        )
+        all_findings.extend(
+            _check_missing_hpos_declaration(
+                path,
+                stripped,
+                in_string,
+                raw_lines,
+                bundle_has_hpos=bundle_has_hpos,
+                component_kind=component_kind,
+            )
+        )
         all_findings.extend(_check_missing_abspath(path, stripped, raw_lines))
 
     all_findings.sort(

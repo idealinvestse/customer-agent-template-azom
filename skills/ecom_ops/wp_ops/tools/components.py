@@ -59,6 +59,69 @@ from ecom_ops.wp_ops.tools.validation import (
 from ecom_ops.wp_ops.tools.workspace_io import authorize_editor_site
 from ecom_ops.wp_ops.wporg_intel import fetch_component_intel
 
+_COMPONENT_KINDS = frozenset({"theme", "plugin", "mu_plugin"})
+_DEFAULT_CRITICAL_PLUGIN_SLUGS = frozenset(
+    {
+        "woocommerce",
+        "klarna-checkout-for-woocommerce",
+        "klarna-payments-for-woocommerce",
+        "woo-vipps",
+        "woocommerce-gateway-stripe",
+        "svea-checkout-for-woocommerce",
+        "azom-ops-bridge",
+    }
+)
+_REQUIRES_PLUGINS_RE = re.compile(r"(?im)^\s*(?:\*\s*)?Requires\s+Plugins:\s*([^\r\n*]+)")
+_HOOK_PRIORITY_RE = re.compile(
+    r"""\b(add_action|add_filter|do_action|apply_filters)\s*\(\s*(['"])([A-Za-z0-9_.:/-]{1,100})\2(?:\s*,\s*([^,\)\r\n]{1,80}))?(?:\s*,\s*(-?\d+))?"""
+)
+
+
+def _critical_plugin_slugs() -> frozenset[str]:
+    try:
+        from ecom_ops.wp_ops.plugin_policy import CRITICAL_PLUGIN_SLUGS
+
+        return frozenset(CRITICAL_PLUGIN_SLUGS)
+    except Exception:
+        return _DEFAULT_CRITICAL_PLUGIN_SLUGS
+
+
+def _parse_requires_plugins(body: str) -> list[str]:
+    if not body:
+        return []
+    match = _REQUIRES_PLUGINS_RE.search(body[:8192])
+    if not match:
+        return []
+    out: list[str] = []
+    for raw_part in match.group(1).split(","):
+        slug = raw_part.strip().lower()
+        if slug and INTEL_SLUG_RE.fullmatch(slug) and slug not in out:
+            out.append(slug)
+        if len(out) >= 16:
+            break
+    return out
+
+
+def _extract_hook_priorities(body: str) -> list[dict[str, Any]]:
+    if not body:
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, int | None]] = set()
+    for kind_fn, _quote, hook_name, raw_cb, raw_prio in _HOOK_PRIORITY_RE.findall(body):
+        cb = (raw_cb or "").strip().strip("'\"")[:80] if raw_cb else ""
+        if kind_fn in {"add_action", "add_filter"}:
+            prio: int | None = int(raw_prio) if raw_prio is not None and raw_prio != "" else 10
+        else:
+            prio = None
+        key = (kind_fn, hook_name, cb, prio)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"kind": kind_fn, "hook": hook_name, "callback": cb, "priority": prio})
+        if len(out) >= 30:
+            break
+    return out
+
 
 def _facade_attr(name: str, default: Any) -> Any:
     facade = sys.modules.get("ecom_ops.wp_ops.agent_tools")
@@ -497,7 +560,7 @@ def _playbook_outcome(data: dict[str, Any], _reads: int | None) -> str:
         "type": "object",
         "properties": {
             "site_id": {"type": "string", "pattern": SITE_ID_RE.pattern},
-            "kind": {"type": "string", "enum": ["theme", "plugin"]},
+            "kind": {"type": "string", "enum": ["theme", "plugin", "mu_plugin"]},
             "slug": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9_-]{0,60}$"},
             "path": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,219}$"},
             "offset": {"type": "integer", "minimum": 0, "maximum": 65536},
@@ -527,7 +590,7 @@ def handle_read_theme_plugin_file(
     relative = arguments.get("path")
     if (
         not isinstance(kind, str)
-        or kind not in {"theme", "plugin"}
+        or kind not in _COMPONENT_KINDS
         or not isinstance(slug, str)
         or not SLUG_RE.fullmatch(slug)
         or not isinstance(relative, str)
@@ -722,7 +785,7 @@ def handle_component_context(tools: Any, ctx: ToolContext, _arguments: dict[str,
         "type": "object",
         "properties": {
             "site_id": {"type": "string"},
-            "kind": {"type": "string", "enum": ["theme", "plugin"]},
+            "kind": {"type": "string", "enum": ["theme", "plugin", "mu_plugin"]},
         },
         "required": ["kind"],
         "additionalProperties": False,
@@ -735,7 +798,7 @@ def handle_component_context(tools: Any, ctx: ToolContext, _arguments: dict[str,
 def handle_list_components(tools: Any, ctx: ToolContext, arguments: dict[str, Any]) -> ToolOutput:
     site_id = str(ctx.site_id)
     kind = arguments.get("kind")
-    if not isinstance(kind, str) or kind not in {"theme", "plugin"}:
+    if not isinstance(kind, str) or kind not in _COMPONENT_KINDS:
         return ToolOutput(error_payload("InvalidToolArguments"), site_id)
     listed = tools.service.list_components(site_id, kind, actor=ctx.actor)
     if listed.ok and isinstance(listed.data, dict):
@@ -974,6 +1037,7 @@ def handle_plugin_overview(tools: Any, ctx: ToolContext, arguments: dict[str, An
     )
     wc_match = WC_TESTED_RE.search(scrubbed_body) if scrubbed_body else None
     wc_tested = wc_match.group(1).strip()[:32] if wc_match and wc_match.group(1).strip() else None
+    requires_plugins = _parse_requires_plugins(scrubbed_body)
     hooks: list[str] = []
     seen_hooks: set[str] = set()
     if scrubbed_body:
@@ -983,6 +1047,44 @@ def handle_plugin_overview(tools: Any, ctx: ToolContext, arguments: dict[str, An
                 hooks.append(hook_name)
                 if len(hooks) >= 30:
                     break
+    hook_priorities = _extract_hook_priorities(scrubbed_body)
+    auto_update: bool | None = None
+    update_available: bool | None = None
+    new_version: str | None = None
+    is_critical = slug.lower() in _critical_plugin_slugs()
+    inv_fn = getattr(tools.service, "plugin_inventory", None)
+    if callable(inv_fn):
+        try:
+            inv_res = inv_fn(site_id, actor=ctx.actor, include_updates=True, include_wporg=False)
+            if inv_res.ok and isinstance(inv_res.data, dict):
+                for prow in inv_res.data.get("plugins") or []:
+                    if not isinstance(prow, dict):
+                        continue
+                    prow_slug = str(prow.get("slug") or "")
+                    if prow_slug != slug:
+                        continue
+                    if isinstance(prow.get("auto_update"), bool):
+                        auto_update = prow["auto_update"]
+                    if isinstance(prow.get("update_available"), bool):
+                        update_available = prow["update_available"]
+                    if isinstance(prow.get("new_version"), str) and prow["new_version"]:
+                        new_version = short_text(prow["new_version"], 32)
+                    if prow.get("is_critical") is True:
+                        is_critical = True
+                    inv_req = prow.get("requires_plugins")
+                    if isinstance(inv_req, list):
+                        for req_slug in inv_req:
+                            if isinstance(req_slug, str) and req_slug.strip() and req_slug.strip() not in requires_plugins:
+                                requires_plugins.append(req_slug.strip())
+                    if not rest_meta["version"] and isinstance(prow.get("version"), str) and prow["version"]:
+                        rest_meta["version"] = short_text(prow["version"], 32)
+                    if not rest_meta["requires_wp"] and isinstance(prow.get("requires_wp"), str) and prow["requires_wp"]:
+                        rest_meta["requires_wp"] = short_text(prow["requires_wp"], 24)
+                    if not rest_meta["requires_php"] and isinstance(prow.get("requires_php"), str) and prow["requires_php"]:
+                        rest_meta["requires_php"] = short_text(prow["requires_php"], 24)
+                    break
+        except Exception:
+            pass
     try:
         recommended: str | None = site_plugin_slug(site_id)
     except ReviewError:
@@ -1004,9 +1106,15 @@ def handle_plugin_overview(tools: Any, ctx: ToolContext, arguments: dict[str, An
             "plugin_status": rest_meta["status"],
             "requires_wp": rest_meta["requires_wp"],
             "requires_php": rest_meta["requires_php"],
+            "requires_plugins": requires_plugins,
+            "auto_update": auto_update,
+            "update_available": update_available,
+            "new_version": new_version,
+            "is_critical": is_critical,
             "has_woo_hpos_declaration": has_hpos,
             "wc_tested_up_to": wc_tested,
             "hooks": hooks,
+            "hook_priorities": hook_priorities,
             "entries": entries,
             "truncated": truncated,
             "third_party_edit_policy": policy,
@@ -1027,7 +1135,7 @@ def handle_plugin_overview(tools: Any, ctx: ToolContext, arguments: dict[str, An
         "type": "object",
         "properties": {
             "site_id": {"type": "string"},
-            "kind": {"type": "string"},
+            "kind": {"type": "string", "enum": ["theme", "plugin", "mu_plugin"]},
             "slug": {"type": "string"},
             "path": {"type": "string"},
         },
@@ -1046,7 +1154,7 @@ def handle_list_component_tree(tools: Any, ctx: ToolContext, arguments: dict[str
     relative = arguments.get("path", "")
     if (
         not isinstance(kind, str)
-        or kind not in {"theme", "plugin"}
+        or kind not in _COMPONENT_KINDS
         or not isinstance(slug, str)
         or not SLUG_RE.fullmatch(slug)
         or not isinstance(relative, str)
@@ -1195,12 +1303,12 @@ def handle_search_component(tools: Any, ctx: ToolContext, arguments: dict[str, A
         err = error_payload("InvalidToolArguments")
         err["hint"] = (
             "Ange antingen plan_id (för att söka i arbetsytan) eller både kind och slug "
-            "(för att söka i ett installerat tema/plugin)."
+            "(för att söka i ett installerat tema/plugin/MU-plugin)."
         )
         return ToolOutput(err, site_id)
     if (
         not isinstance(kind, str)
-        or kind not in {"theme", "plugin"}
+        or kind not in _COMPONENT_KINDS
         or not isinstance(slug, str)
         or not SLUG_RE.fullmatch(slug)
     ):
@@ -1237,7 +1345,7 @@ def handle_search_component(tools: Any, ctx: ToolContext, arguments: dict[str, A
         "type": "object",
         "properties": {
             "site_id": {"type": "string"},
-            "kind": {"type": "string", "enum": ["theme", "plugin"]},
+            "kind": {"type": "string", "enum": ["theme", "plugin", "mu_plugin"]},
             "slug": {"type": "string"},
             "path": {"type": "string"},
             "plan_id": {"type": "string"},
@@ -1274,7 +1382,7 @@ def handle_code_index(tools: Any, ctx: ToolContext, arguments: dict[str, Any]) -
     query = arguments.get("query")
     symbols = arguments.get("symbols")
 
-    if "kind" in arguments and (not isinstance(kind, str) or kind not in {"theme", "plugin"}):
+    if "kind" in arguments and (not isinstance(kind, str) or kind not in _COMPONENT_KINDS):
         return ToolOutput(error_payload("InvalidToolArguments"), site_id)
     if "slug" in arguments and (not isinstance(slug, str) or not SLUG_RE.fullmatch(slug)):
         return ToolOutput(error_payload("InvalidFileTarget"), site_id)

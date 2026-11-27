@@ -43,13 +43,30 @@ def _chmod_quiet(path: Path, mode: int | None) -> None:
         pass
 
 
+def _acquire_posix_lock(fd: int, *, timeout_s: float, raise_on_timeout: bool) -> bool:
+    """Acquire non-blocking POSIX ``fcntl.flock`` with bounded timeout."""
+    import fcntl
+
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                if raise_on_timeout:
+                    raise
+                return False
+            time.sleep(0.02)
+
+
 @contextlib.contextmanager
 def advisory_file_lock(
     lock_path: Path,
     *,
     timeout_s: float = 5.0,
     mode: int | None = None,
-    raise_on_timeout: bool = False,
+    raise_on_timeout: bool = True,
 ) -> Iterator[None]:
     """Cross-platform advisory exclusive file lock (``fcntl.flock`` / ``msvcrt.locking``)."""
     path = Path(lock_path)
@@ -83,10 +100,11 @@ def advisory_file_lock(
                         break
                     time.sleep(0.02)
         else:
-            import fcntl
-
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            locked = True
+            locked = _acquire_posix_lock(
+                fh.fileno(),
+                timeout_s=timeout_s,
+                raise_on_timeout=raise_on_timeout,
+            )
         yield
     finally:
         if locked:

@@ -453,6 +453,28 @@ class FileEditor:
                     row["applied_by"] = actor
 
         self.store.update(mutate)
+        from ecom_ops.wp_ops.change_ledger import safe_record_change
+
+        rel_key = str(plan.get("relative_path") or resolved)
+        safe_record_change(
+            data_dir=self.store.path.parent,
+            site_id=site.id,
+            environment=site.environment,
+            category="file_edit",
+            transport="local_mock",
+            actor=actor,
+            summary=f"Filändring {plan_id}: {plan.get('kind')}/{plan.get('slug')}/{rel_key}",
+            target_ref=f"{plan_id}:{plan.get('kind')}/{plan.get('slug')}/{rel_key}",
+            file_entries=[{"path": rel_key, "op": "updated"}],
+            before_files={rel_key: current.encode("utf-8")},
+            after_files={rel_key: written.encode("utf-8")},
+            metadata={
+                "plan_id": plan_id,
+                "kind": plan.get("kind"),
+                "slug": plan.get("slug"),
+                "relative_path": rel_key,
+            },
+        )
         self.audit_file(
             actor,
             site,
@@ -876,13 +898,16 @@ class FileChangeOps:
             return editor.fail_result("PlanExpired", "The edit plan has expired.")
         try:
             payload = self.payloads.read(plan_id)
+        except TransportError as exc:
+            return editor.fail_result(exc.error_class, transport_message(exc.error_class))
+        try:
             resolved = resolve_file(
                 site.files_root,
                 str(plan.get("kind") or ""),
                 str(plan.get("slug") or ""),
                 str(plan.get("relative_path") or ""),
             )
-        except (PathRejected, TransportError):
+        except PathRejected:
             return editor.fail_result("PathRejected", "Kind or path is not editable.")
         if sha256_digest(payload["new_text"].encode()) != plan.get("after_digest"):
             return editor.fail_result("DigestMismatch", "The stored diff does not match the plan.")
@@ -937,6 +962,9 @@ class FileChangeOps:
     def _prepare_stage(self, plan_id: str, *, actor: str) -> tuple[Any, ...] | WpOpsResult:
         """Check every staging guard. The tuple is ready to write; a result is a refusal."""
         editor = self.editor
+        denied_early = editor.need(actor, Permission.WP_OPS_OPERATE, action="wp_ops_file_edit")
+        if denied_early is not None:
+            return denied_early
         plan = self._load_plan(plan_id, None)
         if plan is None:
             return editor.fail_result("UnknownPlan", "Unknown edit plan.")
@@ -1025,73 +1053,128 @@ class FileChangeOps:
     def stage(self, plan_id: str, *, actor: str) -> WpOpsResult:
         """Write a staging plan on the local mock tree. Live transport is refused."""
         editor = self.editor
-        prepared = self._prepare_stage(plan_id, actor=actor)
-        if isinstance(prepared, WpOpsResult):
-            return prepared
-        site, plan, proposed, resolved, transport = prepared
+        denied_early = editor.need(actor, Permission.WP_OPS_OPERATE, action="wp_ops_file_edit")
+        if denied_early is not None:
+            return denied_early
+        plan_row = self._load_plan(plan_id, None)
+        if plan_row is None:
+            return editor.fail_result("UnknownPlan", "Unknown edit plan.")
+        site_id = str(plan_row.get("site_id") or "")
+        locked = editor.lock(site_id)
+        if not locked.acquire(blocking=False):
+            return editor.fail_result("SiteBusy", "Site check already running", executed=False)
         try:
-            if plan.get("created") is True:
-                transport.create_bytes(resolved, proposed.encode())
-            else:
-                transport.write_bytes(resolved, proposed.encode())
-        except PathRejected:
-            return editor.fail_result("PathRejected", "Kind or path is not editable.")
-        except TransportError as exc:
-            return editor.fail_result(exc.error_class, transport_message(exc.error_class))
-        written = editor.read_text(site, resolved)
-        if sha256_digest(written.encode()) != plan.get("after_digest"):
-            return editor.fail_result("DigestMismatch", "The written file does not match the plan.")
-        self._set_status(plan_id, "staged", actor=actor)
-        self.payloads.delete(plan_id)
-        editor.audit_file(
-            actor,
-            site,
-            success=True,
-            error_class=None,
-            operation="file_stage",
-            path=resolved,
-            byte_length=len(written.encode()),
-            plan_id=plan_id,
-            digest=str(plan.get("after_digest") or ""),
-        )
-        return WpOpsResult(
-            ok=True,
-            message="staged",
-            data={
-                "ok": True,
-                "status": "staged",
-                "plan_id": plan_id,
-                "site_id": site.id,
-                "environment": site.environment,
-                "executed": True,
-                "ssh": False,
-                "live_calls": False,
-            },
-        )
+            prepared = self._prepare_stage(plan_id, actor=actor)
+            if isinstance(prepared, WpOpsResult):
+                return prepared
+            site, plan, proposed, resolved, transport = prepared
+            before_bytes: bytes | None = None
+            if plan.get("created") is not True:
+                try:
+                    before_bytes = transport.read_bytes(resolved)
+                except Exception:
+                    before_bytes = None
+            try:
+                if plan.get("created") is True:
+                    transport.create_bytes(resolved, proposed.encode())
+                else:
+                    transport.write_bytes(resolved, proposed.encode())
+            except PathRejected:
+                return editor.fail_result("PathRejected", "Kind or path is not editable.")
+            except TransportError as exc:
+                return editor.fail_result(exc.error_class, transport_message(exc.error_class))
+            written = editor.read_text(site, resolved)
+            if sha256_digest(written.encode()) != plan.get("after_digest"):
+                return editor.fail_result("DigestMismatch", "The written file does not match the plan.")
+            self._set_status(plan_id, "staged", actor=actor)
+            self.payloads.delete(plan_id)
+            from ecom_ops.wp_ops.change_ledger import safe_record_change
+
+            rel_key = str(plan.get("relative_path") or resolved)
+            op_kind = "created" if plan.get("created") is True else "updated"
+            safe_record_change(
+                data_dir=editor.store.path.parent,
+                site_id=site.id,
+                environment=site.environment,
+                category="file_edit",
+                transport="local_mock",
+                actor=actor,
+                summary=str(plan.get("summary") or f"Staging {plan_id}: {rel_key}"),
+                target_ref=f"{plan_id}:{plan.get('kind')}/{plan.get('slug')}/{rel_key}",
+                file_entries=[{"path": rel_key, "op": op_kind}],
+                before_files=({rel_key: before_bytes} if before_bytes is not None else {}),
+                after_files={rel_key: written.encode("utf-8")},
+                metadata={
+                    "plan_id": plan_id,
+                    "kind": plan.get("kind"),
+                    "slug": plan.get("slug"),
+                    "relative_path": rel_key,
+                },
+            )
+            editor.audit_file(
+                actor,
+                site,
+                success=True,
+                error_class=None,
+                operation="file_stage",
+                path=resolved,
+                byte_length=len(written.encode()),
+                plan_id=plan_id,
+                digest=str(plan.get("after_digest") or ""),
+            )
+            return WpOpsResult(
+                ok=True,
+                message="staged",
+                data={
+                    "ok": True,
+                    "status": "staged",
+                    "plan_id": plan_id,
+                    "site_id": site.id,
+                    "environment": site.environment,
+                    "executed": True,
+                    "ssh": False,
+                    "live_calls": False,
+                },
+            )
+        finally:
+            locked.release()
 
     def deny(self, plan_id: str, *, actor: str) -> WpOpsResult:
         editor = self.editor
+        denied_early = editor.need(actor, Permission.WP_OPS_OPERATE, action="wp_ops_file_edit")
+        if denied_early is not None:
+            return denied_early
         plan = self._load_plan(plan_id, None)
         if plan is None:
             return editor.fail_result("UnknownPlan", "Unknown edit plan.")
-        _site, denied = editor.resolve_site(str(plan.get("site_id") or ""), actor, write=True)
+        site_id = str(plan.get("site_id") or "")
+        _site, denied = editor.resolve_site(site_id, actor, write=True)
         if denied is not None:
             return denied
-        if plan.get("status") not in {"pending_review", "validated"}:
-            return editor.fail_result("PlanNotPending", "Edit plan is not pending.")
-        self.payloads.delete(plan_id)
-        self._set_status(plan_id, "denied", actor=actor)
-        return WpOpsResult(
-            ok=True,
-            message="denied",
-            data={
-                "ok": True,
-                "status": "denied",
-                "plan_id": plan_id,
-                "executed": False,
-                "live_calls": False,
-            },
-        )
+        locked = editor.lock(site_id)
+        if not locked.acquire(blocking=False):
+            return editor.fail_result("SiteBusy", "Site check already running", executed=False)
+        try:
+            plan = self._load_plan(plan_id, None)
+            if plan is None:
+                return editor.fail_result("UnknownPlan", "Unknown edit plan.")
+            if plan.get("status") not in {"pending_review", "validated"}:
+                return editor.fail_result("PlanNotPending", "Edit plan is not pending.")
+            self.payloads.delete(plan_id)
+            self._set_status(plan_id, "denied", actor=actor)
+            return WpOpsResult(
+                ok=True,
+                message="denied",
+                data={
+                    "ok": True,
+                    "status": "denied",
+                    "plan_id": plan_id,
+                    "executed": False,
+                    "live_calls": False,
+                },
+            )
+        finally:
+            locked.release()
 
     def request_production(self, site_id: str, plan_id: str, *, actor: str) -> WpOpsResult:
         editor = self.editor

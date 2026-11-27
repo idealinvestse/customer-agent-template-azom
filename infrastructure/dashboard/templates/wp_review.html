@@ -116,7 +116,7 @@
       {{ ui.status_badge('ok' if plan.check_run and plan.check_run.published else 'neutral', 'Publicerade kontroller: ' ~ ('Ja' if plan.check_run and plan.check_run.published else 'Nej')) }}
       {{ ui.status_badge('warn', 'Läge: ' ~ (label or 'mock')) }}
       {{ ui.status_badge('neutral', 'Giltig till: ' ~ (expires_at_fmt or fmt_dt(plan.expires_at) or '—')) }}
-      {{ ui.status_badge('warn', 'Restore: Ej i MVP') }}
+      {{ ui.status_badge('info', 'Rollback: Change Vault (snapshot)') }}
       {% if variant_group %}
       {{ ui.status_badge('info', 'Variantgrupp: ' ~ variant_group) }}
       {% endif %}
@@ -313,8 +313,8 @@
       {% for c in comments %}
       <li class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3 text-sm">
         <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-mist-400">
-          <span class="font-semibold text-mist-200">{{ c.author or '—' }}</span>
-          <span class="tabular-nums">{{ fmt_dt(c.created_at) or c.created_at or '' }}</span>
+          <span class="font-semibold text-mist-200">{{ c.actor or c.author or '—' }}</span>
+          <span class="tabular-nums">{{ fmt_dt(c.at or c.created_at) or c.at or c.created_at or '' }}</span>
         </div>
         <p class="mt-1.5 text-mist-100 whitespace-pre-wrap">{{ c.text }}</p>
       </li>
@@ -380,7 +380,15 @@
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
           <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
-          <button class="az-btn-oscar az-btn-sm" type="submit" data-review-action="staging" data-busy-label="Godkänner...">Godkänn lokal staging</button>
+          <button
+            class="az-btn-oscar az-btn-sm"
+            type="submit"
+            data-review-action="staging"
+            data-confirm="Tillämpa ändringarna i {{ plan.plan_id }} till lokal staging?"
+            data-confirm-title="Godkänn lokal staging"
+            data-confirm-ok="Godkänn staging"
+            data-busy-label="Godkänner..."
+          >Godkänn lokal staging</button>
         </form>
 
         <form method="post" action="{{ url_for('wp_review_extend', site_id=plan.site_id, plan_id=plan.plan_id) }}">
@@ -399,14 +407,46 @@
         </form>
       </div>
 
-      {% if page_draft or is_standalone_page %}
+      <div class="border-t border-ink-700/80 pt-3 space-y-2" data-deploy-live-panel="true">
+        <p class="az-muted text-xs">Kontrollerad deploy via <strong>Azom Ops Bridge</strong> eller <strong>*-wp-deployer SFTP</strong> med automatiskt snapshot i <a class="text-steel-300 hover:underline" href="{{ url_for('wp_changes', site_id=plan.site_id) }}">Ändringsloggen</a>.</p>
+        <form method="post" action="{{ url_for('wp_review_deploy_live', site_id=plan.site_id, plan_id=plan.plan_id) }}" class="flex flex-wrap items-center gap-2">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
+          <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
+          <select name="transport_mode" aria-label="Deploy-transport" class="az-select text-xs">
+            <option value="auto" selected>Auto (Bridge / SFTP)</option>
+            <option value="bridge">Azom Ops Bridge</option>
+            <option value="sftp_deploy">*-wp-deployer SFTP</option>
+          </select>
+          <button
+            class="az-btn-oscar az-btn-sm"
+            type="submit"
+            data-review-action="deploy-live"
+            {% if plan.status not in ['tests_passed', 'staged', 'production_review'] %}disabled aria-disabled="true"{% endif %}
+            data-confirm="Deploya {{ plan.plan_id }} med automatiskt före-snapshot och hälsokontroll?"
+            data-confirm-title="Deploya med snapshot"
+            data-confirm-ok="Deploya"
+            data-busy-label="Deployar..."
+          >Deploya med snapshot</button>
+        </form>
+      </div>
+
+      {% if (page_draft or is_standalone_page) and not (draft_page and draft_page.get('id')) %}
       <div class="border-t border-ink-700/80 pt-3 space-y-2.5" data-push-draft-section="true">
         <p class="az-muted text-xs">Skapar endast ett WordPress-utkast (<code class="az-code font-mono">status="draft"</code>) — publicerar aldrig automatiskt.</p>
         <form method="post" action="{{ url_for('wp_review_push_draft', site_id=plan.site_id, plan_id=plan.plan_id) }}">
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <input type="hidden" name="base_sha256" value="{{ plan.base_sha256 }}" />
           <input type="hidden" name="work_sha256" value="{{ plan.work_sha256 }}" />
-          <button class="az-btn-primary az-btn-sm" type="submit" data-review-action="push-draft" data-busy-label="Skickar utkast...">Skicka som WordPress-utkast (draft)</button>
+          <button
+            class="az-btn-primary az-btn-sm"
+            type="submit"
+            data-review-action="push-draft"
+            data-confirm="Skicka sidutkastet i {{ plan.plan_id }} till WordPress som draft?"
+            data-confirm-title="Skicka WordPress-utkast"
+            data-confirm-ok="Skicka utkast"
+            data-busy-label="Skickar utkast..."
+          >Skicka som WordPress-utkast (draft)</button>
         </form>
       </div>
       {% endif %}

@@ -105,9 +105,11 @@ def approve_staging(
                 "och inga deployerbara tema-/plugin-filer.",
                 plan_id=plan_id,
             )
-        new_component = plan.get("theme_relationship") in {"no_child", "site_plugin"}
+        new_component = plan.get("theme_relationship") in {"no_child", "site_plugin", "mu_plugin"}
         actions: list[tuple[str, str, str, bytes | None]] = []
         notes: list[dict[str, Any]] = []
+        before_files: dict[str, bytes] = {}
+        after_files: dict[str, bytes] = {}
         for op, relative, data, in_base in diff_ops:
             try:
                 absolute = resolve_file(
@@ -122,14 +124,17 @@ def approve_staging(
                     return _fail("PathRejected", "Sökvägen avvisades.", plan_id=plan_id)
                 if local_target.is_dir():
                     return _fail("PathRejected", "Katalog kan inte raderas.", plan_id=plan_id)
+                if local_target.is_file():
+                    before_files[relative] = local_target.read_bytes()
                 actions.append(("delete", absolute, relative, None))
                 notes.append({"path": relative, "op": "deleted", "bytes": 0, "sha256": None})
                 continue
 
             assert data is not None
             exists_on_staging = True
+            existing_bytes: bytes | None = None
             try:
-                transport.read_bytes(absolute)
+                existing_bytes = transport.read_bytes(absolute)
             except TransportError as exc:
                 if exc.error_class == "FileMissing":
                     exists_on_staging = False
@@ -139,30 +144,73 @@ def approve_staging(
                 return _fail("FileMissing", "Filen finns inte på mockträdet.", plan_id=plan_id)
 
             if exists_on_staging:
+                if existing_bytes is not None:
+                    before_files[relative] = existing_bytes
+                after_files[relative] = data
                 actions.append(("write", absolute, relative, data))
                 notes.append({"path": relative, "op": "updated", "bytes": len(data), "sha256": _sha(data)})
             elif in_base and not new_component:
                 return _fail("FileMissing", "Filen finns inte på mockträdet.", plan_id=plan_id)
             else:
+                after_files[relative] = data
                 actions.append(("create", absolute, relative, data))
                 notes.append({"path": relative, "op": "created", "bytes": len(data), "sha256": _sha(data)})
 
-        for action, absolute, _relative, data in actions:
-            if action == "write":
-                assert data is not None
-                transport.write_bytes(absolute, data)
-            elif action == "create":
-                assert data is not None
-                transport.create_bytes(absolute, data, overwrite=False)
-            elif action == "delete":
-                local_target = transport._local_checked(absolute)
-                if local_target.is_file():
-                    backup = local_target.with_name(local_target.name + ".azom-bak")
-                    backup.write_bytes(local_target.read_bytes())
-                    local_target.unlink()
+        applied_actions: list[tuple[str, str, str]] = []
+        try:
+            for action, absolute, relative, data in actions:
+                if action == "write":
+                    assert data is not None
+                    transport.write_bytes(absolute, data)
+                elif action == "create":
+                    assert data is not None
+                    transport.create_bytes(absolute, data, overwrite=False)
+                elif action == "delete":
+                    local_target = transport._local_checked(absolute)
+                    if local_target.is_file():
+                        backup = local_target.with_name(local_target.name + ".azom-bak")
+                        backup.write_bytes(local_target.read_bytes())
+                        local_target.unlink()
+                applied_actions.append((action, absolute, relative))
+        except Exception as exc:
+            # Atomic rollback of partial local staging writes on error.
+            for prev_action, prev_abs, prev_rel in reversed(applied_actions):
+                try:
+                    if prev_action in {"write", "delete"} and prev_rel in before_files:
+                        transport.create_bytes(prev_abs, before_files[prev_rel], overwrite=True)
+                    elif prev_action == "create":
+                        target_p = transport._local_checked(prev_abs)
+                        if target_p.is_file():
+                            target_p.unlink()
+                except Exception:
+                    pass
+            return _fail("StagingWriteFailed", f"Staging-skrivning avbröts: {type(exc).__name__}", plan_id=plan_id)
+
         plan["status"] = "staged"
         plan["label"] = "mock"
         plans_obj._replace(plan)
+        from ecom_ops.wp_ops.change_ledger import safe_record_change
+
+        safe_record_change(
+            data_dir=plans_obj.data_dir,
+            site_id=site_id,
+            environment=site.environment,
+            category="mu_plugin_deploy" if plan.get("kind") == "mu_plugin" else "workspace_deploy",
+            transport="local_mock",
+            actor=actor,
+            summary=str(plan.get("summary") or f"Staging {plan_id} ({plan.get('kind')}/{plan.get('slug')})"),
+            target_ref=f"{plan_id}:{plan.get('kind')}/{plan.get('slug')}",
+            file_entries=notes,
+            before_files=before_files,
+            after_files=after_files,
+            metadata={
+                "plan_id": plan_id,
+                "kind": plan.get("kind"),
+                "slug": plan.get("slug"),
+                "base_sha256": base_sha256,
+                "work_sha256": work_sha256,
+            },
+        )
     plans_obj._audit(actor, plan, "wp_review_staging", True, files=notes, label="mock")
     return _ok(
         "Mockträdet uppdaterades.",
@@ -185,6 +233,7 @@ def push_page_draft(
     base_sha256: str,
     work_sha256: str,
     client: Any = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Push ``work/page_draft.json`` to WordPress strictly as ``status='draft'`` (Oscar-only HITL)."""
     from ecom_ops.integrations import wp_client_from_env
@@ -228,6 +277,13 @@ def push_page_draft(
             return _err(
                 str((blocked.data or {}).get("error_class") or "StalePlan"),
                 blocked.message,
+            )
+        existing_dp = plan.get("draft_page")
+        if isinstance(existing_dp, dict) and existing_dp.get("id") and not force:
+            return _err(
+                "DraftAlreadyPushed",
+                f"Sidutkast #{existing_dp.get('id')} har redan skickats för den här planen.",
+                draft_page=existing_dp,
             )
         site, missing = plans_obj._site(site_id)
         if missing is not None or site is None:
@@ -285,11 +341,21 @@ def push_page_draft(
             wp_client = client
         else:
             try:
-                wp_client = wp_client_from_env(
-                    base_url=str(site.canonical_url or "https://mock.local"),
-                    use_mock=use_mock,
-                )
-                live_calls = not use_mock
+                if use_mock:
+                    wp_client = wp_client_from_env(
+                        base_url=str(site.canonical_url or "https://mock.local"),
+                        use_mock=True,
+                    )
+                else:
+                    from ecom_ops.integrations.wp_component_reads import wp_client_for_site
+
+                    wp_client = wp_client_for_site(site, fallback_to_env=False)
+                    if wp_client is None:
+                        wp_client = wp_client_from_env(
+                            base_url=str(site.canonical_url or "https://mock.local"),
+                            use_mock=False,
+                        )
+                    live_calls = True
             except Exception as exc:
                 plans_obj._audit(
                     actor, plan, "wp_review_push_draft", False, error_class="WpClientUnavailable"
@@ -333,6 +399,21 @@ def push_page_draft(
         plan["draft_page"] = draft_page
         plans_obj._replace(plan)
         write_manifest(root, plan)
+        from ecom_ops.wp_ops.change_ledger import safe_record_change
+
+        safe_record_change(
+            data_dir=plans_obj.data_dir,
+            site_id=site_id,
+            environment=site.environment,
+            category="page_draft",
+            transport="wp_rest",
+            actor=actor,
+            summary=f"Sidutkast '{draft_page['title']}' (slug={draft_page['slug']})",
+            target_ref=f"page_draft:{draft_page['id']}",
+            before_data={"exists": False, "id": draft_page["id"]},
+            after_data=dict(draft_page),
+            metadata={"plan_id": plan_id, "item_id": str(draft_page["id"])},
+        )
 
     plans_obj._audit(
         actor,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -27,6 +28,44 @@ from ecom_ops.wp_ops.tools.types import (
 from ecom_ops.wp_ops.tools.validation import error_class_token, short_text
 from ecom_ops.wp_ops.tools.workspace_io import safe_sandbox_preview_url
 
+_PLUGIN_PLAN_RE = re.compile(r"^(?:plu|pau|plr)-[a-f0-9]{12}$")
+_SEO_ID_RE = re.compile(r"^(?:seoa|seom|seos|seoc|seol)-[a-f0-9]{12}$")
+_CHANGE_ID_RE = re.compile(r"^chg-[a-f0-9]{12}$")
+_SEO_DETAIL_TOKENS = frozenset(
+    {
+        "site",
+        "technical",
+        "page",
+        "product",
+        "media",
+        "links",
+        "cannibalization",
+        "seo_meta",
+        "media_alt",
+        "product_seo",
+        "page_seo",
+        "schema_jsonld",
+    }
+)
+_PLUGIN_DETAIL_TOKENS = frozenset(
+    {
+        "single",
+        "selected",
+        "all",
+        "policy",
+        "security_only",
+        "patch_only",
+        "minor_safe",
+        "non_critical_only",
+        "disable_all",
+        "custom",
+        "rollback_snapshot",
+        "deactivate",
+        "quarantine_sftp",
+        "restore_from_quarantine",
+    }
+)
+
 _RESEARCH_OUTCOME_FALLBACKS: dict[str, str] = {
     "web_search": "webbsök klar",
     "web_fetch_extract": "webbsida hämtad",
@@ -50,9 +89,23 @@ def safe_tool_detail(
     if name in ALL_FILE_TOOLS or name in WP_TOOL_NAMES:
         raw_plan = arguments.get("plan_id") or arguments.get("source_plan_id") or arguments.get("base_plan_id")
         if isinstance(raw_plan, str) and (
-            REVIEW_PLAN_RE.fullmatch(raw_plan) or FILE_PLAN_RE.fullmatch(raw_plan)
+            REVIEW_PLAN_RE.fullmatch(raw_plan)
+            or FILE_PLAN_RE.fullmatch(raw_plan)
+            or _PLUGIN_PLAN_RE.fullmatch(raw_plan)
+            or _SEO_ID_RE.fullmatch(raw_plan)
         ):
             parts.append(raw_plan)
+        for seo_key in ("audit_id", "strategy_id", "campaign_id", "package_id"):
+            raw_seo = arguments.get(seo_key)
+            if isinstance(raw_seo, str) and _SEO_ID_RE.fullmatch(raw_seo.strip()):
+                parts.append(raw_seo.strip())
+        for seo_tok_key in ("scope", "fix_type"):
+            raw_tok = arguments.get(seo_tok_key)
+            if isinstance(raw_tok, str) and raw_tok in _SEO_DETAIL_TOKENS:
+                parts.append(raw_tok)
+        raw_cid = arguments.get("change_id")
+        if isinstance(raw_cid, str) and _CHANGE_ID_RE.fullmatch(raw_cid.strip()):
+            parts.append(raw_cid.strip())
         raw_path = arguments.get("path")
         raw_prod_path = arguments.get("product_path")
         if isinstance(raw_path, str) and raw_path and FILE_PATH_RE.fullmatch(raw_path):
@@ -63,12 +116,16 @@ def safe_tool_detail(
             kind = arguments.get("kind")
             slug = arguments.get("slug")
             theme_slug = arguments.get("theme_slug")
-            if kind in {"theme", "plugin"} and isinstance(slug, str) and INTEL_SLUG_RE.fullmatch(slug):
+            if kind in {"theme", "plugin", "mu_plugin"} and isinstance(slug, str) and INTEL_SLUG_RE.fullmatch(slug):
                 parts.append(f"{kind}/{slug}")
             elif isinstance(slug, str) and INTEL_SLUG_RE.fullmatch(slug):
                 parts.append(slug)
             elif isinstance(theme_slug, str) and INTEL_SLUG_RE.fullmatch(theme_slug):
                 parts.append(theme_slug)
+        for detail_key in ("selection_mode", "policy", "preset", "action"):
+            val = arguments.get(detail_key)
+            if isinstance(val, str) and val in _PLUGIN_DETAIL_TOKENS:
+                parts.append(val)
         raw_pid = arguments.get("product_id")
         if type(raw_pid) is int and raw_pid > 0:
             parts.append(f"#{raw_pid}")

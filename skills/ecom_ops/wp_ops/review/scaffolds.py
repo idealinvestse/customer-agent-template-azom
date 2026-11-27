@@ -91,6 +91,21 @@ def plugin_skeleton(slug: str) -> list[tuple[str, bytes]]:
     return [(f"{slug}.php", php)]
 
 
+def mu_plugin_skeleton(slug: str) -> list[tuple[str, bytes]]:
+    if not SLUG.fullmatch(slug):
+        raise ReviewError("SlugRejected")
+    php = (
+        "<?php\n"
+        "/**\n"
+        f" * Plugin Name: Azom MU {slug}\n"
+        " * Description: Must-use plugin loaded automatically by WordPress.\n"
+        " * Version: 0.1.0\n"
+        " */\n\n"
+        "defined('ABSPATH') || exit;\n"
+    ).encode()
+    return [(f"{slug}.php", php)]
+
+
 ScaffoldPlan = tuple[list[dict[str, Any]], list[str], list[str], list[str]]
 ScaffoldBuilder = Callable[[Path, str, dict[str, Any]], ScaffoldPlan]
 
@@ -201,10 +216,192 @@ def _build_woo_compat_declaration(work: Path, slug: str, manifest: dict[str, Any
     return changes, created, updated, skipped
 
 
+def _php_prefix(slug: str) -> str:
+    return slug.replace("-", "_")
+
+
+def _build_mu_plugin_basics(work: Path, slug: str, _manifest: dict[str, Any]) -> ScaffoldPlan:
+    if not slug:
+        raise ReviewError("SlugRejected")
+    changes: list[dict[str, Any]] = []
+    created: list[str] = []
+    skipped: list[str] = []
+    prefix = _php_prefix(slug)
+    main_content = (
+        "<?php\n"
+        "/**\n"
+        f" * Plugin Name: Azom MU ({slug})\n"
+        " * Description: Must-use plugin loaded automatically before standard plugins.\n"
+        " * Version: 0.1.0\n"
+        " */\n\n"
+        "defined('ABSPATH') || exit;\n\n"
+        f"if (!function_exists('{prefix}_bootstrap')) {{\n"
+        f"    function {prefix}_bootstrap(): void {{\n"
+        "        // Note: MU-plugins auto-load; activation hooks never fire.\n"
+        "        if (class_exists('WooCommerce')) {\n"
+        "            // Guarded WooCommerce hooks go here.\n"
+        "        }\n"
+        "    }\n"
+        f"    add_action('muplugins_loaded', '{prefix}_bootstrap');\n"
+        "}\n"
+    )
+    _queue_create_if_missing(work, f"{slug}.php", main_content, changes, created, skipped)
+    return changes, created, [], skipped
+
+
+def _build_mu_plugin_loader(work: Path, slug: str, _manifest: dict[str, Any]) -> ScaffoldPlan:
+    if not slug:
+        raise ReviewError("SlugRejected")
+    changes: list[dict[str, Any]] = []
+    created: list[str] = []
+    skipped: list[str] = []
+    prefix = _php_prefix(slug)
+    loader_content = (
+        "<?php\n"
+        "/**\n"
+        f" * Plugin Name: Azom MU Loader ({slug})\n"
+        " * Description: Must-use loader bootstrapping modular subdirectory files.\n"
+        " * Version: 0.1.0\n"
+        " */\n\n"
+        "defined('ABSPATH') || exit;\n\n"
+        "$bootstrap = __DIR__ . '/includes/bootstrap.php';\n"
+        "if (is_readable($bootstrap)) {\n"
+        "    require_once $bootstrap;\n"
+        "}\n"
+    )
+    bootstrap_content = (
+        "<?php\n"
+        "/**\n"
+        f" * Modular bootstrap for MU-plugin {slug}.\n"
+        " */\n\n"
+        "defined('ABSPATH') || exit;\n\n"
+        f"if (!function_exists('{prefix}_init')) {{\n"
+        f"    function {prefix}_init(): void {{\n"
+        "        // Register guarded site-level filters and actions here.\n"
+        "    }\n"
+        f"    add_action('plugins_loaded', '{prefix}_init', 20);\n"
+        "}\n"
+    )
+    _queue_create_if_missing(work, f"{slug}.php", loader_content, changes, created, skipped)
+    _queue_create_if_missing(work, "includes/bootstrap.php", bootstrap_content, changes, created, skipped)
+    return changes, created, [], skipped
+
+
+def _build_plugin_hook_extension(work: Path, slug: str, _manifest: dict[str, Any]) -> ScaffoldPlan:
+    if not slug:
+        raise ReviewError("SlugRejected")
+    changes: list[dict[str, Any]] = []
+    created: list[str] = []
+    skipped: list[str] = []
+    prefix = _php_prefix(slug)
+    main_content = (
+        "<?php\n"
+        "/**\n"
+        f" * Plugin Name: Azom Hook Extension ({slug})\n"
+        " * Description: Safe third-party customization via WordPress/WooCommerce hooks (never edits vendor files).\n"
+        " * Version: 0.1.0\n"
+        " * WC tested up to: 9.6\n"
+        " */\n\n"
+        "defined('ABSPATH') || exit;\n\n"
+        "require_once __DIR__ . '/includes/woo-hpos-compat.php';\n"
+        "azom_declare_woo_hpos_compat(__FILE__);\n"
+        "require_once __DIR__ . '/includes/hooks.php';\n"
+    )
+    hooks_content = (
+        "<?php\n"
+        "/**\n"
+        f" * Guarded action and filter adapters for {slug}.\n"
+        " */\n\n"
+        "defined('ABSPATH') || exit;\n\n"
+        f"if (!function_exists('{prefix}_register_hooks')) {{\n"
+        f"    function {prefix}_register_hooks(): void {{\n"
+        "        if (!class_exists('WooCommerce')) {\n"
+        "            return;\n"
+        "        }\n"
+        "        // Example: add_filter('woocommerce_product_tabs', static fn(array $tabs): array => $tabs, 20);\n"
+        "    }\n"
+        f"    add_action('plugins_loaded', '{prefix}_register_hooks', 20);\n"
+        "}\n"
+    )
+    _queue_create_if_missing(work, f"{slug}.php", main_content, changes, created, skipped)
+    _queue_create_if_missing(work, "includes/woo-hpos-compat.php", _WOO_HPOS_COMPAT_PHP, changes, created, skipped)
+    _queue_create_if_missing(work, "includes/hooks.php", hooks_content, changes, created, skipped)
+    return changes, created, [], skipped
+
+
+def _build_custom_plugin_full(work: Path, slug: str, _manifest: dict[str, Any]) -> ScaffoldPlan:
+    if not slug:
+        raise ReviewError("SlugRejected")
+    changes: list[dict[str, Any]] = []
+    created: list[str] = []
+    skipped: list[str] = []
+    class_name = "Azom_" + "".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part)
+    main_content = (
+        "<?php\n"
+        "/**\n"
+        f" * Plugin Name: Azom Custom ({slug})\n"
+        " * Description: Modular custom WooCommerce/WordPress plugin with HPOS compatibility and clean uninstall.\n"
+        " * Version: 0.1.0\n"
+        " * Requires at least: 6.5\n"
+        " * Requires PHP: 8.1\n"
+        " * Requires Plugins: woocommerce\n"
+        " * WC tested up to: 9.6\n"
+        " */\n\n"
+        "defined('ABSPATH') || exit;\n\n"
+        "require_once __DIR__ . '/includes/woo-hpos-compat.php';\n"
+        "azom_declare_woo_hpos_compat(__FILE__);\n"
+        "require_once __DIR__ . '/includes/class-plugin.php';\n\n"
+        "add_action('plugins_loaded', static function (): void {\n"
+        "    if (!class_exists('WooCommerce')) {\n"
+        "        return;\n"
+        "    }\n"
+        f"    {class_name}::instance()->boot();\n"
+        "}, 20);\n"
+    )
+    class_content = (
+        "<?php\n"
+        "/**\n"
+        f" * Core plugin controller for {slug}.\n"
+        " */\n\n"
+        "defined('ABSPATH') || exit;\n\n"
+        f"if (!class_exists('{class_name}')) {{\n"
+        f"    final class {class_name} {{\n"
+        "        private static ?self $instance = null;\n\n"
+        "        public static function instance(): self {\n"
+        "            if (self::$instance === null) {\n"
+        "                self::$instance = new self();\n"
+        "            }\n"
+        "            return self::$instance;\n"
+        "        }\n\n"
+        "        public function boot(): void {\n"
+        "            // Register plugin hooks here.\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+    uninstall_content = (
+        "<?php\n"
+        "/**\n"
+        f" * Clean uninstall handler for {slug}.\n"
+        " */\n\n"
+        "defined('WP_UNINSTALL_PLUGIN') || exit;\n\n"
+        f"delete_option('{_php_prefix(slug)}_settings');\n"
+    )
+    _queue_create_if_missing(work, f"{slug}.php", main_content, changes, created, skipped)
+    _queue_create_if_missing(work, "includes/woo-hpos-compat.php", _WOO_HPOS_COMPAT_PHP, changes, created, skipped)
+    _queue_create_if_missing(work, "includes/class-plugin.php", class_content, changes, created, skipped)
+    _queue_create_if_missing(work, "uninstall.php", uninstall_content, changes, created, skipped)
+    return changes, created, [], skipped
+
+
 _SCAFFOLD_BUILDERS: dict[str, ScaffoldBuilder] = {
     "child_theme_basics": _build_child_theme_basics,
     "site_plugin_basics": _build_site_plugin_basics,
     "woo_compat_declaration": _build_woo_compat_declaration,
+    "mu_plugin_basics": _build_mu_plugin_basics,
+    "mu_plugin_loader": _build_mu_plugin_loader,
+    "plugin_hook_extension": _build_plugin_hook_extension,
+    "custom_plugin_full": _build_custom_plugin_full,
 }
 SCAFFOLD_TEMPLATES = frozenset(_SCAFFOLD_BUILDERS)
 _SCAFFOLD_TEMPLATES = SCAFFOLD_TEMPLATES
@@ -251,6 +448,7 @@ __all__ = [
     "SCAFFOLD_TEMPLATES",
     "_SCAFFOLD_TEMPLATES",
     "child_skeleton",
+    "mu_plugin_skeleton",
     "plugin_skeleton",
     "scaffold_work",
 ]

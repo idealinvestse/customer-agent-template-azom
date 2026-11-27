@@ -52,6 +52,13 @@ def wp_client_for_site(
                 )
     if not fallback_to_env:
         return None
+    if site is not None and site.canonical_url:
+        from urllib.parse import urlparse
+
+        host = (urlparse(str(site.canonical_url)).hostname or "").lower()
+        tail = host.rsplit(".", 1)[-1] if "." in host else ""
+        if tail in {"no", "se", "dk", "fi"}:
+            return wp_client_from_env(base_url=str(site.canonical_url), use_mock=False, domain=tail)
     return wp_client_from_env(use_mock=False)
 
 

@@ -1,0 +1,326 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Kvalitetssäkrade SEO-butiker – SEO Studio – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Nordiska White-Hat Länkleverantörer (SE / NO / DK){% endblock %}
+{% block content %}
+{% set vs = vendor_selection | default({}) %}
+{% set candidates = vs.get('candidates') if vs.get('candidates') is sequence and vs.get('candidates') is not string else [] %}
+{% set checklist = vs.get('disclosure_checklist') if vs.get('disclosure_checklist') is sequence and vs.get('disclosure_checklist') is not string else [] %}
+{% set citations = vs.get('citations') if vs.get('citations') is sequence and vs.get('citations') is not string else [] %}
+{% set sel_id = vs.get('selected_vendor_id') or '' %}
+{% set rec_tier = vs.get('recommended_tier') or '' %}
+
+<div class="space-y-5" data-seo-studio="true" data-seo-page="vendors">
+  {{ ui.breadcrumb([
+    {'label': 'SEO Studio', 'href': '/seo?site=' ~ selected_site},
+    {'label': 'Kvalitetssäkrade SEO-butiker'}
+  ]) }}
+
+  {% call ui.page_header(
+    "Kvalitetssäkrade SEO-butiker (SE / NO / DK)",
+    "Objektiv 0–100 white-hat vetting-matris med anti-PBN-filter, budgetgolv, nordisk reklammarkering (Annons/Annonse/Annonce) och direktkoppling till länkpaket & Autopilot.",
+    badge_text=(market | upper) ~ " · " ~ budget_sek ~ " SEK",
+    badge_tone="info"
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages?site={{ selected_site }}">
+      {{ icon('globe', 'xs') }}
+      <span>Länkpaket-studio</span>
+    </a>
+  {% endcall %}
+
+  <nav aria-label="SEO Studio flikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
+    <a class="az-btn-secondary az-btn-sm" href="/seo?site={{ selected_site }}">
+      {{ icon('activity', 'xs') }}
+      <span>Översikt &amp; Audit</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/strategies?site={{ selected_site }}">
+      {{ icon('trending-up', 'xs') }}
+      <span>Strategier</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/campaigns?site={{ selected_site }}">
+      {{ icon('sliders', 'xs') }}
+      <span>Kampanjer</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages?site={{ selected_site }}">
+      {{ icon('globe', 'xs') }}
+      <span>Länkpaket</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200" href="/seo/vendors?site={{ selected_site }}" aria-current="page">
+      {{ icon('shield', 'xs') }}
+      <span>Kvalitetssäkrade SEO-butiker</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/digest?site={{ selected_site }}">
+      {{ icon('clipboard-list', 'xs') }}
+      <span>Veckodigest</span>
+    </a>
+  </nav>
+
+  <!-- Strict HITL No-Auto-Purchase Banner -->
+  {{ ui.info_callout(
+    'warn',
+    'Strikt HITL — inga automatiska köp eller externa beställningar',
+    vs.get('no_auto_purchase_notice') or 'Azom köper aldrig länkar automatiskt och skickar inga betalningar till externa SEO-butiker. Alla länkpaket skapas som granskningsbara utkast och kräver Oscars (MARKETING_MUTATE) godkännande före manuell beställning.'
+  ) }}
+
+  <!-- Filter & Vetting Parameter Bar -->
+  <section class="az-card space-y-4" data-seo-vendor-filter="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">Matcha &amp; kvalitetssäkra nordiska SEO-butiker</h2>
+        <p class="az-muted text-xs">Beräknar rekommenderad nivå, budgetgolv (SE/DK &gt;= 1 200 SEK/länk, NO &gt;= 1 800 SEK/länk) och topp 2–3 granskade leverantörer.</p>
+      </div>
+      {% if rec_tier %}
+      {{ ui.status_badge('info', 'Nivå: ' ~ rec_tier) }}
+      {% endif %}
+    </div>
+
+    <form method="post" action="/seo/vendors" class="space-y-3">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="include_web_research_present" value="1" />
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 lg:items-end">
+        <div>
+          <label class="az-label" for="seo-v-site">Webbplats</label>
+          <select id="seo-v-site" name="site_id" class="az-select">
+            {% for s in sites %}
+            <option value="{{ s.id }}" {% if s.id == selected_site %}selected{% endif %}>{{ s.display_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="az-label" for="seo-v-market">Marknad</label>
+          <select id="seo-v-market" name="market" class="az-select">
+            <option value="no" {% if market == 'no' %}selected{% endif %}>NO (Norge · .no)</option>
+            <option value="se" {% if market == 'se' %}selected{% endif %}>SE (Sverige · .se)</option>
+            <option value="dk" {% if market == 'dk' %}selected{% endif %}>DK (Danmark · .dk)</option>
+          </select>
+        </div>
+        <div>
+          <label class="az-label" for="seo-v-budget">Budget (SEK)</label>
+          <input id="seo-v-budget" name="budget_sek" type="number" min="1000" max="500000" step="500" value="{{ budget_sek }}" class="az-input" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-v-links">Antal länkar</label>
+          <input id="seo-v-links" name="link_count" type="number" min="1" max="50" value="{{ link_count }}" class="az-input" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-v-goal">Kampanjmål</label>
+          <select id="seo-v-goal" name="goal" class="az-select">
+            <option value="organic_growth" {% if goal == 'organic_growth' %}selected{% endif %}>Organisk tillväxt</option>
+            <option value="brand_launch_pr" {% if goal == 'brand_launch_pr' %}selected{% endif %}>Varumärkeslansering / PR</option>
+            <option value="category_support" {% if goal == 'category_support' %}selected{% endif %}>Kategori- &amp; produktstöd</option>
+            <option value="product_launch" {% if goal == 'product_launch' %}selected{% endif %}>Produktlansering</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <label class="flex cursor-pointer items-center gap-2 text-xs text-mist-200" for="seo-v-web">
+          <input id="seo-v-web" class="az-checkbox" type="checkbox" name="include_web_research" value="1" {% if include_web_research %}checked{% endif %} />
+          <span>Inkludera webb-vetting (<code class="az-code">seo_vendor_vetting</code>, mock-first / PII-fri)</span>
+        </label>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-mono text-xs text-mist-400">Snitt: ~{{ unit_sek }} SEK/länk</span>
+          <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Matchar...">
+            {{ icon('filter', 'xs') }}
+            <span>Uppdatera vetting</span>
+          </button>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  {% if vs.get('blocked') %}
+    {{ ui.info_callout('danger', 'Leverantörsval blockerat av guardrail', vs.get('block_reason') or 'Åtgärda ankarprofil eller policyfel innan val av SEO-butik.') }}
+  {% endif %}
+
+  {% if vs.get('budget_warning') %}
+    {{ ui.info_callout('warn', 'Budgetvarning (White-Hat golv)', vs.get('budget_warning')) }}
+  {% endif %}
+
+  <!-- Top Vetted Nordic SEO Shop Cards -->
+  <section class="space-y-3" data-seo-vendor-cards="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-0">Topp {{ candidates | length }} kvalitetssäkrade SEO-butiker ({{ market | upper }})</h2>
+        <p class="az-muted text-xs">Endast leverantörer med 0–100 vetting-poäng &gt;= 70 och 0 hard-reject-överträdelser visas.</p>
+      </div>
+      {% if sel_id %}
+      {{ ui.status_badge('ok', 'Rekommenderad #1: ' ~ sel_id, show_icon=True) }}
+      {% endif %}
+    </div>
+
+    {% if candidates %}
+    <div class="grid gap-4 lg:grid-cols-3">
+      {% for c in candidates %}
+      {% set cid = c.get('vendor_id') or '' %}
+      {% set cname = c.get('name') or cid %}
+      {% set cscore = c.get('vetting_score') if c.get('vetting_score') is not none else (c.get('score') or 0) %}
+      {% set cstatus = (c.get('vetting_status') or ('preferred' if cscore >= 85 else 'conditional')) | lower %}
+      {% set is_top = (cid == sel_id) or loop.first %}
+      {% set unit_rng = c.get('estimated_unit_sek_range') if c.get('estimated_unit_sek_range') is sequence and c.get('estimated_unit_sek_range') is not string else [] %}
+      {% set est_sek = (unit_rng[0] ~ '–' ~ unit_rng[1] ~ ' SEK/länk') if (unit_rng | length) == 2 else (c.get('estimated_sek_range') or c.get('price_range_sek') or '') %}
+      {% set pub_count = c.get('market_publishers') or c.get('market_footprint') or 'SE / NO / DK' %}
+      {% set wf_note = c.get('order_workflow_notes') or '' %}
+      {% set caveats = c.get('cautions') or c.get('caveats') or c.get('warnings') or [] %}
+      {% set v_model = c.get('business_model') or c.get('archetype') or c.get('tier') or '' %}
+      {% set g_months = c.get('guarantee_months') or c.get('live_guarantee_months') or 12 %}
+      <article class="az-card flex flex-col justify-between space-y-4 {{ 'border-ok/30 ring-1 ring-steel-500/35' if is_top else '' }}" data-vendor-card="{{ cid }}">
+        <div class="space-y-3">
+          <div class="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div class="flex flex-wrap items-center gap-1.5">
+                <h3 class="font-display text-base font-semibold text-mist-100">{{ cname }}</h3>
+                {% if is_top %}
+                {{ ui.status_badge('ok', 'Rekommenderad #1') }}
+                {% endif %}
+              </div>
+              <p class="font-mono text-xs text-mist-400">{{ c.get('domain') or cid }}</p>
+            </div>
+            <div class="text-right">
+              {{ ui.status_badge('ok' if cscore >= 85 else ('warn' if cscore >= 70 else 'error'), cscore ~ '/100', show_icon=True) }}
+              <div class="mt-1 font-mono text-xs text-mist-400">{{ cstatus }}</div>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap gap-1.5 text-xs">
+            {% if v_model %}
+            {{ ui.status_badge('info', v_model) }}
+            {% endif %}
+            {% if c.get('provenance') %}
+            {{ ui.status_badge('neutral', c.get('provenance')) }}
+            {% endif %}
+            {{ ui.status_badge('ok', 'Anti-PBN verifierad') }}
+            {{ ui.status_badge('ok', 'URL-förhandsvisning') }}
+            {{ ui.status_badge('ok', 'Annons/Annonse/Annonce') }}
+          </div>
+
+          <dl class="grid grid-cols-2 gap-2 text-xs">
+            <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-2">
+              <dt class="text-mist-400">Prisnivå (SEK)</dt>
+              <dd class="mt-1 font-mono font-medium text-mist-100">{{ est_sek or 'Offert / marknadspris' }}</dd>
+            </div>
+            <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-2">
+              <dt class="text-mist-400">Nordiskt lager ({{ market | upper }})</dt>
+              <dd class="mt-1 font-mono font-medium text-mist-100">{{ pub_count }}</dd>
+            </div>
+            <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-2">
+              <dt class="text-mist-400">Redaktionellt språk</dt>
+              <dd class="mt-1 text-mist-200">{{ 'Modersmålsskribent (SE/NO/DK)' if c.get('native_copywriting') else 'Egen redaktionell text rekommenderas' }}</dd>
+            </div>
+            <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-2">
+              <dt class="text-mist-400">Garanti</dt>
+              <dd class="mt-1 text-mist-200">{{ g_months }} mån live-garanti</dd>
+            </div>
+          </dl>
+
+          {% if wf_note %}
+          <p class="text-xs text-mist-300">{{ wf_note }}</p>
+          {% endif %}
+
+          {% if caveats %}
+          <div class="rounded-lg border border-ink-700/70 bg-ink-950/50 p-2 text-xs text-warn">
+            {% for cv in caveats[:2] %}
+            <div>• {{ cv }}</div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+
+        {% if can_suggest %}
+        <div class="space-y-2 border-t border-ink-700/70 pt-3">
+          <form method="post" action="/seo/link-packages" class="space-y-2">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input type="hidden" name="site_id" value="{{ selected_site }}" />
+            <input type="hidden" name="market" value="{{ market }}" />
+            <input type="hidden" name="budget_sek" value="{{ budget_sek }}" />
+            <input type="hidden" name="link_count" value="{{ link_count }}" />
+            <input type="hidden" name="selected_vendor_id" value="{{ cid }}" />
+            <input type="hidden" name="name" value="{{ (market | upper) }} {{ cname }} Länkpaket ({{ link_count }} länkar)" />
+            <input type="hidden" name="notes" value="Kvalitetssäkrad SEO-butik: {{ cname }} ({{ c.get('domain') or cid }}). Inhemsk redaktionell text och nordisk reklammarkering (Annons/Annonse/Annonce)." />
+            <button type="submit" class="az-btn-primary az-btn-sm w-full" data-busy-label="Skapar länkpaket...">
+              {{ icon('plus', 'xs') }}
+              <span>Skapa länkpaket med {{ cname }}</span>
+            </button>
+          </form>
+
+          {% if can_run_autopilot %}
+          <form method="post" action="/seo/autopilot" class="space-y-2">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input type="hidden" name="site_id" value="{{ selected_site }}" />
+            <input type="hidden" name="market" value="{{ market }}" />
+            <input type="hidden" name="budget_sek" value="{{ budget_sek }}" />
+            <input type="hidden" name="link_count" value="{{ link_count }}" />
+            <input type="hidden" name="selected_vendor_id" value="{{ cid }}" />
+            <input type="hidden" name="topic" value="Trådlös CarPlay &amp; OEM-bilteknik {{ market | upper }}" />
+            <input type="hidden" name="include_web_research" value="1" />
+            <button type="submit" class="az-btn-secondary az-btn-sm w-full" data-busy-label="Kör Autopilot...">
+              {{ icon('rocket', 'xs') }}
+              <span>Starta Autopilot med denna profil</span>
+            </button>
+          </form>
+          {% endif %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga godkända SEO-butiker matchade filtret', 'Justera budget eller antal länkar för att uppfylla nordiskt white-hat-golv.', icon_name='shield') }}
+    {% endif %}
+  </section>
+
+  <!-- Nordic Disclosure Checklist & Web-Vetting Citations -->
+  <div class="grid gap-5 lg:grid-cols-2">
+    <section class="az-card space-y-3" data-seo-disclosure-checklist="true">
+      <div>
+        <h2 class="az-section-title mb-0">Nordisk reklammarkering &amp; anti-PBN-checklista</h2>
+        <p class="az-muted text-xs">Krav enligt Konsumentverket (SE: Annons), Forbrukertilsynet (NO: Annonse) och Forbrugerombudsmanden (DK: Annonce).</p>
+      </div>
+      {% if checklist %}
+      <ul class="list-disc space-y-1 pl-4 text-xs text-mist-200">
+        {% for item in checklist %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <ul class="list-disc space-y-1 pl-4 text-xs text-mist-200">
+        <li>Sverige (SE): Tydlig märkning med <strong>Annons</strong> / Reklam enligt Marknadsföringslagen.</li>
+        <li>Norge (NO): Tydlig märkning med <strong>Annonse</strong> / Reklame enligt Markedsføringsloven.</li>
+        <li>Danmark (DK): Tydlig märkning med <strong>Annonce</strong> enligt Markedsføringsloven.</li>
+        <li>Inga dolda PBN-nätverk, inga blinda länklistor, och full domänförhandsvisning före manuell order.</li>
+      </ul>
+      {% endif %}
+    </section>
+
+    <section class="az-card space-y-3" data-seo-vendor-citations="true">
+      <div>
+        <h2 class="az-section-title mb-0">Webb-vetting &amp; verifierade källor ({{ citations | length }})</h2>
+        <p class="az-muted text-xs">Källor från profilen <code class="az-code">seo_vendor_vetting</code> (mock-first offline eller live via PII-brandvägg).</p>
+      </div>
+      {% if citations %}
+      <ul class="space-y-2 text-xs">
+        {% for src in citations[:8] %}
+        <li class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 space-y-1">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="font-medium text-mist-100">{{ src.get('title') or src.get('url') }}</span>
+            {% if src.get('provenance') or src.get('provider') %}
+            {{ ui.status_badge('info', src.get('provenance') or src.get('provider')) }}
+            {% endif %}
+          </div>
+          {% if src.get('url') %}
+          <div class="font-mono text-mist-400 break-all">{{ src.get('url') }}</div>
+          {% endif %}
+          {% if src.get('snippet') %}
+          <p class="text-mist-300">{{ src.get('snippet') }}</p>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="az-muted text-xs">Aktivera "Inkludera webb-vetting" ovan för att visa externa källcitat för SEO-butikerna.</p>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

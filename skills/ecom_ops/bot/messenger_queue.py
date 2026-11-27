@@ -7,6 +7,7 @@ deduplication atomic across retries/restarts, and reconciles interrupted
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
@@ -363,6 +364,7 @@ class MessengerJobQueue:
                     peer_id TEXT NOT NULL,
                     text TEXT,
                     postback TEXT,
+                    image_urls_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL DEFAULT 'pending',
                     attempts INTEGER NOT NULL DEFAULT 0,
                     error TEXT NOT NULL DEFAULT '',
@@ -372,6 +374,14 @@ class MessengerJobQueue:
                 )
                 """
             )
+            cols = {
+                str(r["name"] if isinstance(r, sqlite3.Row) else r[1])
+                for r in conn.execute("PRAGMA table_info(messenger_jobs)").fetchall()
+            }
+            if "image_urls_json" not in cols:
+                conn.execute(
+                    "ALTER TABLE messenger_jobs ADD COLUMN image_urls_json TEXT NOT NULL DEFAULT '[]'"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messenger_jobs_status ON messenger_jobs(status, id)"
             )
@@ -397,14 +407,16 @@ class MessengerJobQueue:
         """Insert a new job atomically. Returns ``(enqueued, job_id)`` (False if duplicate mid)."""
         now = time.time()
         mid = (event.mid or "").strip() or None
+        urls = [str(u) for u in (getattr(event, "image_urls", ()) or ()) if u][:4]
+        urls_json = json.dumps(urls, ensure_ascii=False)
         with self._connect() as conn:
             try:
                 cur = conn.execute(
                     """
-                    INSERT INTO messenger_jobs(mid, peer_id, text, postback, status, attempts, error, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, 'pending', 0, '', ?, ?)
+                    INSERT INTO messenger_jobs(mid, peer_id, text, postback, image_urls_json, status, attempts, error, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 'pending', 0, '', ?, ?)
                     """,
-                    (mid, event.peer_id, event.text, event.postback, now, now),
+                    (mid, event.peer_id, event.text, event.postback, urls_json, now, now),
                 )
                 return True, int(cur.lastrowid) if cur.lastrowid is not None else None
             except sqlite3.IntegrityError:
@@ -418,7 +430,7 @@ class MessengerJobQueue:
             try:
                 row = conn.execute(
                     """
-                    SELECT m.id, m.mid, m.peer_id, m.text, m.postback, m.attempts
+                    SELECT m.id, m.mid, m.peer_id, m.text, m.postback, m.image_urls_json, m.attempts
                     FROM messenger_jobs m
                     WHERE m.status = 'pending'
                       AND NOT EXISTS (
@@ -482,11 +494,17 @@ class MessengerJobQueue:
         page_token: str | None,
         dry_run: bool,
     ) -> bool:
+        try:
+            raw_urls = json.loads(str(job.get("image_urls_json") or "[]"))
+            img_urls = tuple(str(u) for u in raw_urls if u) if isinstance(raw_urls, list) else ()
+        except Exception:
+            img_urls = ()
         ev = InboundEvent(
             peer_id=str(job["peer_id"]),
             text=job.get("text"),
             postback=job.get("postback"),
             mid=job.get("mid"),
+            image_urls=img_urls,
         )
         attempts_done = int(job.get("attempts") or 0) + 1
         try:

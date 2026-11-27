@@ -10,6 +10,7 @@ from support import _flash, _flash_q
 
 PLAN_ID_RE = re.compile(r"^fe-[a-f0-9]{12}$")
 REVIEW_ID_RE = re.compile(r"^wr-[a-f0-9]{12}$")
+CHANGE_ID_RE = re.compile(r"^chg-[a-f0-9]{12}$")
 SITE_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 KINDS = frozenset({"theme", "plugin"})
 
@@ -66,6 +67,12 @@ def file_admin() -> bool:
     from ecom_ops.rbac import Permission
 
     return has_permissions(Permission.WP_OPS_ADMIN, Permission.CODE_EDIT)
+
+
+def can_restore() -> bool:
+    from ecom_ops.rbac import Permission
+
+    return has_permissions(Permission.WP_OPS_RESTORE, Permission.WP_OPS_ADMIN)
 
 
 def can_run(site: dict | None) -> bool:

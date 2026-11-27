@@ -149,10 +149,20 @@ bash tests/test_spinup.sh
 | [`docs/TELEGRAM_OPENCLAW.md`](docs/TELEGRAM_OPENCLAW.md) | Telegram (SV) |
 | [`docs/MARKETING_GOOGLE.md`](docs/MARKETING_GOOGLE.md) | Ads + GA4 (EN) |
 | [`docs/WOO_WORDPRESS.md`](docs/WOO_WORDPRESS.md) | Butiks- och innehålls-API (EN) |
-| [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md) | Webbdrift, granskning, tema och plugin (EN) |
+| [`docs/WORDPRESS_OPS.md`](docs/WORDPRESS_OPS.md) | Webbdrift, granskning, tema, plugin och SEO Studio (EN) |
+| [`docs/WP_LIVE_BRIDGE_ARCHITECTURE.md`](docs/WP_LIVE_BRIDGE_ARCHITECTURE.md) | Live REST fixes, `azom-ops-bridge`, deploy SFTP & Change Vault rollback (EN) |
+| [`docs/SEO_STUDIO.md`](docs/SEO_STUDIO.md) | SEO Studio SE/NO/DK, strategi/kampanj, autonoma länkpaket & Change Vault (EN) |
 | [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md) | Modeller (EN) |
 | [`docs/WEB_SEARCH_RESEARCH.md`](docs/WEB_SEARCH_RESEARCH.md) | Webbsök och djupresearch (EN) |
 | [`docs/TEMPLATE_GUIDE.md`](docs/TEMPLATE_GUIDE.md) | Forka till en ny butik (EN) |
 | [`docs/runbooks/`](docs/runbooks/) | När något stannar (SV) |
 | [`SOUL.md`](SOUL.md) | Rösten och de hårda reglerna |
 | [`AGENTS.md`](AGENTS.md) | Arbetsregler för kodagenter |
+| [`skills/ecom-ops/SKILL.md`](skills/ecom-ops/SKILL.md) | Skill card (EN) |
+
+## Roadmap (kort)
+
+1. **V1–V2.3 code** — shipped on `main` (see [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md))  
+2. **Ops next** — Oscar A1 live soak + baseline (human)  
+3. **FU9 auto-send** — rails only until Oscar written enable  
+4. **Multi-tenant SaaS** — deferred (package is already 3.0.0)

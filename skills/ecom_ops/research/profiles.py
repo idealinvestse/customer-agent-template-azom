@@ -408,6 +408,63 @@ _BUILTIN_PROFILES: dict[str, SearchProfile] = {
         },
         max_fetch_default=3,
     ),
+    "seo_vendor_vetting": SearchProfile(
+        id="seo_vendor_vetting",
+        title="SEO Länkleverantör & Anti-PBN Granskning",
+        description=(
+            "Vetting Nordic & European white-hat SEO link marketplaces and digital PR "
+            "suppliers (SE/NO/DK) against anti-PBN and Nordic ad-disclosure standards."
+        ),
+        goal=(
+            "Granska nordiska länkleverantörer, publicistkvalitet, pristransparens, "
+            "anti-PBN-skydd och Konsumentverkets/Forbrukertilsynets annonsmärkning."
+        ),
+        ambition="standard",
+        combination_mode="staged",
+        fanout_by_depth={"quick": 1, "standard": 2, "deep": 3},
+        round_providers={
+            1: ("parallel", "brave"),
+            2: ("exa", "tavily"),
+            3: ("parallel", "exa", "brave"),
+        },
+        fetch_strategy="direct",
+        output_format_default="comparison",
+        when_to_use=(
+            "Vid urval, ryktes- och anti-PBN-granskning av nordiska länkleverantörer "
+            "och digital PR-plattformar inför länkpaket."
+        ),
+        query_templates=(
+            "{topic} {market} white-hat link building marketplace reviews transparency",
+            "{topic} anti-PBN publisher preview sponsored disclosure {market}",
+        ),
+        deliverable_sections=(
+            "Granskade länkleverantörer",
+            "Anti-PBN & transparensbedömning",
+            "Nordisk marknadstäckning (SE/NO/DK)",
+            "Rekommendation & annonsmärkning [S#]",
+        ),
+        recommended_tools=("web_search", "web_research_start", "web_fetch_extract"),
+        preferred_providers=("parallel", "brave", "exa", "tavily"),
+        market_defaults=("SE", "NO", "DK"),
+        freshness_days=365,
+        corroboration_mode="triangulated_market",
+        authority_domains=(
+            "konsumentverket.se",
+            "forbrukertilsynet.no",
+            "forbrug.dk",
+            "ahrefs.com",
+            "semrush.com",
+        ),
+        pii_strictness="high",
+        weights={
+            "relevance": 0.30,
+            "authority": 0.35,
+            "freshness": 0.15,
+            "signal_density": 0.20,
+        },
+        max_fetch_default=3,
+        skill_doc="skills/research-profiles/SKILL.md",
+    ),
     "regulatory_compliance": SearchProfile(
         id="regulatory_compliance",
         title="Regelverk, Juridik & Compliance",
@@ -578,6 +635,16 @@ _RECOMMEND_RULES: tuple[tuple[str, re.Pattern[str], int], ...] = (
             re.I,
         ),
         6,
+    ),
+    (
+        "seo_vendor_vetting",
+        re.compile(
+            r"\b(?:l[äa]nkleverant[öo]r\w*|l[äa]nkshop\w*|link\s*vendor\w*|link\s*building\s+marketplace|"
+            r"bazoom|whitepress|linkhouse|prnews\.io|getfluence|seeders|anti[- ]?pbn|"
+            r"l[äa]nkmarknadsplats\w*|digital\s+pr\s+leverant[öo]r\w*)\b",
+            re.I,
+        ),
+        7,
     ),
     (
         "seo_content_radar",

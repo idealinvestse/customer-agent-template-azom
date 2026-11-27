@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Ändring {{ change.change_id }} – Azom{% endblock %}
+{% block page_subtitle %}Ändringsdetalj &amp; Återställning{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  {% if site %}
+  {{ ui.breadcrumb([
+    {'label': 'Webbplatser', 'href': url_for('wp_sites')},
+    {'label': site.display_name, 'href': url_for('wp_site_detail', site_id=site.id)},
+    {'label': 'Ändringar & Återställning', 'href': url_for('wp_changes', site_id=site.id)},
+    {'label': change.change_id}
+  ]) }}
+  {% endif %}
+
+  {% call ui.page_header(
+    "Ändring " ~ change.change_id,
+    change.summary,
+    badge_text=change.status,
+    badge_tone='ok' if change.status == 'applied' else 'warn'
+  ) %}
+    {% if site %}
+    <form method="post" action="{{ url_for('wp_change_verify', site_id=site.id, change_id=change.change_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Verifierar...">Verifiera snapshot</button>
+    </form>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_changes', site_id=site.id) }}">{{ icon('arrow-left', 'xs') }}<span>Tillbaka till historik</span></a>
+    {% endif %}
+  {% endcall %}
+
+  {% if preview.drift_detected %}
+    {{ ui.flash_banner('warn', 'Drift upptäckt: ' ~ preview.drift_note, dismissible=False) }}
+  {% endif %}
+
+  <section class="az-card space-y-4">
+    <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="font-semibold uppercase tracking-wider text-mist-400">Kategori &amp; Transport</dt>
+        <dd class="mt-1 font-mono text-mist-100">{{ change.category }} · {{ change.transport }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="font-semibold uppercase tracking-wider text-mist-400">Aktör &amp; Tid</dt>
+        <dd class="mt-1 text-mist-100 tabular-nums">{{ change.actor }} · {{ change.created_at_fmt or change.created_at }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="font-semibold uppercase tracking-wider text-mist-400">Snapshot-integritet</dt>
+        <dd class="mt-1">{{ ui.status_badge('ok' if preview.verified else 'error', 'Verifierad SHA-256' if preview.verified else 'Fel i snapshot') }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="font-semibold uppercase tracking-wider text-mist-400">Före SHA-256</dt>
+        <dd class="mt-1 font-mono text-mist-300 break-all">{{ change.before_sha256 }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="font-semibold uppercase tracking-wider text-mist-400">Efter SHA-256</dt>
+        <dd class="mt-1 font-mono text-mist-300 break-all">{{ change.after_sha256 }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="font-semibold uppercase tracking-wider text-mist-400">Målreferens</dt>
+        <dd class="mt-1 font-mono text-mist-100 break-all">{{ change.target_ref }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  {% if can_see_diff %}
+  <section class="az-card space-y-3">
+    <h2 class="font-display text-base font-semibold text-mist-100">Före / Efter-diff</h2>
+    {% if preview.diff and preview.diff.get('diff') %}
+    <pre class="overflow-x-auto rounded-lg border border-ink-700 bg-ink-950 p-4 font-mono text-xs text-mist-100 whitespace-pre-wrap">{{ preview.diff.get('diff') }}</pre>
+    {% elif preview.diff and preview.diff.get('fields') %}
+    <div class="az-table-wrap">
+      <table class="az-table">
+        <thead>
+          <tr><th scope="col">Fält</th><th scope="col">Före</th><th scope="col">Efter</th></tr>
+        </thead>
+        <tbody>
+          {% for f in preview.diff.get('fields') %}
+          <tr>
+            <td class="font-mono text-xs text-mist-100">{{ f.field }}</td>
+            <td class="text-xs text-mist-300 break-all">{{ f.before }}</td>
+            <td class="text-xs text-mist-100 break-all">{{ f.after }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-sm">Ingen textdiff lagrad.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if can_restore and site and change.category not in ['cache_flush', 'maintenance', 'page_draft'] %}
+  <section class="az-card-oscar space-y-4">
+    <h2 class="font-display text-base font-semibold text-oscar-300">Återställning (Oscar)</h2>
+    {% if preview.block_reason %}
+      <p class="text-xs text-warn">Spärrad i aktuellt läge: <code class="az-code font-mono">{{ preview.block_reason }}</code></p>
+    {% elif not preview.can_rollback %}
+      <p class="text-xs text-warn">Återställning är inte tillgänglig för den här ändringen.</p>
+    {% endif %}
+    <div class="flex flex-wrap gap-3">
+      <form method="post" action="{{ url_for('wp_change_rollback', site_id=site.id, change_id=change.change_id) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="expected_before_sha256" value="{{ change.before_sha256 }}" />
+        <input type="hidden" name="dry_run" value="1" />
+        <button class="az-btn-secondary az-btn-sm" type="submit" data-busy-label="Testar...">Torrkör återställning</button>
+      </form>
+
+      <form method="post" action="{{ url_for('wp_change_rollback', site_id=site.id, change_id=change.change_id) }}">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="expected_before_sha256" value="{{ change.before_sha256 }}" />
+        <button
+          class="az-btn-danger az-btn-sm"
+          type="submit"
+          {% if not preview.can_rollback %}disabled aria-disabled="true"{% endif %}
+          data-confirm="Återställa {{ change.change_id }} till exakt före-snapshot? En ny återställningspost sparas så att även denna åtgärd kan ångras."
+          data-confirm-title="Bekräfta återställning"
+          data-confirm-ok="Återställ ändring"
+          data-confirm-danger="1"
+          data-busy-label="Återställer..."
+        >Återställ ändring</button>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

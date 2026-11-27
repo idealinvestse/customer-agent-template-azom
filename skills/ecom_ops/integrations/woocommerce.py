@@ -34,11 +34,13 @@ from ecom_ops.security import (
 _PRODUCT_WRITE_FIELDS = frozenset(
     {
         "name",
+        "slug",
         "description",
         "short_description",
         "regular_price",
         "stock_quantity",
         "stock_status",
+        "manage_stock",
         "status",
     }
 )
@@ -142,12 +144,31 @@ class InMemoryWooTransport:
             "501": {
                 "id": 501,
                 "name": "Azom Pro Headset",
+                "slug": "azom-pro-headset",
                 "description": "",
                 "short_description": "",
                 "type": "simple",
                 "stock_status": "instock",
                 "stock_quantity": 12,
             }
+        }
+        self.categories: dict[str, dict[str, Any]] = {
+            "15": {
+                "id": 15,
+                "name": "Trådlös CarPlay",
+                "slug": "tradlos-carplay",
+                "parent": 0,
+                "description": "Adaptrar och boxar för trådlös Apple CarPlay i bilen.",
+                "count": 8,
+            },
+            "16": {
+                "id": 16,
+                "name": "Android Auto",
+                "slug": "android-auto",
+                "parent": 0,
+                "description": "",
+                "count": 5,
+            },
         }
         # V2.1 mock stores
         self.trackings: dict[str, list[dict[str, Any]]] = {
@@ -354,7 +375,25 @@ class InMemoryWooTransport:
         json: dict[str, Any] | None,
         params: dict[str, Any] | None,
     ) -> Any:
-        if url.rstrip("/").endswith("/products"):
+        clean_url = url.split("?")[0].rstrip("/")
+        if clean_url.endswith("/products/categories"):
+            if method.upper() == "GET":
+                rows = list(self.categories.values())
+                query = params or {}
+                search = str(query.get("search") or "").strip().lower()
+                if search:
+                    rows = [
+                        r
+                        for r in rows
+                        if search in str(r.get("name") or "").lower()
+                        or search in str(r.get("slug") or "").lower()
+                    ]
+                per_page = int(query.get("per_page") or 50)
+                page = int(query.get("page") or 1)
+                start = (page - 1) * per_page
+                return rows[start : start + per_page]
+            raise SecurityError(f"Unhandled mock product categories URL: {method} {url}")
+        if clean_url.endswith("/products"):
             if method.upper() == "GET":
                 rows = list(self.products.values())
                 params = params or {}
@@ -463,8 +502,11 @@ class WooCommerceClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.domain = domain
-        self.consumer_key = consumer_key or get_env("WOO_CONSUMER_KEY", "")
-        self.consumer_secret = consumer_secret or get_env("WOO_CONSUMER_SECRET", "")
+        dom_tag = str(domain or "").strip().lower().lstrip(".").rsplit(".", 1)[-1].upper()
+        dom_key = get_env(f"WOO_CONSUMER_KEY_{dom_tag}", "") if dom_tag else ""
+        dom_sec = get_env(f"WOO_CONSUMER_SECRET_{dom_tag}", "") if dom_tag else ""
+        self.consumer_key = consumer_key or dom_key or get_env("WOO_CONSUMER_KEY", "")
+        self.consumer_secret = consumer_secret or dom_sec or get_env("WOO_CONSUMER_SECRET", "")
         self.transport = transport or RequestsTransport(
             default_timeout=timeout, service_name="WooCommerce"
         )
@@ -535,15 +577,26 @@ class WooCommerceClient:
         per_page: int = 100,
         max_pages: int = 50,
         status: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        search: str | None = None,
     ) -> Iterator[WooOrder]:
         """Paginate through all orders (bounded by ``max_pages``)."""
+        clamped_per_page = max(1, min(int(per_page), 100))
         for page in range(1, max_pages + 1):
-            batch = self.list_orders(per_page=per_page, page=page, status=status)
+            batch = self.list_orders(
+                per_page=clamped_per_page,
+                page=page,
+                status=status,
+                after=after,
+                before=before,
+                search=search,
+            )
             if not batch:
                 return
             for order in batch:
                 yield order
-            if len(batch) < per_page:
+            if len(batch) < clamped_per_page:
                 return
 
     def find_orders_by_email(
@@ -638,6 +691,8 @@ class WooCommerceClient:
         oid = validate_order_id(order_id)
         payload: dict[str, Any] = {"tracking_number": tracking_number}
         if carrier:
+            payload["tracking_provider"] = carrier
+            payload["custom_tracking_provider"] = carrier
             payload["carrier"] = carrier
         if tracking_link:
             payload["tracking_link"] = tracking_link
@@ -670,12 +725,15 @@ class WooCommerceClient:
 
     # --- order notes / refunds ------------------------------------------- #
 
-    def list_order_notes(self, order_id: str | int) -> list[dict[str, Any]]:
+    def list_order_notes(
+        self, order_id: str | int, *, per_page: int = 100, page: int = 1
+    ) -> list[dict[str, Any]]:
         oid = validate_order_id(order_id)
         data = self.transport.request(
             "GET",
             self._url(f"/wp-json/wc/v3/orders/{oid}/notes"),
             auth=self._auth(),
+            params={"per_page": max(1, min(int(per_page), 100)), "page": max(1, int(page))},
             timeout=self.timeout,
         )
         return data if isinstance(data, list) else []
@@ -697,12 +755,15 @@ class WooCommerceClient:
         )
         return data if isinstance(data, dict) else {}
 
-    def list_refunds(self, order_id: str | int) -> list[dict[str, Any]]:
+    def list_refunds(
+        self, order_id: str | int, *, per_page: int = 100, page: int = 1
+    ) -> list[dict[str, Any]]:
         oid = validate_order_id(order_id)
         data = self.transport.request(
             "GET",
             self._url(f"/wp-json/wc/v3/orders/{oid}/refunds"),
             auth=self._auth(),
+            params={"per_page": max(1, min(int(per_page), 100)), "page": max(1, int(page))},
             timeout=self.timeout,
         )
         return data if isinstance(data, list) else []
@@ -725,6 +786,7 @@ class WooCommerceClient:
         page: int = 1,
         search: str | None = None,
         status: str = "publish",
+        slug: str | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
             "per_page": max(1, min(int(per_page), 100)),
@@ -733,6 +795,8 @@ class WooCommerceClient:
         }
         if search:
             params["search"] = search
+        if slug:
+            params["slug"] = slug
         data = self.transport.request(
             "GET",
             self._url("/wp-json/wc/v3/products"),
@@ -748,15 +812,19 @@ class WooCommerceClient:
         per_page: int = 100,
         max_pages: int = 50,
         search: str | None = None,
+        status: str = "publish",
     ) -> Iterator[dict[str, Any]]:
         """Paginate through all products (bounded by ``max_pages``)."""
+        clamped_per_page = max(1, min(int(per_page), 100))
         for page in range(1, max_pages + 1):
-            batch = self.list_products(per_page=per_page, page=page, search=search)
+            batch = self.list_products(
+                per_page=clamped_per_page, page=page, search=search, status=status
+            )
             if not batch:
                 return
             for product in batch:
                 yield product
-            if len(batch) < per_page:
+            if len(batch) < clamped_per_page:
                 return
 
     def update_product_description(
@@ -767,9 +835,11 @@ class WooCommerceClient:
         short_description: str | None = None,
     ) -> dict[str, Any]:
         pid = validate_order_id(product_id)
-        payload: dict[str, Any] = {"description": description}
+        payload: dict[str, Any] = {
+            "description": sanitize_text(str(description), max_len=8000),
+        }
         if short_description is not None:
-            payload["short_description"] = short_description
+            payload["short_description"] = sanitize_text(str(short_description), max_len=1000)
         return self.transport.request(
             "PUT",
             self._url(f"/wp-json/wc/v3/products/{pid}"),
@@ -779,7 +849,11 @@ class WooCommerceClient:
         )
 
     def update_product(
-        self, product_id: str | int, fields: dict[str, Any]
+        self,
+        product_id: str | int,
+        fields: dict[str, Any],
+        *,
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         """PUT an allowlisted set of product fields. Unknown keys are dropped."""
         pid = validate_order_id(product_id)
@@ -788,17 +862,27 @@ class WooCommerceClient:
             if key not in _PRODUCT_WRITE_FIELDS:
                 continue
             payload[key] = value
+        explicit_manage_stock = payload.get("manage_stock") if "manage_stock" in payload else None
         if "name" in payload:
             payload["name"] = sanitize_text(str(payload["name"]), max_len=200)
+        if "slug" in payload:
+            clean_slug = re.sub(r"[^a-z0-9-]+", "-", str(payload["slug"]).strip().lower()).strip("-")[:120]
+            if not clean_slug and not allow_empty:
+                raise SecurityError("Invalid product slug")
+            payload["slug"] = clean_slug
         if "description" in payload:
-            payload["description"] = sanitize_text(str(payload["description"]), max_len=8000)
+            max_desc = 32768 if allow_empty else 8000
+            payload["description"] = sanitize_text(
+                str(payload["description"]), max_len=max_desc, allow_empty=allow_empty
+            )
         if "short_description" in payload:
+            max_short = 4000 if allow_empty else 1000
             payload["short_description"] = sanitize_text(
-                str(payload["short_description"]), max_len=1000
+                str(payload["short_description"]), max_len=max_short, allow_empty=allow_empty
             )
         if "regular_price" in payload:
             price = str(payload["regular_price"]).strip()
-            if not re.fullmatch(r"\d{1,8}(\.\d{1,2})?", price):
+            if not (allow_empty and price == "") and not re.fullmatch(r"\d{1,8}(\.\d{1,2})?", price):
                 raise SecurityError("Invalid product price")
             payload["regular_price"] = price
         if "stock_quantity" in payload:
@@ -810,6 +894,8 @@ class WooCommerceClient:
                 raise SecurityError("Invalid stock quantity")
             payload["stock_quantity"] = qty
             payload["manage_stock"] = True
+        if explicit_manage_stock is not None:
+            payload["manage_stock"] = bool(explicit_manage_stock)
         if "stock_status" in payload:
             stock = str(payload["stock_status"]).strip().lower()
             if stock not in _STOCK_STATUSES:
@@ -830,15 +916,41 @@ class WooCommerceClient:
             timeout=self.timeout,
         )
 
-    def list_product_variations(self, product_id: str | int) -> list[dict[str, Any]]:
+    def list_product_variations(
+        self, product_id: str | int, *, per_page: int = 100, page: int = 1
+    ) -> list[dict[str, Any]]:
         pid = validate_order_id(product_id)
         data = self.transport.request(
             "GET",
             self._url(f"/wp-json/wc/v3/products/{pid}/variations"),
             auth=self._auth(),
+            params={"per_page": max(1, min(int(per_page), 100)), "page": max(1, int(page))},
             timeout=self.timeout,
         )
         return data if isinstance(data, list) else []
+
+    def list_product_categories(
+        self,
+        *,
+        per_page: int = 50,
+        page: int = 1,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List WooCommerce product categories (/wc/v3/products/categories)."""
+        params: dict[str, Any] = {
+            "per_page": max(1, min(int(per_page), 100)),
+            "page": max(1, int(page)),
+        }
+        if search:
+            params["search"] = str(search).strip()
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wc/v3/products/categories"),
+            auth=self._auth(),
+            params=params,
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
 
     # --- customers / coupons / reports ----------------------------------- #
 
@@ -908,20 +1020,28 @@ class WooCommerceClient:
                         plugin_names.append(str(name))
                 elif isinstance(p, str):
                     plugin_names.append(p)
+        wp_ver = str(env.get("wp_version") or "").strip()
+        if wp_ver:
+            woo_version = str(env.get("version") or data.get("version") or "").strip() or None
+            wordpress_version = wp_ver
+        else:
+            woo_version = str(data.get("version") or "").strip() or None
+            wordpress_version = str(env.get("version") or "").strip() or None
         return WooSystemStatus(
-            version=str(data.get("version") or "") or None,
-            wordpress_version=str(env.get("version") or "") or None,
+            version=woo_version,
+            wordpress_version=wordpress_version,
             active_plugins=plugin_names,
             raw=data,
         )
 
     # --- webhooks management --------------------------------------------- #
 
-    def list_webhooks(self) -> list[dict[str, Any]]:
+    def list_webhooks(self, *, per_page: int = 100, page: int = 1) -> list[dict[str, Any]]:
         data = self.transport.request(
             "GET",
             self._url("/wp-json/wc/v3/webhooks"),
             auth=self._auth(),
+            params={"per_page": max(1, min(int(per_page), 100)), "page": max(1, int(page))},
             timeout=self.timeout,
         )
         return data if isinstance(data, list) else []
@@ -981,7 +1101,15 @@ class WooCommerceClient:
         return ShipmentTracking(
             tracking_id=str(data.get("id") or data.get("tracking_id") or ""),
             tracking_number=str(data.get("tracking_number") or "") or None,
-            carrier=str(data.get("carrier") or data.get("custom_tracking_provider") or "") or None,
+            carrier=(
+                str(
+                    data.get("tracking_provider")
+                    or data.get("carrier")
+                    or data.get("custom_tracking_provider")
+                    or ""
+                )
+                or None
+            ),
             link=str(data.get("tracking_link") or data.get("custom_tracking_link") or "") or None,
             date_shipped=str(data.get("date_shipped") or "") or None,
             raw=data,

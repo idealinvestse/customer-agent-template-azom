@@ -43,6 +43,7 @@ _TARGET_CASE_RE = re.compile(r"^case:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _TARGET_MARKETING_RE = re.compile(r"^marketing:[A-Za-z0-9._:-]{1,64}$")
 _TARGET_PRODUCT_RE = re.compile(r"^product:[A-Za-z0-9._-]{1,64}$")
 _TARGET_CHAT_RE = re.compile(r"^chat:[a-z0-9_-]{1,32}:[A-Za-z0-9._:-]{1,64}$")
+_TARGET_SEO_RE = re.compile(r"^seo:(?:audit:seoa-[0-9a-f]{12}|[a-z][a-z0-9-]{0,62})$")
 
 
 def _default_data_dir() -> Path:
@@ -206,6 +207,18 @@ def authorize_target_ref(actor: str, target_ref: str | None) -> None:
     if ref.startswith("chat:"):
         if not _TARGET_CHAT_RE.fullmatch(ref):
             raise SearchPolicyError(f"Invalid target_ref: {ref}")
+        return
+
+    if ref.startswith("seo:"):
+        if not _TARGET_SEO_RE.fullmatch(ref):
+            raise SearchPolicyError(f"Invalid target_ref: {ref}")
+        if not (
+            actor_obj.has(Permission.MARKETING_READ)
+            or actor_obj.has(Permission.WP_OPS_READ)
+        ):
+            raise AccessDenied(
+                f"Actor {actor_obj.name!r} (role={actor_obj.role}) lacks SEO research target access"
+            )
         return
 
     raise SearchPolicyError(f"Unsupported target_ref: {ref}")

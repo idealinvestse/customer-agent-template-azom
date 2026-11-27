@@ -58,7 +58,7 @@ All external HTTP I/O is isolated under `skills/ecom_ops/integrations/search/` a
 
 ```text
 config/
-└── research.yaml                            # Fail-closed defaults, providers, budgets, cache, egress, 12 profiles
+└── research.yaml                            # Fail-closed defaults, providers, budgets, cache, egress, 13 profiles
 
 skills/ecom_ops/
 ├── integrations/
@@ -82,7 +82,7 @@ skills/ecom_ops/
 │   ├── __init__.py                          # ResearchService, get_research_service()
 │   ├── config.py                            # Fail-closed gate helpers + mtime-cached config/research.yaml loader
 │   ├── models.py                            # res-<12hex>, SearchProfile, ResearchSpec, ResearchJob, ResearchBrief
-│   ├── profiles.py                          # 12 goal/ambition SearchProfiles + recommend_profile() + YAML overrides
+│   ├── profiles.py                          # 13 goal/ambition SearchProfiles + recommend_profile() + YAML overrides
 │   ├── firewall.py                          # OutboundQueryFirewall, QueryTaintContext
 │   ├── sanitizer.py                         # sanitize_untrusted_text(), frame_untrusted_web_data()
 │   ├── evaluator.py                         # URL canonicalization, corroboration, EvidenceStatus, claim classification
@@ -147,7 +147,7 @@ Live route priority defaults to `parallel,exa,brave,tavily,searxng` (overridable
 
 `PROTECTED_OVERLAY_KEYS` are never read from `AZOM_DATA_DIR/runtime.env` or `AZOM_DATA_DIR/secrets.env` — systemd / process env always wins so dashboard-written overlays cannot flip live egress gates or kill-switches.
 
-## 4. The 12 Search Profiles & Multi-Tool Combinations
+## 4. The 13 Search Profiles & Multi-Tool Combinations
 
 Defined in `skills/ecom_ops/research/profiles.py`, documented as skill playbooks in [`skills/research-profiles/SKILL.md`](../skills/research-profiles/SKILL.md), and overridable in `config/research.yaml`. Each profile pairs a **`combination_mode`** (`failover`, `ensemble` via `SearchRouter.search_multi()`, or `staged` via `round_providers`) with a **`fetch_strategy`** (`snippet_only`, `direct`, `parallel_extract_first`, or `hybrid`):
 
@@ -160,6 +160,7 @@ Defined in `skills/ecom_ops/research/profiles.py`, documented as skill playbooks
 | `marketing_intel` | `standard` | `ensemble` · `direct` | `exa, parallel, brave, tavily` | `SE, NO, DK, en` | 365d | `triangulated_market` | `high` |
 | `product_spec_deep` | `standard` | `ensemble` · `parallel_extract_first` | `parallel, exa, brave, tavily` | `en, SE` | 730d | `authoritative_primary` | `standard` |
 | `seo_content_radar` | `standard` | `ensemble` · `direct` | `exa, brave, tavily, parallel` | `SE, NO, DK` | 365d | `triangulated_market` | `high` |
+| `seo_vendor_vetting` | `standard` | `staged` · `direct` | `parallel, brave, exa, tavily` | `SE, NO, DK` | 365d | `triangulated_market` | `high` |
 | `competitor_market` | `deep` | `staged` · `hybrid` | `parallel, exa, brave, tavily` | `SE, NO, DK` | 365d | `triangulated_market` | `high` |
 | `regulatory_compliance` | `deep` | `staged` · `direct` | `parallel, brave, tavily, exa, searxng` | `SE, NO, DK` | 180d | `strict_factual` | `strict` |
 | `conversion_teardown` | `deep` | `staged` · `parallel_extract_first` | `exa, parallel, tavily, brave` | `en, SE, NO, DK` | 540d | `inspiration_and_heuristics` | `standard` |
@@ -227,7 +228,7 @@ python -m ecom_ops --mock product-desc --product-id 42 --language sv --research
 
 | Route | Permission | Purpose |
 |-------|------------|---------|
-| `GET /research` | `WEB_SEARCH` or `RESEARCH_RUN` | Research Hub: defaults to `Automatisk (rekommenderad)` profile (`auto`) and `Automatisk (följer profil)` depth (`auto`) with live preview, 8 1-click presets (`_QUICK_PRESETS`), ambition-filtered catalog of the 12 profiles, async job queue, budget & provider readiness badges, and `#research-setup` (Oscar-writable, Jonatan read-only). |
+| `GET /research` | `WEB_SEARCH` or `RESEARCH_RUN` | Research Hub: defaults to `Automatisk (rekommenderad)` profile (`auto`) and `Automatisk (följer profil)` depth (`auto`) with live preview, 8 1-click presets (`_QUICK_PRESETS`), ambition-filtered catalog of the 13 profiles, async job queue, budget & provider readiness badges, and `#research-setup` (Oscar-writable, Jonatan read-only). |
 | `GET /research/recommend` | `WEB_SEARCH` or `RESEARCH_RUN` | JSON auto-recommendation endpoint (`?q=...&ambition=auto|quick|standard|deep`) returning `ok`, resolved `profile`, `resolved_depth`, `configured_providers`, and `live_ready`. |
 | `POST /research/search` | `WEB_SEARCH` | Run synchronous quick search from the Hub; `profile_id=auto` resolves via `recommend_profile()`, enforces `OutboundQueryFirewall`, and renders resolved profile metadata (`Auto: ...`). |
 | `POST /research/jobs` | `RESEARCH_RUN` | Enqueue async Deep Research job; `profile_id=auto` and `depth=auto` resolve via `recommend_profile()` / profile `ambition`, optional `target_ref`, starts lazy worker when live. |

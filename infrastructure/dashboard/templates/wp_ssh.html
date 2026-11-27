@@ -33,8 +33,11 @@
   {% if site %}
   <nav aria-label="Webbplatsflikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
     <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_site_detail', site_id=site.id) }}">Översikt</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_plugins', site_id=site.id) }}">Plugins &amp; MU</a>
     <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_files', site_id=site.id) }}">Tema- och pluginfiler</a>
     <a class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200" href="{{ url_for('wp_ssh', site_id=site.id) }}" aria-current="page">SSH-inställningar</a>
+    <a class="az-btn-secondary az-btn-sm" href="{{ url_for('wp_changes', site_id=site.id) }}">Ändringar &amp; Återställning</a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo?site={{ site.id }}">SEO Studio</a>
   </nav>
   {% endif %}
 
@@ -153,6 +156,67 @@
       </label>
 
       <button class="az-btn-primary" type="submit" data-busy-label="Sparar...">Spara SSH-inställningar</button>
+    </form>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if deploy_ssh %}
+  <section class="az-card-oscar space-y-4" data-deploy-ssh-card="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="font-display text-base font-semibold text-oscar-300">Deploy-SFTP (*-wp-deployer)</h2>
+        <p class="az-muted text-xs">Separat ut-av-band-identitet för atomär fildeploy och WSOD-säker återställning (<code class="az-code font-mono">AZOM_WP_DEPLOY_SSH</code>). Delar aldrig nyckel med <code class="az-code font-mono">*-wp-reader</code>.</p>
+      </div>
+      {{ ui.status_badge('ok' if deploy_ssh.deploy_ssh_enabled else 'neutral', 'Deploy SSH: PÅ' if deploy_ssh.deploy_ssh_enabled else 'Deploy SSH: AV') }}
+    </div>
+
+    <dl class="grid gap-3 sm:grid-cols-2 text-xs">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="font-semibold uppercase tracking-wider text-mist-400">Deploy-användare &amp; Port</dt>
+        <dd class="mt-1 font-mono text-mist-100">{{ deploy_ssh.deploy_ssh_user or 'saknas' }}:{{ deploy_ssh.ssh_port }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="font-semibold uppercase tracking-wider text-mist-400">Deploy-nyckel</dt>
+        <dd class="mt-1">{{ ui.status_badge('ok' if deploy_ssh.deploy_key_stored else 'neutral', 'lagrad' if deploy_ssh.deploy_key_stored else 'saknas') }}</dd>
+      </div>
+    </dl>
+
+    {% if can_save %}
+    <form class="border-t border-ink-700/80 pt-4 space-y-4" method="post" action="{{ url_for('wp_ssh_deploy', site_id=deploy_ssh.site_id) }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label class="az-label" for="deploy_ssh_user">Deploy-användare (*-wp-deployer)</label>
+          <input class="az-input font-mono text-xs" id="deploy_ssh_user" name="deploy_ssh_user" type="text" value="{{ deploy_ssh.deploy_ssh_user }}" placeholder="azom-wp-deployer" autocomplete="off" spellcheck="false" />
+        </div>
+        <div>
+          <label class="az-label" for="deploy_files_root">Rot på servern</label>
+          <input class="az-input font-mono text-xs" id="deploy_files_root" name="files_root" type="text" value="{{ deploy_ssh.files_root }}" autocomplete="off" spellcheck="false" />
+        </div>
+        <div>
+          <label class="az-label" for="deploy_ssh_host">Värd</label>
+          <input class="az-input font-mono text-xs" id="deploy_ssh_host" name="ssh_host" type="text" value="{{ deploy_ssh.ssh_host }}" autocomplete="off" spellcheck="false" />
+        </div>
+        <div>
+          <label class="az-label" for="deploy_ssh_port">Port</label>
+          <input class="az-input max-w-[10rem] font-mono text-xs tabular-nums" id="deploy_ssh_port" name="ssh_port" type="number" min="1" max="65535" value="{{ deploy_ssh.ssh_port }}" autocomplete="off" />
+        </div>
+      </div>
+      <div>
+        <label class="az-label" for="deploy_host_public_key">Publik värdnyckel (valfri)</label>
+        <textarea class="az-textarea min-h-[4rem] font-mono text-xs" id="deploy_host_public_key" name="host_public_key" rows="2" maxlength="2000" spellcheck="false" placeholder="Lämna tomt för att behålla sparad värdnyckel...">{{ deploy_ssh.host_public_key or '' }}</textarea>
+        <p class="mt-1 text-xs text-mist-400">En rad, till exempel <code class="az-code font-mono">ssh-ed25519</code>. Tom ruta behåller befintlig sparad värdnyckel.</p>
+      </div>
+      <div>
+        <label class="az-label" for="deploy_private_key">Privat deploy-nyckel (unik för *-wp-deployer)</label>
+        <textarea class="az-textarea font-mono text-xs" id="deploy_private_key" name="deploy_private_key" rows="4" maxlength="16384" autocomplete="off" spellcheck="false" placeholder="Klistra in separat OpenSSH-nyckel för deploykontot..."></textarea>
+      </div>
+      <label class="flex cursor-pointer items-center gap-2.5 text-sm text-mist-100" for="clear_deploy_key">
+        <input id="clear_deploy_key" class="az-checkbox" type="checkbox" name="clear_deploy_key" value="1" />
+        <span>Ta bort sparad deploy-nyckel</span>
+      </label>
+      <button class="az-btn-oscar az-btn-sm" type="submit" data-busy-label="Sparar...">Spara Deploy-SSH</button>
     </form>
     {% endif %}
   </section>

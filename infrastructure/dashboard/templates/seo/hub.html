@@ -1,0 +1,824 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}SEO Studio – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Teknisk SEO, On-Page, Media, Strategi &amp; Länkpaket{% endblock %}
+{% block content %}
+{% set p = posture | default({}) %}
+{% set k = kpis | default({}) %}
+{% set known_site_ids = sites | map(attribute='id') | list %}
+{% set can_link_changes = selected_site in known_site_ids %}
+<div class="space-y-5" data-seo-studio="true" data-seo-page="hub">
+  {% call ui.page_header(
+    "SEO Studio",
+    "Nordisk SEO-arbetsyta för teknisk audit, on-page & bild-SEO, strategi, kampanjer och granskade länkpaket.",
+    badge_text="Mock-läge" if p.get('mock_mode') else ("Live skrivläge öppet" if p.get('live_writes_open') else "Live läsläge"),
+    badge_tone="warn" if p.get('mock_mode') else ("ok" if p.get('live_writes_open') else "info")
+  ) %}
+    {% if can_link_changes %}
+    <a class="az-btn-secondary az-btn-sm" href="/wp/{{ selected_site }}/changes">
+      {{ icon('clipboard-list', 'xs') }}
+      <span>Change Vault</span>
+    </a>
+    {% endif %}
+    <a class="az-btn-secondary az-btn-sm" href="/seo">
+      {{ icon('refresh', 'xs') }}
+      <span>Uppdatera</span>
+    </a>
+  {% endcall %}
+
+  <!-- SEO Studio sub-navigation -->
+  <nav aria-label="SEO Studio flikar" class="flex flex-wrap gap-2 border-b border-ink-700/80 pb-3">
+    <a class="az-btn-secondary az-btn-sm {{ 'bg-ink-800 ring-1 ring-steel-500/35 text-steel-200' if active_seo_section != 'digest' else '' }}" href="/seo?site={{ selected_site }}" {% if active_seo_section != 'digest' %}aria-current="page"{% endif %}>
+      {{ icon('activity', 'xs') }}
+      <span>Översikt &amp; Audit</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/strategies?site={{ selected_site }}">
+      {{ icon('trending-up', 'xs') }}
+      <span>Strategier ({{ k.get('strategies_count', 0) }})</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/campaigns?site={{ selected_site }}">
+      {{ icon('sliders', 'xs') }}
+      <span>Kampanjer ({{ k.get('campaigns_count', 0) }})</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/link-packages?site={{ selected_site }}">
+      {{ icon('globe', 'xs') }}
+      <span>Länkpaket ({{ k.get('link_packages_count', 0) }})</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo/vendors?site={{ selected_site }}">
+      {{ icon('shield', 'xs') }}
+      <span>Kvalitetssäkrade SEO-butiker</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm {{ 'bg-ink-800 ring-1 ring-steel-500/35 text-steel-200' if active_seo_section == 'digest' else '' }}" href="/seo/digest?site={{ selected_site }}" {% if active_seo_section == 'digest' %}aria-current="page"{% endif %}>
+      {{ icon('clipboard-list', 'xs') }}
+      <span>Veckodigest</span>
+    </a>
+  </nav>
+
+  <!-- Unified Site-Switcher & Cross-Surface Ops Bar -->
+  <section class="az-card p-3" data-seo-site-switcher="true">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <form method="get" action="/seo" class="flex flex-wrap items-center gap-2">
+        <label class="text-xs font-semibold text-mist-300" for="seo-hub-site-switch">Aktiv webbplats:</label>
+        <select id="seo-hub-site-switch" name="site" class="az-select text-xs" data-auto-submit="1">
+          {% for s in sites %}
+          <option value="{{ s.id }}" {% if s.id == selected_site %}selected{% endif %}>{{ s.display_name }} ({{ s.id }})</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="az-btn-secondary az-btn-sm">Byt</button>
+      </form>
+      <div class="flex flex-wrap items-center gap-1.5 text-xs">
+        <a class="az-btn-secondary az-btn-sm" href="/seo?site={{ selected_site }}">SEO Studio</a>
+        {% if can_link_changes %}
+        <a class="az-btn-secondary az-btn-sm" href="/wp/{{ selected_site }}">WP-översikt</a>
+        <a class="az-btn-secondary az-btn-sm" href="/wp/{{ selected_site }}/plugins">Plugins &amp; MU</a>
+        <a class="az-btn-secondary az-btn-sm" href="/wp/{{ selected_site }}/changes?category=seo_meta">Change Vault (SEO)</a>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  {% if p.get('kill_switch_active') %}
+    {{ ui.flash_banner('error', 'Nödstopp (AZOM_SEO_KILL / AZOM_WP_DEPLOY_KILL) är aktivt. Alla SEO-skrivningar och återställningar är spärrade.', dismissible=False) }}
+  {% endif %}
+
+  <!-- GSC transparency notice -->
+  {{ ui.info_callout('info', 'Datakällor & GSC-notis', gsc_note) }}
+
+  <!-- Audit Trend Delta Strip -->
+  {% set diff = audit_diff | default({}) %}
+  {% if diff and diff.get('ok') %}
+  <section class="az-card p-3.5" data-seo-audit-diff="true">
+    <div class="flex flex-wrap items-center justify-between gap-3 text-xs">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-semibold text-mist-100">Audit-trend (Delta):</span>
+        {% if diff.get('has_previous') %}
+          {% set delta = diff.get('score_delta', 0) %}
+          {{ ui.status_badge('ok' if delta > 0 else ('error' if delta < 0 else 'neutral'), ('+' ~ delta if delta > 0 else delta) ~ ' poäng') }}
+          <span class="text-mist-300">Nya fynd: <strong class="text-mist-100">{{ (diff.get('new_issues') or []) | length }}</strong></span>
+          <span class="text-mist-300">Lösta fynd: <strong class="text-mist-100">{{ (diff.get('resolved_issues') or []) | length }}</strong></span>
+          <span class="font-mono text-mist-400">({{ diff.get('previous_id') }} → {{ diff.get('latest_id') }})</span>
+        {% else %}
+          <span class="text-mist-400">Första registrerade auditen för {{ selected_site }} — kör ytterligare en audit för att se trenddelta.</span>
+        {% endif %}
+      </div>
+      {% if diff.get('latest_id') %}
+      <a class="az-btn-secondary az-btn-sm" href="/seo/audit/{{ diff.get('latest_id') }}">Öppna senaste audit</a>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- Executive KPI summary cards -->
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+    {{ ui.kpi_card(
+      'Senaste SEO-poäng',
+      (k.get('latest_score') ~ '/100') if k.get('latest_score') is not none else '—',
+      hint=('Betyg: ' ~ k.get('latest_grade')) if k.get('latest_grade') else 'Kör en audit nedan',
+      tone='ok' if (k.get('latest_score') is not none and k.get('latest_score') >= 80) else ('warn' if k.get('latest_score') is not none else 'neutral'),
+      href=('/seo/audit/' ~ k.get('latest_audit_id')) if k.get('latest_audit_id') else None,
+      link_label='Visa senaste',
+      icon_name='activity'
+    ) }}
+    {{ ui.kpi_card(
+      'Kritiska / Höga fynd',
+      k.get('critical_findings', 0),
+      hint='Från senaste SEO-auditen',
+      tone='danger' if k.get('critical_findings', 0) > 0 else 'ok',
+      icon_name='alert-triangle'
+    ) }}
+    {{ ui.kpi_card(
+      'Saknade alt-texter',
+      k.get('missing_alt', 0),
+      hint='Bilder utan beskrivande alt',
+      tone='warn' if k.get('missing_alt', 0) > 0 else 'ok',
+      icon_name='search'
+    ) }}
+    {{ ui.kpi_card(
+      'Strategier & Kampanjer',
+      (k.get('strategies_count', 0) ~ ' / ' ~ k.get('campaigns_count', 0)),
+      hint='Aktiva nordiska SEO-planer',
+      tone='info',
+      href='/seo/strategies',
+      link_label='Öppna studio',
+      icon_name='trending-up'
+    ) }}
+    {{ ui.kpi_card(
+      'Länkpaket',
+      k.get('link_packages_count', 0),
+      hint=(k.get('ready_links_count', 0) ~ ' för granskning · ' ~ k.get('approved_links_count', 0) ~ ' godkända'),
+      tone='info',
+      href='/seo/link-packages',
+      link_label='Länkpaket-studio',
+      icon_name='globe'
+    ) }}
+  </div>
+
+  <!-- Autonomous SEO Pipeline (Autopilot) -->
+  {% if can_run_autopilot %}
+  <section class="az-card space-y-4 border-steel-500/35" data-seo-autopilot-card="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">Autonom SEO-pipeline (Research → Strategi → Kampanj → Valda SEO-butiker)</h2>
+        <p class="az-muted text-xs">Kör helhetskedjan på ett klick: audit + GSC + webbresearch → strategi (<code class="az-code">seos-*</code>) → kampanj (<code class="az-code">seoc-*</code>) → kvalitetssäkrade SEO-butiker → beställningsklart utkast (<code class="az-code">seol-*</code>). Strikt HITL — inga automatiska köp eller live-ändringar.</p>
+      </div>
+      <a class="az-btn-secondary az-btn-sm" href="/seo/vendors?site={{ selected_site }}">
+        {{ icon('shield', 'xs') }}
+        <span>Kvalitetssäkrade SEO-butiker</span>
+      </a>
+    </div>
+
+    <form method="post" action="/seo/autopilot" class="space-y-3">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="site_id" value="{{ selected_site }}" />
+      <input type="hidden" name="include_web_research_present" value="1" />
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 lg:items-end">
+        <div class="sm:col-span-2">
+          <label class="az-label" for="seo-auto-topic">Fokusämne / produktkluster</label>
+          <input id="seo-auto-topic" name="topic" type="text" maxlength="240" class="az-input" placeholder="T.ex. Trådlös CarPlay Volvo &amp; BMW" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-auto-market">Marknad</label>
+          <select id="seo-auto-market" name="market" class="az-select">
+            <option value="no" selected>NO (Norge)</option>
+            <option value="se">SE (Sverige)</option>
+            <option value="dk">DK (Danmark)</option>
+          </select>
+        </div>
+        <div>
+          <label class="az-label" for="seo-auto-budget">Budget (SEK)</label>
+          <input id="seo-auto-budget" name="budget_sek" type="number" min="1000" max="500000" step="500" value="15000" class="az-input" />
+        </div>
+        <div>
+          <label class="az-label" for="seo-auto-links">Antal länkar</label>
+          <input id="seo-auto-links" name="link_count" type="number" min="1" max="50" value="6" class="az-input" />
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <div class="flex flex-wrap items-center gap-4 text-xs text-mist-200">
+          <label class="flex cursor-pointer items-center gap-2" for="seo-auto-web">
+            <input id="seo-auto-web" class="az-checkbox" type="checkbox" name="include_web_research" value="1" checked />
+            <span>Inkludera SERP- &amp; butiksresearch</span>
+          </label>
+          <label class="flex cursor-pointer items-center gap-2" for="seo-auto-batch">
+            <input id="seo-auto-batch" class="az-checkbox" type="checkbox" name="include_batch_fixes" value="1" />
+            <span>Skapa batch-förhandsvisning (<code class="az-code">seob-*</code>, ej exekverad)</span>
+          </label>
+        </div>
+        <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Kör Autopilot...">
+          {{ icon('rocket', 'xs') }}
+          <span>Kör Autonom SEO-pipeline</span>
+        </button>
+      </div>
+    </form>
+  </section>
+  {% endif %}
+
+  <!-- Quick SEO Scanner -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">Snabbskanner — Kör ny SEO-audit</h2>
+        <p class="az-muted text-xs">Skrivskyddad analys av teknisk SEO, on-page, media/alt-texter, internlänkar och kannibalisering.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-1.5">
+        {{ ui.status_badge('ok' if p.get('mock_mode') else ('ok' if p.get('seo_write_enabled') else 'neutral'), 'SEO-skrivning: ' ~ ('Mock' if p.get('mock_mode') else ('På' if p.get('seo_write_enabled') else 'Av'))) }}
+        {{ ui.status_badge('info', 'Roll: ' ~ role) }}
+      </div>
+    </div>
+
+    <form method="post" action="/seo/audit" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 lg:items-end">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div>
+        <label class="az-label" for="seo-scan-site">Webbplats</label>
+        <select id="seo-scan-site" name="site_id" class="az-select">
+          {% for s in sites %}
+          <option value="{{ s.id }}" {% if s.id == selected_site %}selected{% endif %}>{{ s.display_name }} ({{ s.id }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="az-label" for="seo-scan-market">Marknad</label>
+        <select id="seo-scan-market" name="market" class="az-select">
+          <option value="no" selected>NO (Norge)</option>
+          <option value="se">SE (Sverige)</option>
+          <option value="dk">DK (Danmark)</option>
+        </select>
+      </div>
+      <div>
+        <label class="az-label" for="seo-scan-scope">Omfattning (scope)</label>
+        <select id="seo-scan-scope" name="scope" class="az-select">
+          <option value="site" selected>Hel sajt (site)</option>
+          <option value="technical">Teknisk SEO (technical)</option>
+          <option value="page">Sida (page)</option>
+          <option value="product">Produkter (product)</option>
+          <option value="media">Bild- &amp; media-SEO (media)</option>
+          <option value="links">Internlänkar (links)</option>
+          <option value="cannibalization">Kannibalisering (cannibalization)</option>
+        </select>
+      </div>
+      <div>
+        <label class="az-label" for="seo-scan-path">Sökväg (valfri)</label>
+        <input id="seo-scan-path" name="path" type="text" class="az-input" value="/" maxlength="200" placeholder="/produkt/..." />
+      </div>
+      <div>
+        <button type="submit" class="az-btn-primary w-full" data-busy-label="Skannar...">
+          {{ icon('search', 'xs') }}
+          <span>Kör SEO-audit</span>
+        </button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Latest Audits Table -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0">Senaste SEO-audits ({{ audits | length }})</h2>
+    </div>
+
+    {% if audits %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Senaste SEO-audits">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Audit-ID</th>
+            <th scope="col">Webbplats &amp; Marknad</th>
+            <th scope="col">Omfattning</th>
+            <th scope="col">Poäng</th>
+            <th scope="col">Fynd</th>
+            <th scope="col">Skapad</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in audits %}
+          {% set a_score = a.get('score', 0) %}
+          <tr>
+            <td class="font-mono text-xs">{{ a.get('audit_id') }}</td>
+            <td>
+              <span class="font-medium text-mist-100">{{ a.get('site_id') }}</span>
+              <span class="az-badge az-badge-neutral uppercase">{{ a.get('market') or 'no' }}</span>
+            </td>
+            <td class="font-mono text-xs text-mist-300">{{ a.get('scope') or 'site' }}</td>
+            <td>
+              {{ ui.status_badge('ok' if a_score >= 80 else ('warn' if a_score >= 60 else 'error'), a_score ~ '/100 · ' ~ (a.get('grade') or '')) }}
+            </td>
+            <td class="tabular-nums text-xs text-mist-300">{{ (a.get('issues') or []) | length }} st</td>
+            <td class="text-xs text-mist-400 tabular-nums">{{ a.get('created_at_fmt') or a.get('created_at') or '—' }}</td>
+            <td>
+              <a class="az-btn-secondary az-btn-sm" href="/seo/audit/{{ a.get('audit_id') }}">Öppna rapport</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga SEO-audits körda ännu', 'Använd snabbskannern ovan för att skapa din första SEO-rapport.', icon_name='search') }}
+    {% endif %}
+  </section>
+
+  <!-- GSC Strike-Distance Quick-Wins & Nordic Parity / Deep Crawl -->
+  {% set gsc = gsc_data | default({}) %}
+  {% set gsc_st = gsc.get('gsc_status') if gsc.get('gsc_status') is mapping else {} %}
+  {% set gsc_strike = gsc.get('strike_distance') if gsc.get('strike_distance') is sequence and gsc.get('strike_distance') is not string else [] %}
+  {% set gsc_low_ctr = gsc.get('low_ctr') if gsc.get('low_ctr') is sequence and gsc.get('low_ctr') is not string else [] %}
+  {% set parity = parity_data | default({}) %}
+  {% set dcrawl = deep_crawl_data | default({}) %}
+  <div class="grid gap-5 lg:grid-cols-2">
+    <section class="az-card space-y-3" data-seo-gsc-card="true">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="az-section-title mb-0">GSC Strike-Distance Quick-Wins</h2>
+          <p class="az-muted text-xs">Sökfrågor på position 4–15 med höga visningar samt låg-CTR-möjligheter.</p>
+        </div>
+        {% set gsc_mode = (gsc_st.get('mode') or ('mock' if p.get('mock_mode') else 'disconnected')) | lower %}
+        {{ ui.status_badge('ok' if gsc_mode == 'live' else ('warn' if gsc_mode == 'mock' else 'neutral'), 'GSC: ' ~ ('Live (read-only)' if gsc_mode == 'live' else ('Mock' if gsc_mode == 'mock' else 'Ej ansluten'))) }}
+      </div>
+      {% if gsc_strike %}
+      <div class="az-table-wrap" tabindex="0" role="region" aria-label="GSC Strike-Distance">
+        <table class="az-table">
+          <thead>
+            <tr>
+              <th scope="col">Sökfråga &amp; Sida</th>
+              <th scope="col">Pos</th>
+              <th scope="col">Visningar</th>
+              <th scope="col">CTR</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in gsc_strike[:6] %}
+            <tr>
+              <td class="text-xs">
+                <div class="font-medium text-mist-100">{{ row.get('query') }}</div>
+                <div class="truncate font-mono text-mist-400">{{ row.get('page') or row.get('url') or '' }}</div>
+              </td>
+              <td class="font-mono text-xs tabular-nums">{{ row.get('position') }}</td>
+              <td class="font-mono text-xs tabular-nums">{{ row.get('impressions') }}</td>
+              <td class="font-mono text-xs tabular-nums">{{ row.get('ctr_pct') if row.get('ctr_pct') is not none else row.get('ctr') }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="flex flex-wrap gap-2 text-xs text-mist-400">
+        <span>Strike-distance: <strong class="text-mist-200">{{ gsc_strike | length }}</strong></span>
+        <span>Låg CTR: <strong class="text-mist-200">{{ gsc_low_ctr | length }}</strong></span>
+        <span>GSC-kannibalisering: <strong class="text-mist-200">{{ (gsc.get('cannibalization') or []) | length }}</strong></span>
+      </div>
+      {% else %}
+      <p class="az-muted text-xs">Inga GSC quick-wins laddade ännu för {{ selected_site }}.</p>
+      {% endif %}
+    </section>
+
+    <section class="az-card space-y-3" data-seo-parity-crawl-card="true">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="az-section-title mb-0">Nordisk SE/NO/DK-paritet &amp; Djup crawl</h2>
+          <p class="az-muted text-xs">Kontrollera hreflang, språkläckage (SE→NO/DK), valuta och sitemap-status.</p>
+        </div>
+        <div class="flex flex-wrap gap-1.5">
+          <form method="post" action="/seo/parity">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input type="hidden" name="site_id" value="{{ selected_site }}" />
+            <input type="hidden" name="next_url" value="/seo?site={{ selected_site }}" />
+            <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Kontrollerar...">Kör SE/NO/DK-paritet</button>
+          </form>
+          <form method="post" action="/seo/deep-crawl">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+            <input type="hidden" name="site_id" value="{{ selected_site }}" />
+            <input type="hidden" name="max_pages" value="10" />
+            <input type="hidden" name="next_url" value="/seo?site={{ selected_site }}" />
+            <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Crawlar...">Kör djup crawl</button>
+          </form>
+        </div>
+      </div>
+
+      {% if parity and parity.get('ok') %}
+      {% set p_issues = parity.get('issues') or [] %}
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 text-xs space-y-1.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="font-semibold text-mist-100">Nordisk paritet ({{ (parity.get('markets') or ['se', 'no', 'dk']) | join('/') | upper }})</span>
+          {{ ui.status_badge('ok' if (p_issues | length) == 0 else 'warn', (p_issues | length) ~ ' avvikelser') }}
+        </div>
+        {% if p_issues %}
+        <ul class="list-disc space-y-0.5 pl-4 text-mist-300">
+          {% for pi in p_issues[:4] %}
+          <li>{{ pi.get('title') or pi.get('detail') or pi.get('code') if pi is mapping else pi }}</li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-mist-400">Inga paritets- eller hreflang-avvikelser funna.</p>
+        {% endif %}
+      </div>
+      {% else %}
+      <p class="az-muted text-xs">Klicka "Kör SE/NO/DK-paritet" för att granska hreflang, översättning och valuta.</p>
+      {% endif %}
+
+      {% if dcrawl and dcrawl.get('ok') %}
+      {% set dc_crawled = dcrawl.get('crawled') or [] %}
+      {% set dc_issues = dcrawl.get('issues') or [] %}
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3 text-xs space-y-1.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="font-semibold text-mist-100">Senaste djupa crawl</span>
+          {{ ui.status_badge('ok' if (dc_issues | length) == 0 else 'warn', (dc_crawled | length) ~ ' sidor · ' ~ (dc_issues | length) ~ ' fynd') }}
+        </div>
+        {% if dc_issues %}
+        <ul class="list-disc space-y-0.5 pl-4 text-mist-300">
+          {% for di in dc_issues[:4] %}
+          <li>{{ di.get('title') or di.get('url') or di.get('code') if di is mapping else di }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+      </div>
+      {% endif %}
+    </section>
+  </div>
+
+  <!-- Weekly SEO & Plugin Drift Digest Preview -->
+  {% set dig = digest_data | default({}) %}
+  {% if dig and dig.get('ok') %}
+  <section class="az-card space-y-3 {{ 'ring-1 ring-steel-500/40' if digest_focus else '' }}" data-seo-drift-digest="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-0">Veckovis SEO- &amp; Plugin-driftdigest ({{ selected_site }})</h2>
+        <p class="az-muted text-xs">Samlad översikt av SEO-trend, GSC quick-wins, nordisk paritet och väntande pluginuppdateringar.</p>
+      </div>
+      <div class="flex flex-wrap gap-1.5">
+        <a class="az-btn-secondary az-btn-sm" href="/seo/digest?site={{ selected_site }}">Öppna digest-vy</a>
+        <a class="az-btn-secondary az-btn-sm" href="/seo/digest?site={{ selected_site }}&amp;format=json">JSON</a>
+      </div>
+    </div>
+    {% set plug_sum = dig.get('plugin_summary') if dig.get('plugin_summary') is mapping else {} %}
+    {% set gsc_sum = dig.get('gsc_summary') if dig.get('gsc_summary') is mapping else {} %}
+    {% set par_sum = dig.get('parity_summary') if dig.get('parity_summary') is mapping else {} %}
+    <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">GSC Quick-Wins</dt>
+        <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ gsc_sum.get('strike_distance_count', gsc_sum.get('opportunities', 0)) }}</dd>
+      </div>
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Paritetsavvikelser</dt>
+        <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ par_sum.get('total_issues', par_sum.get('issue_count', par_sum.get('issues_count', 0))) }}</dd>
+      </div>
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Väntande pluginuppdateringar</dt>
+        <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ plug_sum.get('pending_updates', plug_sum.get('updates_available', 0)) }}</dd>
+      </div>
+      <div class="rounded-lg border border-ink-700/70 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Kritiska pluginuppdateringar</dt>
+        <dd class="mt-1 font-mono text-base font-semibold tabular-nums text-mist-100">{{ plug_sum.get('critical_updates', 0) }}</dd>
+      </div>
+    </dl>
+    {% if dig.get('markdown') %}
+    <details class="rounded-lg border border-ink-700/70 bg-ink-950/50 p-3 text-xs" {% if digest_focus %}open{% endif %}>
+      <summary class="cursor-pointer font-medium text-steel-300">Visa Messenger/Telegram Markdown-sammanfattning</summary>
+      <pre class="mt-2 max-h-72 overflow-x-auto overflow-y-auto whitespace-pre-wrap font-mono text-xs text-mist-200">{{ dig.get('markdown') }}</pre>
+    </details>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  <!-- Pending & Recent Batch Fix Plans (seob-*) -->
+  {% set batches = fix_batches | default([]) %}
+  <section class="az-card space-y-4" data-seo-batches-section="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">Batch-fixplaner (<code class="az-code">seob-*</code>) ({{ batches | length }})</h2>
+        <p class="az-muted text-xs">Granska flera alt-texter eller meta-förbättringar samlat med SHA-256-manifest och 1-klicks batch-återställning i Change Vault.</p>
+      </div>
+    </div>
+
+    {% if batches %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="SEO Batch-fixplaner">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Batch-ID</th>
+            <th scope="col">Omfattning &amp; Antal</th>
+            <th scope="col">Före vs. Föreslaget</th>
+            <th scope="col">Status &amp; Hash</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for fb in batches %}
+          {% set fb_st = (fb.get('status') or 'pending') | lower %}
+          {% set fb_id = fb.get('batch_id') %}
+          <tr data-seo-batch-row="{{ fb_id }}">
+            <td class="font-mono text-xs">
+              <div>{{ fb_id }}</div>
+              <div class="text-mist-400">{{ fb.get('site_id') }}</div>
+            </td>
+            <td class="text-xs">
+              {{ ui.status_badge('info', fb.get('scope') or 'all') }}
+              <div class="mt-1 font-mono tabular-nums text-mist-300">{{ fb.get('item_count', (fb.get('items') or []) | length) }} objekt</div>
+            </td>
+            <td class="text-xs text-mist-200">
+              <div>{{ fb.get('summary') or 'Batch-fixplan från audit ' ~ (fb.get('audit_id') or '') }}</div>
+              {% if fb.get('items') %}
+              <details class="mt-1.5 rounded border border-ink-700/60 bg-ink-950/60 p-2">
+                <summary class="cursor-pointer font-medium text-steel-300">Före vs. Föreslaget ({{ (fb.get('items') or []) | length }} poster)</summary>
+                <div class="mt-2 space-y-2">
+                  {% for it in (fb.get('items') or [])[:8] %}
+                  <div class="rounded border border-ink-700/60 p-2">
+                    <div class="font-mono text-mist-300">{{ it.get('fix_type') or 'seo_meta' }} · {{ it.get('target_type') }} #{{ it.get('target_id') }}</div>
+                    {% for dr in (it.get('diff_rows') or []) %}
+                    <div class="mt-1 grid grid-cols-3 gap-2">
+                      <span class="font-mono text-mist-400">{{ dr.field }}</span>
+                      <span class="text-mist-400">Före: {{ dr.before }}</span>
+                      <span class="text-teal-400">Efter: {{ dr.after }}</span>
+                    </div>
+                    {% endfor %}
+                  </div>
+                  {% endfor %}
+                </div>
+              </details>
+              {% endif %}
+            </td>
+            <td class="text-xs">
+              {{ ui.status_badge('ok' if fb_st == 'applied' else ('warn' if fb_st == 'pending' else 'neutral'), fb_st) }}
+              <div class="mt-1 font-mono text-mist-400" title="{{ fb.get('plan_sha256') or '' }}">{{ (fb.get('plan_sha256') or '')[:12] }}</div>
+            </td>
+            <td class="whitespace-nowrap">
+              <div class="flex flex-wrap items-center gap-1.5">
+                {% if fb_st == 'pending' and can_apply_fix %}
+                <form method="post" action="/seo/batches/{{ fb_id }}/apply">
+                  <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                  <input type="hidden" name="site_id" value="{{ fb.get('site_id') }}" />
+                  <input type="hidden" name="expected_sha256" value="{{ fb.get('plan_sha256') }}" />
+                  <input type="hidden" name="next_url" value="/seo?site={{ selected_site }}" />
+                  <button
+                    type="submit"
+                    class="az-btn-oscar az-btn-sm"
+                    data-confirm="Applicera batch-fixplan {{ fb_id }} ({{ fb.get('item_count', 0) }} objekt) med SHA-256-manifest och Change Vault batch_id?"
+                    data-confirm-title="Applicera batch-fixplan (Oscar)"
+                    data-confirm-ok="Applicera batch"
+                    data-busy-label="Applicerar..."
+                  >
+                    {{ icon('shield', 'xs') }}
+                    <span>Applicera batch (Oscar)</span>
+                  </button>
+                </form>
+                {% elif fb_st == 'applied' %}
+                <a class="az-btn-secondary az-btn-sm" href="/wp/{{ fb.get('site_id') }}/changes?batch_id={{ fb_id }}">Change Vault</a>
+                {% if can_rollback_batch %}
+                <form method="post" action="/seo/batches/{{ fb_id }}/rollback">
+                  <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                  <input type="hidden" name="site_id" value="{{ fb.get('site_id') }}" />
+                  <input type="hidden" name="confirm_batch_id" value="{{ fb_id }}" />
+                  <input type="hidden" name="next_url" value="/seo?site={{ selected_site }}" />
+                  <button
+                    type="submit"
+                    class="az-btn-danger az-btn-sm"
+                    data-confirm="Återställ hela batch {{ fb_id }} i Change Vault till före-snapshots?"
+                    data-confirm-title="Batch-återställning (Oscar)"
+                    data-confirm-ok="Återställ batch"
+                    data-confirm-danger="1"
+                    data-busy-label="Återställer..."
+                  >Batch Rollback</button>
+                </form>
+                {% endif %}
+                {% elif fb_st == 'pending' %}
+                <span class="text-xs text-mist-400">Väntar på Oscar</span>
+                {% else %}
+                <span class="text-xs text-mist-500">—</span>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-xs">Inga batch-fixplaner ännu. Öppna en audit och klicka "Skapa bulk-alt-batch" eller "Skapa meta-batch".</p>
+    {% endif %}
+  </section>
+
+  <!-- Pending & Recent SEO Fix Plans (seom-*) -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">Pågående SEO-fixplaner (<code class="az-code">seom-*</code>)</h2>
+        <p class="az-muted text-xs">Varje SEO-ändring är hash-pinnad, kräver Oscar-godkännande och loggar återställningsbar snapshot i Change Vault.</p>
+      </div>
+      {% if can_link_changes %}
+      <a class="az-btn-secondary az-btn-sm" href="/wp/{{ selected_site }}/changes">
+        {{ icon('clipboard-list', 'xs') }}
+        <span>Öppna Change Vault</span>
+      </a>
+      {% endif %}
+    </div>
+
+    {% if not can_apply_fix %}
+    {{ ui.info_callout('info', 'Rollbegränsning (HITL)', 'Jonatan kan granska audits och föreslå SEO-fixplaner. Endast Oscar (WP_OPS_ADMIN) kan applicera ändringar mot sajten.') }}
+    {% endif %}
+
+    {% if fix_plans %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="SEO-fixplaner">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Plan-ID</th>
+            <th scope="col">Typ &amp; Mål</th>
+            <th scope="col">Sammanfattning</th>
+            <th scope="col">Status &amp; Hash</th>
+            <th scope="col">Åtgärd</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for fp in fix_plans %}
+          {% set fp_status = (fp.get('status') or 'pending') | lower %}
+          <tr>
+            <td class="font-mono text-xs">{{ fp.get('plan_id') }}</td>
+            <td class="text-xs">
+              <div class="flex flex-wrap items-center gap-1.5">
+                {{ ui.status_badge('info', fp.get('fix_type') or 'seo_meta') }}
+                <span class="font-mono text-mist-300">{{ fp.get('target_type') }} #{{ fp.get('target_id') }}</span>
+              </div>
+              <div class="mt-1 text-mist-400">{{ fp.get('site_id') }} · {{ (fp.get('market') or 'no') | upper }}</div>
+            </td>
+            <td class="text-xs text-mist-200">
+              <div>{{ fp.get('summary') or 'SEO-ändringsförslag' }}</div>
+              {% if fp.get('diff_rows') %}
+              <details class="mt-1.5 rounded border border-ink-700/60 bg-ink-950/60 p-2">
+                <summary class="cursor-pointer font-medium text-steel-300">Före vs. Föreslaget ({{ (fp.get('diff_rows') or []) | length }} fält)</summary>
+                <div class="mt-1.5 space-y-1">
+                  {% for dr in fp.get('diff_rows') %}
+                  <div class="grid grid-cols-3 gap-2 border-t border-ink-700/60 pt-1">
+                    <span class="font-mono text-mist-400">{{ dr.field }}</span>
+                    <span class="text-mist-400">Före: {{ dr.before }}</span>
+                    <span class="text-teal-400">Efter: {{ dr.after }}</span>
+                  </div>
+                  {% endfor %}
+                </div>
+              </details>
+              {% elif fp.get('proposed') %}
+              <details class="mt-1.5 rounded border border-ink-700/60 bg-ink-950/60 p-2">
+                <summary class="cursor-pointer font-medium text-steel-300">Visa föreslagna fält</summary>
+                <pre class="mt-1.5 overflow-x-auto whitespace-pre-wrap font-mono text-xs text-mist-300">{{ fmt_json(fp.get('proposed')) }}</pre>
+              </details>
+              {% endif %}
+            </td>
+            <td class="text-xs">
+              {{ ui.status_badge('ok' if fp_status == 'applied' else ('warn' if fp_status == 'pending' else 'neutral'), fp_status) }}
+              <div class="mt-1 font-mono text-mist-400" title="{{ fp.get('plan_sha256') or '' }}">{{ (fp.get('plan_sha256') or '')[:12] }}</div>
+            </td>
+            <td>
+              {% if fp_status == 'pending' and can_apply_fix %}
+              <form method="post" action="/seo/fixes/{{ fp.get('plan_id') }}/apply">
+                <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+                <input type="hidden" name="site_id" value="{{ fp.get('site_id') }}" />
+                <input type="hidden" name="expected_sha256" value="{{ fp.get('plan_sha256') }}" />
+                <input type="hidden" name="next_url" value="/seo" />
+                <button
+                  type="submit"
+                  class="az-btn-oscar az-btn-sm"
+                  data-confirm="Applicera SEO-fixplan {{ fp.get('plan_id') }} ({{ fp.get('fix_type') }} på {{ fp.get('target_type') }} #{{ fp.get('target_id') }}) med verifierad hash-pinning och Change Vault-snapshot?"
+                  data-confirm-title="Applicera SEO-fixplan (Oscar)"
+                  data-confirm-ok="Applicera ändring"
+                  data-busy-label="Applicerar..."
+                >
+                  {{ icon('shield', 'xs') }}
+                  <span>Applicera (Oscar)</span>
+                </button>
+              </form>
+              {% elif fp_status == 'applied' and (fp.get('applied_change_id') or fp.get('change_id')) %}
+              <a class="az-btn-secondary az-btn-sm" href="/wp/{{ fp.get('site_id') }}/changes/{{ fp.get('applied_change_id') or fp.get('change_id') }}">
+                Visa snapshot
+              </a>
+              {% elif fp_status == 'pending' %}
+              <span class="text-xs text-mist-400">Väntar på Oscar</span>
+              {% else %}
+              <span class="text-xs text-mist-500">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    {{ ui.empty_state('Inga SEO-fixplaner ännu', 'Öppna en SEO-audit för att skapa en granskningsbar fixplan.', icon_name='clipboard-list') }}
+    {% endif %}
+  </section>
+
+  <!-- Inline Recent SEO Changes in Change Vault Strip -->
+  {% set seo_ch = recent_seo_changes | default([]) %}
+  <section class="az-card space-y-3" data-seo-change-vault-strip="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-0">Senaste SEO-ändringar i Change Vault</h2>
+        <p class="az-muted text-xs">Direktlänkar till SHA-256-verifierade snapshots och 1-klicks återställning.</p>
+      </div>
+      {% if can_link_changes %}
+      <a class="az-btn-secondary az-btn-sm" href="/wp/{{ selected_site }}/changes?category=seo_meta">Visa alla i Change Vault</a>
+      {% endif %}
+    </div>
+    {% if seo_ch %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Senaste SEO-ändringar i Change Vault">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Change-ID</th>
+            <th scope="col">Kategori &amp; Batch</th>
+            <th scope="col">Sammanfattning</th>
+            <th scope="col">Status</th>
+            <th scope="col">Rollback</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ch in seo_ch %}
+          <tr>
+            <td class="font-mono text-xs">{{ ch.get('change_id') }}</td>
+            <td class="font-mono text-xs text-mist-300">
+              <span>{{ ch.get('category') }}</span>
+              {% set ch_batch = ch.get('batch_id') or (ch.get('metadata') or {}).get('batch_id') %}
+              {% if ch_batch %}
+              <div><a class="text-steel-300 hover:underline" href="/wp/{{ selected_site }}/changes?batch_id={{ ch_batch }}">{{ ch_batch }}</a></div>
+              {% endif %}
+            </td>
+            <td class="text-xs text-mist-200">{{ ch.get('summary') }}</td>
+            <td>{{ ui.status_badge('ok' if ch.get('status') == 'applied' else 'warn', ch.get('status') or 'applied') }}</td>
+            <td>
+              <a class="az-btn-secondary az-btn-sm" href="/wp/{{ selected_site }}/changes/{{ ch.get('change_id') }}">Detaljer / Rollback</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-xs">Inga applicerade SEO-ändringar i Change Vault för {{ selected_site }} ännu.</p>
+    {% endif %}
+  </section>
+
+  <!-- Contextual SEO Web Research panel -->
+  <section class="az-card space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">SEO-innehållsradar &amp; Sökresearch</h2>
+        <p class="az-muted text-xs">Starta en nordisk SEO-research (<code class="az-code">seo_content_radar</code>) kopplad till SEO Studio.</p>
+      </div>
+      <a class="az-btn-secondary az-btn-sm" href="/research">Öppna Research-hubb</a>
+    </div>
+
+    <form method="post" action="/research/jobs" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <input type="hidden" name="target_ref" value="seo:{{ selected_site }}" />
+      <input type="hidden" name="next_url" value="/seo" />
+      <div class="sm:col-span-2">
+        <label class="az-label" for="seo-research-topic">SEO-ämne eller sökordskluster</label>
+        <input
+          id="seo-research-topic"
+          name="topic"
+          type="text"
+          maxlength="300"
+          required
+          class="az-input text-xs"
+          placeholder="T.ex. trådlös CarPlay Volvo köpguide och sökintention NO/SE"
+        />
+      </div>
+      <div>
+        <label class="az-label" for="seo-research-profile">Profil</label>
+        <select id="seo-research-profile" name="profile_id" class="az-select text-xs">
+          <option value="auto">Automatisk (rekommenderad)</option>
+          <option value="seo_content_radar" selected>seo_content_radar</option>
+          <option value="competitor_market">competitor_market</option>
+          <option value="product_spec_deep">product_spec_deep</option>
+        </select>
+      </div>
+      <div class="flex gap-2">
+        <select name="market" aria-label="Marknad" class="az-select text-xs">
+          <option value="NO" selected>NO</option>
+          <option value="SE">SE</option>
+          <option value="DK">DK</option>
+        </select>
+        <button type="submit" class="az-btn-primary az-btn-sm shrink-0" data-busy-label="Startar...">
+          {{ icon('search', 'xs') }}
+          <span>Starta</span>
+        </button>
+      </div>
+    </form>
+
+    {% if seo_research_jobs %}
+    <div class="space-y-2 border-t border-ink-700/70 pt-3">
+      <p class="text-xs font-semibold text-mist-300">Kopplade SEO-researchjobb</p>
+      <ul class="space-y-1.5 text-xs">
+        {% for rj in seo_research_jobs %}
+        <li class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ink-700/70 bg-ink-950/60 px-3 py-2">
+          <div class="min-w-0">
+            <a class="font-medium text-steel-200 hover:text-mist-100" href="/research/{{ rj.id }}">{{ rj.topic or rj.id }}</a>
+            <span class="font-mono text-mist-500"> · {{ rj.id }}</span>
+          </div>
+          {{ ui.status_badge('ok' if rj.status == 'completed' else ('warn' if rj.status in ('partial', 'cancelled') else ('error' if rj.status == 'failed' else 'info')), rj.status) }}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

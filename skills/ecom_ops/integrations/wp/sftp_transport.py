@@ -66,6 +66,14 @@ def host_allowed(host: str) -> bool:
     return _HOST.fullmatch(text) is not None
 
 
+def _pinned_host_key_types(expected_key: paramiko.PKey) -> list[str]:
+    """Pin KEX host-key algorithms matching ``expected_key``, keeping RSA-SHA2 for OpenSSH 8.8+."""
+    name = expected_key.get_name()
+    if name == "ssh-rsa":
+        return ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"]
+    return [name]
+
+
 def _is_missing_error(exc: BaseException) -> bool:
     if isinstance(exc, FileNotFoundError):
         return True
@@ -243,8 +251,8 @@ class SshFileTransport:
         del absolute_file, data
         raise TransportError("SshWriteDisabled")
 
-    def create_bytes(self, absolute_file: str, data: bytes) -> None:
-        del absolute_file, data
+    def create_bytes(self, absolute_file: str, data: bytes, *, overwrite: bool = False) -> None:
+        del absolute_file, data, overwrite
         raise TransportError("SshWriteDisabled")
 
     def _validate_ssh_config(self) -> tuple[str, str, int]:
@@ -316,6 +324,9 @@ class SshFileTransport:
         try:
             sock = socket_mod.create_connection((host, port), timeout=_CONNECT_TIMEOUT)
             transport = paramiko_mod.Transport(sock)
+            sec_opts = getattr(transport, "get_security_options", None)
+            if callable(sec_opts):
+                sec_opts().key_types = _pinned_host_key_types(expected_key)
             transport.set_log_channel("ecom_ops.wp_sftp")
             transport.banner_timeout = _CONNECT_TIMEOUT
             transport.auth_timeout = _CONNECT_TIMEOUT
@@ -375,8 +386,9 @@ class SshFileTransport:
         parts = path[len(root) + 1 :].split("/")
         if any(not part or part in {".", ".."} for part in parts):
             raise PathRejected("segments")
-        if len(parts) < 2 or parts[0] != "wp-content" or parts[1] not in {"themes", "plugins"}:
+        if len(parts) < 2 or parts[0] != "wp-content" or parts[1] not in {"themes", "plugins", "mu-plugins"}:
             raise PathRejected("scope")
+        is_mu = parts[1] == "mu-plugins"
         if listing:
             if len(parts) >= 3 and not _SLUG.fullmatch(parts[2]):
                 raise PathRejected("slug")
@@ -386,6 +398,16 @@ class SshFileTransport:
             ):
                 raise PathRejected("segments")
         else:
+            if is_mu and len(parts) == 3:
+                leaf = parts[2]
+                if (
+                    _SEGMENT.fullmatch(leaf) is None
+                    or leaf.endswith(".azom-bak")
+                    or _SENSITIVE_NAME.search(leaf)
+                    or Path(leaf).suffix.lower() not in _EXTENSIONS
+                ):
+                    raise PathRejected("extension")
+                return path
             if len(parts) < 4 or not _SLUG.fullmatch(parts[2]):
                 raise PathRejected("file")
             if any(

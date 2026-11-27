@@ -35,6 +35,7 @@ from marketing_routes import register_marketing_routes  # noqa: E402
 from oauth_routes import register_oauth_routes  # noqa: E402
 from oscar_routes import register_oscar_routes  # noqa: E402
 from research_routes import register_research_routes  # noqa: E402
+from seo_routes import register_seo_routes  # noqa: E402
 from settings_store import apply_env_overlays  # noqa: E402
 from support import _fmt_dt  # noqa: E402
 from webhooks import register_webhook_routes  # noqa: E402
@@ -105,7 +106,14 @@ def _case_age(iso: str | None) -> str:
 def create_app() -> Flask:
     apply_env_overlays()
     application = Flask(__name__)
-    application.wsgi_app = ProxyFix(application.wsgi_app, x_for=1, x_proto=1)
+    try:
+        trusted_proxies = max(0, int(os.environ.get("TRUSTED_PROXY_COUNT", "0") or 0))
+    except ValueError:
+        trusted_proxies = 0
+    if trusted_proxies > 0:
+        application.wsgi_app = ProxyFix(
+            application.wsgi_app, x_for=trusted_proxies, x_proto=trusted_proxies
+        )
     helpers = {
         "case_age": _case_age,
         "fmt_dt": _fmt_dt,
@@ -127,6 +135,7 @@ def create_app() -> Flask:
         cookie_secure = False
     else:
         cookie_secure = live
+    application.config.setdefault("MAX_CONTENT_LENGTH", 2 * 1024 * 1024)
     application.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
@@ -142,6 +151,7 @@ def create_app() -> Flask:
     register_wp_routes(application)
     register_oauth_routes(application)
     register_research_routes(application)
+    register_seo_routes(application)
 
     @application.context_processor
     def _inject_csrf() -> dict[str, str]:

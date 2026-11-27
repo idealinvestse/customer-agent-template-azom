@@ -145,16 +145,6 @@ def _collect_flashes() -> list[dict[str, str]]:
                 out.append({"level": level, "text": text})
     except RuntimeError:
         pass
-    for param, level in (
-        ("err", "error"),
-        ("warn", "warn"),
-        ("info", "info"),
-        ("msg", "ok"),
-    ):
-        val = (request.args.get(param) or "").strip()
-        if val and (level, val) not in seen:
-            seen.add((level, val))
-            out.append({"level": level, "text": val})
     return out
 
 
@@ -297,6 +287,7 @@ def _probe_last_path() -> Path:
 
 
 def _save_probe_last(results: list) -> None:
+    import tempfile
     from datetime import UTC, datetime
 
     path = _probe_last_path()
@@ -305,7 +296,27 @@ def _save_probe_last(results: list) -> None:
         "checked_at": datetime.now(UTC).isoformat(),
         "results": [r.to_dict() if hasattr(r, "to_dict") else r for r in results],
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    text = json.dumps(payload, indent=2)
+    fd, tmp_name = tempfile.mkstemp(prefix=".probe_last.", suffix=".tmp", dir=str(path.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp_path, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _load_probe_last() -> dict | None:

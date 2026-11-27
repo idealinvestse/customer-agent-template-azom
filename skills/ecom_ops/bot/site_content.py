@@ -42,6 +42,12 @@ from ecom_ops.bot.wp_intents import (
     WP_WORKSPACE_INTENT_RE as _WP_WORKSPACE_INTENT_RE,
 )
 from ecom_ops.security import SecurityError, sanitize_text
+from ecom_ops.wp_ops.plugin_policy import (
+    BRIDGE_PLUGIN_SLUG,
+    CRITICAL_PLUGIN_SLUGS,
+    is_bridge_plugin,
+    normalize_plugin_slug,
+)
 
 _POST_NOUN_RE = re.compile(
     r"\b(?:inl[äa]gg(?:et|en|ets|ens)?|blogginl[äa]gg(?:et)?|posts?)\b",
@@ -103,15 +109,9 @@ _PLUGIN_OFF_RE = re.compile(
     rf"(?:plugin(?:et)?|till[äa]gget?)\s+{_PLUGIN_ID_TOKEN}",
     re.I,
 )
-_CRITICAL_PLUGIN_SLUGS = frozenset(
-    {
-        "woocommerce",
-        "klarna-checkout-for-woocommerce",
-        "klarna-payments-for-woocommerce",
-        "vipps-mobilepay",
-        "woocommerce-gateway-stripe",
-        "svea-checkout-for-woocommerce",
-    }
+_CRITICAL_PLUGIN_SLUGS = frozenset(CRITICAL_PLUGIN_SLUGS) | frozenset({"vipps-mobilepay"})
+_REFUSE_BRIDGE_DEACTIVATE = (
+    f"Pluginet {BRIDGE_PLUGIN_SLUG} är självskyddat och får inte inaktiveras via chatten."
 )
 _POST_STATUS = {
     "utkast": "draft",
@@ -304,17 +304,49 @@ def execute_post_update(
     actor: str,
     domain: str | None = None,
 ) -> tuple[bool, str]:
-    from ecom_ops.rbac import Permission
+    from ecom_ops.rbac import Permission, resolve_actor
     from ecom_ops.security import validate_order_id
+    from ecom_ops.wp_ops.change_ledger import resolve_ledger_site_id, safe_record_change
+    from ecom_ops.wp_ops.config import is_mock_mode
+
+    actor_name = resolve_actor(actor).name
 
     def _perform(wp: Any) -> tuple[str, dict[str, Any], str]:
         pid = validate_order_id(post_id)
         clean = _revalidate_post_fields(fields)
+        before_snap: dict[str, Any] = {}
+        try:
+            cur = wp.get_post(pid, context="edit")
+            raw_c = cur.raw or {}
+            c_obj = raw_c.get("content") if isinstance(raw_c.get("content"), dict) else {}
+            before_snap = {
+                "title": cur.title,
+                "content": str(c_obj.get("raw") or c_obj.get("rendered") or raw_c.get("content") or ""),
+                "status": cur.status,
+            }
+        except Exception:
+            before_snap = {}
         updated = wp.update_post(
             pid,
             title=clean.get("title"),
             content=clean.get("content"),
             status=clean.get("status"),
+        )
+        safe_record_change(
+            site_id=resolve_ledger_site_id(domain=domain),
+            environment="staging" if is_mock_mode() else "production",
+            category="post",
+            transport="wp_rest",
+            actor=actor_name,
+            summary=f"Inlägg {updated.id} ({_plain(updated.title)}): {', '.join(sorted(clean))}",
+            target_ref=f"post:{updated.id}",
+            before_data=before_snap,
+            after_data={
+                "title": updated.title,
+                "content": clean.get("content", before_snap.get("content", "")),
+                "status": updated.status,
+            },
+            metadata={"item_id": str(updated.id), "domain": domain or "", "fields": sorted(clean)},
         )
         shown = ", ".join(sorted(clean))
         return (
@@ -339,13 +371,36 @@ def execute_site_update(
     actor: str,
     domain: str | None = None,
 ) -> tuple[bool, str]:
-    from ecom_ops.rbac import Permission
+    from ecom_ops.rbac import Permission, resolve_actor
+    from ecom_ops.wp_ops.change_ledger import resolve_ledger_site_id, safe_record_change
+    from ecom_ops.wp_ops.config import is_mock_mode
+
+    actor_name = resolve_actor(actor).name
 
     def _perform(wp: Any) -> tuple[str, dict[str, Any], str]:
         clean = _revalidate_site_fields(fields)
+        before_snap: dict[str, Any] = {}
+        try:
+            cur_s = wp.get_settings()
+            if isinstance(cur_s, dict):
+                before_snap = {k: cur_s.get(k) for k in ("title", "description")}
+        except Exception:
+            before_snap = {}
         updated = wp.update_site_identity(
             title=clean.get("title"),
             description=clean.get("description"),
+        )
+        safe_record_change(
+            site_id=resolve_ledger_site_id(domain=domain),
+            environment="staging" if is_mock_mode() else "production",
+            category="settings",
+            transport="wp_rest",
+            actor=actor_name,
+            summary=f"Sajtinställningar: {', '.join(sorted(clean))}",
+            target_ref="settings:site",
+            before_data=before_snap,
+            after_data={k: updated.get(k) for k in ("title", "description")},
+            metadata={"domain": domain or "", "fields": sorted(clean)},
         )
         shown = ", ".join(sorted(clean))
         title = _plain(updated.get("title") or "")
@@ -373,14 +428,43 @@ def execute_plugin_status(
     domain: str | None = None,
 ) -> tuple[bool, str]:
     from ecom_ops.integrations.wordpress import _validate_plugin_id
-    from ecom_ops.rbac import Permission
+    from ecom_ops.rbac import Permission, resolve_actor
+    from ecom_ops.wp_ops.change_ledger import resolve_ledger_site_id, safe_record_change
+    from ecom_ops.wp_ops.config import is_mock_mode
+
+    if str(status).strip().lower() == "inactive" and is_bridge_plugin(plugin):
+        return False, _REFUSE_BRIDGE_DEACTIVATE
+
+    actor_name = resolve_actor(actor).name
 
     def _perform(wp: Any) -> tuple[str, dict[str, Any], str]:
         plugin_id = _validate_plugin_id(plugin)
         normalized = str(status).strip().lower()
         if normalized not in _PLUGIN_STATUS_SV:
             raise SecurityError("Invalid plugin status")
+        if normalized == "inactive" and is_bridge_plugin(plugin_id):
+            raise SecurityError(_REFUSE_BRIDGE_DEACTIVATE)
+        prev_status = "inactive" if normalized == "active" else "active"
+        try:
+            for row in wp.list_plugins():
+                if str(row.get("plugin") or "").strip().lower() == plugin_id:
+                    prev_status = str(row.get("status") or prev_status).strip().lower()
+                    break
+        except Exception:
+            pass
         updated = wp.set_plugin_status(plugin_id, normalized)
+        safe_record_change(
+            site_id=resolve_ledger_site_id(domain=domain),
+            environment="staging" if is_mock_mode() else "production",
+            category="plugin_toggle",
+            transport="wp_rest",
+            actor=actor_name,
+            summary=f"Plugin {plugin_id}: {prev_status} → {normalized}",
+            target_ref=f"plugin:{plugin_id}",
+            before_data={"plugin": plugin_id, "status": prev_status},
+            after_data={"plugin": plugin_id, "status": normalized},
+            metadata={"plugin": plugin_id, "domain": domain or ""},
+        )
         name = _plain(updated.get("name") or plugin_id)
         label = _PLUGIN_STATUS_SV[normalized]
         return (
@@ -594,7 +678,9 @@ def _propose_plugin(write: _Write, *, domain: str | None) -> SiteTurn:
         if error or plugin is None:
             return SiteTurn(consumed=True, results=[("site_content", error or "Pluginet saknas.")])
         plugin_id = str(plugin.get("plugin") or "")
-        slug = plugin_id.split("/", 1)[0].lower()
+        slug = normalize_plugin_slug(plugin_id)
+        if write.fields.get("status") == "inactive" and is_bridge_plugin(slug):
+            return SiteTurn(consumed=True, results=[("site_content", _REFUSE_BRIDGE_DEACTIVATE)])
         is_critical = (
             write.fields.get("status") == "inactive" and slug in _CRITICAL_PLUGIN_SLUGS
         )

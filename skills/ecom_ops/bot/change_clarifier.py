@@ -15,6 +15,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ecom_ops.bot.seo_handlers import (
+    SEO_INTENT_RE as _SEO_INTENT_RE,
+)
+from ecom_ops.bot.seo_handlers import (
+    SEO_META_EDIT_RE as _SEO_META_EDIT_RE,
+)
 from ecom_ops.bot.wp_intents import (
     NEW_PAGE_CREATE_RE as _NEW_PAGE_CREATION_RE,
 )
@@ -50,6 +56,7 @@ VALID_CATEGORIES = frozenset(
         "product",
         "site_settings",
         "order",
+        "seo",
         "general_change",
         *RESEARCH_CLARIFY_CATEGORIES,
     }
@@ -574,6 +581,20 @@ _SCREENSHOT_ANNOTATION_RE = re.compile(
     r")\b",
     re.I,
 )
+_MEDIA_SEO_EXEMPT_RE = re.compile(
+    r"\b(?:bild-?seo|image\s+seo|alt-?text\w*|produktbild\w*\s+alt|mediabibliotek\w*)\b",
+    re.I,
+)
+_SEO_DRAFT_OR_AUDIT_RE = re.compile(
+    r"\b(?:"
+    r"seo-?(?:audit|analys|genomg[åa]ng|strategi\w*|kampanj\w*)|"
+    r"seo\s+(?:audit|strategy|campaign)|"
+    r"l[äa]nkpaket\w*|l[äa]nkbygge|link\s+package|link\s+building|"
+    r"s[öo]kords(?:analys|strategi)|nyckelordsanalys|klusterstrategi|"
+    r"kannibaliser\w*|cannibalization|internl[äa]nk\w*|orphan\s+pages?"
+    r")\b",
+    re.I,
+)
 
 _VAGUE_WORDS_RE = re.compile(
     r"\b(?:"
@@ -691,6 +712,8 @@ _EXPLICIT_PRODUCT_DESC_RE = re.compile(
 
 
 def _classify_category(text: str, *, mentions_screenshot: bool) -> str:
+    if _SEO_META_EDIT_RE.search(text) or _SEO_INTENT_RE.search(text):
+        return "seo"
     if _ORDER_WORD_RE.search(text) and not _CODE_FILE_RE.search(text) and not _VISUAL_DESIGN_RE.search(text):
         return "order"
     if _PRODUCT_WORD_RE.search(text) and not _CODE_FILE_RE.search(text) and not _VISUAL_DESIGN_RE.search(text):
@@ -727,7 +750,10 @@ def detect_change_ambiguity(
     """Assess whether ``text`` is an ambiguous change request needing clarification."""
     del has_tool_results, has_wp_site_context  # accepted for caller contract parity
     raw = (text or "").strip()
-    mentions_screenshot = bool(has_images) or bool(_SCREENSHOT_ANNOTATION_RE.search(raw))
+    mentions_screenshot = bool(has_images) or (
+        bool(_SCREENSHOT_ANNOTATION_RE.search(raw))
+        and not bool(_MEDIA_SEO_EXEMPT_RE.search(raw))
+    )
 
     if not raw or raw.startswith("/"):
         return ChangeAssessment(False, False, "general_change", (), False)
@@ -737,6 +763,8 @@ def detect_change_ambiguity(
         return ChangeAssessment(False, False, "general_change", (), False)
     if _SITE_REFUSAL_RE.search(raw):
         return ChangeAssessment(False, False, "general_change", (), mentions_screenshot)
+    if _SEO_DRAFT_OR_AUDIT_RE.search(raw):
+        return ChangeAssessment(False, False, "seo", (), False)
 
     has_change_verb = bool(_EXPLICIT_CHANGE_VERB_RE.search(raw))
     has_soft_intent = bool(_SOFT_CHANGE_INTENT_RE.search(raw)) or (
@@ -748,6 +776,14 @@ def detect_change_ambiguity(
         return ChangeAssessment(False, False, "general_change", (), mentions_screenshot)
 
     category = _classify_category(raw, mentions_screenshot=mentions_screenshot)
+    if category == "seo" and _SEO_META_EDIT_RE.search(raw):
+        return ChangeAssessment(
+            is_change_request=True,
+            is_ambiguous=False,
+            category="seo",
+            reasons=(),
+            mentions_screenshot_or_annotation=mentions_screenshot,
+        )
     if (
         has_active_wp_review
         and not _SWITCH_TARGET_RE.search(raw)
@@ -831,6 +867,7 @@ def build_clarification_prompt_hint(
     has_wp_site_context: bool = False,
     site_id: str | None = None,
     round_num: int = 1,
+    has_images: bool = False,
 ) -> str:
     """Build internal prompt hint instructing the model when/how to ask ``<clarify>``."""
     reasons_txt = "; ".join(assessment.reasons) or "tvetydig ändringsbegäran"
@@ -840,10 +877,16 @@ def build_clarification_prompt_hint(
         f"Orsaker: {reasons_txt}.",
     ]
     if assessment.mentions_screenshot_or_annotation:
-        lines.append(
-            "Användaren hänvisar till en bild/skärmdump eller inringning som du inte kan se "
-            "direkt i textchatten. Bekräfta vad du tror avses och erbjud 2–4 konkreta tolkningar/spår."
-        )
+        if has_images:
+            lines.append(
+                "Användaren har bifogat en bild/skärmdump och hänvisar till en visuell ändring. "
+                "Beskriv kort vad du ser i bilden, bekräfta målområdet och erbjud 2–4 konkreta tolkningar/spår i <clarify>."
+            )
+        else:
+            lines.append(
+                "Användaren hänvisar till en bild/skärmdump eller inringning som du inte kan se "
+                "direkt i textchatten. Bekräfta vad du tror avses och erbjud 2–4 konkreta tolkningar/spår."
+            )
     if has_wp_site_context or site_id or assessment.category in {"wp_visual", "wp_code"}:
         site_note = f" (aktiv sajt: {site_id})" if site_id else ""
         lines.append(
@@ -1136,6 +1179,31 @@ _FALLBACK_SPECS: dict[str, _FallbackSpec] = {
             ),
         ),
     ),
+    "seo": _FallbackSpec(
+        understanding="Du vill arbeta med SEO (audit, metadata, alt-text, strategi eller länkpaket) via SEO Studio.",
+        question="Vilket SEO-spår vill du börja med?",
+        options=(
+            ClarificationOption(
+                id="seo_audit",
+                label="Kör SEO-audit först",
+                summary="Analysera sajt, produkter, sidor eller mediabibliotek (wp_seo_audit) innan förslag.",
+                action_hint="Kör read-only wp_seo_audit för att samla fakta",
+                recommended=True,
+            ),
+            ClarificationOption(
+                id="seo_meta",
+                label="Skapa meta-/alt-plan",
+                summary="Ta fram en låst SHA-256-förhandsvisning (seom-*) för SEO-titel, metabeskrivning eller alt-text.",
+                action_hint="Föreslå seom-* via wp_seo_plan_meta (kräver Oscar HITL i /seo)",
+            ),
+            ClarificationOption(
+                id="seo_plan",
+                label="Strategi, kampanj eller länkpaket",
+                summary="Skapa nordisk SEO-strategi (seos-*), kampanjplan (seoc-*) eller länkpaket-utkast (seol-*).",
+                action_hint="Skapa utkast i SEO Studio utan direkt skrivning",
+            ),
+        ),
+    ),
     "general_change": _FallbackSpec(
         understanding="Du vill göra en ändring, men mål och exakt resultat behöver förtydligas innan jag föreslår något.",
         question="Vilket område gäller din ändring?",
@@ -1272,6 +1340,7 @@ def build_fallback_clarification(
     site_id: str | None = None,
     sticky_page_id: str | None = None,
     sticky_product_id: str | None = None,
+    has_images: bool = False,
 ) -> ClarificationProposal:
     """Build a tailored 3-option Swedish clarification proposal without an LLM call."""
     del has_wp_site_context
@@ -1295,9 +1364,17 @@ def build_fallback_clarification(
         and spec.screenshot_understanding is not None
         and spec.screenshot_question is not None
     )
-    understanding = (
-        spec.screenshot_understanding if use_screenshot_copy and spec.screenshot_understanding else spec.understanding
-    )
+    if use_screenshot_copy and has_images:
+        understanding = (
+            "Jag ser din bifogade skärmdump/markering och förstår att du vill göra en "
+            "visuell eller layoutmässig ändring."
+        )
+    else:
+        understanding = (
+            spec.screenshot_understanding
+            if use_screenshot_copy and spec.screenshot_understanding
+            else spec.understanding
+        )
     question = (
         spec.screenshot_question if use_screenshot_copy and spec.screenshot_question else spec.question
     )

@@ -234,10 +234,10 @@ def test_research_hub_ui_rendering_oscar_vs_jonatan(dash_env):
     for amb in ("all", "quick", "standard", "deep"):
         assert f'data-profile-ambition-filter="{amb}"' in osc_html
 
-    # All 12 profile cards + search/deep apply buttons
+    # All 13 profile cards + search/deep apply buttons
     profiles = list_profiles()
-    assert len(profiles) == 12
-    assert osc_html.count('data-profile-card="true"') == 12
+    assert len(profiles) == 13
+    assert osc_html.count('data-profile-card="true"') == 13
     for prof in profiles:
         assert f'data-apply-profile-search="{prof.id}"' in osc_html
         assert f'data-apply-profile-deep="{prof.id}"' in osc_html

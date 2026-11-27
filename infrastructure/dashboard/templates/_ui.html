@@ -179,12 +179,12 @@
   {% endif %}
 {% endmacro %}
 
-{% macro render_flashes(legacy_flash=None) %}
-  {%- set session_flashes = get_flashed_messages(with_categories=true) if get_flashed_messages is defined else [] -%}
-  {%- for cat, msg in session_flashes -%}
-    {{ flash_banner(cat, msg) }}
+{% macro render_flashes(legacy_flash=None, context_flashes=None) %}
+  {%- set items = context_flashes if context_flashes else [] -%}
+  {%- for entry in items -%}
+    {{ flash_banner(entry.level, entry.text) }}
   {%- endfor -%}
-  {%- if legacy_flash -%}
+  {%- if legacy_flash and not items -%}
     {%- if legacy_flash.startswith('error:') -%}
       {{ flash_banner('error', legacy_flash[6:]) }}
     {%- elif legacy_flash.startswith('warn:') -%}

@@ -137,7 +137,7 @@ def _render_files(
 def _render_file_plan(site_id: str, plan_id: str, *, notice: str = "", error_class: str = ""):
     if not PLAN_ID_RE.fullmatch(plan_id):
         return Response("Okänd plan", 404)
-    if not file_admin():
+    if not (file_admin() and g.actor.get("is_oscar")):
         return Response("Saknar behörighet", 403)
     svc = wp_service()
     shown = svc.show_site(site_id, actor=g.actor["name"])
@@ -164,7 +164,7 @@ def _render_file_plan(site_id: str, plan_id: str, *, notice: str = "", error_cla
 
 
 def _post_file_deploy(site_id: str):
-    if not file_admin():
+    if not (file_admin() and g.actor.get("is_oscar")):
         return Response("Saknar behörighet", 403)
     plan_id = request.form.get("plan_id") or ""
     if not PLAN_ID_RE.fullmatch(plan_id):

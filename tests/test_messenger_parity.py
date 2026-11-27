@@ -363,3 +363,47 @@ def test_reply_compare_png_and_push_draft_actions(tmp_path: Path) -> None:
     assert bound is not None
     assert bound.rows[0][0].payload == "proposal:yes:pr-112233445566"
     assert bound.rows[0][1].payload == "order:cancel"
+
+
+def test_messenger_send_bot_reply_sends_images_before_quick_replies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import ecom_ops.bot.messenger_adapter as ma
+    from ecom_ops.bot.messenger_adapter import send_bot_reply
+    from ecom_ops.bot.reply import ActionButton, ActionMarkup, BotReply
+
+    art = tmp_path / "wp_workspaces" / "azom-no" / "wr-123456abcdef" / "artifacts"
+    art.mkdir(parents=True)
+    img = art / "preview-desktop.png"
+    img.write_bytes(_PNG_BYTES)
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("AZOM_NULL_SEND", "0")
+    monkeypatch.setenv("MESSENGER_SEND_ENABLED", "1")
+    monkeypatch.setattr(ma, "null_send_active", lambda: False)
+
+    sent_payloads: list[dict[str, Any]] = []
+
+    def _fake_urlopen(req: urllib.request.Request, timeout: float = 20):
+        del timeout
+        ctype = str(req.get_header("Content-type") or "")
+        body = req.data or b""
+        if "multipart/form-data" in ctype:
+            sent_payloads.append({"multipart": True})
+        else:
+            sent_payloads.append(json.loads(body.decode("utf-8")))
+        return _FakeResponse(json.dumps({"recipient_id": "PSID1", "message_id": "mid.1"}).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    reply = BotReply(
+        text="Här är förhandsvisningen.",
+        attachments=(str(img),),
+        actions=ActionMarkup(
+            rows=tuple((ActionButton(f"Val {i}", payload=f"opt:{i}"),) for i in range(1, 6))
+        ),
+    )
+    res = send_bot_reply("PSID1", reply, page_token="tok", dry_run=False)
+    assert len(res) >= 2
+    # Quick replies must travel on the final message so image attachments don't dismiss them
+    assert sent_payloads[-1].get("message", {}).get("quick_replies")
+    assert any(p.get("multipart") for p in sent_payloads[:-1])

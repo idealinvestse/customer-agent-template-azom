@@ -58,6 +58,10 @@ _SENSITIVE_AUTH_HEADERS: frozenset[str] = frozenset(
         "x-api-key",
         "x-subscription-token",
         "proxy-authorization",
+        "x-azom-signature",
+        "x-azom-nonce",
+        "x-azom-timestamp",
+        "x-auth-token",
     }
 )
 _REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
@@ -216,12 +220,18 @@ def safe_https_parsed(
     return parsed._replace(netloc=netloc)
 
 
-def resolve_and_validate_public_ips(host: str, port: int = 443) -> list[str]:
+def resolve_and_validate_public_ips(
+    host: str,
+    port: int = 443,
+    *,
+    getaddrinfo_fn: Callable[..., list[object]] | None = None,
+) -> list[str]:
     """Resolve *host* once via ``socket.getaddrinfo`` and fail closed unless ALL IPs are public."""
     ok, clean_host, reason = _validate_public_dns_hostname(host, block_example_test_tlds=True)
     if not ok:
         raise ValueError(f"Unsafe host for DNS resolution ({reason})")
-    infos = socket.getaddrinfo(clean_host, int(port), type=socket.SOCK_STREAM)
+    lookup = getaddrinfo_fn if callable(getaddrinfo_fn) else socket.getaddrinfo
+    infos = lookup(clean_host, int(port), type=socket.SOCK_STREAM)
     if not infos:
         raise ValueError(f"No DNS records resolved for {clean_host}")
     validated: list[str] = []
@@ -480,6 +490,7 @@ def pinned_https_request(
     current_verb = verb
     current_body = body
     initial_origin: tuple[str, str, int] | None = None
+    auth_stripped = False
     dropped_body_on_redirect = False
 
     for hop in range(max_redirects + 1):
@@ -494,9 +505,11 @@ def pinned_https_request(
             initial_origin = origin
 
         if allowed_origins is not None:
-            strip_auth = origin not in allowed_origins
+            strip_auth = auth_stripped or (origin not in allowed_origins)
         else:
-            strip_auth = hop > 0 and origin != initial_origin
+            strip_auth = auth_stripped or (hop > 0 and origin != initial_origin)
+        if strip_auth:
+            auth_stripped = True
 
         pinned_ips = resolve_and_validate_public_ips(host, port)
         host_header = host if port == 443 else f"{host}:{port}"
@@ -524,11 +537,11 @@ def pinned_https_request(
             resp_headers = {str(k).lower(): str(v) for k, v in resp.getheaders()}
 
             if status in _REDIRECT_STATUSES:
-                location = resp.getheader("Location")
+                location = (resp.getheader("Location") or "").strip()
                 if location:
                     if hop >= max_redirects:
                         raise ValueError(f"Exceeded max_redirects ({max_redirects})")
-                    current_url = urllib.parse.urljoin(current_url, location.strip())
+                    current_url = urllib.parse.urljoin(current_url, location)
                     if status == 303 or (status in (301, 302) and current_verb not in ("GET", "HEAD")):
                         current_verb = "GET"
                         current_body = None

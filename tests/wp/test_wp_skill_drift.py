@@ -41,7 +41,9 @@ NON_TOOL_WP_IDENTIFIERS = frozenset(
 WP_SKILL_CARDS = (
     ROOT / "skills" / "wordpress-page-builder" / "SKILL.md",
     ROOT / "skills" / "wordpress-plugin-dev" / "SKILL.md",
+    ROOT / "skills" / "wordpress-plugin-ops" / "SKILL.md",
     ROOT / "skills" / "wordpress-review" / "SKILL.md",
+    ROOT / "skills" / "wordpress-seo" / "SKILL.md",
     ROOT / "skills" / "wordpress-theme-dev" / "SKILL.md",
     ROOT / "skills" / "wordpress-ui-iteration" / "SKILL.md",
     ROOT / "skills" / "change-verification" / "SKILL.md",
@@ -123,6 +125,8 @@ def test_wp_docs_and_skills_byte_limits_match_code() -> None:
         ROOT / "skills" / "ecom-ops" / "SKILL.md",
         ROOT / "skills" / "wordpress-theme-dev" / "SKILL.md",
         ROOT / "skills" / "wordpress-plugin-dev" / "SKILL.md",
+        ROOT / "skills" / "wordpress-plugin-ops" / "SKILL.md",
+        ROOT / "skills" / "wordpress-seo" / "SKILL.md",
         ROOT / "skills" / "wordpress-review" / "SKILL.md",
     ):
         text = path.read_text(encoding="utf-8")

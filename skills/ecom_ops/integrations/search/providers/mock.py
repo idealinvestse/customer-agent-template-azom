@@ -289,6 +289,187 @@ _PROFILE_FIXTURES: dict[str, tuple[dict[str, Any], ...]] = {
             ),
         },
     ),
+    "seo_content_radar": (
+        {
+            "url": "https://www.brl.se/sv/artiklar/bilstereo-apple-carplay",
+            "title": "Apple CarPlay & Android Auto i bil – Köpguide & Modeller (SE)",
+            "snippet": (
+                "Svenska konkurrenter lyfter modellanpassad passform (Volvo, VW, BMW), "
+                "plug-and-play CANBUS-kablage, rattstyrning och tydliga monteringsguider men saknar "
+                "ofta strukturerad FAQPage-schema för äldre årsmodeller."
+            ),
+            "published_at": "2026-01-18",
+            "score": 0.94,
+            "content": (
+                "# SERP Gap Analysis – Sverige (CarPlay)\n"
+                "- Competitors: brl.se, ljudia.se, autoudstyr.dk.\n"
+                "- Content gaps: 5-minuters DIY-monteringsvideo, kompatibilitetstabell per årsmodell, "
+                "FAQPage + Product JSON-LD med lagerstatus och 2 års nordisk garanti."
+            ),
+        },
+        {
+            "url": "https://www.bilradiospes.no/produkter/bilstereo/apple-carplay",
+            "title": "Trådløs Apple CarPlay skjerm i bil – Norsk kjøpsguide & DAB+",
+            "snippet": (
+                "Norske søkeresultater etterspør DAB+-støtte, stabilitet i kulde, "
+                "trådløs oppstartstid og kompatibilitet med originalt ryggekamera."
+            ),
+            "published_at": "2026-01-25",
+            "score": 0.92,
+            "content": (
+                "# SERP Gap Analysis – Norge (CarPlay)\n"
+                "- Competitors: bilradiospes.no, bassbrothers.no.\n"
+                "- Content gaps: Norsk (bokmål) monteringsguide uten verksted, tydelig DAB+/FM-sender "
+                "forklaring og sammenligning mellom adapter og frittstående skjerm."
+            ),
+        },
+        {
+            "url": "https://www.carsound.dk/produkter/multimedia-carplay",
+            "title": "Trådløs Apple CarPlay skærm & adapter til ældre biler (DK)",
+            "snippet": (
+                "Danske købere sammenligner trådløs CarPlay-skærm mod fast 2-DIN indbygning "
+                "og søger hurtig montering uden værksted samt klare leveringsbetingelser."
+            ),
+            "published_at": "2026-01-10",
+            "score": 0.89,
+            "content": (
+                "# SERP Gap Analysis – Danmark (CarPlay)\n"
+                "- Competitors: carsound.dk, thansen.dk.\n"
+                "- Content gaps: Dansk købsguide med bilmodel-tjekliste, bakkamera-tilvalg og "
+                "tydelig retur-/garantisektion."
+            ),
+        },
+        {
+            "url": "https://developers.google.com/search/docs/appearance/structured-data/product",
+            "title": "Google Search Central: Product, Merchant Listing & FAQ Structured Data",
+            "snippet": (
+                "Include complete Product JSON-LD with sku, brand, priceCurrency (SEK/NOK/DKK), "
+                "availability, shippingDetails, and BreadcrumbList for Nordic e-commerce rich results."
+            ),
+            "published_at": "2025-12-04",
+            "score": 0.91,
+            "content": (
+                "# Structured Data Best Practices\n"
+                "- Ensure unique meta titles (30-60 chars), meta descriptions (110-158 chars), "
+                "reciprocal nb-NO/sv-SE/da-DK hreflang, and rich Product + FAQPage schema."
+            ),
+        },
+    ),
+    "seo_vendor_vetting": (
+        {
+            "url": "https://bazoom.com/marketplace/nordics/",
+            "title": "Bazoom Nordic Link Building Marketplace (SE, NO, DK)",
+            "snippet": (
+                "Denmark-founded self-serve marketplace with ~5,500 DK, ~3,500 SE, and ~1,000 NO "
+                "publishers. Upfront URL/price preview, Ahrefs DR & Semrush AS metrics, native "
+                "Nordic copywriting, duplicate protection, and 12-month live link guarantee."
+            ),
+            "published_at": "2026-02-10",
+            "score": 0.95,
+            "content": (
+                "# Bazoom Nordic Marketplace\n"
+                "- Markets: SE (~3,500), DK (~5,500), NO (~1,000); automotive & tech verticals.\n"
+                "- Model: Pay-per-placement, no subscription; typical Nordic cost 1,500–5,500 SEK.\n"
+                "- Editorial: Self-supplied, AI-draft, or native SE/NO/DK copywriters.\n"
+                "- Transparency: Full publisher URL preview before payment, rel/sponsored flags, 12m guarantee."
+            ),
+        },
+        {
+            "url": "https://www.whitepress.com/en/nordic-content-marketing",
+            "title": "WhitePress Content Marketing & Verified Nordic Publishers",
+            "snippet": (
+                "Transparent European marketplace covering Sweden, Norway, and Denmark with 50+ "
+                "SEO/traffic filters, escrow checkout, native sv/nb/da copywriters, Google-compliant "
+                "sponsored marking, and 12–36 month monitored publication guarantees."
+            ),
+            "published_at": "2026-01-28",
+            "score": 0.93,
+            "content": (
+                "# WhitePress Nordic Catalog\n"
+                "- Markets: SE, NO, DK regional news and niche portals.\n"
+                "- Model: Free advertiser account, publisher-set prices (~1,200–5,000 SEK) + unbundled native writing.\n"
+                "- Transparency: Full URL + Ahrefs/Semrush/Majestic preview pre-cart, 12m/36m live monitoring."
+            ),
+        },
+        {
+            "url": "https://linkhouse.net/marketplace/scandinavia/",
+            "title": "Linkhouse Self-Serve SEO Marketplace (DK, SE, NO)",
+            "snippet": (
+                "Self-service platform indexing ~2,200 .dk, ~1,100 .se, and ~760 .no domains with "
+                "Ahrefs DR/UR, Majestic TF/CF, and Semrush traffic previews before checkout."
+            ),
+            "published_at": "2026-01-15",
+            "score": 0.89,
+            "content": (
+                "# Linkhouse Scandinavia\n"
+                "- Markets: DK (~2,200), SE (~1,100), NO (~760).\n"
+                "- Model: No subscription, publisher-set rates (~700–2,600+ SEK); optional writing.\n"
+                "- Vetting note: Enforce >=1,000 organic traffic & TF/DR balance on budget tiers."
+            ),
+        },
+        {
+            "url": "https://prnews.io/sites/nordics/",
+            "title": "PRNEWS.IO Sponsored News & Digital PR Catalog (SE, NO, DK)",
+            "snippet": (
+                "Fixed-price digital PR marketplace featuring regional and national Nordic news "
+                "outlets with pre-payment traffic/geo previews, explicit sponsored/rel attributes, "
+                "and Konsumentverket/Forbrukertilsynet disclosure compliance."
+            ),
+            "published_at": "2026-02-01",
+            "score": 0.88,
+            "content": (
+                "# PRNEWS.IO Nordic Media\n"
+                "- Best for: Branded/URL digital PR placements on regional (1,600–6,500 SEK) & Tier-1 Nordic news.\n"
+                "- Transparency: Pre-payment traffic, DR, anchor rules, explicit Annons/Annonse/Annonce compliance."
+            ),
+        },
+        {
+            "url": "https://getfluence.com/en/managed-digital-pr/",
+            "title": "Getfluence Premium Editorial Marketplace & Getfluence+ Managed PR",
+            "snippet": (
+                "Curated European & Nordic high-authority media marketplace with Spot Finder URL "
+                "previews, Copyscape editorial checks, strict anti-PBN moderation, and managed "
+                "Getfluence+ retainers for high-authority campaigns."
+            ),
+            "published_at": "2026-01-20",
+            "score": 0.86,
+            "content": (
+                "# Getfluence Editorial & Managed PR\n"
+                "- Model: A-la-carte premium media (~3,500–20,000+ SEK) or Getfluence+ (€1,000/mo+).\n"
+                "- Quality: Manual publisher vetting, strict anti-PBN/de-indexation freeze, Copyscape checks."
+            ),
+        },
+        {
+            "url": "https://seeders.com/nordics-link-building/",
+            "title": "Seeders Managed Nordic Link Building & Digital PR (SE, NO, DK)",
+            "snippet": (
+                "Cross-border managed outreach and digital PR agency with native Swedish, Norwegian, "
+                "and Danish teams specializing in scarce .no/.dk/.se authority acquisition."
+            ),
+            "published_at": "2026-02-05",
+            "score": 0.87,
+            "content": (
+                "# Seeders Managed Nordic Outreach\n"
+                "- Best for: 8–15+ link launches, scarce .no market entry, native digital PR campaigns.\n"
+                "- Model: Custom campaign retainers (~23k–52k SEK/mo single-market; pre-approved domain lists)."
+            ),
+        },
+        {
+            "url": "https://www.konsumentverket.se/for-foretag/marknadsforing/reklammarkning/",
+            "title": "Nordic Sponsored Content Disclosure Rules (SE/NO/DK Compliance)",
+            "snippet": (
+                "Swedish Konsumentverket, Norwegian Forbrukertilsynet, and Danish Forbrugerombudsmanden "
+                "require clear commercial labels (Annons, Annonse, Annonce) on paid editorial placements."
+            ),
+            "published_at": "2025-11-12",
+            "score": 0.91,
+            "content": (
+                "# Nordic Commercial Disclosure Compliance\n"
+                "- SE: Reklam/Annons (Marknadsföringslagen). NO: Annonse/Reklame (Markedsføringsloven). DK: Annonce.\n"
+                "- Avoid vague tags or hidden paid-link PBN schemes."
+            ),
+        },
+    ),
 }
 
 

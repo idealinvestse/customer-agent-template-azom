@@ -150,11 +150,11 @@ def mask_email(addr: str) -> str:
     return f"{local[0]}***@{domain}"
 
 
-def sanitize_text(text: str, *, max_len: int = 8000) -> str:
+def sanitize_text(text: str, *, max_len: int = 8000, allow_empty: bool = False) -> str:
     if text is None:
         raise SecurityError("Text must not be None")
     cleaned = text.replace("\x00", "").strip()
-    if not cleaned:
+    if not cleaned and not allow_empty:
         raise SecurityError("Text must not be empty")
     if len(cleaned) > max_len:
         raise SecurityError(f"Text exceeds max length ({max_len})")
@@ -202,6 +202,7 @@ def redact_secrets(payload: Any) -> Any:
                     "PASSWORD",
                     "TOKEN",
                     "API_KEY",
+                    "CONSUMER_KEY",
                     "PRIVATE_KEY",
                     "CODE_VERIFIER",
                     "AUTHORIZATION_CODE",
@@ -216,6 +217,10 @@ def redact_secrets(payload: Any) -> Any:
         return out
     if isinstance(payload, list):
         return [redact_secrets(x) for x in payload]
+    if isinstance(payload, str):
+        from ecom_ops.wp_ops.credentials import redact_secret_text
+
+        return redact_secret_text(payload)
     return payload
 
 

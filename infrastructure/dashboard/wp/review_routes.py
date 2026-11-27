@@ -458,6 +458,68 @@ def register_review_routes(app: Flask) -> None:
     def wp_review_push_draft(site_id: str, plan_id: str):
         return _post_review_push_draft(site_id, plan_id)
 
+    @app.route("/wp/<site_id>/reviews/<plan_id>/deploy-live", methods=["POST"])
+    @_auth_required
+    def wp_review_deploy_live(site_id: str, plan_id: str):
+        if not SITE_ID_RE.fullmatch(str(site_id or "")) or not REVIEW_ID_RE.fullmatch(str(plan_id or "")):
+            return Response("Okänd plan", 404)
+        if not (file_admin() and g.actor.get("is_oscar")):
+            return Response("Saknar behörighet", 403)
+        base, work = _posted_hashes()
+        transport_mode = (request.form.get("transport_mode") or "auto").strip().lower()
+        from ecom_ops.wp_ops.deploy_orchestrator import DeployOrchestrator
+
+        ops = review_ops()
+        orch = DeployOrchestrator(
+            data_dir=ops.data_dir,
+            registry_path=ops.registry_path,
+        )
+
+        def _post_deploy_health() -> bool:
+            from ecom_ops.wp_ops.config import is_mock_mode
+            from ecom_ops.wp_ops.registry import load_sites, site_by_id
+
+            if is_mock_mode():
+                return True
+            site_obj = site_by_id(load_sites(ops.registry_path), site_id)
+            url = str(getattr(site_obj, "canonical_url", "") or "").strip()
+            if not url:
+                return False
+            try:
+                from ecom_ops.integrations._http_guard import pinned_https_request
+
+                status_code, _headers, _body, _final_url = pinned_https_request(
+                    url,
+                    method="GET",
+                    connect_timeout=5.0,
+                    read_timeout=10.0,
+                )
+                return 200 <= int(status_code) < 400
+            except Exception:
+                return False
+
+        result = orch.deploy_workspace(
+            site_id,
+            plan_id,
+            actor=g.actor["name"],
+            base_sha256=base,
+            work_sha256=work,
+            transport_mode=transport_mode,
+            health_check_fn=_post_deploy_health,
+        )
+        blocked = review_http(result)
+        if blocked is not None:
+            return blocked
+        data = result.data or {}
+        return render_review(
+            site_id,
+            plan_id,
+            error_class=str(data.get("error_class") or ""),
+            result=data,
+            result_obj=result,
+            action_name="deploy_live",
+        )
+
     @app.route("/wp/<site_id>/reviews/<plan_id>/artifact/<name>")
     @_auth_required
     def wp_review_artifact(site_id: str, plan_id: str, name: str):

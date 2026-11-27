@@ -265,6 +265,28 @@ python -m ecom_ops --mock --actor agent wp restore-drill --backup <backup-id> --
 python -m ecom_ops --mock --actor jonatan wp files --id mock-staging --kind theme [--slug twentytwentyfive]
 python -m ecom_ops --mock --actor agent wp file-propose --id mock-staging --kind theme --slug twentytwentyfive --path style.css --from ./edit.css
 python -m ecom_ops --mock --actor agent wp file-apply --id mock-staging --plan fe-aaaaaaaaaaaa --from ./edit.css
+python -m ecom_ops --mock --actor jonatan wp changes --id mock-staging [--limit 20] [--category product] [--status applied|rolled_back] [--batch seob-aaaaaaaaaaaa] [--table | --format json|table]
+python -m ecom_ops --mock --actor jonatan wp change-show --id mock-staging --change chg-aaaaaaaaaaaa
+python -m ecom_ops --mock --actor oscar wp rollback --id mock-staging --change chg-aaaaaaaaaaaa [--execute --expected-sha256 <64-hex>]
+python -m ecom_ops --mock --actor oscar wp rollback-batch --id mock-staging --batch seob-aaaaaaaaaaaa [--execute [--confirm-batch-id seob-aaaaaaaaaaaa]]
+python -m ecom_ops --mock --actor jonatan wp bridge-health --id mock-staging
+python -m ecom_ops --mock --actor oscar wp cache-flush --id mock-staging
+python -m ecom_ops --mock --actor oscar wp bridge-maintenance --id mock-staging --enabled 1|0|on|off [--duration 300]
+python -m ecom_ops --mock --actor jonatan wp bridge-translations --id mock-staging [--post-id 123]
+python -m ecom_ops --mock --actor oscar wp deploy-live --id mock-staging --plan wr-aaaaaaaaaaaa --base-sha256 <64-hex> --work-sha256 <64-hex> [--transport auto|bridge|sftp_deploy]
+python -m ecom_ops --mock --actor jonatan wp plugins-inventory --id mock-staging [--wporg]
+python -m ecom_ops --mock --actor jonatan wp plugins-mu --id mock-staging
+python -m ecom_ops --mock --actor jonatan wp plugins-plans --id mock-staging [--table | --format json|table]
+python -m ecom_ops --mock --actor oscar wp plugins-plan-update --id mock-staging [--mode policy|single|selected|all] [--policy non_critical_only|security_only|patch_only|minor_safe] [--slugs a,b] [--exclude c] [--include-critical]
+python -m ecom_ops --mock --actor oscar wp plugins-update --id mock-staging --plan plu-aaaaaaaaaaaa --expected-sha256 <64-hex> [--allow-critical]
+python -m ecom_ops --mock --actor jonatan wp plugins-autoupdate --id mock-staging [--show | --drift]
+python -m ecom_ops --mock --actor oscar wp plugins-autoupdate --id mock-staging --plan [--preset non_critical_only|security_only|disable_all|custom] [--changes-json '[...]'] [--allow-critical]
+python -m ecom_ops --mock --actor oscar wp plugins-autoupdate --id mock-staging --execute --plan pau-aaaaaaaaaaaa --expected-sha256 <64-hex>
+python -m ecom_ops --mock --actor oscar wp plugins-diagnostics --id mock-staging [--hooks init,plugins_loaded] [--log-lines 80]
+python -m ecom_ops --mock --actor oscar wp plugins-quarantine --id mock-staging --slug broken-plugin [--kind plugin|mu_plugin]
+python -m ecom_ops --mock --actor oscar wp plugins-unquarantine --id mock-staging --slug broken-plugin [--quarantine-name <name>] [--kind plugin|mu_plugin]
+python -m ecom_ops --mock --actor oscar wp plugins-recovery --id mock-staging --slug broken-plugin --action rollback_snapshot|deactivate|quarantine_sftp|restore_from_quarantine [--change chg-aaaaaaaaaaaa]
+python -m ecom_ops --mock --actor oscar wp plugins-recovery --id mock-staging --execute --plan plr-aaaaaaaaaaaa --expected-sha256 <64-hex>
 ```
 
 Telegram's WordPress conversation uses the same registered site ids. Use `/wp sites` to list sites visible under `WP_OPS_READ`, `/wp use <site-id>` to set the current conversation site, and `/wp clear` to clear it. Natural-language requests can use the named site-status, backup-status, security-findings, open-operations, and plan-preview tools. Each turn is limited to 3 WordPress tool calls, 30 seconds of tool execution, 4 KB per result, and 10 KB combined. Plan previews are stored with a digest for 12 hours but remain non-executable and cannot be approved while the update and restore adapters are unavailable.
@@ -309,6 +331,39 @@ python -m ecom_ops --mock research profiles [--id <profile-id>] [--recommend "<g
 # expect: JSON with ok: true, provenance: "mock" (in mock mode), and res-<12hex> identifiers
 ```
 
+### `seo`
+
+Fail-closed mock-first WordPress/WooCommerce SEO Studio (`skills/ecom_ops/seo/`, [`SEO_STUDIO.md`](SEO_STUDIO.md)):
+
+```bash
+# cwd: repository root
+# env: AZOM_USE_MOCK=1
+python -m ecom_ops --mock --actor jonatan seo audit --site mock-shop [--scope site|technical|page|product|media|links|cannibalization|gsc|parity|deep_crawl] [--path /] [--market no|se|dk] [--target-id ID] [--limit 50]
+python -m ecom_ops --mock --actor jonatan seo audit --site mock-shop --scope media
+python -m ecom_ops --mock --actor jonatan seo audit --site mock-shop --scope cannibalization
+python -m ecom_ops --mock --actor jonatan seo audits [--site mock-shop] [--limit 20] [--table | --format json|table]
+python -m ecom_ops --mock --actor jonatan seo fixes [--site mock-shop] [--status pending|applied] [--limit 30] [--table | --format json|table]
+python -m ecom_ops --mock --actor jonatan seo batches [--site mock-shop] [--limit 20] [--table | --format json|table]
+python -m ecom_ops --mock --actor jonatan seo batch-propose --site mock-shop --audit seoa-aaaaaaaaaaaa [--scope all|media_alt|seo_meta] [--limit 20]
+python -m ecom_ops --mock --actor oscar seo batch-apply --site mock-shop --batch seob-aaaaaaaaaaaa --expected-sha256 <64-hex>
+python -m ecom_ops --mock --actor jonatan seo gsc [--site mock-shop] [--days 28] [--table | --format json|table]
+python -m ecom_ops --mock --actor jonatan seo parity [--site mock-shop] [--table | --format json|table]
+python -m ecom_ops --mock --actor jonatan seo diff [--site mock-shop] [--latest seoa-...] [--previous seoa-...]
+python -m ecom_ops --mock --actor jonatan seo digest [--site mock-shop] [--days 7] [--markdown]
+python -m ecom_ops --mock --actor oscar seo fix-propose --site mock-shop --fix-type seo_meta --target-type product|page|post|media|category|site --target-id 501 --json-fields '{"meta_title":"CarPlay Volvo | Azom"}' [--summary "..."] [--market no|se|dk]
+python -m ecom_ops --mock --actor oscar seo fix-apply --site mock-shop --plan seom-aaaaaaaaaaaa --expected-sha256 <64-hex>
+python -m ecom_ops --mock --actor jonatan seo strategy --site mock-shop --title "Nordisk CarPlay SEO" [--market no|se|dk] [--topics "CarPlay,DAB+"] [--goals "..."] [--research-brief res-...]
+python -m ecom_ops --mock --actor jonatan seo campaign --site mock-shop --name "CarPlay Volvo" [--market no|se|dk] [--strategy-id seos-...] [--keywords "carplay volvo"] [--urls "/produkt/carplay"] [--campaign-type commercial|seasonal|product_launch|content_hub|technical_sprint|category|informational|technical] [--objective "..."] [--research-brief res-...]
+python -m ecom_ops --mock --actor jonatan seo link-pack --site mock-shop --name "NO CarPlay Q2" [--market no|se|dk] [--campaign-id seoc-...] [--budget 15000] [--links 6] [--targets-json '[{"target_url":"/","keyword":"carplay","anchor_type":"brand","anchor_text":"Azom"}]'] [--notes "..."] [--export md|json|csv]
+python -m ecom_ops --mock --actor jonatan seo link-packs [--site mock-shop] [--limit 20] [--table | --format json|table]
+python -m ecom_ops --mock --actor jonatan seo link-pack-edit --id seol-aaaaaaaaaaaa [--name "..."] [--budget 15000] [--targets-json '[...]'] [--notes "..."]
+python -m ecom_ops --mock --actor jonatan seo link-pack-verify --id seol-aaaaaaaaaaaa [--table | --format json|table]
+python -m ecom_ops --mock --actor oscar seo link-pack-status --id seol-aaaaaaaaaaaa --status draft|ready_for_review|approved_for_manual_order|ordered_external|delivered|cancelled [--note "..."]
+python -m ecom_ops --mock --actor jonatan seo vendors --market no --budget 15000 --links 6 [--goal organic_growth] [--no-web-research] [--table | --format json|table]
+python -m ecom_ops --mock --actor jonatan seo autopilot --site mock-shop --topic "Trådlös CarPlay Volvo & BMW" --market no --budget 15000 --links 6 [--no-web-research] [--with-batch] [--table | --format json|table]
+# note: live seo fix-apply / batch-apply requires AZOM_USE_MOCK=0, AZOM_SEO_WRITE_ENABLED=1, AZOM_SEO_KILL unset, and Oscar WP_OPS_ADMIN; seo autopilot & seo vendors are strictly HITL (never auto-buy links or auto-apply WP edits)
+```
+
 ## Environment that changes CLI behavior
 
 | Env | Effect |
@@ -328,6 +383,10 @@ python -m ecom_ops --mock research profiles [--id <profile-id>] [--recommend "<g
 | `AZOM_WEB_FETCH_ENABLED=1` | Live web fetch egress gate (process env only; requires `AZOM_USE_MOCK=0`) |
 | `AZOM_RESEARCH_ENABLED=1` | Live async Deep Research gate (process env only; requires `AZOM_USE_MOCK=0`) |
 | `AZOM_WEB_SEARCH_KILL=1` / `AZOM_RESEARCH_KILL=1` | Emergency kill-switches forcing search/research off (process env only) |
+| `AZOM_SEO_WRITE_ENABLED=1` | Live SEO Studio write gate for approved `seom-*` / `seob-*` meta/media fixes (process env only; requires `AZOM_USE_MOCK=0`) |
+| `AZOM_SEO_KILL=1` | Emergency kill-switch halting all SEO Studio writes and SEO rollbacks (process env only) |
+| `AZOM_GSC_ENABLED=1` | Live read-only Google Search Console (`webmasters.readonly`) gate (process env only; requires `AZOM_USE_MOCK=0`) |
+| `AZOM_GSC_KILL=1` | Emergency kill-switch forcing Google Search Console connector off (process env only) |
 
 ## Related
 

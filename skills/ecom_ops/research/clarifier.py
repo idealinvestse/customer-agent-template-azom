@@ -123,8 +123,15 @@ _SUPPORT_KW_RE = re.compile(
     r"konsumentlag\w*|garanti|reklamation|carplay|dab\+)\b",
     re.I,
 )
+_SEO_KW_RE = re.compile(
+    r"\b(?:seo|s[öo]kmotoroptimering|s[öo]kord\w*|inneh[åa]llsluck\w*|"
+    r"schema\.org|strukturerad\s+data|json-?ld|hreflang|canonical|"
+    r"meta-?titel|meta-?beskrivning|alt-?text\w*|bild-?seo|"
+    r"l[äa]nkpaket\w*|l[äa]nkbygge|backlinks?|ankartext\w*|kannibaliser\w*)\b",
+    re.I,
+)
 _MARKETING_KW_RE = re.compile(
-    r"\b(?:google\s+ads|ga4|consent\s+mode|roas|seo|s[öo]kord|adwords|kampanj\w*)\b",
+    r"\b(?:google\s+ads|ga4|consent\s+mode|roas|adwords|kampanj\w*)\b",
     re.I,
 )
 _WP_CONTEXT_RE = re.compile(
@@ -270,6 +277,8 @@ def _is_known_profile(name: str) -> bool:
 def _match_profile_kw(text: str) -> str | None:
     if not text:
         return None
+    if _SEO_KW_RE.search(text):
+        return "seo_content_radar"
     if _DESIGN_KW_RE.search(text):
         return "design_inspiration"
     if _TECH_KW_RE.search(text):

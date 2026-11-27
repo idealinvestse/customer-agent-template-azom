@@ -43,6 +43,11 @@ from ecom_ops.bot.progress_events import (
     ProgressEvent,
     emit_progress,
 )
+from ecom_ops.bot.seo_handlers import (
+    EXPLICIT_ADS_RE,
+    SEO_INTENT_RE,
+    SEO_META_EDIT_RE,
+)
 from ecom_ops.bot.site_content import (
     _WP_WORKSPACE_INTENT_RE,
     site_content_turn,
@@ -52,6 +57,8 @@ from ecom_ops.bot.store import clamp_messages
 from ecom_ops.bot.wp_intents import (
     WP_CODE_INTENT_RE,
     WP_OPS_INTENT_RE,
+    is_support_or_order_dominant,
+    wants_wp_plugin_ops_routing,
 )
 from ecom_ops.bot.wp_turn import (
     append_wp_context_blocks,
@@ -1218,9 +1225,12 @@ def _use_read_tool_loop(
     if has_vision_wp_intent:
         return False
     msg = user_message or ""
-    if WP_OPS_INTENT_RE.search(msg):
+    support_dominant = not has_wp_site_context and is_support_or_order_dominant(msg)
+    if not support_dominant and WP_OPS_INTENT_RE.search(msg):
         return False
-    if WP_CODE_INTENT_RE.search(msg):
+    if not support_dominant and WP_CODE_INTENT_RE.search(msg):
+        return False
+    if SEO_INTENT_RE.search(msg):
         return False
     if RESEARCH_INTENT_RE.search(msg) or WEB_SEARCH_INTENT_RE.search(msg):
         return False
@@ -1530,7 +1540,7 @@ def tool_capabilities() -> str:
         f"{format_wp_capabilities_lines()}\n"
         "• Staging endast via knapp (/wp plans, /wp plan <id>); produktion/restore körs aldrig\n"
         "• Status, budget, brief, eskalera till Oscar\n"
-        "Slash: /help /commands /order /cases /wp /search /research /status /tools …"
+        "Slash: /help /commands /order /cases /wp /seo /search /research /status /tools …"
     )
 
 
@@ -1632,6 +1642,7 @@ def gather_tool_results(
     on_progress: ProgressCallback | None = None,
     has_wp_site_context: bool = False,
     has_vision_wp_intent: bool = False,
+    actor: str | None = None,
 ) -> ToolPrefetch:
     """Tool prefetch with sticky multi-turn context (OpenClaw-like follow-ups)."""
     pref = ToolPrefetch(
@@ -1649,23 +1660,44 @@ def gather_tool_results(
     if has_vision_wp_intent:
         return pref
 
+    is_seo_intent = bool(SEO_INTENT_RE.search(text))
+    is_seo_meta_edit = bool(SEO_META_EDIT_RE.search(text))
     explicit_store_write = bool(
-        _EXPLICIT_STORE_WRITE_RE.search(text)
-        or parse_catalog_write(
-            text,
-            sticky_product_id=sticky_product_id,
-            sticky_page_id=sticky_page_id,
+        (
+            _EXPLICIT_STORE_WRITE_RE.search(text)
+            or parse_catalog_write(
+                text,
+                sticky_product_id=sticky_product_id,
+                sticky_page_id=sticky_page_id,
+            )
+            is not None
         )
-        is not None
+        and not is_seo_meta_edit
     )
     is_research_or_web = (
         bool(RESEARCH_INTENT_RE.search(text) or WEB_SEARCH_INTENT_RE.search(text))
         and not explicit_store_write
     )
-    explicit_wp_workspace = bool(_WP_WORKSPACE_INTENT_RE.search(text))
+    plugin_ops_bypass = wants_wp_plugin_ops_routing(
+        text, actor=actor, has_wp_site_context=has_wp_site_context
+    )
+    support_order_suppress = (
+        not has_wp_site_context
+        and not plugin_ops_bypass
+        and not is_seo_meta_edit
+        and not is_seo_intent
+        and is_support_or_order_dominant(text)
+    )
+    explicit_wp_workspace = (
+        not support_order_suppress and bool(_WP_WORKSPACE_INTENT_RE.search(text))
+    )
     wp_code_bypass = (
-        has_wp_site_context and bool(WP_CODE_INTENT_RE.search(text))
-    ) or explicit_wp_workspace
+        (has_wp_site_context and bool(WP_CODE_INTENT_RE.search(text)))
+        or explicit_wp_workspace
+        or plugin_ops_bypass
+        or is_seo_meta_edit
+        or is_seo_intent
+    )
 
     if not wp_code_bypass and not is_research_or_web:
         site_intent = bool(_SITE_CONTENT_HINT_RE.search(text))
@@ -1945,7 +1977,11 @@ def gather_tool_results(
         pref.results.append(("list_cases", body))
         pref.suggest_case_ids = suggest_ids
 
-    if MARKETING_INTENT_RE.search(text) and len(pref.results) < 3:
+    if (
+        MARKETING_INTENT_RE.search(text)
+        and not (is_seo_intent and not EXPLICIT_ADS_RE.search(text))
+        and len(pref.results) < 3
+    ):
         pref.results.append(
             (
                 "marketing_snapshot",
@@ -2868,6 +2904,7 @@ def run_chat(
         on_progress=on_progress,
         has_wp_site_context=has_wp_site_context or bool(wp_state.explicit_site_id),
         has_vision_wp_intent=wp_state.has_vision_wp_intent,
+        actor=actor,
     )
     phase_started = time.monotonic()
     _prefetch_listed_orders(
@@ -2955,7 +2992,7 @@ def run_chat(
             "wp_ops_context": wp_ops_context,
             "active_wp_review": active_wp_review_out,
             "clear_active_wp_review": bool(
-                (wp_state.site_switch or wp_state.is_new_page_request)
+                (wp_state.site_switch or wp_state.review_invalidated or wp_state.is_new_page_request)
                 and active_wp_review_out is None
             ),
             "file_stage_plan_id": file_stage_plan_id,
@@ -3043,6 +3080,7 @@ def run_chat(
                 sticky_product_id=str(pref.sticky_product_id or sticky_product_id)
                 if (pref.sticky_product_id or sticky_product_id)
                 else None,
+                has_images=bool(valid_images),
             )
             proposal.round_num = clarify_round
             rendered = render_clarification_message(proposal)
@@ -3129,6 +3167,7 @@ def run_chat(
             has_wp_site_context=has_wp_site_context or bool(site_id),
             site_id=site_id,
             round_num=clarify_round,
+            has_images=bool(valid_images),
         )
         if clarify_hint:
             tool_block = (

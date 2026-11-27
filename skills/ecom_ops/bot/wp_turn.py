@@ -24,6 +24,7 @@ from ecom_ops.bot.progress_events import (
     ProgressEvent,
     emit_progress,
 )
+from ecom_ops.bot.seo_handlers import SEO_INTENT_RE
 from ecom_ops.bot.wp_intents import (
     NEW_PAGE_CREATE_RE,
     VISION_WP_INTENT_RE,
@@ -31,6 +32,8 @@ from ecom_ops.bot.wp_intents import (
     WP_CONTEXT_CONTINUITY_RE,
     WP_OPS_INTENT_RE,
     WP_UI_FOLLOWUP_RE,
+    is_support_or_order_dominant,
+    wants_wp_plugin_ops_routing,
 )
 from ecom_ops.bot.wp_session import (
     merge_active_wp_review,
@@ -183,6 +186,7 @@ def format_wp_capabilities_lines() -> str:
     fe_tools = ", ".join(TOOL_CAPABILITIES.get("fe_plan", ()))
     preview_tools = ", ".join(TOOL_CAPABILITIES.get("preview_catalog", ()))
     web_research_tools = ", ".join(TOOL_CAPABILITIES.get("web_research", ()))
+    seo_tools = ", ".join(TOOL_CAPABILITIES.get("seo", ()))
     lines = [
         f"• WordPress-drift & kodanalys (/wp use <site-id>): {drift_tools}",
         f"• Isolerade wr-*-arbetsytor: {workspace_tools}",
@@ -191,6 +195,8 @@ def format_wp_capabilities_lines() -> str:
     ]
     if web_research_tools:
         lines.append(f"• Webbsök & research (/search, /research): {web_research_tools}")
+    if seo_tools:
+        lines.append(f"• SEO Studio & länkpaket (/seo): {seo_tools}")
     return "\n".join(lines)
 
 
@@ -330,6 +336,7 @@ class WpTurnState:
     has_wp_drift_intent: bool
     prompt_mode: str
     default_profile_id: str
+    review_invalidated: bool = False
 
 
 def prepare_wp_turn(
@@ -389,9 +396,12 @@ def prepare_wp_turn(
             or (rev_site and rev_site != explicit_site_id)
         )
     )
+    review_site_mismatch = bool(wp_ctx_site and rev_site and wp_ctx_site != rev_site)
     if site_switch:
         has_wp_site_context = False
         wp_ops_context = None
+        prior_active_review = None
+    elif review_site_mismatch:
         prior_active_review = None
 
     active_review_followup = bool(
@@ -452,13 +462,49 @@ def prepare_wp_turn(
     clarify_ctx_wp_drift = bool(
         clarification_clean and WP_OPS_INTENT_RE.search(clarification_clean)
     )
+    has_seo_intent = False
+    if SEO_INTENT_RE.search(user_message) or (
+        clarification_clean and SEO_INTENT_RE.search(clarification_clean)
+    ):
+        try:
+            has_seo_intent = bool(resolve_actor(actor).has(Permission.WP_OPS_READ))
+        except Exception:
+            has_seo_intent = False
+    has_plugin_ops_intent = wants_wp_plugin_ops_routing(
+        user_message,
+        actor=actor,
+        has_wp_site_context=has_wp_site_context or bool(explicit_site_id),
+    )
+    support_order_suppress = (
+        not has_wp_site_context
+        and prior_active_review is None
+        and not inbound_images
+        and not explicit_site_id
+        and not has_seo_intent
+        and not has_plugin_ops_intent
+        and not clarify_ctx_wp_code
+        and not clarify_ctx_wp_drift
+        and (
+            is_support_or_order_dominant(user_message)
+            or (
+                (bool(extract_order_id(user_message)) or bool(cases_intent_re.search(user_message)))
+                and not bool(WP_OPS_INTENT_RE.search(user_message))
+            )
+        )
+    )
     has_wp_code_intent = (
-        bool(WP_CODE_INTENT_RE.search(user_message))
-        or clarify_ctx_wp_code
-        or active_review_followup
+        not support_order_suppress
+        and (
+            bool(WP_CODE_INTENT_RE.search(user_message))
+            or clarify_ctx_wp_code
+            or active_review_followup
+            or has_seo_intent
+            or has_plugin_ops_intent
+        )
     )
     has_wp_drift_intent = (
-        bool(WP_OPS_INTENT_RE.search(user_message)) or clarify_ctx_wp_drift
+        not support_order_suppress
+        and (bool(WP_OPS_INTENT_RE.search(user_message)) or clarify_ctx_wp_drift)
     )
 
     if has_wp_code_intent or has_vision_wp_intent:
@@ -495,6 +541,7 @@ def prepare_wp_turn(
         has_wp_drift_intent=has_wp_drift_intent,
         prompt_mode=prompt_mode,
         default_profile_id=default_profile_id,
+        review_invalidated=site_switch or review_site_mismatch,
     )
 
 
@@ -525,8 +572,10 @@ def append_wp_guidance_blocks(
     """Append WP playbook hints and vision system guide when applicable."""
     if (
         WP_CODE_INTENT_RE.search(user_message)
+        or SEO_INTENT_RE.search(user_message)
         or state.clarify_ctx_wp_code
         or state.active_review_followup
+        or state.has_wp_code_intent
     ):
         from ecom_ops.wp_ops.playbooks import format_playbook_hints
 

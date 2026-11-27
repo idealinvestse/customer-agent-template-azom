@@ -315,7 +315,12 @@
           pendingSubmit = null;
           form.setAttribute('data-az-confirmed', '1');
           applyBusyState(form, submitter);
-          if (submitter && submitter.name && !form.querySelector('input[data-confirm-injected="1"]')) {
+          if (
+            submitter &&
+            submitter.name &&
+            !form.querySelector('input[data-busy-injected="1"]') &&
+            !form.querySelector('input[data-confirm-injected="1"]')
+          ) {
             var hidden = document.createElement('input');
             hidden.type = 'hidden';
             hidden.name = submitter.name;
@@ -326,6 +331,7 @@
           if (typeof form.requestSubmit === 'function' && (!submitter || !submitter.disabled)) {
             form.requestSubmit(submitter || undefined);
           } else {
+            form.removeAttribute('data-az-confirmed');
             HTMLFormElement.prototype.submit.call(form);
           }
         } else {
@@ -388,9 +394,10 @@
         } else if (window.confirm(confirmMsg)) {
           form.setAttribute('data-az-confirmed', '1');
           applyBusyState(form, submitter);
-          if (typeof form.requestSubmit === 'function') {
+          if (typeof form.requestSubmit === 'function' && (!submitter || !submitter.disabled)) {
             form.requestSubmit(submitter || undefined);
           } else {
+            form.removeAttribute('data-az-confirmed');
             HTMLFormElement.prototype.submit.call(form);
           }
         }
@@ -400,8 +407,11 @@
       applyBusyState(form, submitter);
     });
 
-    // Reset disabled buttons if browser restores page from bfcache
+    // Reset disabled buttons and HITL confirmation state if browser restores page from bfcache
     window.addEventListener('pageshow', function (e) {
+      document.querySelectorAll('form[data-az-confirmed]').forEach(function (f) {
+        f.removeAttribute('data-az-confirmed');
+      });
       if (!e.persisted) return;
       document.querySelectorAll('input[data-busy-injected="1"], input[data-confirm-injected="1"]').forEach(function (el) {
         el.remove();
@@ -466,19 +476,32 @@
         text = 'value' in el && el.value !== undefined ? String(el.value) : (el.textContent || '');
       }
       function markCopied() {
-        var orig = btn.getAttribute('data-orig-copy') || btn.textContent;
-        if (!btn.hasAttribute('data-orig-copy')) btn.setAttribute('data-orig-copy', orig);
         var labelEl = btn.querySelector('[data-copy-label]');
-        if (labelEl) labelEl.textContent = 'Kopierad';
-        else btn.textContent = 'Kopierad';
+        var textTarget = labelEl;
+        if (!textTarget) {
+          if (btn.querySelector('svg')) {
+            var span = document.createElement('span');
+            span.setAttribute('data-copy-label', '1');
+            Array.prototype.slice.call(btn.childNodes).forEach(function (node) {
+              if (node.nodeType === 3) span.appendChild(node);
+            });
+            btn.appendChild(span);
+            textTarget = span;
+          } else {
+            textTarget = btn;
+          }
+        }
+        var orig = btn.getAttribute('data-orig-copy');
+        if (orig === null) {
+          orig = (textTarget.textContent || '').trim();
+          btn.setAttribute('data-orig-copy', orig);
+        }
+        textTarget.textContent = 'Kopierad';
         window.setTimeout(function () {
-          if (labelEl) labelEl.textContent = btn.getAttribute('data-orig-copy');
-          else btn.textContent = btn.getAttribute('data-orig-copy');
+          textTarget.textContent = btn.getAttribute('data-orig-copy') || '';
         }, 1800);
       }
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(markCopied).catch(function () {});
-      } else {
+      function fallbackCopy() {
         var ta = document.createElement('textarea');
         ta.value = text;
         ta.style.position = 'fixed';
@@ -486,10 +509,16 @@
         document.body.appendChild(ta);
         ta.select();
         try {
-          document.execCommand('copy');
-          markCopied();
+          if (document.execCommand('copy')) {
+            markCopied();
+          }
         } catch (_err) {}
         ta.remove();
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(markCopied).catch(fallbackCopy);
+      } else {
+        fallbackCopy();
       }
     });
 
@@ -1264,6 +1293,367 @@
     refreshDeepPreview();
   }
 
+  /* ------------------------------------------------------------------ */
+  /* 9. SEO Studio Progressive Enhancement (strict CSP, DOM-safe)       */
+  /* ------------------------------------------------------------------ */
+  function initSeoStudio() {
+    var root = document.querySelector('[data-seo-studio="true"]');
+    if (!root) return;
+
+    function selectHasOptionValue(sel, val) {
+      if (!sel) return false;
+      for (var i = 0; i < sel.options.length; i += 1) {
+        if (sel.options[i].value === val) return true;
+      }
+      return false;
+    }
+
+    // Quick-fill fix proposal form from an audit issue row
+    root.querySelectorAll('[data-seo-fix-prefill]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var fixType = btn.getAttribute('data-fix-type') || 'seo_meta';
+        var targetType = btn.getAttribute('data-target-type') || 'product';
+        var targetId = btn.getAttribute('data-target-id') || '';
+        var summary = btn.getAttribute('data-fix-summary') || '';
+        var rawProposed = btn.getAttribute('data-proposed-json') || '';
+
+        var fixTypeEl = document.getElementById('seo-fix-type');
+        var targetTypeEl = document.getElementById('seo-fix-target-type');
+        var targetIdEl = document.getElementById('seo-fix-target-id');
+        var summaryEl = document.getElementById('seo-fix-summary');
+        var metaTitleEl = document.getElementById('seo-fix-meta-title');
+        var metaDescEl = document.getElementById('seo-fix-meta-desc');
+        var focusEl = document.getElementById('seo-fix-focus');
+        var altEl = document.getElementById('seo-fix-alt');
+        var jsonEl = document.getElementById('seo-fix-proposed-json');
+
+        if (fixTypeEl && selectHasOptionValue(fixTypeEl, fixType)) {
+          fixTypeEl.value = fixType;
+        }
+        if (targetTypeEl && selectHasOptionValue(targetTypeEl, targetType)) {
+          targetTypeEl.value = targetType;
+        }
+        if (targetIdEl) targetIdEl.value = targetId;
+        if (summaryEl) summaryEl.value = summary;
+
+        // Always reset stale field values before prefilling new issue
+        var fieldMap = {
+          meta_title: metaTitleEl,
+          meta_description: metaDescEl,
+          focus_keyphrase: focusEl,
+          alt_text: altEl,
+        };
+        Object.keys(fieldMap).forEach(function (k) {
+          if (fieldMap[k]) fieldMap[k].value = '';
+        });
+        if (jsonEl) jsonEl.value = '';
+
+        if (rawProposed) {
+          try {
+            var parsed = JSON.parse(rawProposed);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              var hasExtraKeys = false;
+              Object.keys(parsed).forEach(function (k) {
+                var val = parsed[k];
+                if (val === null || val === undefined) return;
+                if (Object.prototype.hasOwnProperty.call(fieldMap, k) && fieldMap[k]) {
+                  fieldMap[k].value = String(val);
+                } else {
+                  hasExtraKeys = true;
+                }
+              });
+              if (hasExtraKeys && jsonEl) {
+                jsonEl.value = JSON.stringify(parsed, null, 2);
+                var details = jsonEl.closest('details');
+                if (details) details.open = true;
+              }
+            }
+          } catch (_err) {}
+        }
+
+        [metaTitleEl, metaDescEl].forEach(function (el) {
+          if (el) el.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+
+        var formSection = document.getElementById('seo-fix-propose-section');
+        if (formSection) {
+          formSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        if (targetIdEl) targetIdEl.focus();
+      });
+    });
+
+    // Live Google SERP Desktop/Mobile preview & char meters (<= 60 title / <= 158 desc)
+    var serpBox = root.querySelector('[data-serp-preview="1"]');
+    if (serpBox) {
+      var serpCard = document.getElementById('seo-serp-card');
+      var serpTitleEl = document.getElementById('seo-serp-title');
+      var serpDescEl = document.getElementById('seo-serp-desc');
+      var serpTitleMeter = document.getElementById('seo-serp-title-meter');
+      var serpDescMeter = document.getElementById('seo-serp-desc-meter');
+      var titleInput = document.getElementById('seo-fix-meta-title');
+      var descInput = document.getElementById('seo-fix-meta-desc');
+      var modeBtns = Array.prototype.slice.call(serpBox.querySelectorAll('[data-serp-mode]'));
+      var serpMode = 'desktop';
+
+      var renderSerpPreview = function () {
+        var titleLimit = serpMode === 'mobile' ? 55 : 60;
+        var descLimit = serpMode === 'mobile' ? 120 : 158;
+        var tVal = titleInput ? (titleInput.value || '').trim() : '';
+        var dVal = descInput ? (descInput.value || '').trim() : '';
+
+        if (serpTitleEl) {
+          serpTitleEl.textContent = tVal || 'Skriv en meta-titel för att förhandsvisa Google-resultatet';
+        }
+        if (serpDescEl) {
+          serpDescEl.textContent =
+            dVal || 'Skriv en meta-beskrivning (rekommenderat upp till 158 tecken) för att se utdraget i sökresultatet.';
+        }
+        if (serpTitleMeter) {
+          var tLen = tVal.length;
+          serpTitleMeter.textContent =
+            'Titel: ' + tLen + ' / 60 tecken' + (tLen > 60 ? ' (för lång)' : (tLen > titleLimit ? ' (mobil trunkering)' : ' (OK)'));
+          serpTitleMeter.classList.toggle('text-danger-text', tLen > 60);
+          serpTitleMeter.classList.toggle('text-warn', tLen > titleLimit && tLen <= 60);
+          serpTitleMeter.classList.toggle('text-mist-400', tLen <= titleLimit);
+        }
+        if (serpDescMeter) {
+          var dLen = dVal.length;
+          serpDescMeter.textContent =
+            'Beskrivning: ' + dLen + ' / 158 tecken' + (dLen > 158 ? ' (för lång)' : (dLen > descLimit ? ' (mobil trunkering)' : ' (OK)'));
+          serpDescMeter.classList.toggle('text-danger-text', dLen > 158);
+          serpDescMeter.classList.toggle('text-warn', dLen > descLimit && dLen <= 158);
+          serpDescMeter.classList.toggle('text-mist-400', dLen <= descLimit);
+        }
+        if (serpCard) {
+          serpCard.classList.toggle('max-w-md', serpMode === 'mobile');
+        }
+      };
+
+      modeBtns.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          serpMode = btn.getAttribute('data-serp-mode') || 'desktop';
+          modeBtns.forEach(function (other) {
+            var active = other === btn;
+            other.setAttribute('aria-pressed', active ? 'true' : 'false');
+            other.classList.toggle('bg-ink-800', active);
+            other.classList.toggle('ring-1', active);
+            other.classList.toggle('ring-steel-500/35', active);
+            other.classList.toggle('text-steel-200', active);
+          });
+          renderSerpPreview();
+        });
+      });
+
+      if (titleInput) titleInput.addEventListener('input', renderSerpPreview);
+      if (descInput) descInput.addEventListener('input', renderSerpPreview);
+      renderSerpPreview();
+    }
+
+    // Interactive Audit Issue Filter Pills, Live Text Search & "Nästa olösta fynd"
+    var issueRows = Array.prototype.slice.call(root.querySelectorAll('[data-seo-issue-row="1"]'));
+    var issueFilterBtns = Array.prototype.slice.call(root.querySelectorAll('[data-seo-issue-filter]'));
+    var issueSearchInput = document.getElementById('seo-issue-search');
+    var issueCountEl = document.getElementById('seo-issue-count');
+    var nextIssueBtn = root.querySelector('[data-seo-next-issue="1"]');
+    if (issueRows.length) {
+      var activeFilter = 'all';
+      var nextCursor = -1;
+
+      var applyIssueFilters = function () {
+        var q = issueSearchInput ? (issueSearchInput.value || '').trim().toLowerCase() : '';
+        var visibleCount = 0;
+        issueRows.forEach(function (row) {
+          var sev = (row.getAttribute('data-severity') || '').toLowerCase();
+          var cat = (row.getAttribute('data-category') || '').toLowerCase();
+          var txt = (row.getAttribute('data-issue-text') || '').toLowerCase();
+          var matchesPill =
+            activeFilter === 'all' ||
+            sev === activeFilter ||
+            cat === activeFilter ||
+            (activeFilter === 'on_page' && (cat === 'on_page' || cat === 'on-page' || cat === 'content' || cat === 'meta'));
+          var matchesSearch = !q || txt.indexOf(q) !== -1;
+          var show = matchesPill && matchesSearch;
+          row.classList.toggle('hidden', !show);
+          if (show) visibleCount += 1;
+        });
+        if (issueCountEl) issueCountEl.textContent = String(visibleCount);
+        nextCursor = -1;
+      };
+
+      issueFilterBtns.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          activeFilter = (btn.getAttribute('data-seo-issue-filter') || 'all').toLowerCase();
+          issueFilterBtns.forEach(function (other) {
+            var active = other === btn;
+            other.setAttribute('aria-pressed', active ? 'true' : 'false');
+            other.classList.toggle('bg-ink-800', active);
+            other.classList.toggle('ring-1', active);
+            other.classList.toggle('ring-steel-500/35', active);
+            other.classList.toggle('text-steel-200', active);
+          });
+          applyIssueFilters();
+        });
+      });
+
+      if (issueSearchInput) {
+        issueSearchInput.addEventListener('input', applyIssueFilters);
+      }
+
+      if (nextIssueBtn) {
+        nextIssueBtn.addEventListener('click', function () {
+          var visible = issueRows.filter(function (r) {
+            return !r.classList.contains('hidden');
+          });
+          if (!visible.length) return;
+          nextCursor = (nextCursor + 1) % visible.length;
+          var targetRow = visible[nextCursor];
+          issueRows.forEach(function (r) {
+            r.classList.remove('bg-ink-800');
+          });
+          targetRow.classList.add('bg-ink-800');
+          var prefillBtn = targetRow.querySelector('[data-seo-fix-prefill]');
+          if (prefillBtn) {
+            prefillBtn.click();
+          } else {
+            targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        });
+      }
+    }
+
+    // Live anchor-mix hint on Link Package builder textarea (mirrors skills/ecom_ops/seo/policy.py)
+    var targetsInput = document.getElementById('seo-link-targets-raw');
+    var notesInput = document.getElementById('seo-lp-notes');
+    var mixHint = document.getElementById('seo-link-mix-preview');
+    if (targetsInput && mixHint) {
+      var spamPbnRe = /\b(?:pbn|private\s+blog\s+network|link\s*farm|l[aä]nkfarm|link\s*wheel|comment\s+spam|forum\s+spam|xrumer|gsa\s+ser|cloaking|doorway\s+pages?|hidden\s+links?|casino|gambling|slots|poker|payday\s+loan|viagra|cialis|porn|adult\s+links?|\d{3,}\s+(?:backlinks?|links?)\s+blast|cheap\s+bulk\s+links?)\b/i;
+      var genericAnchors = {
+        'klicka här': 1, 'läs mer': 1, 'läs mer här': 1, 'här': 1, 'se mer': 1,
+        'se utbudet': 1, 'se produkter': 1, 'besök hemsidan': 1, 'denna guide': 1,
+        'denna sida': 1, 'länk': 1, 'hemsida': 1, 'köp här': 1,
+        'les mer': 1, 'les mer her': 1, 'klikk her': 1, 'her': 1, 'se utvalget': 1,
+        'besøk nettsiden': 1, 'denne siden': 1, 'læs mere': 1, 'læs mere her': 1,
+        'klik her': 1, 'se udvalget': 1, 'besøg hjemmesiden': 1, 'click here': 1,
+        'read more': 1, 'here': 1, 'visit site': 1, 'learn more': 1, 'this page': 1,
+        'website': 1, 'link': 1, 'more info': 1,
+      };
+      var brandTerms = {
+        'azom': 1, 'azom.no': 1, 'azom.se': 1, 'azom.dk': 1,
+        'azom nordic': 1, 'azom bilstereo': 1, 'azom butik': 1,
+        'azom nettbutikk': 1, 'azom shop': 1,
+      };
+      var normTokens = function (text) {
+        var matches = String(text || '').toLowerCase().match(/[a-z0-9åäöøæ]{2,}/g);
+        return matches || [];
+      };
+      var tokenSetEqual = function (a, b) {
+        if (!a.length || !b.length) return false;
+        var mapA = {};
+        var mapB = {};
+        a.forEach(function (t) { mapA[t] = 1; });
+        b.forEach(function (t) { mapB[t] = 1; });
+        var keysA = Object.keys(mapA);
+        var keysB = Object.keys(mapB);
+        if (keysA.length !== keysB.length) return false;
+        return keysA.every(function (k) { return !!mapB[k]; });
+      };
+      var inferAnchorType = function (url, kw, anchor) {
+        var low = String(anchor || '').trim().replace(/\s+/g, ' ').toLowerCase().replace(/^[ .,:;!?→»]+|[ .,:;!?→»]+$/g, '');
+        if (!low) return 'generic';
+        if (/^(?:https?:\/\/|www\.)/i.test(low) || /^[a-z0-9-]+\.(?:no|se|dk|com|net|org)(?:\/[^\s]*)?$/i.test(low)) {
+          return 'naked_url';
+        }
+        if (Object.prototype.hasOwnProperty.call(genericAnchors, low)) return 'generic';
+        var kwClean = String(kw || '').trim().replace(/\s+/g, ' ').toLowerCase();
+        var kwTokens = normTokens(kwClean);
+        var anchorTokens = normTokens(low);
+        if (kwClean) {
+          if (low === kwClean || tokenSetEqual(anchorTokens, kwTokens)) return 'exact';
+          if (kwTokens.length) {
+            var kwMap = {};
+            kwTokens.forEach(function (t) { kwMap[t] = 1; });
+            if (anchorTokens.some(function (t) { return !!kwMap[t]; })) return 'partial';
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(brandTerms, low)) return 'brand';
+        if (anchorTokens.indexOf('azom') !== -1 && anchorTokens.length <= 2) return 'brand';
+        return 'partial';
+      };
+
+      var updateMixHint = function () {
+        var lines = (targetsInput.value || '')
+          .split(/\r?\n/)
+          .map(function (l) {
+            return l.trim();
+          })
+          .filter(Boolean);
+        var notesText = notesInput ? (notesInput.value || '') : '';
+        var notesSpam = spamPbnRe.test(notesText);
+        if (!lines.length) {
+          if (notesSpam) {
+            mixHint.textContent = 'BLOCKERAS (anti-spam/PBN-termer upptäckta i anteckningar)';
+            return;
+          }
+          mixHint.textContent =
+            'Lämna tomt för automatisk naturlig ankarprofil (60%+ varumärke/URL/generisk, <=10% exact).';
+          return;
+        }
+        var counts = { brand: 0, naked_url: 0, generic: 0, partial: 0, exact: 0 };
+        var total = 0;
+        var spamHit = notesSpam;
+        lines.forEach(function (line) {
+          var cols = line.split('|').map(function (c) {
+            return c.trim();
+          });
+          var url = cols[0] || '';
+          var kw = cols[1] || '';
+          var explicitType = (cols[2] || '').toLowerCase();
+          var anchor = cols[3] || '';
+          if (spamPbnRe.test(anchor + ' ' + kw + ' ' + url)) {
+            spamHit = true;
+          }
+          if (explicitType === 'partial_match') explicitType = 'partial';
+          if (explicitType === 'exact_match') explicitType = 'exact';
+          if (explicitType === 'url' || explicitType === 'naked') explicitType = 'naked_url';
+
+          var inferred = anchor ? inferAnchorType(url, kw, anchor) : '';
+          var t = explicitType;
+          if (!t) {
+            t = inferred || 'brand';
+          } else if (inferred && (inferred === 'exact' || inferred === 'partial') && t !== inferred) {
+            t = inferred;
+          }
+          if (Object.prototype.hasOwnProperty.call(counts, t)) counts[t] += 1;
+          else counts.brand += 1;
+          total += 1;
+        });
+        var exactPct = Math.round((counts.exact / total) * 100);
+        var partialPct = Math.round((counts.partial / total) * 100);
+        var naturalPct = Math.round(((counts.brand + counts.naked_url + counts.generic) / total) * 100);
+        var status = '';
+        if (spamHit) {
+          status = 'BLOCKERAS (otillåtna anti-spam/PBN-termer upptäckta)';
+        } else if (exactPct > 20 || naturalPct < 35) {
+          status = 'BLOCKERAS (för hög exact-match > 20% eller låg naturlig andel < 35%)';
+        } else if (exactPct > 10 || naturalPct < 60 || partialPct > 25) {
+          var reasons = [];
+          if (exactPct > 10) reasons.push('exact-match > 10%');
+          if (naturalPct < 60) reasons.push('naturlig andel < 60%');
+          if (partialPct > 25) reasons.push('partial-match > 25%');
+          status = 'VARNING (' + reasons.join(', ') + ')';
+        } else {
+          status = 'OK (naturlig ankarprofil)';
+        }
+        mixHint.textContent =
+          total + ' mål-rader · Naturlig andel: ' + naturalPct + '% · Exact: ' + exactPct + '% — ' + status;
+      };
+      targetsInput.addEventListener('input', updateMixHint);
+      if (notesInput) notesInput.addEventListener('input', updateMixHint);
+      updateMixHint();
+    }
+  }
+
   function boot() {
     initDrawer();
     initDialogLightDismiss();
@@ -1272,6 +1662,7 @@
     initUtilityHooks();
     initVanillaXaiPolling();
     initResearchHub();
+    initSeoStudio();
   }
 
   if (document.readyState === 'loading') {
