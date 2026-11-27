@@ -924,13 +924,33 @@
           }
         },
 
+        _fmtUtcMinutes: function (raw) {
+          if (!raw) return '';
+          var s = String(raw).trim();
+          if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(s)) return s;
+          var parsed = Date.parse(s);
+          if (!isNaN(parsed)) {
+            var d = new Date(parsed);
+            var pad = function (n) { return n < 10 ? '0' + n : String(n); };
+            return (
+              d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()) +
+              ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes())
+            );
+          }
+          return s.length >= 16 ? s.slice(0, 16).replace('T', ' ') : s;
+        },
+
         _normalizeEvents: function (list) {
+          var self = this;
           return (Array.isArray(list) ? list : []).map(function (ev, idx) {
+            var rawTs = (ev && ev.created_at) ? String(ev.created_at) : '';
+            var fmtTs = (ev && ev.created_at_fmt) ? String(ev.created_at_fmt) : self._fmtUtcMinutes(rawTs);
             return {
               seq: ev && ev.seq !== undefined ? ev.seq : idx + 1,
               phase: (ev && ev.phase) ? String(ev.phase) : 'info',
               message: (ev && ev.message) ? String(ev.message) : '',
-              created_at: (ev && ev.created_at) ? String(ev.created_at) : '',
+              created_at: rawTs,
+              created_at_fmt: fmtTs,
             };
           });
         },
@@ -995,7 +1015,12 @@
               }
               var evStatus = body.evidence_status !== undefined ? body.evidence_status : job.evidence_status;
               if (evStatus) this.evidenceStatus = String(evStatus);
-              var errMsg = body.error_message !== undefined ? body.error_message : job.error_message;
+              var errMsg =
+                (body.error_message !== undefined && body.error_message !== null && body.error_message !== '')
+                  ? body.error_message
+                  : ((job.error_message !== undefined && job.error_message !== null && job.error_message !== '')
+                      ? job.error_message
+                      : (body.error_code !== undefined ? body.error_code : job.error_class));
               if (errMsg) this.errorMessage = String(errMsg);
               if (Array.isArray(body.events)) {
                 this.events = this._normalizeEvents(body.events);

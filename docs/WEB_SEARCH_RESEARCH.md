@@ -15,7 +15,7 @@
 | **Target Reference (`target_ref`)** | Structured optional link (`case:<uuid>`, `wp:<site_id>:<wr-plan_id>`, `wp_site:<site_id>`, `product:<woo_id>`, `marketing:<kind>`, `chat:<channel>:<peer_id>`). Stored **only** in `research_jobs.sqlite3` (never on disk artifacts) so GDPR unlinking is atomic. |
 | **SearchRouter** | Multi-provider router in `skills/ecom_ops/integrations/search/router.py` enforcing fail-closed live gates, `OutboundQueryFirewall`, per-route circuit breakers, and failover. |
 | **OutboundQueryFirewall** | Fail-closed scrubber/blocker (`skills/ecom_ops/research/firewall.py`) blocking PII, secrets, internal IDs, and private/internal hosts before any outbound query or URL fetch. |
-| **EvidenceStatus** | Corroboration rating on results/briefs: `strong`, `moderate`, `weak`, `conflicted`, `insufficient`. |
+| **EvidenceStatus** | Corroboration rating on results/briefs: `grounded`, `inspiration_only`, `partial`, `conflicting`, `insufficient`, `provider_unavailable`, `mock`. |
 | **Provenance** | Source origin label: `mock` / `mock_fixture` (offline deterministic fixtures), `live` / `live_api`, or `cache`. |
 | **PROTECTED_OVERLAY_KEYS** | Security-critical env vars in `skills/ecom_ops/runtime_env.py` that are ignored if placed in `runtime.env` or `secrets.env` (process env / systemd wins). |
 | **ResearchWorkerPool** | Lazy SQLite-leased background worker pool (`skills/ecom_ops/research/worker.py`, `max_concurrent_jobs: 2`, 120s lease, 25s heartbeat) — never spawned at `create_app()` import time. |
@@ -109,10 +109,10 @@ Live route priority defaults to `parallel,exa,brave,tavily,searxng` (overridable
 
 | Provider (`route_id`) | Endpoint & method | Auth header (env var) | Capabilities & notes |
 |-----------------------|-------------------|-----------------------|----------------------|
-| **`parallel`** | `POST https://api.parallel.ai/v1/search` and `/v1/extract` | `x-api-key` (`PARALLEL_API_KEY`) | Sends `objective`, `search_queries` (1–5 concise queries `<= 200` chars), `mode` (`mode_quick: fast`, `mode_deep: basic`), and `advanced_settings` (`max_results`, `source_policy.include_domains` / `exclude_domains`, `fetch_policy.max_age_seconds`). Supports extract & deep mode. |
+| **`parallel`** | `POST https://api.parallel.ai/v1/search` and `/v1/extract` | `x-api-key` (`PARALLEL_API_KEY`) | Sends `objective`, `search_queries` (1–5 concise queries `<= 200` chars), `mode` (`mode_quick: fast`, `mode_deep: basic`), and `advanced_settings` (`max_results`, `source_policy.include_domains` / `exclude_domains` / `after_date`). Supports extract & deep mode. |
 | **`exa`** | `POST https://api.exa.ai/search` | `x-api-key` (`EXA_API_KEY`) | Sends `query`, `type` (`search_type_quick: auto`, `search_type_deep: deep`), `numResults`, `contents` (`highlights`, optional `text`), `includeDomains`/`excludeDomains`, `startPublishedDate`. |
 | **`brave`** | `GET https://api.search.brave.com/res/v1/web/search` | `X-Subscription-Token` (`BRAVE_SEARCH_API_KEY`) | Supports Nordic `country` (`SE`/`NO`/`DK`), `search_lang`, `freshness` (`pd`/`pw`/`pm`/`py`), and `extra_snippets=true`. |
-| **`tavily`** | `POST https://api.tavily.com/search` | `Authorization: Bearer` (`TAVILY_API_KEY`) | Sends `query`, `search_depth` (`search_depth_quick: basic`, `search_depth_deep: advanced`), `max_results`, `include_raw_content`, `include_domains`/`exclude_domains`, `days`. |
+| **`tavily`** | `POST https://api.tavily.com/search` | `Authorization: Bearer` (`TAVILY_API_KEY`) | Sends `query`, `search_depth` (`search_depth_quick: basic`, `search_depth_deep: advanced`), `max_results`, `include_raw_content`, `include_domains`/`exclude_domains`, `time_range`. |
 | **`searxng`** (opt-in) | `GET <SEARXNG_BASE_URL>/search?format=json` | Optional `Authorization: Bearer` (`SEARXNG_API_KEY`) | Disabled by default (`providers.searxng.enabled: false` in `config/research.yaml`). Requires process-env `SEARXNG_BASE_URL` pointing to public HTTPS or explicit loopback `http://127.0.0.1:<port>` / `http://[::1]:<port>` (`max_redirects=0`, port must not collide with `DASHBOARD_PORT` or `AZOM_DASHBOARD_PUBLIC_URL`). |
 | **`mock`** (`MockSearchRoute`) | Offline only (no network) | None | Active **only** when `AZOM_USE_MOCK=1` (or unset/truthy). Serves deterministic profile-keyed fixtures (`provenance="mock_fixture"`, `estimated_cost_usd=0.0`). Raises `SearchConfigError` (`mock_disabled`) if invoked in live mode. |
 
@@ -181,7 +181,7 @@ Defined in `skills/ecom_ops/research/profiles.py` and overridable in `config/res
 | Permission | Roles | Controls |
 |------------|-------|----------|
 | `WEB_SEARCH` | `viewer` (Jonatan), `operator` (agent), `full_admin` (Oscar) | Quick search, URL fetch, view/export own or team-visible research (`authorize_research_access`). |
-| `RESEARCH_RUN` | `viewer` (Jonatan), `operator` (agent), `full_admin` (Oscar) | Start, steer, and cancel research jobs (`authorize_target_ref` additionally requires `WP_OPS_READ` for `wp:*`/`wp_site:*`, `CASE_REPLY` for `case:*`, `MARKETING_READ` for `marketing:*`). |
+| `RESEARCH_RUN` | `viewer` (Jonatan), `operator` (agent), `full_admin` (Oscar) | Start, steer, and cancel research jobs (`authorize_target_ref` additionally requires `WP_OPS_OPERATE` or `WP_OPS_ADMIN` for `wp:*`/`wp_site:*`, `CASE_REPLY` or `MAIL_READ` for `case:*`, `MARKETING_READ` for `marketing:*`). |
 | `RESEARCH_ADMIN` | `full_admin` (Oscar) | View/administer any actor's private research jobs and run cross-actor diagnostics. |
 | `wp_workspace_attach_research` | `operator` (agent), `full_admin` (Oscar) | Requires **both** `WP_OPS_OPERATE` and `WEB_SEARCH` (denies Jonatan `viewer`). |
 

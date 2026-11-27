@@ -9,7 +9,13 @@ from email.utils import parseaddr
 from typing import Any
 
 from ecom_ops.actions.mail import MailService
-from ecom_ops.actions.support import SupportService, extract_order_id
+from ecom_ops.actions.support import (
+    BARE_SUBJECT_ORDER_RE,
+    ORDER_NEAR_STATUS_RE,
+    ORDER_RE,
+    SupportService,
+)
+from ecom_ops.cases.mailboxes import load_mailboxes
 from ecom_ops.cases.results import ACTIVE_CASE_STATUSES, CaseActionResult, IngestResult
 from ecom_ops.cases.store import Case, CaseMessage, CaseStore
 from ecom_ops.escalation import EscalationService, default_escalation
@@ -24,7 +30,6 @@ from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, r
 from ecom_ops.research import get_research_service
 from ecom_ops.research.config import is_mock_mode
 from ecom_ops.research.firewall import OutboundQueryFirewall, QueryTaintContext
-from ecom_ops.research.sanitizer import sanitize_untrusted_text
 from ecom_ops.runtime_profile import null_send_active
 from ecom_ops.telemetry import Telemetry, default_telemetry
 
@@ -41,22 +46,71 @@ _POSTAL_SCAN_RE = re.compile(
     re.I,
 )
 _TRACKING_SCAN_RE = re.compile(
-    r"\b(?:JJFI[A-Z0-9]{6,}|BRING[A-Z0-9]{4,}|DHL[A-Z0-9]{6,})\b"
-    r"|(?:\b(?:tracking|kolli|spårning|sporing)[\s:#-]*([A-Z0-9]{6,24})\b)",
+    r"\b(?:JJFI[A-Z0-9]{6,}|BRING[A-Z0-9]{4,}|DHL[A-Z0-9]{6,}|00\d{14,20})\b"
+    r"|(?:\b(?:tracking|kolli|spårning|sporing|paket)[\s:#-]*([A-Z0-9]{6,24})\b)",
     re.I,
 )
 _SIG_NAME_RE = re.compile(
-    r"(?:^|\n)\s*(?:mvh|hälsningar|med vänlig hälsning|vennlig hilsen|venlig hilsen|best regards|regards|"
-    r"mitt namn är|jag heter)\s*[,:-]?\s*([A-ZÅÄÖÆØ][a-zåäöæøA-ZÅÄÖÆØ-]{1,24}(?:\s+[A-ZÅÄÖÆØ][a-zåäöæøA-ZÅÄÖÆØ-]{1,24}){0,2})",
+    r"(?:^|\n)[ \t]*(?i:mvh|hälsningar|med[ \t]+vänlig[ \t]+hälsning|vennlig[ \t]+hilsen|"
+    r"venlig[ \t]+hilsen|best[ \t]+regards|regards|mitt[ \t]+namn[ \t]+är|jag[ \t]+heter)"
+    r"[ \t]*[,:-]?[ \t]*"
+    r"([A-ZÅÄÖÆØ][a-zåäöæøA-ZÅÄÖÆØ-]{1,24}(?:[ \t]+[A-ZÅÄÖÆØ][a-zåäöæøA-ZÅÄÖÆØ-]{1,24}){0,2})"
+)
+_STREET_ADDR_RE = re.compile(
+    r"\b([A-ZÅÄÖÆØ][a-zåäöæøA-ZÅÄÖÆØ-]{1,30}"
+    r"(?:[ \t]+[A-ZÅÄÖÆØa-zåäöæø-]{2,30}){0,2}[ \t]*"
+    r"(?:gatan|gata|gaden|gade|vägen|veien|vejen|vei|vej|allén|allen|gränd|gränden|"
+    r"torget|torg|stigen|stig|backen|backe|stranden|strand|kajen|kaj|brinken|"
+    r"plan|plads|stræde|gate|street|road|avenue|lane|drive|boulevard))"
+    r"[ \t]+(\d{1,5}[A-Za-z]?)\b",
     re.I,
 )
+_CITY_AFTER_ADDR_RE = re.compile(
+    r"\b\d{1,5}[A-Za-z]?[ \t]*,[ \t]*([A-ZÅÄÖÆØ][a-zåäöæøA-ZÅÄÖÆØ-]{2,30})\b"
+)
+_POSTAL_CITY_RE = re.compile(
+    r"\b(?:(?:SE|NO|DK)-?)?\d{3}[ \t]?\d{2}\b[ \t,]*([A-ZÅÄÖÆØ][a-zåäöæø]{2,30})\b"
+)
+_LABELED_ADDR_RE = re.compile(
+    r"(?:^|\n)[ \t]*(?i:adress|address|leveransadress|postadress|gatuadress)[ \t]*:[ \t]*([^\n]{4,80})"
+)
+_EXCLUDED_SIG_NAMES = frozenset(
+    {"azom support", "azom", "support", "kundtjänst", "kundservice", "kundeservice"}
+)
+_COUNTRY_WORDS = frozenset({"sverige", "norge", "danmark", "sweden", "norway", "denmark"})
+_BRAND_STAFF_LOCALS = frozenset(
+    {
+        "support",
+        "info",
+        "noreply",
+        "no-reply",
+        "order",
+        "orders",
+        "hej",
+        "kundtjanst",
+        "kundservice",
+        "kundeservice",
+        "admin",
+        "oscar",
+        "jonatan",
+    }
+)
+_SAFE_PRODUCT_KEYWORDS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bcarplay\b", re.I), "CarPlay"),
+    (re.compile(r"\bandroid[ \t]+auto\b", re.I), "Android Auto"),
+    (re.compile(r"\bdab\+?\b", re.I), "DAB+"),
+    (re.compile(r"\b(?:backkamera|reversing[ \t]+camera|ryggekamera)\b", re.I), "backkamera"),
+    (re.compile(r"\bdashcam\b", re.I), "dashcam"),
+)
 _FALLBACK_CASE_TOPICS: dict[str, str] = {
+    "order_status": "PostNord Bring DHL leverans spårning status",
     "shipping": "PostNord Bring DHL leverans driftinformation status",
     "return": "konsumentköp ångerrätt 14 dagar reklamation regler",
     "billing": "e-handel faktura betalning ångerrätt regler",
     "product": "bilmultimedia CarPlay DAB+ kompatibilitet specifikation",
     "technical": "bilmultimedia CarPlay DAB+ felsökning specifikation",
 }
+_LAST_RESORT_CASE_QUERY = "nordisk e-handel kundservice regler specifikation"
 
 
 def _edit_distance_ratio(a: str, b: str) -> float:
@@ -140,6 +194,182 @@ def _outbound_thread_headers(
         references_header=refs_hdr,
         in_reply_to=in_reply,
     )
+
+
+def _brand_email_filters(case: Case, messages: list[CaseMessage]) -> tuple[set[str], set[str]]:
+    """Return known brand/staff email addresses and domains to exclude from taint."""
+    exact: set[str] = set()
+    domains: set[str] = {"azom.se", "azom.no", "azom.dk"}
+    try:
+        for mb in load_mailboxes():
+            addr = (mb.address or "").strip().lower()
+            if addr:
+                exact.add(addr)
+                if "@" in addr:
+                    domains.add(addr.split("@", 1)[1])
+    except Exception:
+        pass
+    try:
+        for dom in load_profile().domains:
+            d = str(dom or "").strip().lower()
+            if d:
+                domains.add(d)
+    except Exception:
+        pass
+    if getattr(case, "to_addr", None):
+        _, parsed = parseaddr(str(case.to_addr))
+        addr = (parsed or str(case.to_addr)).strip().lower()
+        if "@" in addr:
+            exact.add(addr)
+    for msg in messages:
+        if (msg.direction or "").strip().lower() == "outbound" and msg.from_addr:
+            _, parsed = parseaddr(msg.from_addr)
+            addr = (parsed or msg.from_addr).strip().lower()
+            if "@" in addr:
+                exact.add(addr)
+        if (msg.direction or "").strip().lower() == "inbound" and msg.to_addr:
+            _, parsed = parseaddr(msg.to_addr)
+            addr = (parsed or msg.to_addr).strip().lower()
+            if "@" in addr:
+                exact.add(addr)
+    return exact, domains
+
+
+def _is_brand_or_staff_email(
+    addr: str, exact: set[str], brand_domains: set[str]
+) -> bool:
+    low = addr.strip().lower()
+    if not low or "@" not in low:
+        return False
+    if low in exact:
+        return True
+    local, dom = low.split("@", 1)
+    if dom in brand_domains and local in _BRAND_STAFF_LOCALS:
+        return True
+    return False
+
+
+def build_case_taint_context(
+    case: Case,
+    messages: list[CaseMessage] | None = None,
+) -> QueryTaintContext:
+    """Build outbound PII/ID taint context from a case and its inbound messages."""
+    msgs = list(messages or [])
+    brand_emails, brand_domains = _brand_email_filters(case, msgs)
+    emails: list[str] = []
+    names: list[str] = []
+    phones: list[str] = []
+    addresses: list[str] = []
+    postal_codes: list[str] = []
+    order_ids: list[str] = []
+    tracking_numbers: list[str] = []
+
+    def _add_addr(raw_addr: str | None) -> None:
+        raw = (raw_addr or "").strip()
+        if not raw:
+            return
+        disp, addr = parseaddr(raw)
+        disp_clean = disp.strip()
+        if disp_clean and disp_clean.lower() not in _EXCLUDED_SIG_NAMES:
+            names.append(disp_clean)
+        cand_email = addr.strip() if addr.strip() and "@" in addr else (raw if "@" in raw else "")
+        if cand_email and not _is_brand_or_staff_email(cand_email, brand_emails, brand_domains):
+            emails.append(cand_email)
+
+    _add_addr(case.from_addr)
+    if case.order_id:
+        order_ids.append(str(case.order_id).strip())
+
+    inbound_msgs = [m for m in msgs if (m.direction or "").strip().lower() == "inbound"]
+    texts: list[str] = [case.subject or ""]
+    for msg in inbound_msgs:
+        _add_addr(msg.from_addr)
+        if msg.subject:
+            texts.append(msg.subject)
+        if msg.body:
+            texts.append(msg.body)
+
+    combined = "\n".join(texts)
+    for em in _EMAIL_SCAN_RE.findall(combined):
+        if not _is_brand_or_staff_email(em, brand_emails, brand_domains):
+            emails.append(em)
+    phones.extend(m.group(0).strip() for m in _PHONE_SCAN_RE.finditer(combined))
+    for pm in _POSTAL_SCAN_RE.finditer(combined):
+        postal_codes.append((pm.group(1) or pm.group(0)).strip())
+    for tm in _TRACKING_SCAN_RE.finditer(combined):
+        tracking_numbers.append((tm.group(1) or tm.group(0)).strip())
+    for sm in _SIG_NAME_RE.finditer(combined):
+        cand_name = " ".join(sm.group(1).split())
+        if cand_name and cand_name.lower() not in _EXCLUDED_SIG_NAMES:
+            names.append(cand_name)
+
+    for am in _STREET_ADDR_RE.finditer(combined):
+        full_addr = " ".join(am.group(0).split())
+        street_only = " ".join(am.group(1).split())
+        if len(full_addr) >= 4:
+            addresses.append(full_addr)
+        if len(street_only) >= 4:
+            addresses.append(street_only)
+    for cm in _CITY_AFTER_ADDR_RE.finditer(combined):
+        city = cm.group(1).strip()
+        if len(city) >= 4 and city.lower() not in _COUNTRY_WORDS:
+            addresses.append(city)
+    for pcm in _POSTAL_CITY_RE.finditer(combined):
+        city = pcm.group(1).strip()
+        if len(city) >= 4 and city.lower() not in _COUNTRY_WORDS:
+            addresses.append(city)
+    for lm in _LABELED_ADDR_RE.finditer(combined):
+        line_val = " ".join(lm.group(1).split())
+        if len(line_val) >= 4:
+            addresses.append(line_val)
+            for seg in line_val.split(","):
+                seg_clean = seg.strip()
+                if len(seg_clean) >= 4 and seg_clean.lower() not in _COUNTRY_WORDS:
+                    addresses.append(seg_clean)
+
+    for om in ORDER_RE.finditer(combined):
+        order_ids.append(om.group(1).strip())
+    for om2 in ORDER_NEAR_STATUS_RE.finditer(combined):
+        oid = (om2.group(1) or om2.group(2) or "").strip()
+        if oid:
+            order_ids.append(oid)
+    for subj_cand in [case.subject or "", *(m.subject or "" for m in inbound_msgs)]:
+        bm = BARE_SUBJECT_ORDER_RE.match(subj_cand)
+        if bm:
+            order_ids.append(bm.group(1).strip())
+
+    case_ids = [case.id]
+    if len(case.id) >= 8:
+        case_ids.append(case.id[:8])
+
+    return QueryTaintContext(
+        customer_names=tuple(dict.fromkeys(names)),
+        emails=tuple(dict.fromkeys(emails)),
+        phones=tuple(dict.fromkeys(phones)),
+        addresses=tuple(dict.fromkeys(addresses)),
+        postal_codes=tuple(dict.fromkeys(postal_codes)),
+        order_ids=tuple(dict.fromkeys(order_ids)),
+        tracking_numbers=tuple(dict.fromkeys(tracking_numbers)),
+        case_ids=tuple(dict.fromkeys(case_ids)),
+    )
+
+
+def _strip_taint_colliding_words(
+    candidate: str, taint: QueryTaintContext, fw: OutboundQueryFirewall
+) -> str:
+    safe_words: list[str] = []
+    seen_low: set[str] = set()
+    for word in candidate.split():
+        low = word.lower()
+        if low in seen_low:
+            continue
+        try:
+            fw.check_query(word, taint=taint)
+        except Exception:
+            continue
+        seen_low.add(low)
+        safe_words.append(word)
+    return " ".join(safe_words).strip()
 
 
 class CaseService:
@@ -349,68 +579,9 @@ class CaseService:
 
     @staticmethod
     def _build_case_taint_context(
-        case: Case, messages: list[CaseMessage]
+        case: Case, messages: list[CaseMessage] | None = None
     ) -> QueryTaintContext:
-        emails: list[str] = []
-        names: list[str] = []
-        phones: list[str] = []
-        postal_codes: list[str] = []
-        order_ids: list[str] = []
-        tracking_numbers: list[str] = []
-
-        def _add_addr(raw_addr: str | None) -> None:
-            raw = (raw_addr or "").strip()
-            if not raw:
-                return
-            disp, addr = parseaddr(raw)
-            if disp.strip():
-                names.append(disp.strip())
-            if addr.strip() and "@" in addr:
-                emails.append(addr.strip())
-            elif "@" in raw:
-                emails.append(raw)
-
-        _add_addr(case.from_addr)
-        if case.order_id:
-            order_ids.append(str(case.order_id).strip())
-
-        texts: list[str] = [case.subject or ""]
-        for msg in messages:
-            if (msg.direction or "") == "inbound":
-                _add_addr(msg.from_addr)
-            if msg.subject:
-                texts.append(msg.subject)
-            if msg.body:
-                texts.append(msg.body)
-
-        combined = "\n".join(texts)
-        emails.extend(_EMAIL_SCAN_RE.findall(combined))
-        phones.extend(m.group(0).strip() for m in _PHONE_SCAN_RE.finditer(combined))
-        for pm in _POSTAL_SCAN_RE.finditer(combined):
-            postal_codes.append((pm.group(1) or pm.group(0)).strip())
-        for tm in _TRACKING_SCAN_RE.finditer(combined):
-            tracking_numbers.append((tm.group(1) or tm.group(0)).strip())
-        for sm in _SIG_NAME_RE.finditer(combined):
-            cand_name = sm.group(1).strip()
-            if cand_name:
-                names.append(cand_name)
-        extracted_oid = extract_order_id(combined)
-        if extracted_oid:
-            order_ids.append(extracted_oid)
-
-        case_ids = [case.id]
-        if len(case.id) >= 8:
-            case_ids.append(case.id[:8])
-
-        return QueryTaintContext(
-            customer_names=tuple(dict.fromkeys(names)),
-            emails=tuple(dict.fromkeys(emails)),
-            phones=tuple(dict.fromkeys(phones)),
-            postal_codes=tuple(dict.fromkeys(postal_codes)),
-            order_ids=tuple(dict.fromkeys(order_ids)),
-            tracking_numbers=tuple(dict.fromkeys(tracking_numbers)),
-            case_ids=tuple(dict.fromkeys(case_ids)),
-        )
+        return build_case_taint_context(case, messages)
 
     @staticmethod
     def _build_safe_case_query(
@@ -419,26 +590,37 @@ class CaseService:
         taint: QueryTaintContext,
         fw: OutboundQueryFirewall,
     ) -> str:
-        raw_subject = re.sub(r"^(?:re|fw|fwd)\s*:\s*", "", case.subject or "", flags=re.I)
-        scrubbed = _EMAIL_SCAN_RE.sub(" ", raw_subject)
-        scrubbed = _PHONE_SCAN_RE.sub(" ", scrubbed)
-        scrubbed = _POSTAL_SCAN_RE.sub(" ", scrubbed)
-        scrubbed = _TRACKING_SCAN_RE.sub(" ", scrubbed)
-        scrubbed = re.sub(r"\b(?:order|ordre|beställning|bestilling)?\s*#?\d{4,12}\b", " ", scrubbed, flags=re.I)
-        for token in (*taint.customer_names, *taint.order_ids, *taint.case_ids):
-            if token:
-                scrubbed = re.sub(rf"(?<!\w){re.escape(token)}(?!\w)", " ", scrubbed, flags=re.I)
-        cand = " ".join(sanitize_untrusted_text(scrubbed, max_chars=180).split())
         cat = (case.category or "").strip().lower()
         hint = _FALLBACK_CASE_TOPICS.get(cat, "nordisk e-handel kundsupport fakta")
         market = (case.market or "").strip().upper()
-        if cand and len(cand) >= 6:
-            try:
-                return fw.check_query(cand[:220], taint=taint)
-            except Exception:
-                pass
-        fallback = f"{hint} {market}".strip() if market in {"SE", "NO", "DK"} else hint
-        return fw.check_query(fallback[:220], taint=taint)
+        inbound_text = " ".join(
+            [
+                case.subject or "",
+                *(
+                    f"{m.subject or ''} {m.body or ''}"
+                    for m in messages
+                    if (m.direction or "").strip().lower() == "inbound"
+                ),
+            ]
+        )
+        extra_products: list[str] = []
+        hint_low = hint.lower()
+        for pat, label in _SAFE_PRODUCT_KEYWORDS:
+            if pat.search(inbound_text) and label.lower() not in hint_low:
+                extra_products.append(label)
+        parts = [hint, *extra_products]
+        if market in {"SE", "NO", "DK"}:
+            parts.append(market)
+        raw_template = " ".join(parts).strip()
+
+        for candidate in (raw_template, _LAST_RESORT_CASE_QUERY, "general support info"):
+            cleaned = _strip_taint_colliding_words(candidate, taint, fw)
+            if cleaned and len(cleaned) >= 4:
+                try:
+                    return fw.check_query(cleaned[:220], taint=taint)
+                except Exception:
+                    continue
+        return fw.check_query("ecom info", taint=taint)
 
     def start_case_research(
         self,

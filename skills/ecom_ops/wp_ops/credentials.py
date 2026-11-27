@@ -30,12 +30,25 @@ _TOKEN_LITERAL_PATTERN = (
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
 )
 _TOKEN_LITERAL_RE = re.compile(rf"(?:{_TOKEN_LITERAL_PATTERN})")
-_CRED_LINE_RE = re.compile(
-    r"(?im)^([^\r\n]*?(?:db_password|db_pass|db_user|secret|password|passwd|passphrase|"
-    r"token|api[_-]?key|private[_-]?key|auth(?:orization)?[_-]?(?:key|token|secret|salt)?|"
+_CRED_KEY_NAMES = (
+    r"(?:[A-Za-z0-9_]*_)?(?:"
+    r"db_password|db_pass|db_user|secret|password|passwd|passphrase|"
+    r"token|api[_-]?key|private[_-]?key|"
+    r"auth[_-]?(?:key|token|secret|salt)|authorization|"
     r"logged_in_(?:key|salt)|nonce_(?:key|salt)|secure_auth_(?:key|salt)|"
-    r"consumer[_-]?(?:key|secret)|access[_-]?key|signing[_-]?key|client[_-]?secret|"
-    r"webhook[_-]?secret|encryption[_-]?key)[^\r\n]*?(?:=>|=|:|,))(.+)$"
+    r"consumer[_-]?(?:key|secret)|access[_-]?(?:key|token)|signing[_-]?key|"
+    r"client[_-]?(?:secret|key)|webhook[_-]?(?:secret|token)|encryption[_-]?key"
+    r")"
+)
+_CRED_LINE_RE = re.compile(
+    r"(?im)^([^\r\n]*?(?:"
+    r"\bdefine\s*\(\s*['\"]"
+    + _CRED_KEY_NAMES
+    + r"['\"]\s*,|"
+    r"\b"
+    + _CRED_KEY_NAMES
+    + r"['\"]?\s*(?:=>|=|:)"
+    r"))(.+)$"
 )
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)(\b(?:[A-Za-z0-9_]*(?:secret|password|passwd|passphrase|token|api[_-]?key|"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from email.utils import parseaddr
 from typing import Any
 
 from ecom_ops.actions.mail import NULL_SEND_REFUSED_MSG
@@ -94,8 +95,12 @@ def approve_and_send(
                 case=restored.to_dict(),
             )
 
+        raw_from = (case.from_addr or "").strip()
+        _, parsed_to = parseaddr(raw_from)
+        to_addr = parsed_to.strip() if "@" in parsed_to else raw_from
+
         send = svc.mail.send(
-            to=case.from_addr,
+            to=to_addr,
             subject=subject,
             body=body,
             site=case.site,
@@ -127,7 +132,7 @@ def approve_and_send(
         updated = svc.store.mark_replied(
             case_id,
             outbound_body=body,
-            to_addr=case.from_addr,
+            to_addr=to_addr,
             from_addr="",
             subject=subject,
             message_id=(
@@ -143,7 +148,7 @@ def approve_and_send(
             updated = svc.store.mark_replied(
                 case_id,
                 outbound_body=body,
-                to_addr=case.from_addr,
+                to_addr=to_addr,
                 from_addr="",
                 subject=subject,
                 message_id=(

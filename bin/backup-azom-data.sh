@@ -63,7 +63,7 @@ PY
 }
 
 # SQLite's online backup API keeps each live database consistent under WAL writes.
-for database in cases telegram_jobs research_jobs; do
+for database in cases telegram_jobs research_jobs messenger_jobs messenger_proposals; do
   case "$database" in
     cases)
       SOURCE_DB="${DATA_DIR}/cases.db"
@@ -76,6 +76,14 @@ for database in cases telegram_jobs research_jobs; do
     research_jobs)
       SOURCE_DB="${DATA_DIR}/research_jobs.sqlite3"
       TARGET_DB="${STAMP_DIR}/research_jobs.sqlite3"
+      ;;
+    messenger_jobs)
+      SOURCE_DB="${DATA_DIR}/messenger_jobs.sqlite3"
+      TARGET_DB="${STAMP_DIR}/messenger_jobs.sqlite3"
+      ;;
+    messenger_proposals)
+      SOURCE_DB="${DATA_DIR}/messenger_proposals.sqlite3"
+      TARGET_DB="${STAMP_DIR}/messenger_proposals.sqlite3"
       ;;
   esac
   if [[ -f "$SOURCE_DB" ]]; then
@@ -93,6 +101,9 @@ TARBALL="${STAMP_DIR}/azom-data.tar.gz"
 # wp_workspaces holds copied source, diffs, and check artifacts; it is excluded.
 # wp_review_plans.json metadata is included. A restored plan without its workspace
 # is marked not_resumable by the application and cannot resume checks or staging.
+# research_artifacts holds rendered per-job briefs/sources; excluded from the tarball
+# because research_jobs.sqlite3 is backed up separately and artifacts can grow large.
+# On restore without research_artifacts, get_brief() reports artifacts unavailable.
 # Take a separate encrypted copy if Oscar needs an off-box restore.
 tar -czf "$TARBALL" \
   --exclude="${BACKUP_DIR}" \
@@ -122,6 +133,12 @@ tar -czf "$TARBALL" \
   --exclude="*/research_jobs.sqlite3" \
   --exclude="*/research_jobs.sqlite3-wal" \
   --exclude="*/research_jobs.sqlite3-shm" \
+  --exclude="*/messenger_jobs.sqlite3" \
+  --exclude="*/messenger_jobs.sqlite3-wal" \
+  --exclude="*/messenger_jobs.sqlite3-shm" \
+  --exclude="*/messenger_proposals.sqlite3" \
+  --exclude="*/messenger_proposals.sqlite3-wal" \
+  --exclude="*/messenger_proposals.sqlite3-shm" \
   --exclude="*/web_search_cache.sqlite3*" \
   --exclude="*/model_oauth" \
   --exclude="*/model_oauth/*" \
@@ -137,7 +154,25 @@ tar -czf "$TARBALL" \
   -C "$(dirname "$DATA_DIR")" \
   "$(basename "$DATA_DIR")"
 
-# --- 3) Optional off-box sync ---
+# --- 3) Retention: drop backup dirs older than KEEP days ---
+log "Pruning backups older than ${KEEP} days"
+find "$BACKUP_DIR" -maxdepth 1 -type d -name '20*' -mtime +${KEEP} -exec rm -rf {} + 2>/dev/null || true
+
+# --- 4) Manifest ---
+{
+  echo "backup_ts=${TS}"
+  echo "data_dir=${DATA_DIR}"
+  echo "backup_dir=${STAMP_DIR}"
+  echo "cases_db_bytes=$(stat -c%s "${STAMP_DIR}/cases.db" 2>/dev/null || echo 0)"
+  echo "telegram_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/telegram_jobs.sqlite3" 2>/dev/null || echo 0)"
+  echo "research_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/research_jobs.sqlite3" 2>/dev/null || echo 0)"
+  echo "messenger_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/messenger_jobs.sqlite3" 2>/dev/null || echo 0)"
+  echo "messenger_proposals_db_bytes=$(stat -c%s "${STAMP_DIR}/messenger_proposals.sqlite3" 2>/dev/null || echo 0)"
+  echo "tarball_bytes=$(stat -c%s "$TARBALL" 2>/dev/null || echo 0)"
+  echo "dest=${DEST:-local}"
+} > "${STAMP_DIR}/manifest.txt"
+
+# --- 5) Optional off-box sync ---
 if [[ -n "$DEST" ]]; then
   log "rsync to ${DEST}"
   if command -v rsync >/dev/null 2>&1; then
@@ -146,22 +181,6 @@ if [[ -n "$DEST" ]]; then
     warn "rsync not installed — skipping off-box sync"
   fi
 fi
-
-# --- 4) Retention: drop backup dirs older than KEEP days ---
-log "Pruning backups older than ${KEEP} days"
-find "$BACKUP_DIR" -maxdepth 1 -type d -name '20*' -mtime +${KEEP} -exec rm -rf {} + 2>/dev/null || true
-
-# --- 5) Manifest ---
-{
-  echo "backup_ts=${TS}"
-  echo "data_dir=${DATA_DIR}"
-  echo "backup_dir=${STAMP_DIR}"
-  echo "cases_db_bytes=$(stat -c%s "${STAMP_DIR}/cases.db" 2>/dev/null || echo 0)"
-  echo "telegram_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/telegram_jobs.sqlite3" 2>/dev/null || echo 0)"
-  echo "research_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/research_jobs.sqlite3" 2>/dev/null || echo 0)"
-  echo "tarball_bytes=$(stat -c%s "$TARBALL" 2>/dev/null || echo 0)"
-  echo "dest=${DEST:-local}"
-} > "${STAMP_DIR}/manifest.txt"
 
 ok_size="$(du -sh "$STAMP_DIR" | cut -f1)"
 log "Backup complete: ${STAMP_DIR} (${ok_size})"

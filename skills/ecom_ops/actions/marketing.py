@@ -524,6 +524,12 @@ class MarketingService:
             return {"ok": False, "error_class": "access_denied", "message": str(exc)}
         except SearchPolicyError as exc:
             return {"ok": False, "error_class": "policy_blocked", "message": str(exc)}
+        except SearchRouteError as exc:
+            return {
+                "ok": False,
+                "error_class": type(exc).__name__,
+                "message": str(exc),
+            }
         except (ValueError, KeyError) as exc:
             return {"ok": False, "error_class": "invalid_input", "message": str(exc)}
 

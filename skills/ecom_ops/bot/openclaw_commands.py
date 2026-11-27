@@ -794,6 +794,25 @@ def cmd_search(ctx: CommandContext) -> str:
     return f"__SEARCH__:{arg}"
 
 
+def cmd_cancel(ctx: CommandContext) -> str:
+    """Cancel a specific research job (/cancel res-...) or clear current dialog flow."""
+    arg = ctx.args.strip()
+    if arg:
+        return f"__CANCEL__:{arg}"
+    return cmd_stop(ctx)
+
+
+def cmd_jobs(ctx: CommandContext) -> str:
+    """List active and recent jobs for this chat (dispatched by BotHandler)."""
+    del ctx
+    return "__JOBS__"
+
+
+def cmd_steer(ctx: CommandContext) -> str:
+    """Steer a running or queued research job (dispatched by BotHandler)."""
+    return f"__STEER__:{ctx.args.strip()}"
+
+
 def cmd_research(ctx: CommandContext) -> str:
     """Deep async research command (dispatched by BotHandler)."""
     arg = ctx.args.strip()
@@ -826,7 +845,10 @@ COMMANDS: list[CommandSpec] = [
     CommandSpec("whoami", "Visa chat_id / actor", cmd_whoami, aliases=("id",)),
     CommandSpec("new", "Ny session", cmd_new),
     CommandSpec("reset", "Reset session (soft behåller settings)", cmd_reset),
-    CommandSpec("stop", "Avbryt pågående flöde", cmd_stop, aliases=("cancel",)),
+    CommandSpec("stop", "Avbryt pågående flöde", cmd_stop),
+    CommandSpec("cancel", "Avbryt pågående flöde eller jobb", cmd_cancel),
+    CommandSpec("jobs", "Lista jobb i denna chatt", cmd_jobs),
+    CommandSpec("steer", "Styr pågående jobb", cmd_steer),
     CommandSpec("tools", "Lista agent-tools", cmd_tools),
     CommandSpec("tasks", "Öppna cases + eskaleringar", cmd_tasks),
     CommandSpec("usage", "Kostnad / usage-läge", cmd_usage),
@@ -852,7 +874,7 @@ COMMANDS: list[CommandSpec] = [
         "research",
         "Djupare research (start/list/status/show/cancel/steer)",
         cmd_research,
-        permission=Permission.RESEARCH_RUN,
+        permission=Permission.WEB_SEARCH,
     ),
     CommandSpec("oauth", "Oscar: länka ChatGPT Plus & xAI OAuth", cmd_oauth),
     CommandSpec("ops", "Oscar: drifthälsa, köer & disk", cmd_ops),

@@ -388,15 +388,18 @@ class ReviewPlans:
         )
 
     def place(self, site_id: str, plan_id: str, relative: str, data: bytes, *, actor: str) -> WpOpsResult:
-        denied = self._need(actor, Permission.WP_OPS_OPERATE, action="wp_review_place")
-        if denied is not None:
-            return denied
-        try:
-            root = workspace_root(self.data_dir, site_id, plan_id)
+        def _do(_plan: dict[str, Any], root: Path):
             place_work_file(root, relative, data)
-        except ReviewError as exc:
-            return _fail(exc.error_class, exc.error_class)
-        return self.refresh(site_id, plan_id, actor=actor)
+            return {"audit": {"path": relative, "bytes": len(data)}, "public": {}}, None
+
+        return self._mutate_workspace(
+            site_id,
+            plan_id,
+            actor=actor,
+            action="wp_review_place",
+            message="Arbetsytan uppdaterades.",
+            mutate=_do,
+        )
 
     def _refresh_locked(self, plan: dict[str, Any], *, actor: str) -> dict[str, Any]:
         del actor
@@ -405,7 +408,11 @@ class ReviewPlans:
         root = workspace_root(self.data_dir, site_id, plan_id)
         plan["work_sha256"] = tree_hash(root / "work")
         plan["base_sha256"] = tree_hash(root / "base")
-        plan["risk"] = tree_risk(str(plan.get("slug") or ""), iter_files(root / "work"))
+        plan["risk"] = tree_risk(
+            str(plan.get("slug") or ""),
+            iter_files(root / "work"),
+            str(plan.get("summary") or ""),
+        )
         plan["check_generation"] = _generation(plan) + 1
         plan["checks"] = []
         plan["check_run"] = {}
@@ -493,12 +500,10 @@ class ReviewPlans:
         if denied is not None:
             return denied
         with self._locks(site_id, plan_id):
-            plan = self._row(site_id, plan_id)
-            if plan is None:
-                return _fail("UnknownPlan", "Okänd plan.")
-            blocked = self._fresh(plan)
+            plan, blocked = self._load_editable_locked(site_id, plan_id)
             if blocked is not None:
                 return blocked
+            assert plan is not None
             plan = self._refresh_locked(plan, actor=actor)
         self._audit(actor, plan, "wp_review_refresh", True)
         return _ok(
@@ -1344,7 +1349,7 @@ class ReviewPlans:
                     str((blocked.data or {}).get("error_class") or "StalePlan"),
                     blocked.message,
                 )
-            if str(plan.get("status") or "") in _TERMINAL:
+            if str(plan.get("status") or "") in _NON_EDITABLE:
                 return _err("PlanNotEditable", "Planen kan inte uppdateras.")
             try:
                 root = workspace_root(self.data_dir, site.id, clean_pid)

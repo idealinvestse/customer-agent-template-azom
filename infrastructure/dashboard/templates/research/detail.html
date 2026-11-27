@@ -36,7 +36,7 @@
   data-initial-queries="{{ job.queries_used | default(0) }}"
   data-initial-fetches="{{ job.fetches_used | default(0) }}"
   data-initial-evidence="{{ job.evidence_status or rj_brief.get('evidence_status') or '' }}"
-  data-initial-error="{{ job.error_message or '' }}"
+  data-initial-error="{{ job.error_message or rj_err_code or '' }}"
 >
   {{ ui.breadcrumb([
     {'label': 'Research', 'href': '/research'},
@@ -313,7 +313,7 @@
             <li class="rounded-lg border border-ink-700/70 bg-ink-950/60 px-3 py-2 space-y-0.5">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <span class="font-mono font-semibold text-steel-300" x-text="ev.phase"></span>
-                <span class="font-mono text-mist-400 tabular-nums" x-text="ev.created_at"></span>
+                <span class="font-mono text-mist-400 tabular-nums" x-text="ev.created_at_fmt"></span>
               </div>
               <p class="text-mist-200" x-text="ev.message"></p>
             </li>
@@ -322,9 +322,10 @@
         </ul>
       </section>
 
-      {% if allow_mutate %}
+      {% if (allow_mutate and rj_active) or rj_steers %}
       <section class="az-card space-y-4" data-research-steer="true">
         <h2 class="az-section-title mb-0">Styrning (Steer)</h2>
+        {% if allow_mutate and rj_active %}
         <form method="post" action="/research/{{ rj_id }}/steer" class="space-y-3">
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <div>
@@ -344,9 +345,10 @@
             <span>Lägg till styrning</span>
           </button>
         </form>
+        {% endif %}
 
         {% if rj_steers %}
-        <div class="border-t border-ink-700/80 pt-3 space-y-2">
+        <div class="{% if allow_mutate and rj_active %}border-t border-ink-700/80 pt-3 {% endif %}space-y-2">
           <h3 class="az-section-heading mb-1">Tidigare styrningar</h3>
           <ul class="space-y-1.5 text-xs">
             {% for st_item in rj_steers %}

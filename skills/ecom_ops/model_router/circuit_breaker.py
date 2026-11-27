@@ -104,8 +104,10 @@ def _mutate(fn: Any) -> Any:
     try:
         with file_lock(_lock_path(), timeout=2.0, label="model_router_health"):
             data = _read_raw(use_cache=False)
+            before = copy.deepcopy(data)
             result = fn(data)
-            _write_raw(data)
+            if data != before:
+                _write_raw(data)
             return result
     except TimeoutError:
         return None
@@ -153,6 +155,8 @@ def allow_attempt(
     def _claim(locked_data: dict[str, Any]) -> tuple[bool, str, float]:
         cur_entries = locked_data.setdefault("entries", {})
         t_now = time.time()
+        to_clear: list[str] = []
+        to_probe: list[dict[str, Any]] = []
         for key in (rk, sk):
             ent = cur_entries.get(key)
             if not isinstance(ent, dict):
@@ -161,7 +165,7 @@ def allow_attempt(
             if st == "closed":
                 continue
             if st == "open_auth" and int(ent.get("auth_epoch") or 0) != int(auth_epoch):
-                cur_entries.pop(key, None)
+                to_clear.append(key)
                 continue
             cd = float(ent.get("cooldown_until") or 0.0)
             if t_now < cd:
@@ -169,10 +173,16 @@ def allow_attempt(
             pf = float(ent.get("probe_in_flight_until") or 0.0)
             if t_now < pf:
                 return False, "half_open_busy", max(0.0, pf - t_now)
+            to_probe.append(ent)
+        for key in to_clear:
+            cur_entries.pop(key, None)
+        for ent in to_probe:
             ent["state"] = "half_open"
             ent["probe_in_flight_until"] = t_now + 20.0
             ent["last_probe_at"] = t_now
-        return True, "half_open", 0.0
+        if to_probe:
+            return True, "half_open", 0.0
+        return True, "closed", 0.0
 
     claimed = _mutate(_claim)
     if claimed is None:
@@ -238,6 +248,13 @@ def record_failure(
                 _bump(rk, state="open", duration_s=60.0, threshold=1)
             elif "not found" in str(exc).lower() or "binary" in err_code:
                 _bump(rk, state="open", duration_s=300.0, threshold=1)
+            else:
+                for key in (rk, sk):
+                    ent = entries.get(key)
+                    if isinstance(ent, dict) and ent.get("state") == "half_open":
+                        ent = dict(ent)
+                        ent["probe_in_flight_until"] = 0.0
+                        entries[key] = ent
             return
 
         if isinstance(exc, ModelAuthError):

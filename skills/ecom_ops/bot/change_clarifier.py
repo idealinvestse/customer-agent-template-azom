@@ -232,7 +232,7 @@ def _scrub_spec(raw: Any) -> dict[str, Any]:
 
 
 def _normalize_options(
-    raw_options: Any, *, max_label_len: int = 44
+    raw_options: Any, *, max_label_len: int = 44, reserve_recommended_prefix: int = 0
 ) -> tuple[ClarificationOption, ...]:
     if not raw_options:
         return ()
@@ -240,10 +240,15 @@ def _normalize_options(
     for idx, item in enumerate(raw_options, start=1):
         opt = ClarificationOption.from_dict(item, fallback_index=idx)
         if opt is not None:
-            if max_label_len < 44 and len(opt.label) > max_label_len:
+            effective_max = (
+                max(1, max_label_len - reserve_recommended_prefix)
+                if (opt.recommended and reserve_recommended_prefix > 0)
+                else max_label_len
+            )
+            if len(opt.label) > effective_max:
                 opt = ClarificationOption(
                     id=opt.id,
-                    label=opt.label[:max_label_len].rstrip() or opt.id,
+                    label=opt.label[:effective_max].rstrip() or opt.id,
                     summary=opt.summary,
                     action_hint=opt.action_hint,
                     recommended=opt.recommended,
@@ -346,7 +351,11 @@ class ClarificationProposal:
                 steps.append(cleaned)
         self.plan_steps = tuple(steps)
         max_label_len = 20 if self.dialog_kind == "research" else 44
-        self.options = _normalize_options(self.options, max_label_len=max_label_len)
+        self.options = _normalize_options(
+            self.options,
+            max_label_len=max_label_len,
+            reserve_recommended_prefix=2 if self.dialog_kind == "research" else 0,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

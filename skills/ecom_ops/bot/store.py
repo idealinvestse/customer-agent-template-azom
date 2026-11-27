@@ -113,19 +113,42 @@ class ConversationStore:
         self.ttl_seconds = ttl_seconds
         self._lock = threading.RLock()
         self._data: dict[str, dict[str, Any]] = {}
+        self._loaded_sig: tuple[int, int] | None = None
         self._load()
+
+    def _stat_sig(self) -> tuple[int, int] | None:
+        try:
+            st = self.path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    def _reload_if_changed(self) -> None:
+        with self._lock:
+            sig = self._stat_sig()
+            if sig is None:
+                if self._loaded_sig is not None or self._data:
+                    self._data = {}
+                    self._loaded_sig = None
+                return
+            if sig != self._loaded_sig:
+                self._load()
 
     def _load(self) -> None:
         with self._lock:
             if not self.path.is_file():
                 self._data = {}
+                self._loaded_sig = None
                 return
             try:
+                sig = self._stat_sig()
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
                 self._data = raw if isinstance(raw, dict) else {}
+                self._loaded_sig = sig
             except (json.JSONDecodeError, OSError):
                 self._data = {}
-            self.cleanup_expired()
+                self._loaded_sig = None
+            self._cleanup_expired_locked()
 
     def _save(self) -> None:
         with self._lock:
@@ -137,6 +160,7 @@ class ConversationStore:
             try:
                 tmp.write_text(payload, encoding="utf-8")
                 _replace_with_retry(tmp, self.path)
+                self._loaded_sig = self._stat_sig()
             finally:
                 if tmp.exists():
                     try:
@@ -146,6 +170,7 @@ class ConversationStore:
 
     def get(self, chat_id: str | int) -> dict[str, Any] | None:
         with self._lock:
+            self._reload_if_changed()
             key = str(chat_id)
             entry = self._data.get(key)
             if not entry:
@@ -161,6 +186,7 @@ class ConversationStore:
 
     def set(self, chat_id: str | int, state: dict[str, Any]) -> None:
         with self._lock:
+            self._reload_if_changed()
             key = str(chat_id)
             state = dict(state)
             if "messages" in state:
@@ -171,23 +197,28 @@ class ConversationStore:
 
     def clear(self, chat_id: str | int) -> None:
         with self._lock:
+            self._reload_if_changed()
             key = str(chat_id)
             if key in self._data:
                 del self._data[key]
                 self._save()
 
+    def _cleanup_expired_locked(self) -> int:
+        now = time.time()
+        removed = 0
+        for key in list(self._data.keys()):
+            updated = float(self._data[key].get("updated_at", 0))
+            if now - updated > self.ttl_seconds:
+                del self._data[key]
+                removed += 1
+        if removed:
+            self._save()
+        return removed
+
     def cleanup_expired(self) -> int:
         with self._lock:
-            now = time.time()
-            removed = 0
-            for key in list(self._data.keys()):
-                updated = float(self._data[key].get("updated_at", 0))
-                if now - updated > self.ttl_seconds:
-                    del self._data[key]
-                    removed += 1
-            if removed:
-                self._save()
-            return removed
+            self._reload_if_changed()
+            return self._cleanup_expired_locked()
 
     def update_atomic(
         self,
@@ -196,6 +227,7 @@ class ConversationStore:
     ) -> dict[str, Any] | None:
         """Atomically read-modify-write one chat's state under ``self._lock``."""
         with self._lock:
+            self._reload_if_changed()
             now = time.time()
             key = str(chat_id)
             existing = self._data.get(key)
@@ -230,6 +262,7 @@ class ConversationStore:
         flow_updates: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
+            self._reload_if_changed()
             now = time.time()
             key = str(chat_id)
             existing = self._data.get(key)

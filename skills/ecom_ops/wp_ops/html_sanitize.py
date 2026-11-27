@@ -31,13 +31,21 @@ _OVERLAY_TAG_ATTR_SCAN_RE = re.compile(
     r"""(?P<ev>(?:[\s/]+|(?<=["']))on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s/>]+))|(?P<q>"[^"]*"|'[^']*')""",
     re.IGNORECASE,
 )
-_OVERLAY_JS_PROTO_ATTR_RE = re.compile(
-    r"""(\b(?:href|src|action|formaction)\s*=\s*["']?\s*)(?:javascript|vbscript)\s*:""",
+_OVERLAY_URL_ATTR_RE = re.compile(
+    r"""(\b(?:href|src|action|formaction|xlink:href)\s*=\s*)(?:"([^"]*)"|'([^']*)'|([^\s/>]+))""",
     re.IGNORECASE,
 )
 
 _VALID_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _VALID_TLD_LABEL_RE = re.compile(r"^(?:[a-z]{2,63}|xn--[a-z0-9]{2,59})$")
+_CGNAT_NETWORK = ipaddress.IPv4Network("100.64.0.0/10")
+_METADATA_IPV4 = ipaddress.IPv4Address("169.254.169.254")
+_METADATA_IPV6 = ipaddress.IPv6Address("fd00:ec2::254")
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+_IPV4_COMPAT_NETWORK = ipaddress.IPv6Network("::/96")
+_SIXTOFOUR_NETWORK = ipaddress.IPv6Network("2002::/16")
+_TEREDO_NETWORK = ipaddress.IPv6Network("2001::/32")
 
 _PAGE_DRAFT_ALLOWED_TAGS = frozenset(
     {
@@ -180,6 +188,40 @@ _UNSAFE_SCHEME_RE = re.compile(r"^\s*(?:javascript|vbscript)\s*:", re.IGNORECASE
 _BODY_CLOSE_RE = re.compile(r"</body\s*>", re.IGNORECASE)
 
 
+def _is_public_global_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True iff *addr* is a globally routable public IP (pure stdlib, no integrations import)."""
+    if isinstance(addr, ipaddress.IPv6Address):
+        mapped = getattr(addr, "ipv4_mapped", None)
+        if mapped is not None:
+            addr = mapped
+        elif (
+            addr == _METADATA_IPV6
+            or addr in _NAT64_WELL_KNOWN
+            or addr in _NAT64_LOCAL
+            or addr in _IPV4_COMPAT_NETWORK
+            or addr in _SIXTOFOUR_NETWORK
+            or addr in _TEREDO_NETWORK
+            or addr.sixtofour is not None
+            or addr.teredo is not None
+        ):
+            return False
+    if not addr.is_global:
+        return False
+    if (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    ):
+        return False
+    if isinstance(addr, ipaddress.IPv4Address):
+        if addr == _METADATA_IPV4 or addr in _CGNAT_NETWORK:
+            return False
+    return True
+
+
 def _is_safe_url(url: str, *, allowed_hosts: frozenset[str], is_image: bool) -> bool:
     raw = str(url or "").strip()
     if not raw or "\\" in raw or any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
@@ -192,7 +234,8 @@ def _is_safe_url(url: str, *, allowed_hosts: frozenset[str], is_image: bool) -> 
     parsed = urlparse(raw)
     if parsed.scheme != "https":
         return False
-    if parsed.username or parsed.password:
+    netloc = parsed.netloc or ""
+    if parsed.username is not None or parsed.password is not None or "@" in netloc:
         return False
     host = (parsed.hostname or "").strip().lower().rstrip(".")
     if not host or host in {"localhost", "127.0.0.1", "::1"} or host.endswith(".local"):
@@ -202,7 +245,7 @@ def _is_safe_url(url: str, *, allowed_hosts: frozenset[str], is_image: bool) -> 
     except ValueError:
         ip = None
     if ip is not None:
-        if not ip.is_global:
+        if not _is_public_global_ip(ip):
             return False
     else:
         labels = host.split(".")
@@ -220,6 +263,17 @@ def _is_safe_url(url: str, *, allowed_hosts: frozenset[str], is_image: bool) -> 
 def _strip_tag_event_handlers(html: str) -> str:
     """Strip inline ``on*=`` handlers across open HTML tags, including ``/``-separated and quoted-``>`` forms."""
 
+    def _scrub_unsafe_url_attr(match: re.Match[str]) -> str:
+        raw_val = (
+            match.group(2)
+            if match.group(2) is not None
+            else (match.group(3) if match.group(3) is not None else match.group(4))
+        )
+        compact = re.sub(r"[\x00-\x20]+", "", html_lib.unescape(raw_val or ""))
+        if _UNSAFE_SCHEME_RE.match(compact):
+            return f'{match.group(1)}"#"'
+        return match.group(0)
+
     def _clean_tag(match: re.Match[str]) -> str:
         tag_name = match.group(1)
         attrs_part = match.group(2)
@@ -227,7 +281,7 @@ def _strip_tag_event_handlers(html: str) -> str:
             lambda m: "" if m.group("ev") is not None else m.group(0),
             attrs_part,
         )
-        cleaned_attrs = _OVERLAY_JS_PROTO_ATTR_RE.sub(r"\1#", cleaned_attrs)
+        cleaned_attrs = _OVERLAY_URL_ATTR_RE.sub(_scrub_unsafe_url_attr, cleaned_attrs)
         return f"<{tag_name}{cleaned_attrs}>"
 
     return _OVERLAY_OPEN_TAG_RE.sub(_clean_tag, html)
@@ -235,8 +289,13 @@ def _strip_tag_event_handlers(html: str) -> str:
 
 def _neutralize_overlay_fragment(fragment: str) -> str:
     """Strip ``<script>`` tags, ``on*=`` event handlers, and ``javascript:`` attrs from overlay hunks."""
-    cleaned = _OVERLAY_SCRIPT_BLOCK_RE.sub("", str(fragment or ""))
-    cleaned = _OVERLAY_SCRIPT_STRAY_RE.sub("", cleaned)
+    cleaned = str(fragment or "")
+    for _ in range(8):
+        prev = cleaned
+        cleaned = _OVERLAY_SCRIPT_BLOCK_RE.sub("", cleaned)
+        cleaned = _OVERLAY_SCRIPT_STRAY_RE.sub("", cleaned)
+        if cleaned == prev:
+            break
     cleaned = _strip_tag_event_handlers(cleaned)
     return cleaned
 
@@ -478,7 +537,7 @@ def strip_tag_unsafe_attrs(match: re.Match[str]) -> str:
             continue
         if raw_val is not None and lname in _UNSAFE_URL_ATTRS:
             unquoted = raw_val[1:-1] if len(raw_val) >= 2 and raw_val[0] in "\"'" else raw_val
-            compact = re.sub(r"[\x00-\x20]+", "", unquoted)
+            compact = re.sub(r"[\x00-\x20]+", "", html_lib.unescape(unquoted))
             if _UNSAFE_SCHEME_RE.match(compact):
                 continue
         clean_sep = " " if (not sep or "/" in sep) else sep
@@ -523,8 +582,13 @@ def harden_preview_html(
     """Strip ALL on-disk scripts & inline handlers; inject only server-generated canonical guard."""
     had_genuine_guard, guard_params = extract_genuine_guard_params(html_text)
 
-    working = _SCRIPT_BLOCK_RE.sub("", html_text)
-    working = _STRAY_SCRIPT_RE.sub("", working)
+    working = html_text
+    for _ in range(8):
+        prev = working
+        working = _SCRIPT_BLOCK_RE.sub("", working)
+        working = _STRAY_SCRIPT_RE.sub("", working)
+        if working == prev:
+            break
     working = _HTML_OPEN_TAG_RE.sub(strip_tag_unsafe_attrs, working)
 
     if had_genuine_guard or _AZOM_TOOLBAR_RE.search(working):

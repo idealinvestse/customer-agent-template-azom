@@ -74,7 +74,14 @@ class TavilySearchRoute:
         if request.exclude_domains:
             body["exclude_domains"] = list(request.exclude_domains)
         if request.freshness_days is not None:
-            body["days"] = int(request.freshness_days)
+            if request.freshness_days <= 1:
+                body["time_range"] = "day"
+            elif request.freshness_days <= 7:
+                body["time_range"] = "week"
+            elif request.freshness_days <= 31:
+                body["time_range"] = "month"
+            else:
+                body["time_range"] = "year"
 
         started = time.monotonic()
         data = pinned_json_request(

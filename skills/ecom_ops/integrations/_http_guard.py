@@ -47,6 +47,9 @@ _METADATA_IPV4 = ipaddress.IPv4Address("169.254.169.254")
 _METADATA_IPV6 = ipaddress.IPv6Address("fd00:ec2::254")
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
 _NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+_IPV4_COMPAT_NETWORK = ipaddress.IPv6Network("::/96")
+_SIXTOFOUR_NETWORK = ipaddress.IPv6Network("2002::/16")
+_TEREDO_NETWORK = ipaddress.IPv6Network("2001::/32")
 
 _SENSITIVE_AUTH_HEADERS: frozenset[str] = frozenset(
     {
@@ -93,6 +96,18 @@ def is_public_global_ip(raw_ip: str) -> bool:
     mapped = getattr(addr, "ipv4_mapped", None)
     if mapped is not None:
         addr = mapped
+    if isinstance(addr, ipaddress.IPv6Address):
+        if (
+            addr == _METADATA_IPV6
+            or addr in _NAT64_WELL_KNOWN
+            or addr in _NAT64_LOCAL
+            or addr in _IPV4_COMPAT_NETWORK
+            or addr in _SIXTOFOUR_NETWORK
+            or addr in _TEREDO_NETWORK
+            or addr.sixtofour is not None
+            or addr.teredo is not None
+        ):
+            return False
     if not addr.is_global:
         return False
     if (
@@ -106,9 +121,6 @@ def is_public_global_ip(raw_ip: str) -> bool:
         return False
     if isinstance(addr, ipaddress.IPv4Address):
         if addr == _METADATA_IPV4 or addr in _CGNAT_NETWORK:
-            return False
-    else:
-        if addr == _METADATA_IPV6 or addr in _NAT64_WELL_KNOWN or addr in _NAT64_LOCAL:
             return False
     return True
 
@@ -358,6 +370,35 @@ def _read_bounded_response(
     decomp_total = 0
     chunks: list[bytes] = []
     first_deflate_chunk = is_deflate
+    deflate_pending = b""
+
+    def _feed_decomp(data: bytes) -> None:
+        nonlocal decomp, decomp_total, first_deflate_chunk
+        assert decomp is not None
+        buf = data
+        while buf:
+            remaining = max_decompressed_bytes - decomp_total + 1
+            try:
+                piece = decomp.decompress(buf, max_length=remaining)
+            except zlib.error as exc:
+                if first_deflate_chunk:
+                    first_deflate_chunk = False
+                    decomp = zlib.decompressobj(-zlib.MAX_WBITS)
+                    try:
+                        piece = decomp.decompress(buf, max_length=remaining)
+                    except zlib.error as raw_exc:
+                        raise ValueError("Invalid compressed response stream") from raw_exc
+                else:
+                    raise ValueError("Invalid compressed response stream") from exc
+            first_deflate_chunk = False
+            decomp_total += len(piece)
+            if decomp_total > max_decompressed_bytes:
+                raise ValueError(
+                    f"Decompressed response exceeded {max_decompressed_bytes} bytes"
+                )
+            if piece:
+                chunks.append(piece)
+            buf = decomp.unconsumed_tail
 
     while True:
         chunk = resp.read(chunk_size)
@@ -375,27 +416,19 @@ def _read_bounded_response(
             chunks.append(chunk)
             continue
 
-        buf = chunk
-        while buf:
-            remaining = max_decompressed_bytes - decomp_total + 1
-            try:
-                piece = decomp.decompress(buf, max_length=remaining)
-            except zlib.error as exc:
-                if first_deflate_chunk:
-                    first_deflate_chunk = False
-                    decomp = zlib.decompressobj(-zlib.MAX_WBITS)
-                    piece = decomp.decompress(buf, max_length=remaining)
-                else:
-                    raise ValueError("Invalid compressed response stream") from exc
-            first_deflate_chunk = False
-            decomp_total += len(piece)
-            if decomp_total > max_decompressed_bytes:
-                raise ValueError(
-                    f"Decompressed response exceeded {max_decompressed_bytes} bytes"
-                )
-            if piece:
-                chunks.append(piece)
-            buf = decomp.unconsumed_tail
+        if first_deflate_chunk:
+            deflate_pending += chunk
+            if len(deflate_pending) < 2:
+                continue
+            buf = deflate_pending
+            deflate_pending = b""
+            _feed_decomp(buf)
+        else:
+            _feed_decomp(chunk)
+
+    if decomp is not None and deflate_pending:
+        _feed_decomp(deflate_pending)
+        deflate_pending = b""
 
     if decomp is not None:
         remaining = max_decompressed_bytes - decomp_total + 1
@@ -510,6 +543,15 @@ def pinned_https_request(
 
             if current_verb == "HEAD" or status == 204:
                 payload = b""
+            elif status < 200 or status >= 300:
+                try:
+                    payload = _read_bounded_response(
+                        resp,
+                        max_raw_bytes=max_raw_bytes,
+                        max_decompressed_bytes=max_decompressed_bytes,
+                    )
+                except ValueError:
+                    payload = b""
             else:
                 payload = _read_bounded_response(
                     resp,
@@ -537,16 +579,32 @@ def safe_public_https_url(
     except ValueError:
         return None
     host = (parsed.hostname or "").lower()
-    denied: set[str] = {str(h).strip().lower().rstrip(".") for h in (blocked_hosts or set()) if h}
+
+    def _norm_denied(raw_host: str) -> str:
+        h = str(raw_host or "").strip().lower().lstrip(".").rstrip(".")
+        if not h:
+            return ""
+        try:
+            return h.encode("idna").decode("ascii").lower().rstrip(".")
+        except UnicodeError:
+            return h
+
+    denied: set[str] = set()
+    for h in blocked_hosts or set():
+        nh = _norm_denied(h)
+        if nh:
+            denied.add(nh)
     dash_public = os.environ.get("AZOM_DASHBOARD_PUBLIC_URL", "").strip()
     if dash_public:
         try:
-            dash_host = (urllib.parse.urlparse(dash_public).hostname or "").strip().lower().rstrip(".")
-            if dash_host:
-                denied.add(dash_host)
+            dash_url = dash_public if "://" in dash_public else f"https://{dash_public}"
+            dash_host = (urllib.parse.urlparse(dash_url).hostname or "").strip().lower().rstrip(".")
+            nh = _norm_denied(dash_host)
+            if nh:
+                denied.add(nh)
         except ValueError:
             pass
-    if host in denied:
+    if any(host == d or host.endswith(f".{d}") for d in denied):
         return None
     return urllib.parse.urlunsplit(
         ("https", host, parsed.path, parsed.query, parsed.fragment)

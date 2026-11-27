@@ -175,7 +175,7 @@
             {{ icon('send', 'sm') }}
             <span data-nav-label>Telegram &amp; Kanaler</span>
           </a>
-          <a href="/ops/runtime" class="az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith('/ops/runtime') else '' }}"{% if path.startswith('/ops/runtime') %} aria-current="page"{% endif %}>
+          <a href="/ops/runtime" class="az-nav-link-oscar {{ 'az-nav-link-oscar-active' if path.startswith(('/ops/runtime', '/oscar/runtime')) else '' }}"{% if path.startswith(('/ops/runtime', '/oscar/runtime')) %} aria-current="page"{% endif %}>
             {{ icon('activity', 'sm') }}
             <span data-nav-label>Drift &amp; Hälsa</span>
           </a>

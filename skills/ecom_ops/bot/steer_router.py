@@ -263,6 +263,12 @@ def decide_message_routing(
                     cleaned_text=body,
                     reason="explicit_steer_prefix_ambiguous",
                 )
+            return RouteDecision(
+                mode="new_task",
+                target_job_id=None,
+                cleaned_text=body,
+                reason="explicit_steer_prefix_not_found",
+            )
         if len(steerable_jobs) == 1:
             target = steerable_jobs[0]
             if _has_steer_capacity(target, max_steers_per_job):

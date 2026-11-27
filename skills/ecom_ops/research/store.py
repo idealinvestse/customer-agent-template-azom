@@ -19,6 +19,7 @@ from typing import Any, Literal
 from ecom_ops.rbac import AccessDenied, Permission, resolve_actor
 from ecom_ops.research.config import load_research_config
 from ecom_ops.research.evaluator import canonicalize_url
+from ecom_ops.research.firewall import OutboundQueryFirewall, QueryTaintContext
 from ecom_ops.research.models import (
     RESEARCH_ID_RE,
     EvaluatedSource,
@@ -31,6 +32,7 @@ from ecom_ops.research.models import (
 )
 from ecom_ops.research.sanitizer import sanitize_untrusted_text
 
+MAX_STEERS_PER_JOB = 3
 _ACTIVE_STATUSES = ("planning", "searching", "fetching", "evaluating", "synthesizing", "running")
 _TERMINAL_STATUSES = frozenset({"completed", "partial", "cancelled", "failed"})
 _REPLACE_RETRY_DELAYS = (0.02, 0.04, 0.06, 0.08)
@@ -262,9 +264,9 @@ class SearchCache:
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=5000")
         try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
             yield conn
         finally:
             conn.close()
@@ -451,10 +453,10 @@ class ResearchStore:
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA foreign_keys=ON")
         try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
             yield conn
         finally:
             conn.close()
@@ -753,6 +755,43 @@ class ResearchStore:
                 break
         return out
 
+    def _recover_expired_leases_in_tx(self, conn: sqlite3.Connection, now: float) -> int:
+        active_marks = ",".join("?" for _ in _ACTIVE_STATUSES)
+        rows = conn.execute(
+            f"""
+            SELECT id FROM research_jobs
+            WHERE status IN ({active_marks})
+              AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+            """,
+            (*_ACTIVE_STATUSES, now),
+        ).fetchall()
+        recovered = 0
+        for row in rows:
+            jid = str(row["id"])
+            conn.execute(
+                """
+                UPDATE research_jobs
+                SET status='queued', lease_owner=NULL, lease_expires_at=NULL, updated_at=?
+                WHERE id=?
+                """,
+                (now, jid),
+            )
+            conn.execute(
+                "UPDATE research_steers SET consumed_at=NULL WHERE job_id=?",
+                (jid,),
+            )
+            self._insert_event(
+                conn,
+                jid,
+                phase="recovered",
+                message="Worker lease expired; job re-queued",
+                round_num=0,
+                provenance="system",
+                created_at=now,
+            )
+            recovered += 1
+        return recovered
+
     def claim_next(
         self,
         worker_id: str,
@@ -775,10 +814,16 @@ class ResearchStore:
 
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._recover_expired_leases_in_tx(conn, now)
             active_count = int(
                 conn.execute(
-                    f"SELECT COUNT(*) FROM research_jobs WHERE status IN ({active_marks})",
-                    _ACTIVE_STATUSES,
+                    f"""
+                    SELECT COUNT(*) FROM research_jobs
+                    WHERE status IN ({active_marks})
+                      AND lease_expires_at IS NOT NULL
+                      AND lease_expires_at > ?
+                    """,
+                    (*_ACTIVE_STATUSES, now),
                 ).fetchone()[0]
             )
             if active_count >= cap:
@@ -841,42 +886,9 @@ class ResearchStore:
     def recover_stale_leases(self, now_ts: float | None = None) -> int:
         """Re-queue active jobs whose lease has expired and return recovered count."""
         now = float(now_ts) if now_ts is not None else _now()
-        active_marks = ",".join("?" for _ in _ACTIVE_STATUSES)
-        recovered = 0
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            rows = conn.execute(
-                f"""
-                SELECT id FROM research_jobs
-                WHERE status IN ({active_marks})
-                  AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
-                """,
-                (*_ACTIVE_STATUSES, now),
-            ).fetchall()
-            for row in rows:
-                jid = str(row["id"])
-                conn.execute(
-                    """
-                    UPDATE research_jobs
-                    SET status='queued', lease_owner=NULL, lease_expires_at=NULL, updated_at=?
-                    WHERE id=?
-                    """,
-                    (now, jid),
-                )
-                conn.execute(
-                    "UPDATE research_steers SET consumed_at=NULL WHERE job_id=?",
-                    (jid,),
-                )
-                self._insert_event(
-                    conn,
-                    jid,
-                    phase="recovered",
-                    message="Worker lease expired; job re-queued",
-                    round_num=0,
-                    provenance="system",
-                    created_at=now,
-                )
-                recovered += 1
+            recovered = self._recover_expired_leases_in_tx(conn, now)
             conn.commit()
         return recovered
 
@@ -947,13 +959,18 @@ class ResearchStore:
         estimated_search_usd: float | None = None,
         error_code: str | None = None,
         error_message: str | None = None,
+        worker_id: str | None = None,
     ) -> ResearchJob | None:
         """Persist completion state and write sanitized artifacts atomically."""
         now = _now()
+        target_status = str(status)
         ev_str = str(evidence_status) if evidence_status is not None else (
             str(brief.evidence_status) if brief is not None else None
         )
-        clean_err = sanitize_untrusted_text(error_message, max_chars=400) if error_message else None
+        eff_err_code = error_code
+        eff_err_msg = error_message
+        write_brief = brief
+        write_sources = sources
 
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -961,7 +978,21 @@ class ResearchStore:
             if row is None:
                 conn.commit()
                 return None
+            if str(row["status"]) in _TERMINAL_STATUSES:
+                conn.commit()
+                return self._row_to_job(row)
+            if worker_id is not None and str(row["lease_owner"] or "") != str(worker_id):
+                conn.commit()
+                return self._row_to_job(row)
+            if int(row["cancel_requested"] or 0) == 1 and target_status != "cancelled":
+                target_status = "cancelled"
+                eff_err_code = eff_err_code or "cancelled"
+                eff_err_msg = eff_err_msg or "Cancelled by user request"
+                ev_str = row["evidence_status"]
+                write_brief = None
+                write_sources = None
 
+            clean_err = sanitize_untrusted_text(eff_err_msg, max_chars=400) if eff_err_msg else None
             r_done = int(rounds_completed if rounds_completed is not None else row["rounds_completed"])
             q_used = int(queries_used if queries_used is not None else row["queries_used"])
             f_used = int(fetches_used if fetches_used is not None else row["fetches_used"])
@@ -979,14 +1010,14 @@ class ResearchStore:
                 WHERE id=?
                 """,
                 (
-                    str(status),
+                    target_status,
                     ev_str,
                     r_done,
                     q_used,
                     f_used,
                     l_used,
                     usd_used,
-                    str(error_code)[:64] if error_code else None,
+                    str(eff_err_code)[:64] if eff_err_code else None,
                     clean_err,
                     now,
                     now,
@@ -996,29 +1027,39 @@ class ResearchStore:
             self._insert_event(
                 conn,
                 job_id,
-                phase=str(status),
-                message=f"Research {status}",
+                phase=target_status,
+                message=f"Research {target_status}",
                 round_num=r_done,
-                provenance=brief.provenance if brief is not None else "system",
+                provenance=write_brief.provenance if write_brief is not None else "system",
                 created_at=now,
             )
             updated = conn.execute("SELECT * FROM research_jobs WHERE id=?", (job_id,)).fetchone()
             conn.commit()
 
         job = self._row_to_job(updated)
-        if brief is not None and job is not None:
-            self.write_artifacts(job, brief=brief, sources=sources or [])
+        if write_brief is not None and job is not None and job.status != "cancelled":
+            self.write_artifacts(job, brief=write_brief, sources=write_sources or [])
         return job
 
-    def add_steer(self, job_id: str, actor: str, note: str) -> int:
+    def add_steer(
+        self,
+        job_id: str,
+        actor: str,
+        note: str,
+        *,
+        taint: QueryTaintContext | None = None,
+    ) -> int:
         """Append a sanitized steer note for ``job_id`` after ownership/RBAC verification."""
         job = self.get_job(job_id)
         if job is None:
             raise KeyError(f"Unknown research job: {job_id}")
         if not authorize_research_access(actor, job, "steer"):
             raise AccessDenied(f"Actor {actor!r} cannot steer research job {job_id}")
+        if job.status in _TERMINAL_STATUSES:
+            raise ValueError(f"Research job {job_id} is already {job.status}")
 
-        clean_note = sanitize_untrusted_text(note, max_chars=500)
+        checked_note = OutboundQueryFirewall().check_query(note, taint=taint)
+        clean_note = sanitize_untrusted_text(checked_note, max_chars=250)
         if not clean_note:
             raise SearchPolicyError("Empty steer note")
 
@@ -1026,6 +1067,19 @@ class ResearchStore:
         now = _now()
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT status FROM research_jobs WHERE id=?", (job_id,)).fetchone()
+            if row is None:
+                conn.commit()
+                raise KeyError(f"Unknown research job: {job_id}")
+            if str(row["status"]) in _TERMINAL_STATUSES:
+                conn.commit()
+                raise ValueError(f"Research job {job_id} is already {row['status']}")
+            steer_count = int(
+                conn.execute("SELECT COUNT(*) FROM research_steers WHERE job_id=?", (job_id,)).fetchone()[0]
+            )
+            if steer_count >= MAX_STEERS_PER_JOB:
+                conn.commit()
+                raise ValueError(f"Max {MAX_STEERS_PER_JOB} steering notes per job reached")
             cur = conn.execute(
                 "INSERT INTO research_steers(job_id, actor, note, created_at) VALUES(?, ?, ?, ?)",
                 (job_id, actor_obj.name, clean_note, now),

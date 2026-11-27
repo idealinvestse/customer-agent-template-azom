@@ -499,6 +499,7 @@ class ComponentSearcher:
             kind=kind,
             slug=slug,
             directory=directory,
+            relative=relative,
             query=text,
             compiled=compiled,
             case_insensitive=case_insensitive,
@@ -532,6 +533,7 @@ class ComponentSearcher:
         kind: str,
         slug: str,
         directory: str,
+        relative: str = "",
         query: str,
         compiled: re.Pattern[str] | None,
         case_insensitive: bool,
@@ -545,7 +547,10 @@ class ComponentSearcher:
         scanned_files = 0
         scanned_bytes = 0
         truncated = False
-        stack = [("", directory)]
+        clean_prefix = "/".join(
+            part for part in str(relative or "").strip().replace("\\", "/").split("/") if part
+        )
+        stack = [(clean_prefix, directory)]
 
         with transport_open_batch(transport):
             while stack and scanned_files < SEARCH_FILES and scanned_bytes < SEARCH_BYTES:
@@ -557,13 +562,14 @@ class ComponentSearcher:
                 for name, is_dir in dir_entries:
                     if sensitive_relative(name) or name.lower() in SKIP_DIRS:
                         continue
+                    if not SEGMENT_RE.fullmatch(name):
+                        continue
                     rel = f"{prefix}/{name}" if prefix else name
                     if is_dir:
-                        if SEGMENT_RE.fullmatch(name):
-                            try:
-                                stack.append((rel, resolve_dir(site.files_root, kind, slug, rel)))
-                            except PathRejected:
-                                continue
+                        try:
+                            stack.append((rel, resolve_dir(site.files_root, kind, slug, rel)))
+                        except PathRejected:
+                            continue
                         continue
                     suffix = Path(name).suffix.lower()
                     if suffix not in allowed_suffixes:
@@ -571,7 +577,10 @@ class ComponentSearcher:
                     if scanned_files >= SEARCH_FILES or scanned_bytes >= SEARCH_BYTES:
                         truncated = True
                         break
-                    resolved_abs = resolve_file(site.files_root, kind, slug, rel)
+                    try:
+                        resolved_abs = resolve_file(site.files_root, kind, slug, rel)
+                    except PathRejected:
+                        continue
                     body, large_css_used = _read_candidate_text(transport, resolved_abs, suffix)
                     if body is None:
                         continue

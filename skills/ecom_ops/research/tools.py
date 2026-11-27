@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from ecom_ops.audit import log_action
@@ -19,6 +20,7 @@ from ecom_ops.research.store import authorize_research_access, authorize_target_
 WEB_SEARCH_MAX_BYTES = 5 * 1024
 WEB_FETCH_MAX_BYTES = 7 * 1024
 WEB_RESEARCH_GET_MAX_BYTES = 8 * 1024
+_TOOL_RESULT_ENVELOPE_HEADROOM_BYTES = 32
 
 RESEARCH_TOOL_NAMES: tuple[str, ...] = (
     "web_search",
@@ -156,13 +158,14 @@ def _bounded_framed_output(
     text_key: str = "content",
 ) -> dict[str, Any]:
     """Attach nonce-framed ``raw_text`` while guaranteeing total JSON <= ``max_bytes``."""
-    budget = max(512, max_bytes - _utf8_len(payload) - 160)
+    effective_max = max(512, int(max_bytes) - _TOOL_RESULT_ENVELOPE_HEADROOM_BYTES)
+    budget = max(512, effective_max - _utf8_len(payload) - 160)
     char_cap = max(200, budget)
     for _ in range(5):
         framed = frame_untrusted_web_data(raw_text, label=label, max_chars=char_cap)
         candidate = dict(payload)
         candidate[text_key] = framed
-        if _utf8_len(candidate) <= max_bytes:
+        if _utf8_len(candidate) <= effective_max:
             return candidate
         char_cap = max(120, int(char_cap * 0.65))
     framed = frame_untrusted_web_data(raw_text, label=label, max_chars=120)
@@ -270,6 +273,7 @@ def execute_research_tool(
     peer_id: str = "local",
     taint: QueryTaintContext | None = None,
     on_enqueue: Callable[[Any], None] | None = None,
+    data_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """Execute one canonical research tool with strict RBAC, firewall, and size caps."""
     tool_name = str(name or "").strip()
@@ -277,7 +281,7 @@ def execute_research_tool(
         return _error_result("UnknownTool", "unknown_tool", f"Unknown research tool: {tool_name}")
 
     arguments = dict(args or {})
-    service = get_research_service()
+    service = get_research_service(data_dir)
 
     try:
         actor_obj = resolve_actor(actor)

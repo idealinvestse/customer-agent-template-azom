@@ -448,6 +448,8 @@ class WpAgentTools:
                 arguments,
                 actor=actor,
                 sticky_site_id=sticky_site_id,
+                channel=channel,
+                conversation_id=conversation_id,
             )
         allowed = set(spec.schema.get("properties", {}))
         if set(arguments) - allowed:
@@ -488,6 +490,8 @@ class WpAgentTools:
         *,
         actor: str,
         sticky_site_id: str | None,
+        channel: str = "",
+        conversation_id: str = "",
     ) -> ToolOutput:
         spec = TOOL_REGISTRY.get(name)
         if spec is None or not spec.in_file_schemas:
@@ -524,13 +528,24 @@ class WpAgentTools:
             cleaned_args["plan_id"] = cleaned_pid
 
         if not spec.requires_site:
-            ctx = ToolContext(actor=actor, sticky_site_id=sticky_site_id)
+            ctx = ToolContext(
+                actor=actor,
+                sticky_site_id=sticky_site_id,
+                channel=channel,
+                conversation_id=conversation_id,
+            )
             return spec.handler(self, ctx, cleaned_args)
 
         site_id = cleaned_args.get("site_id", sticky_site_id)
         if not isinstance(site_id, str) or not _SITE_ID.fullmatch(site_id):
             return self._site_required_error(actor)
-        ctx = ToolContext(actor=actor, site_id=site_id, sticky_site_id=sticky_site_id)
+        ctx = ToolContext(
+            actor=actor,
+            site_id=site_id,
+            sticky_site_id=sticky_site_id,
+            channel=channel,
+            conversation_id=conversation_id,
+        )
         if spec.workspace_tool:
             return spec.handler(self, ctx, cleaned_args, ops=self._review_plans())
         return spec.handler(self, ctx, cleaned_args)

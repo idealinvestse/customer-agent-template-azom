@@ -81,6 +81,7 @@ SECRET_ENV_KEYS = (
     "BRAVE_SEARCH_API_KEY",
     "TAVILY_API_KEY",
     "SEARXNG_API_KEY",
+    "XAI_API_KEY",
 )
 
 _ORDER_ID_RE = re.compile(r"^\d{1,12}$")
@@ -130,6 +131,8 @@ def validate_site(site: str) -> str:
 
 
 def validate_email(email: str) -> str:
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in email):
+        raise SecurityError(f"Invalid email: {email!r}")
     e = email.strip()
     if not _EMAIL_RE.match(e) or len(e) > 254:
         raise SecurityError(f"Invalid email: {email!r}")
@@ -232,14 +235,22 @@ def is_critical_ssh_command(command: str) -> bool:
 
 
 def assert_no_path_traversal(path: str) -> str:
+    if "\x00" in path:
+        raise SecurityError(f"Path traversal blocked: {path!r}")
     if ".." in path.replace("\\", "/").split("/"):
         raise SecurityError(f"Path traversal blocked: {path!r}")
-    if path.startswith("~") or os.path.isabs(path):
+    if path.startswith("~"):
+        raise SecurityError(f"Absolute path not allowed: {path!r}")
+    if os.path.isabs(path):
         # Absolute paths allowed only if under controlled workspace via env
         workspace = os.environ.get("AZOM_WORKSPACE", "")
-        if workspace and os.path.commonpath(
-            [os.path.realpath(path), os.path.realpath(workspace)]
-        ) == os.path.realpath(workspace):
-            return path
+        if workspace:
+            real_ws = os.path.realpath(workspace)
+            try:
+                common = os.path.commonpath([os.path.realpath(path), real_ws])
+            except ValueError as exc:
+                raise SecurityError(f"Absolute path not allowed: {path!r}") from exc
+            if common == real_ws:
+                return path
         raise SecurityError(f"Absolute path not allowed: {path!r}")
     return path

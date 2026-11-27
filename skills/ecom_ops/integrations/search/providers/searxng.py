@@ -11,6 +11,7 @@ Accepts either:
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
@@ -147,7 +148,7 @@ def _loopback_json_get(url: str, *, headers: dict[str, str], read_timeout: float
     except urllib.error.HTTPError as exc:
         hdrs = {str(k).lower(): str(v) for k, v in (exc.headers.items() if exc.headers else ())}
         raise http_status_to_search_error("searxng", int(exc.code), hdrs) from exc
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError, http.client.HTTPException) as exc:
         raise SearchUnavailableError(
             f"searxng: loopback request failed ({type(exc).__name__})",
             code="transport_error",

@@ -31,7 +31,7 @@
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex flex-wrap items-center gap-2">
         <h2 class="az-section-title mb-0">Sökstatus &amp; Dagsbudget</h2>
-        {% if st_mode == 'live' and not st.get('kill_switch') %}
+        {% if st_mode in ('ready', 'live') and not st.get('kill_switch') %}
           {{ ui.status_badge('ok', 'Live webbsökning aktiv', show_icon=True) }}
         {% elif st_mode == 'mock' %}
           {{ ui.status_badge('warn', 'Mock-läge (offline-fixturer)', show_icon=True) }}

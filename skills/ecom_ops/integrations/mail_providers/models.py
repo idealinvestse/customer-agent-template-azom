@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import email
 import email.policy
+import email.utils
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol
@@ -155,7 +156,9 @@ def _b64_xoauth2(username: str, access_token: str) -> bytes:
 
 def parse_email_message(parsed: email.message.Message, *, uid: str) -> MailMessage:
     subject = str(parsed.get("Subject") or "")
-    from_addr = str(parsed.get("From") or "")
+    from_raw = str(parsed.get("From") or "").strip()
+    _, parsed_from = email.utils.parseaddr(from_raw)
+    from_addr = parsed_from.strip() if "@" in parsed_from else from_raw
     to_raw = str(parsed.get("To") or "")
     cc_raw = str(parsed.get("Cc") or "")
     date = str(parsed.get("Date") or "")

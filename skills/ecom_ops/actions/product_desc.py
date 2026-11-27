@@ -320,13 +320,15 @@ class ProductDescService:
                 else "premium quality"
             )
 
+            can_apply_research = bool(allow_llm or self.generator is not None)
             research_context = self._load_research_context(
                 actor_name=actor_obj.name,
                 product_name=product_name,
                 sku=sku,
                 research_brief_id=research_brief_id,
-                run_research=run_research,
+                run_research=bool(run_research and can_apply_research),
             )
+            research_applied = bool(research_context) and can_apply_research
 
             short, long_desc = self._resolve_copy(
                 product_name,
@@ -334,7 +336,7 @@ class ProductDescService:
                 lang,
                 site=site,
                 allow_llm=allow_llm,
-                research_context=research_context,
+                research_context=research_context if research_applied else None,
             )
 
             published = False
@@ -356,7 +358,8 @@ class ProductDescService:
                     "language": lang,
                     "published": published,
                     "actor": actor_obj.name,
-                    "has_research": bool(research_context),
+                    "has_research": research_applied,
+                    "research_applied": research_applied,
                 },
             )
             # P1.5: record audit + feedback signal for published descriptions

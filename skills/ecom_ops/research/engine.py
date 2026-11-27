@@ -21,23 +21,30 @@ Security & budget invariants:
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from ecom_ops import llm
-from ecom_ops.bot.progress_events import ProgressEvent, emit_progress
 from ecom_ops.budget import budget_status
 from ecom_ops.integrations.search.base import SearchHit, SearchRequest
-from ecom_ops.integrations.search.errors import SearchRouteError
+from ecom_ops.integrations.search.errors import SearchConfigError, SearchRouteError
 from ecom_ops.integrations.search.fetcher import SafePublicHttpClient
 from ecom_ops.integrations.search.router import SearchRouter, get_search_router
 from ecom_ops.model_router import get_model_router
 from ecom_ops.model_router.errors import ModelRouteError
 from ecom_ops.prompts import get_prompt
 from ecom_ops.research.budget import research_budget_status
-from ecom_ops.research.config import DepthTierConfig, is_mock_mode, load_research_config
+from ecom_ops.research.config import (
+    DepthTierConfig,
+    is_mock_mode,
+    kill_switch_active,
+    load_research_config,
+    research_enabled,
+)
 from ecom_ops.research.evaluator import build_citations, evaluate_search_hits, verify_citations
 from ecom_ops.research.firewall import MAX_QUERY_CHARS, OutboundQueryFirewall, QueryTaintContext
 from ecom_ops.research.models import (
@@ -232,6 +239,41 @@ def _resolve_profile(profile_id: str) -> SearchProfile:
         return get_profile(profile_id)
     except KeyError:
         return get_profile("deep_general")
+
+
+def resolve_taint_for_target_ref(
+    target_ref: str | None,
+    data_dir: Path | str | None,
+) -> QueryTaintContext | None:
+    """Lazily resolve ``QueryTaintContext`` for ``case:<uuid>`` without creating an empty DB."""
+    ref = (target_ref or "").strip()
+    if not ref.startswith("case:") or data_dir is None:
+        return None
+    case_id = ref.split(":", 1)[1].strip()
+    if not case_id:
+        return None
+    db_path = Path(data_dir) / "cases.db"
+    if not db_path.is_file():
+        return None
+    from ecom_ops.cases.service import build_case_taint_context
+    from ecom_ops.cases.store import CaseStore
+
+    case_store = CaseStore(path=db_path)
+    case_obj = case_store.get(case_id)
+    if case_obj is None:
+        return None
+    messages = case_store.messages(case_id)
+    return build_case_taint_context(case_obj, messages)
+
+
+def _resolve_taint_for_job(
+    job: ResearchJob | None,
+    data_dir: Path | str | None,
+) -> QueryTaintContext | None:
+    if job is None:
+        return None
+    effective_ref = job.target_ref or (job.spec.target_ref if job.spec is not None else None)
+    return resolve_taint_for_target_ref(effective_ref, data_dir)
 
 
 def _build_sources_context_block(sources: list[EvaluatedSource], *, max_sources: int = 8) -> str:
@@ -459,8 +501,7 @@ class ResearchEngine:
         # Validate topic strictly first so PII/secret topics fail closed instead of leaking.
         raw_topic = " ".join(sanitize_untrusted_text(spec.topic, max_chars=500).split())
         if raw_topic:
-            for offset in range(0, len(raw_topic), MAX_QUERY_CHARS):
-                self.firewall.check_query(raw_topic[offset : offset + MAX_QUERY_CHARS], taint=taint)
+            raw_topic = self.firewall.check_text(raw_topic, max_chars=500, taint=taint)
 
         candidates: list[str] = list(spec.queries_seed or ())
         if raw_topic:
@@ -483,6 +524,43 @@ class ResearchEngine:
             limit=4,
             strict_on_all_blocked=True,
         )
+
+    @staticmethod
+    def _extract_query_strings(raw_val: Any) -> list[str]:
+        if isinstance(raw_val, str):
+            items = [raw_val]
+        elif isinstance(raw_val, list):
+            items = raw_val
+        else:
+            return []
+        out: list[str] = []
+        for item in items:
+            if isinstance(item, dict):
+                q = item.get("query") or item.get("q") or ""
+                if str(q).strip():
+                    out.append(str(q))
+            elif item is not None and not isinstance(item, (dict, list, bool)):
+                s = str(item).strip()
+                if s:
+                    out.append(s)
+        return out
+
+    @staticmethod
+    def _coerce_str_list(raw_val: Any, *, max_chars: int = 400) -> list[str]:
+        if isinstance(raw_val, str):
+            items = [raw_val]
+        elif isinstance(raw_val, list):
+            items = raw_val
+        else:
+            return []
+        out: list[str] = []
+        for item in items:
+            if isinstance(item, (dict, list)):
+                continue
+            s = sanitize_untrusted_text(str(item or ""), max_chars=max_chars)
+            if s:
+                out.append(s)
+        return out
 
     def _plan_queries(
         self,
@@ -530,9 +608,10 @@ class ResearchEngine:
                 llm_calls_used += 1
                 parsed = _extract_json_dict(content)
                 raw_queries = parsed.get("queries") if isinstance(parsed, dict) else None
-                if isinstance(raw_queries, list):
+                extracted = self._extract_query_strings(raw_queries)
+                if extracted:
                     llm_queries = self._scrub_queries(
-                        [str(q) for q in raw_queries],
+                        extracted,
                         taint=taint,
                         seen=seen,
                         limit=4,
@@ -540,7 +619,7 @@ class ResearchEngine:
                     )
                     if llm_queries:
                         return llm_queries, llm_calls_used, False
-            except (ModelRouteError, KeyError):
+            except (ModelRouteError, KeyError, TypeError, ValueError):
                 pass
 
         queries = self._deterministic_plan(spec, profile, steers, taint=taint, seen=seen)
@@ -603,23 +682,20 @@ class ResearchEngine:
                 llm_calls_used += 1
                 parsed = _extract_json_dict(content)
                 if isinstance(parsed, dict):
-                    gaps = [
-                        sanitize_untrusted_text(str(g), max_chars=240)
-                        for g in (parsed.get("gaps") or [])
-                        if str(g or "").strip()
-                    ]
+                    gaps = self._coerce_str_list(parsed.get("gaps"), max_chars=240)
                     if parsed.get("sufficient") is True:
                         return [], gaps, llm_calls_used, False
-                    raw_follow = parsed.get("follow_up_queries") or []
-                    if isinstance(raw_follow, list):
+                    extracted_follow = self._extract_query_strings(parsed.get("follow_up_queries"))
+                    if extracted_follow:
                         follow = self._scrub_queries(
-                            [str(q) for q in raw_follow],
+                            extracted_follow,
                             taint=taint,
                             seen=seen,
                             limit=3,
                         )
                         return follow, gaps, llm_calls_used, False
-            except (ModelRouteError, KeyError):
+                    return [], gaps, llm_calls_used, False
+            except (ModelRouteError, KeyError, TypeError, ValueError):
                 pass
 
         # Deterministic gap check fallback when LLM unavailable
@@ -649,6 +725,7 @@ class ResearchEngine:
         *,
         provenance: str,
         extra_gaps: list[str],
+        steers: Sequence[str] = (),
         llm_calls_used: int,
         max_llm_calls: int,
         budget_stopped: bool,
@@ -689,11 +766,18 @@ class ResearchEngine:
         src_block = _build_sources_context_block(sources, max_sources=10)
         framed_sources = frame_untrusted_web_data(src_block, label="WEB_DATA", max_chars=24_000)
         conflict_text = "\n".join(f"- [{c.severity}] {c.summary}" for c in conflicts) or "(none)"
+        clean_steers = [sanitize_untrusted_text(str(s), max_chars=240) for s in steers if str(s or "").strip()]
+        steer_block = (
+            "Steer notes:\n" + "\n".join(f"- {s}" for s in clean_steers) + "\n"
+            if clean_steers
+            else ""
+        )
         user_msg = (
             f"Research ID: {job.research_id}\n"
             f"Topic: {sanitize_untrusted_text(spec.topic, max_chars=400)}\n"
             f"Profile: {profile.id} | Corroboration mode: {profile.corroboration_mode}\n"
             f"Evidence status: {evidence_status} | Provenance: {provenance}\n"
+            f"{steer_block}"
             f"Conflicts:\n{conflict_text}\n\n"
             f"Untrusted source extracts (cite ONLY valid [S#] IDs below):\n{framed_sources}"
         )
@@ -716,37 +800,38 @@ class ResearchEngine:
                 citations = build_citations(sources, profile)
                 summary = sanitize_untrusted_text(str(parsed.get("summary") or ""), max_chars=2000)
                 findings: list[dict[str, Any]] = []
-                for raw_f in parsed.get("findings") or []:
-                    if not isinstance(raw_f, dict):
-                        continue
-                    claim = sanitize_untrusted_text(str(raw_f.get("claim") or ""), max_chars=600)
-                    if not claim:
-                        continue
-                    kind_raw = str(raw_f.get("claim_kind") or "fact").strip().lower()
-                    if kind_raw not in {"fact", "best_practice", "inspiration", "opinion"}:
-                        kind_raw = "fact"
-                    cids = [
-                        str(c).strip().strip("[]").upper()
-                        for c in (raw_f.get("citations") or [])
-                        if str(c or "").strip()
-                    ]
-                    findings.append(
-                        {
-                            "claim": claim,
-                            "claim_kind": kind_raw,
-                            "citations": cids,
-                        }
-                    )
-                recommendations = [
-                    sanitize_untrusted_text(str(r), max_chars=400)
-                    for r in (parsed.get("recommendations") or [])
-                    if str(r or "").strip()
-                ]
-                model_gaps = [
-                    sanitize_untrusted_text(str(g), max_chars=400)
-                    for g in (parsed.get("gaps") or [])
-                    if str(g or "").strip()
-                ]
+                raw_findings = parsed.get("findings")
+                if isinstance(raw_findings, list):
+                    for raw_f in raw_findings:
+                        if not isinstance(raw_f, dict):
+                            continue
+                        claim = sanitize_untrusted_text(str(raw_f.get("claim") or ""), max_chars=600)
+                        if not claim:
+                            continue
+                        kind_raw = str(raw_f.get("claim_kind") or "fact").strip().lower()
+                        if kind_raw not in {"fact", "best_practice", "inspiration", "opinion"}:
+                            kind_raw = "fact"
+                        raw_cits = raw_f.get("citations")
+                        if isinstance(raw_cits, str):
+                            cit_items = [raw_cits]
+                        elif isinstance(raw_cits, list):
+                            cit_items = raw_cits
+                        else:
+                            cit_items = []
+                        cids = [
+                            str(c).strip().strip("[]").upper()
+                            for c in cit_items
+                            if c is not None and not isinstance(c, (dict, list, bool)) and str(c).strip()
+                        ]
+                        findings.append(
+                            {
+                                "claim": claim,
+                                "claim_kind": kind_raw,
+                                "citations": cids,
+                            }
+                        )
+                recommendations = self._coerce_str_list(parsed.get("recommendations"), max_chars=400)
+                model_gaps = self._coerce_str_list(parsed.get("gaps"), max_chars=400)
                 all_gaps = list(dict.fromkeys([*extra_gaps, *model_gaps]))
                 markdown = _render_brief_markdown(
                     research_id=job.research_id,
@@ -778,7 +863,7 @@ class ResearchEngine:
                     ),
                     llm_calls_used,
                 )
-        except (ModelRouteError, KeyError):
+        except (ModelRouteError, KeyError, TypeError, ValueError):
             pass
 
         return (
@@ -804,12 +889,23 @@ class ResearchEngine:
         on_progress: Callable[[Any], None] | None = None,
     ) -> ResearchJob:
         """Execute a queued or claimed research job through the full pipeline."""
-        del worker_id
         job = self.store.get_job(job_id)
         if job is None:
             raise KeyError(f"Unknown research job: {job_id}")
         if job.status in {"completed", "partial", "cancelled", "failed"}:
             return job
+
+        if not is_mock_mode():
+            if kill_switch_active("research"):
+                raise SearchConfigError(
+                    "Deep research is disabled by kill switch",
+                    code="research_kill_switch",
+                )
+            if not research_enabled():
+                raise SearchConfigError(
+                    "Live deep research is disabled (requires AZOM_USE_MOCK=0 and AZOM_RESEARCH_ENABLED=1)",
+                    code="research_disabled",
+                )
 
         cfg = load_research_config()
         spec = job.spec or ResearchSpec(topic="")
@@ -834,6 +930,7 @@ class ResearchEngine:
             step_phase: str = "running",
             outcome: str | None = None,
             error_class: str | None = None,
+            record_db: bool = True,
         ) -> None:
             if status is not None:
                 self.store.update_progress(
@@ -845,14 +942,17 @@ class ResearchEngine:
                     llm_calls_used=llm_calls_used,
                     estimated_search_usd=estimated_search_usd,
                 )
-            self.store.append_event(
-                job_id,
-                phase=phase,
-                message=message,
-                round_num=round_num,
-                provenance=provenance,
-            )
+            if record_db:
+                self.store.append_event(
+                    job_id,
+                    phase=phase,
+                    message=message,
+                    round_num=round_num,
+                    provenance=provenance,
+                )
             if on_progress is not None:
+                from ecom_ops.bot.progress_events import ProgressEvent, emit_progress
+
                 ev = ProgressEvent(
                     step_id=f"research:{phase}:{round_num}",
                     tool="research",
@@ -870,7 +970,6 @@ class ResearchEngine:
             return bool(fresh and fresh.cancel_requested)
 
         def _finalize_cancelled() -> ResearchJob:
-            _emit("cancelled", rounds_completed, "Research avbruten", step_phase="failed")
             cancelled_job = self.store.complete_job(
                 job_id,
                 status="cancelled",
@@ -881,8 +980,10 @@ class ResearchEngine:
                 estimated_search_usd=estimated_search_usd,
                 error_code="cancelled",
                 error_message="Cancelled by user request",
+                worker_id=worker_id,
             )
             assert cancelled_job is not None
+            _emit("cancelled", rounds_completed, "Research avbruten", step_phase="failed", record_db=False)
             return cancelled_job
 
         active_steers: list[str] = []
@@ -902,6 +1003,15 @@ class ResearchEngine:
         try:
             if _is_cancelled():
                 return _finalize_cancelled()
+
+            if taint is None:
+                store_path = getattr(self.store, "path", None)
+                data_dir = (
+                    store_path.parent
+                    if store_path is not None
+                    else Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+                )
+                taint = _resolve_taint_for_job(job, data_dir)
 
             active_steers.extend(self.store.consume_steers(job_id))
             _emit("planning", 0, f"Planerar research ({profile.id})", status="planning")
@@ -938,6 +1048,7 @@ class ResearchEngine:
                 else None
             )
             language = spec.locale or None
+            mock_mode = is_mock_mode()
 
             for round_num in range(1, limits["max_rounds"] + 1):
                 if openrouter_budget_stopped:
@@ -994,12 +1105,13 @@ class ResearchEngine:
                         stopped_partial = True
                         stop_error_code = "wall_timeout"
                         break
-                    rb = research_budget_status(telemetry=self.telemetry, config=cfg)
-                    if not rb["search_allowed"]:
-                        stopped_partial = True
-                        stop_error_code = "research_budget_exhausted"
-                        extra_gaps.append(str(rb["message"]))
-                        break
+                    if not mock_mode:
+                        rb = research_budget_status(telemetry=self.telemetry, config=cfg)
+                        if not rb["search_allowed"]:
+                            stopped_partial = True
+                            stop_error_code = "research_budget_exhausted"
+                            extra_gaps.append(str(rb["message"]))
+                            break
 
                     req = SearchRequest(
                         query=q,
@@ -1051,8 +1163,10 @@ class ResearchEngine:
                     and evaluated_sources
                     and (time.monotonic() - started_at) < limits["max_wall_s"]
                 ):
-                    rb_fetch = research_budget_status(telemetry=self.telemetry, config=cfg)
-                    if rb_fetch["fetch_allowed"]:
+                    fetch_allowed = True
+                    if not mock_mode:
+                        fetch_allowed = bool(research_budget_status(telemetry=self.telemetry, config=cfg)["fetch_allowed"])
+                    if fetch_allowed:
                         _emit("fetching", round_num, f"Hämtar toppkällor (runda {round_num})", status="fetching")
                         k_left = min(profile.max_fetch_default, limits["max_fetches"] - fetches_used)
                         candidates_to_fetch = [
@@ -1176,11 +1290,15 @@ class ResearchEngine:
                 conflicts,
                 provenance=provenance,
                 extra_gaps=extra_gaps,
+                steers=active_steers,
                 llm_calls_used=llm_calls_used,
                 max_llm_calls=limits["max_llm_calls"],
                 budget_stopped=openrouter_budget_stopped,
             )
             brief = verify_citations(brief, evaluated_sources)
+
+            if _is_cancelled():
+                return _finalize_cancelled()
 
             final_status = "partial" if stopped_partial else "completed"
             final_job = self.store.complete_job(
@@ -1196,16 +1314,21 @@ class ResearchEngine:
                 estimated_search_usd=estimated_search_usd,
                 error_code=stop_error_code,
                 error_message=stop_error_message,
+                worker_id=worker_id,
             )
             assert final_job is not None
+            if final_job.status == "cancelled":
+                _emit("cancelled", rounds_completed, "Research avbruten", step_phase="failed", record_db=False)
+                return final_job
             _emit(
-                final_status,
+                final_job.status,
                 rounds_completed,
-                f"Research {final_status} ({brief.evidence_status})",
+                f"Research {final_job.status} ({brief.evidence_status})",
                 step_phase="completed",
+                record_db=False,
             )
             self.telemetry.record(
-                action=f"research_job_{final_status}",
+                action=f"research_job_{final_job.status}",
                 site="azom",
                 units=1,
                 unit_type="api_calls",
@@ -1228,7 +1351,6 @@ class ResearchEngine:
 
         except SearchPolicyError as exc:
             err_msg = sanitize_untrusted_text(str(exc), max_chars=300)
-            _emit("failed", rounds_completed, err_msg, step_phase="failed", error_class="SearchPolicyError")
             failed_job = self.store.complete_job(
                 job_id,
                 status="failed",
@@ -1239,12 +1361,13 @@ class ResearchEngine:
                 estimated_search_usd=estimated_search_usd,
                 error_code="policy_blocked",
                 error_message=err_msg,
+                worker_id=worker_id,
             )
             assert failed_job is not None
+            _emit("failed", rounds_completed, err_msg, step_phase="failed", error_class="SearchPolicyError", record_db=False)
             return failed_job
         except Exception as exc:
             err_msg = sanitize_untrusted_text(f"{type(exc).__name__}: {exc}", max_chars=300)
-            _emit("failed", rounds_completed, err_msg, step_phase="failed", error_class=type(exc).__name__)
             failed_job = self.store.complete_job(
                 job_id,
                 status="failed",
@@ -1255,8 +1378,10 @@ class ResearchEngine:
                 estimated_search_usd=estimated_search_usd,
                 error_code=type(exc).__name__,
                 error_message=err_msg,
+                worker_id=worker_id,
             )
             assert failed_job is not None
+            _emit("failed", rounds_completed, err_msg, step_phase="failed", error_class=type(exc).__name__, record_db=False)
             return failed_job
 
 

@@ -281,13 +281,13 @@ def clarification_actions(
         confirm_label = (
             "✅ Starta research"
             if resolved_kind == "research"
-            else "✅ Stämmer — börja arbeta"
+            else "✅ Kör"
         )
         return ActionMarkup(
             rows=[
                 [ActionButton(confirm_label, payload=f"clarify:go:{cid}")],
                 [
-                    ActionButton("✍️ Justera / lägg till", payload=f"clarify:other:{cid}"),
+                    ActionButton("✍️ Justera", payload=f"clarify:other:{cid}"),
                     ActionButton("✖️ Avbryt", payload=f"clarify:cancel:{cid}"),
                 ],
             ]
@@ -311,12 +311,18 @@ def clarification_actions(
             payload = f"clarify:pick:{cid}:{opt_id}"
 
         clean_label = " ".join(raw_label.split()) or f"Alternativ {idx}"
-        label = (f"⭐ {clean_label}" if recommended else clean_label)[:48]
+        if resolved_kind == "research":
+            if recommended:
+                label = f"⭐ {clean_label[:18].rstrip()}"[:20]
+            else:
+                label = clean_label[:20].rstrip()
+        else:
+            label = (f"⭐ {clean_label}" if recommended else clean_label)[:48]
         rows.append([ActionButton(label=label, payload=payload)])
 
     rows.append(
         [
-            ActionButton("✍️ Skriv egen förklaring", payload=f"clarify:other:{cid}"),
+            ActionButton("✍️ Eget svar", payload=f"clarify:other:{cid}"),
             ActionButton("✖️ Avbryt", payload=f"clarify:cancel:{cid}"),
         ]
     )

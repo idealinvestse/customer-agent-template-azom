@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from email.utils import parseaddr
 from typing import Any
 
 from ecom_ops.actions.support import extract_order_id
@@ -240,7 +241,9 @@ def ingest_message(
 
     body = msg.body or ""
     subject = msg.subject or "(no subject)"
-    from_addr = msg.from_addr or "unknown@unknown"
+    raw_from = (msg.from_addr or "").strip()
+    _, parsed_from = parseaddr(raw_from)
+    from_addr = (parsed_from.strip() if "@" in parsed_from else raw_from) or "unknown@unknown"
     in_reply_to = getattr(msg, "in_reply_to", None)
     references_header = getattr(msg, "references_header", None)
 

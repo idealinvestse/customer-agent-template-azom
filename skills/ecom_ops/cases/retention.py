@@ -18,6 +18,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
 
@@ -142,7 +143,10 @@ def _unlink_case_research_refs(case_ids: list[str], *, db_dir: Path | None = Non
     """Sever ``case:<uuid>`` linkages in ``research_jobs.sqlite3`` (invariant #17.8)."""
     if not case_ids:
         return 0
-    stores: list[ResearchStore] = [ResearchStore()]
+    stores: list[ResearchStore] = []
+    default_jobs = _data_dir() / "research_jobs.sqlite3"
+    if default_jobs.is_file():
+        stores.append(ResearchStore())
     if db_dir is not None:
         local_jobs = db_dir / "research_jobs.sqlite3"
         if local_jobs.is_file() and db_dir.resolve() != _data_dir().resolve():
@@ -152,6 +156,8 @@ def _unlink_case_research_refs(case_ids: list[str], *, db_dir: Path | None = Non
                     artifacts_dir=db_dir / "research_artifacts",
                 )
             )
+    if not stores:
+        return 0
     unlinked = 0
     for cid in case_ids:
         ref = f"case:{cid}"
@@ -216,11 +222,15 @@ def purge_closed_cases(
                 (*TERMINAL_STATUSES, cutoff_iso),
             )
             conn.commit()
-            _unlink_case_research_refs(target_ids, db_dir=cs.path.parent)
+            unlink_warn = ""
+            try:
+                _unlink_case_research_refs(target_ids, db_dir=cs.path.parent)
+            except Exception as exc:
+                unlink_warn = f" (research unlink warning: {str(exc)[:160]})"
             jsonl = purge_sidecar_jsonl(now=now)
             return RetentionResult(
                 ok=True,
-                message=f"Redacted {redacted} closed/replied cases older than {days}d",
+                message=f"Redacted {redacted} closed/replied cases older than {days}d{unlink_warn}",
                 redacted=redacted,
                 retention_days=days,
                 jsonl_purged=jsonl,
@@ -244,11 +254,15 @@ def purge_closed_cases(
         )
         deleted = cur.rowcount
         conn.commit()
-        _unlink_case_research_refs(target_ids, db_dir=cs.path.parent)
+        unlink_warn = ""
+        try:
+            _unlink_case_research_refs(target_ids, db_dir=cs.path.parent)
+        except Exception as exc:
+            unlink_warn = f" (research unlink warning: {str(exc)[:160]})"
         jsonl = purge_sidecar_jsonl(now=now)
         return RetentionResult(
             ok=True,
-            message=f"Deleted {deleted} closed/replied cases older than {days}d",
+            message=f"Deleted {deleted} closed/replied cases older than {days}d{unlink_warn}",
             deleted=deleted,
             retention_days=days,
             jsonl_purged=jsonl,
@@ -260,18 +274,42 @@ def purge_closed_cases(
         conn.close()
 
 
+def _bare_email_lower(raw: str | None) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    _, addr = parseaddr(s)
+    addr_s = addr.strip().lower()
+    if addr_s and "@" in addr_s:
+        return addr_s
+    return s.lower()
+
+
 def gdpr_cases_for_email(conn: Any, email: str) -> list[str]:
     """Case ids matching ``from_addr`` on the case or any message (case-insensitive)."""
     email_l = email.strip().lower()
+    escaped = email_l.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like_pat = f"%{escaped}%"
     rows = conn.execute(
         """
-        SELECT DISTINCT c.id FROM cases c
+        SELECT DISTINCT c.id, c.from_addr, m.from_addr AS msg_from_addr
+        FROM cases c
         LEFT JOIN case_messages m ON m.case_id = c.id
-        WHERE lower(c.from_addr) = ? OR lower(m.from_addr) = ?
+        WHERE lower(c.from_addr) LIKE ? ESCAPE '\\'
+           OR lower(m.from_addr) LIKE ? ESCAPE '\\'
         """,
-        (email_l, email_l),
+        (like_pat, like_pat),
     ).fetchall()
-    return [r[0] for r in rows]
+    matched: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        cid = str(row[0])
+        if cid in seen:
+            continue
+        if _bare_email_lower(row[1]) == email_l or _bare_email_lower(row[2]) == email_l:
+            seen.add(cid)
+            matched.append(cid)
+    return matched
 
 
 def gdpr_export(*, email: str, db_path: Path) -> dict[str, Any]:
@@ -345,12 +383,19 @@ def gdpr_delete(*, email: str, db_path: Path) -> dict[str, Any]:
         )
         conn.execute(f"DELETE FROM cases WHERE id IN ({placeholders})", ids)
         conn.commit()
-        _unlink_case_research_refs(ids, db_dir=db_path.parent)
-        return {
+        unlink_warn: str | None = None
+        try:
+            _unlink_case_research_refs(ids, db_dir=db_path.parent)
+        except Exception as exc:
+            unlink_warn = str(exc)[:200]
+        res: dict[str, Any] = {
             "ok": True,
             "deleted": len(ids),
             "message": f"Deleted {len(ids)} cases for {email}",
         }
+        if unlink_warn:
+            res["warning"] = f"research unlink failed: {unlink_warn}"
+        return res
     except Exception as exc:
         conn.rollback()
         return {"ok": False, "message": str(exc)[:200]}

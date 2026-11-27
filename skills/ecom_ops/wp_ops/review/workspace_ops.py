@@ -589,6 +589,8 @@ def bulk_replace_work(
             )
         )
 
+    if len(matched_changes) > _MAX_CHANGES:
+        raise ReviewError("InvalidToolArguments")
     diff_preview, truncated = _bounded_diff_text(diff_chunks)
     if not dry_run and matched_changes:
         apply_work_changes(ws_root, matched_changes, allow_create=False, allow_delete=False)

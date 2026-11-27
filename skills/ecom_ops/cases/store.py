@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sqlite3
@@ -996,14 +997,15 @@ class CaseStore:
         callback_pattern = f'%"data":"cases:approve:{id8}"%'
         command_pattern = f'%"text":"/cases approve {id8}%'
         try:
-            with sqlite3.connect(jobs_path, timeout=0.5) as jobs:
-                row = jobs.execute(
-                    "SELECT 1 FROM bot_jobs WHERE side_effect_started=1 "
-                    "AND (state IN ('running','needs_reconciliation') "
-                    "OR (state='reconciled' AND reconciliation_outcome='done')) "
-                    "AND (payload_json LIKE ? OR payload_json LIKE ?) LIMIT 1",
-                    (callback_pattern, command_pattern),
-                ).fetchone()
+            with contextlib.closing(sqlite3.connect(jobs_path, timeout=0.5)) as jobs:
+                with jobs:
+                    row = jobs.execute(
+                        "SELECT 1 FROM bot_jobs WHERE side_effect_started=1 "
+                        "AND (state IN ('running','needs_reconciliation') "
+                        "OR (state='reconciled' AND reconciliation_outcome='done')) "
+                        "AND (payload_json LIKE ? OR payload_json LIKE ?) LIMIT 1",
+                        (callback_pattern, command_pattern),
+                    ).fetchone()
             return row is not None
         except sqlite3.Error:
             # If the job ledger cannot be read, leave the sending claim for

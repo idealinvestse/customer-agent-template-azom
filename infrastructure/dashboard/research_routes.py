@@ -74,11 +74,42 @@ def _maybe_start_research_worker() -> None:
 
 def _safe_next_url(raw: str | None) -> str | None:
     text = str(raw or "").strip()
+    if not text:
+        return None
+    if any(ord(ch) < 32 or ord(ch) == 127 or ch == "\\" for ch in text):
+        return None
+    text = text.split("#", 1)[0].strip()
     if not text or not text.startswith("/") or text.startswith("//"):
         return None
-    if any(ch in text for ch in ("\r", "\n", "\t", "\\")):
-        return None
     return text
+
+
+def _format_events(events: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        item = dict(ev)
+        created = item.get("created_at")
+        item["created_at_fmt"] = _fmt_dt(created) or str(created or "")
+        out.append(item)
+    return out
+
+
+def _case_taint_for_target(target_ref: str | None):
+    if not target_ref or not target_ref.startswith("case:"):
+        return None
+    case_id = target_ref.split(":", 1)[1].strip()
+    if not case_id:
+        return None
+    from ecom_ops.cases.service import CaseService
+
+    case_svc = CaseService()
+    case_obj = case_svc.store.get(case_id)
+    if case_obj is None:
+        return None
+    case_msgs = case_svc.store.messages(case_id)
+    return case_svc._build_case_taint_context(case_obj, case_msgs)
 
 
 def _job_view(job: ResearchJob) -> dict[str, Any]:
@@ -195,7 +226,7 @@ def _hub_context(
     quick_result: dict[str, Any] | None = None,
     quick_query: str = "",
     selected_profile: str = "deep_general",
-    selected_locale: str = "sv",
+    selected_locale: str = "SE",
     flash: str | None = None,
 ) -> dict[str, Any]:
     actor_name = g.actor["name"]
@@ -203,15 +234,17 @@ def _hub_context(
     store = _research_store()
     jobs = [_job_view(j) for j in store.list_jobs(actor=actor_name, limit=50)]
     profiles = [p.to_dict() for p in list_profiles()]
+    raw_loc = (selected_locale or "").strip()
+    norm_locale = "SE" if raw_loc.lower() in {"", "sv"} else raw_loc
     extra: dict[str, Any] = {
         "jobs": jobs,
         "profiles": profiles,
         "search_status": _build_search_status(),
         "quick_result": quick_result,
         "quick_query": quick_query,
-        "quick_locale": selected_locale,
+        "quick_locale": norm_locale,
         "selected_profile": selected_profile,
-        "selected_locale": selected_locale,
+        "selected_locale": norm_locale,
         "can_admin": actor_obj.has(Permission.RESEARCH_ADMIN),
     }
     if flash is not None:
@@ -327,7 +360,7 @@ def research_search():
                 quick_result=None,
                 quick_query="",
                 selected_profile=profile_id,
-                selected_locale=locale or "sv",
+                selected_locale=locale or "SE",
                 flash=f"error:{err_msg}",
             ),
         )
@@ -350,7 +383,7 @@ def research_search():
                 quick_result=None,
                 quick_query=query,
                 selected_profile=profile_id,
-                selected_locale=locale or "sv",
+                selected_locale=locale or "SE",
                 flash=f"error:{err_msg}",
             ),
         )
@@ -364,7 +397,7 @@ def research_search():
                 quick_result=None,
                 quick_query=query,
                 selected_profile=profile_id,
-                selected_locale=locale or "sv",
+                selected_locale=locale or "SE",
                 flash=f"error:{err_msg}",
             ),
         )
@@ -377,7 +410,7 @@ def research_search():
                 quick_result=None,
                 quick_query=query,
                 selected_profile=profile_id,
-                selected_locale=locale or "sv",
+                selected_locale=locale or "SE",
                 flash=f"error:{err_msg}",
             ),
         )
@@ -399,7 +432,7 @@ def research_search():
             quick_result=quick_result,
             quick_query=query,
             selected_profile=profile_id,
-            selected_locale=locale or "sv",
+            selected_locale=locale or "SE",
         ),
     )
 
@@ -437,6 +470,7 @@ def research_jobs_create():
     visibility = "team" if (target_ref and not is_wp) else "private"
     markets = [market] if market else None
     country = market if len(market) == 2 else None
+    taint = _case_taint_for_target(target_ref)
 
     try:
         job = _research_service().start_research(
@@ -450,18 +484,26 @@ def research_jobs_create():
             country=country,
             visibility=visibility,
             channel="dashboard",
+            taint=taint,
             start_worker=False,
         )
     except AccessDenied:
         return Response("Saknar behörighet", 403)
-    except (SearchPolicyError, KeyError, ValueError) as exc:
+    except (SearchPolicyError, SearchRouteError, KeyError, ValueError) as exc:
         err_msg = f"Kunde inte starta research ({exc})"
         _flash(err_msg, "error")
         dest = next_url or url_for("research.research_hub")
         sep = "&" if "?" in dest else "?"
         return redirect(f"{dest}{sep}{_flash_q(err=err_msg)}")
 
-    _maybe_start_research_worker()
+    try:
+        _maybe_start_research_worker()
+    except SearchRouteError as exc:
+        err_msg = f"Research köad men kunde inte startas ({exc})"
+        _flash(err_msg, "error")
+        dest = next_url or url_for("research.research_detail", res_id=job.research_id)
+        sep = "&" if "?" in dest else "?"
+        return redirect(f"{dest}{sep}{_flash_q(err=err_msg)}")
     msg = f"Research startad ({job.research_id})"
     _flash(msg, "ok")
     if next_url:
@@ -500,7 +542,7 @@ def research_detail(res_id: str):
             if isinstance(s, dict)
         ]
 
-    events = store.list_events(res_id, since_seq=0, limit=200)
+    events = _format_events(store.list_events(res_id, since_seq=0, limit=200))
     steers = _list_steers(store, res_id)
     can_mutate = authorize_research_access(actor_name, job, "steer")
     return render_template(
@@ -535,7 +577,7 @@ def research_status(res_id: str):
         since_seq = max(0, int(request.args.get("since_seq") or 0))
     except (TypeError, ValueError):
         since_seq = 0
-    events = store.list_events(res_id, since_seq=since_seq, limit=200)
+    events = _format_events(store.list_events(res_id, since_seq=since_seq, limit=200))
     return jsonify(
         {
             "ok": True,
@@ -566,14 +608,31 @@ def research_steer(res_id: str):
     if err_resp is not None or job is None:
         return err_resp
 
+    if job.status in {"completed", "partial", "cancelled", "failed"}:
+        err_msg = "Kan inte styra ett redan avslutat research-jobb."
+        _flash(err_msg, "error")
+        return redirect(url_for("research.research_detail", res_id=res_id) + f"?{_flash_q(err=err_msg)}")
+
     note = (request.form.get("note") or "").strip()
     try:
+        taint = _case_taint_for_target(job.target_ref)
+        if taint is not None and note:
+            from ecom_ops.research.firewall import OutboundQueryFirewall
+
+            fw = OutboundQueryFirewall()
+            norm_note = " ".join(note.split())
+            for offset in range(0, len(norm_note), 125):
+                chunk = norm_note[offset : offset + 250]
+                if chunk:
+                    fw.check_query(chunk, taint=taint)
+                if offset + 250 >= len(norm_note):
+                    break
         _research_service().steer_research(res_id, note, actor=g.actor["name"])
     except AccessDenied:
         return Response("Saknar behörighet", 403)
     except KeyError:
         return Response("Research hittades inte", 404)
-    except SearchPolicyError as exc:
+    except (SearchPolicyError, ValueError) as exc:
         err_msg = f"Ogiltig styrning ({exc})"
         _flash(err_msg, "error")
         return redirect(url_for("research.research_detail", res_id=res_id) + f"?{_flash_q(err=err_msg)}")
@@ -600,9 +659,20 @@ def research_cancel(res_id: str):
     except AccessDenied:
         return Response("Saknar behörighet", 403)
 
-    msg = "Research avbruten" if res.get("result") == "cancelled" else "Avbrytning begärd"
-    _flash(msg, "ok")
-    return redirect(url_for("research.research_detail", res_id=res_id) + f"?{_flash_q(msg)}")
+    result = res.get("result")
+    if result == "cancelled":
+        msg = "Research avbruten"
+        _flash(msg, "ok")
+        q = _flash_q(msg)
+    elif result == "already_terminal":
+        msg = "Research-jobbet är redan avslutat"
+        _flash(msg, "info")
+        q = _flash_q(info=msg)
+    else:
+        msg = "Avbrytning begärd"
+        _flash(msg, "ok")
+        q = _flash_q(msg)
+    return redirect(url_for("research.research_detail", res_id=res_id) + f"?{q}")
 
 
 @research_bp.route("/research/<res_id>/export", methods=["GET"])

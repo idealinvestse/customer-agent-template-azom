@@ -176,12 +176,18 @@ def _open_sqlite_ro(db_path: Path) -> sqlite3.Connection | None:
             timeout=2.0,
         )
     except sqlite3.OperationalError:
+        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(str(db_path), timeout=2.0)
             conn.execute("PRAGMA query_only=ON")
             conn.execute("PRAGMA busy_timeout=2000")
             return conn
         except sqlite3.Error:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             return None
     except sqlite3.Error:
         return None
@@ -561,7 +567,7 @@ def _collect_disk_usage(root: Path, now_dt: datetime) -> dict[str, Any]:
         except OSError:
             pass
 
-    # Expired non-pinned terminal research artifacts count
+    # Expired non-pinned terminal research artifacts count (must exist on disk, matching ops_gc)
     expired_research_artifacts_count = 0
     try:
         from ecom_ops.research.config import load_research_config
@@ -575,6 +581,8 @@ def _collect_disk_usage(root: Path, now_dt: datetime) -> dict[str, Any]:
     res_cutoff_ts = now_dt.timestamp() - (ttl_s + grace_s)
     res_expired_ids: set[str] = set()
     res_db_ids: set[str] = set()
+    res_art_root = root / "research_artifacts"
+    res_art_root_ok = res_art_root.is_dir() and not res_art_root.is_symlink()
     rconn = _open_sqlite_ro(root / "research_jobs.sqlite3")
     if rconn is not None:
         try:
@@ -595,8 +603,11 @@ def _collect_disk_usage(root: Path, now_dt: datetime) -> dict[str, Any]:
                     """,
                     (res_cutoff_ts,),
                 ).fetchall():
-                    if row[0]:
-                        res_expired_ids.add(str(row[0]))
+                    if row[0] and res_art_root_ok:
+                        jid = str(row[0])
+                        jdir = res_art_root / jid
+                        if jdir.is_dir() and not jdir.is_symlink():
+                            res_expired_ids.add(jid)
         except sqlite3.Error:
             pass
         finally:
@@ -604,14 +615,21 @@ def _collect_disk_usage(root: Path, now_dt: datetime) -> dict[str, Any]:
                 rconn.close()
             except Exception:
                 pass
-    res_art_root = root / "research_artifacts"
-    if res_art_root.is_dir() and not res_art_root.is_symlink():
+    if res_art_root_ok:
         try:
             for item in res_art_root.iterdir():
                 if not item.name.startswith("res-") or item.is_symlink() or not item.is_dir():
                     continue
                 if item.name in res_db_ids:
                     continue
+                meta_path = item / "meta.json"
+                if meta_path.is_file() and not meta_path.is_symlink():
+                    try:
+                        meta_obj = json.loads(meta_path.read_text(encoding="utf-8"))
+                        if isinstance(meta_obj, dict) and meta_obj.get("pinned"):
+                            continue
+                    except (OSError, json.JSONDecodeError):
+                        pass
                 try:
                     newest_mt = item.lstat().st_mtime
                     for dp, _dns, fns in os.walk(item, topdown=True, followlinks=False):

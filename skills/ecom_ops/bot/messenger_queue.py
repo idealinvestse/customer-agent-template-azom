@@ -12,7 +12,8 @@ import os
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -110,19 +111,30 @@ def build_messenger_research_completion_reply(
     topic = sanitize_status_fragment(getattr(spec, "topic", "") if spec else "", max_len=120)
     brief_url = dashboard_links.research_brief_url(rid)
 
-    quick_actions = ActionMarkup(
-        rows=[
-            [
-                ActionButton(label="Visa brief", payload=f"research:show:{rid}"),
-                ActionButton(label="Status", payload=f"research:status:{rid}"),
-            ],
-            [
-                ActionButton(label="Ärenden", payload="cases:list"),
-                ActionButton(label="Avbryt", payload=f"research:cancel:{rid}"),
-            ],
-            *([[ActionButton(label="Öppna i dashboard", url=brief_url)]] if brief_url else []),
-        ]
-    )
+    if status in {"cancelled", "failed"}:
+        quick_actions = ActionMarkup(
+            rows=[
+                [
+                    ActionButton(label="Status", payload=f"research:status:{rid}"),
+                    ActionButton(label="Ärenden", payload="cases:list"),
+                ],
+                *([[ActionButton(label="Öppna i dashboard", url=brief_url)]] if brief_url else []),
+            ]
+        )
+    else:
+        quick_actions = ActionMarkup(
+            rows=[
+                [
+                    ActionButton(label="Visa brief", payload=f"research:show:{rid}"),
+                    ActionButton(label="Status", payload=f"research:status:{rid}"),
+                ],
+                [
+                    ActionButton(label="Alla jobb", payload=f"research:list:{rid}"),
+                    ActionButton(label="Ärenden", payload="cases:list"),
+                ],
+                *([[ActionButton(label="Öppna i dashboard", url=brief_url)]] if brief_url else []),
+            ]
+        )
 
     if status == "cancelled":
         text = f"🛑 Research {rid} avbröts."
@@ -219,6 +231,14 @@ def _update_messenger_session_research_ids(
         pass
 
 
+def _delivery_result_succeeded(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("ok") is True or item.get("dry_run") is True:
+        return True
+    return bool(item.get("message_id")) and not item.get("error")
+
+
 def deliver_messenger_research_completion(
     job: Any,
     *,
@@ -273,7 +293,7 @@ def deliver_messenger_research_completion(
     is_dry = dry_run if dry_run is not None else (not tok)
     results = send_bot_reply(peer_id, reply, page_token=tok, dry_run=is_dry)
     _update_messenger_session_research_ids(peer_id, rid, data_dir=base)
-    if rstore is not None and results and all(r.get("ok") or r.get("dry_run") for r in results):
+    if rstore is not None and results and all(_delivery_result_succeeded(r) for r in results):
         try:
             rstore.update_progress(rid, delivery_state="delivered")
         except Exception:
@@ -306,19 +326,32 @@ class MessengerJobQueue:
         self._wakeup = threading.Event()
         self._stop = threading.Event()
         self._worker_lock = threading.Lock()
+        self._sweep_lock = threading.Lock()
+        self._last_sweep_at: float = 0.0
+        self._delivery_backoff: dict[str, tuple[int, float]] = {}
         self._threads: list[threading.Thread] = []
         self._handler_factory: Callable[[], Any] | None = None
         self._page_token: str | None = None
         self._dry_run: bool = True
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), timeout=5.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            yield conn
+            if conn.in_transaction:
+                conn.commit()
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -502,6 +535,88 @@ class MessengerJobQueue:
             dry_run=self._dry_run,
         )
 
+    def sweep_pending_research_deliveries(self) -> int:
+        """Deliver completed Messenger research jobs still marked ``delivery_state='pending'``."""
+        base = self.db_path.parent
+        db_path = base / "research_jobs.sqlite3"
+        if not db_path.is_file():
+            return 0
+        delivered = 0
+        with self._sweep_lock:
+            from ecom_ops.research.store import ResearchStore
+
+            rstore = ResearchStore(
+                path=db_path,
+                artifacts_dir=base / "research_artifacts",
+            )
+            marks = ",".join("?" for _ in _RESEARCH_TERMINAL_STATUSES)
+            with rstore._connection() as conn:
+                rows = conn.execute(
+                    f"SELECT * FROM research_jobs "
+                    f"WHERE channel='messenger' AND peer_id != '' "
+                    f"AND status IN ({marks}) AND delivery_state='pending' "
+                    f"ORDER BY updated_at ASC LIMIT 20",
+                    tuple(sorted(_RESEARCH_TERMINAL_STATUSES)),
+                ).fetchall()
+            now = time.monotonic()
+            for row in rows:
+                job = rstore._row_to_job(row)
+                if job is None:
+                    continue
+                rid = str(job.research_id)
+                attempts_done, next_at = self._delivery_backoff.get(rid, (0, 0.0))
+                if now < next_at:
+                    continue
+                try:
+                    results = deliver_messenger_research_completion(
+                        job,
+                        data_dir=base,
+                        page_token=self._page_token,
+                        dry_run=self._dry_run,
+                        store=rstore,
+                    )
+                except Exception:
+                    results = None
+                refreshed = rstore.get_job(rid)
+                new_state = str(getattr(refreshed, "delivery_state", "pending") or "pending")
+                if new_state != "pending":
+                    self._delivery_backoff.pop(rid, None)
+                    if new_state == "delivered":
+                        delivered += 1
+                elif results is not None:
+                    next_attempts = attempts_done + 1
+                    if next_attempts >= 8:
+                        try:
+                            rstore.update_progress(rid, delivery_state="failed")
+                        except Exception:
+                            pass
+                        self._delivery_backoff.pop(rid, None)
+                    else:
+                        delay = min(4.0 * (2 ** (next_attempts - 1)), 300.0)
+                        self._delivery_backoff[rid] = (next_attempts, now + delay)
+                else:
+                    next_attempts = attempts_done + 1
+                    if next_attempts >= 8:
+                        try:
+                            rstore.update_progress(rid, delivery_state="failed")
+                        except Exception:
+                            pass
+                        self._delivery_backoff.pop(rid, None)
+                    else:
+                        delay = min(4.0 * (2 ** (next_attempts - 1)), 300.0)
+                        self._delivery_backoff[rid] = (next_attempts, now + delay)
+        return delivered
+
+    def _maybe_sweep_research_deliveries(self, *, min_interval_s: float = 2.0) -> None:
+        now = time.monotonic()
+        if (now - self._last_sweep_at) < min_interval_s:
+            return
+        self._last_sweep_at = now
+        try:
+            self.sweep_pending_research_deliveries()
+        except Exception as exc:
+            log.debug("Messenger research delivery sweep failed: %s", type(exc).__name__)
+
     def ensure_started(
         self,
         *,
@@ -535,6 +650,7 @@ class MessengerJobQueue:
 
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
+            self._maybe_sweep_research_deliveries()
             job = self._claim_next()
             if job is None:
                 self._wakeup.wait(timeout=1.0)

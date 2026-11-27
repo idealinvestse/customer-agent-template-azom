@@ -279,7 +279,29 @@ class AllowlistedSiteRedirectHandler(urllib.request.HTTPRedirectHandler):
                     headers,
                     fp,
                 )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None:
+            orig_parsed = urllib.parse.urlparse(str(getattr(req, "full_url", "") or ""))
+            orig_host = (orig_parsed.hostname or "").strip().lower().rstrip(".")
+            if orig_host:
+                try:
+                    orig_host = orig_host.encode("idna").decode("ascii").lower().rstrip(".")
+                except UnicodeError:
+                    pass
+            try:
+                orig_port = orig_parsed.port or 443
+            except ValueError:
+                orig_port = -1
+            try:
+                new_port = parsed.port or 443
+            except ValueError:
+                new_port = -1
+            if orig_parsed.scheme.lower() != "https" or orig_host != host or orig_port != new_port:
+                for hdr_dict in (new_req.headers, getattr(new_req, "unredirected_hdrs", {})):
+                    for key in list(hdr_dict.keys()):
+                        if str(key).lower() in _shared_http_guard._SENSITIVE_AUTH_HEADERS:
+                            hdr_dict.pop(key, None)
+        return new_req
 
 
 _AllowlistedSiteRedirectHandler = AllowlistedSiteRedirectHandler

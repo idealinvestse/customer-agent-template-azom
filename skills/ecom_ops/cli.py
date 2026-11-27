@@ -532,12 +532,21 @@ def _mock_mode() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from ecom_ops.rbac import AccessDenied
     from ecom_ops.runtime_env import bootstrap_runtime
 
     bootstrap_runtime()
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        return _run_cli_command(parser, args)
+    except AccessDenied as exc:
+        return _cli_error_result(exc)
 
+
+def _run_cli_command(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> int:
     if args.mock:
         import os
 

@@ -87,7 +87,10 @@ _PAGE_LIST_RE = re.compile(
     r"(?:\d{1,2}\s+)?sidor(?:na)?\b",
     re.I,
 )
-_PAGE_TITLE_RE = re.compile(r"\bsid(?:an|a)\s+(.+)$", re.I)
+_PAGE_TITLE_RE = re.compile(
+    r"(?:^|\b(?:visa|öppna|oppna|kolla|hämta|hamta)\s+)sid(?:an|a)\s+(.+)$",
+    re.I,
+)
 _STICKY_PRODUCT_RE = re.compile(r"\b(?:visa|öppna|oppna|kolla)\s+produkten\b", re.I)
 _STICKY_PAGE_RE = re.compile(r"\b(?:visa|öppna|oppna|kolla)\s+sidan\s*$", re.I)
 _ORDER_STATUS_WORDS = frozenset(

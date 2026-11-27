@@ -94,7 +94,7 @@
       {% for variant in sibling_variants %}
       <a
         href="{{ url_for('wp_review', site_id=plan.site_id, plan_id=variant.plan_id) }}"
-        class="az-btn-secondary az-btn-sm {% if variant.is_current %}bg-ink-800 ring-1 ring-steel-500/50 text-steel-200{% endif %}"
+        class="az-btn-secondary az-btn-sm {% if variant.is_current %}bg-ink-800 ring-1 ring-steel-500/40 text-steel-200{% endif %}"
         {% if variant.is_current %}aria-current="page"{% endif %}
         data-variant-plan-id="{{ variant.plan_id }}"
       >
@@ -126,7 +126,7 @@
     </div>
 
     {% if can_review and page_draft and (page_draft.get('slug') or page_draft.get('title') or page_draft.get('page_type') or page_draft.get('template_file')) %}
-    <div class="rounded-xl border border-steel-500/30 bg-ink-950/70 p-3.5 space-y-2" data-page-draft-meta="true">
+    <div class="rounded-xl border border-steel-500/35 bg-ink-950/70 p-3.5 space-y-2" data-page-draft-meta="true">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <span class="text-xs font-semibold uppercase tracking-wider text-steel-300">Sidutkast (fristående sida)</span>
         {% if page_draft.get('synthetic_data') %}
@@ -412,9 +412,9 @@
       {% endif %}
 
       {% if draft_page %}
-      <div class="rounded-xl border border-ok/40 bg-ok/10 p-3.5 space-y-2" data-draft-page-card="true">
+      <div class="rounded-xl border border-ok/30 bg-teal-500/15 p-3.5 space-y-2" data-draft-page-card="true">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-ok">
+          <span class="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-400">
             {{ icon('check-circle', 'xs') }}
             <span>WordPress-utkast sparat</span>
           </span>
@@ -490,7 +490,7 @@
       <h3 class="text-xs font-semibold uppercase tracking-wider text-steel-300">Jämförelsebild (Före / Efter eller Varianter)</h3>
       <div class="grid gap-4">
         {% for shot in live_overlay_comparison.compare %}
-        <figure class="space-y-1.5 rounded-xl border border-steel-500/40 bg-ink-950/70 p-3">
+        <figure class="space-y-1.5 rounded-xl border border-steel-500/45 bg-ink-950/70 p-3">
           <figcaption class="flex items-center justify-between gap-2 text-xs">
             <span class="font-semibold text-steel-200">{{ shot.label }}</span>
             <code class="font-mono text-mist-400">{{ shot.name }}</code>
@@ -613,7 +613,7 @@
       <a class="az-btn-secondary az-btn-sm" href="/research">Research-hubb</a>
     </div>
 
-    <form method="post" action="/research/jobs" class="grid gap-3 sm:grid-cols-4 sm:items-end">
+    <form method="post" action="/research/jobs" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <input type="hidden" name="target_ref" value="wp:{{ plan.site_id }}:{{ plan.plan_id }}" />
       <input type="hidden" name="next_url" value="{{ url_for('wp_review', site_id=plan.site_id, plan_id=plan.plan_id) }}" />

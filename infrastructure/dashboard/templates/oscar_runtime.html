@@ -8,6 +8,7 @@
 {% set queues = snapshot.get('queues') or {} %}
 {% set tg_queue = queues.get('telegram') or {} %}
 {% set ms_queue = queues.get('messenger') or {} %}
+{% set res_queue = queues.get('research') or {} %}
 {% set router = snapshot.get('model_router') or {} %}
 {% set breakers = router.get('circuit_breakers') or router.get('breakers') or {} %}
 {% set oauth = router.get('chatgpt_oauth') or router.get('oauth') or {} %}
@@ -32,17 +33,17 @@
   {% endif %}
 
   {% if gc_result %}
-  <section class="az-card border-ok/40 bg-ok/5 space-y-3" data-gc-result="true" data-gc-dry-run="{{ 'true' if gc_result.get('dry_run') else 'false' }}">
+  <section class="az-card border-ok/30 bg-teal-500/15 space-y-3" data-gc-result="true" data-gc-dry-run="{{ 'true' if gc_result.get('dry_run') else 'false' }}">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex items-center gap-2">
-        <span class="text-ok">{{ icon('check-circle', 'sm') }}</span>
+        <span class="text-teal-400">{{ icon('check-circle', 'sm') }}</span>
         <h2 class="font-display text-base font-semibold text-mist-100">
           {% if gc_result.get('dry_run') %}Förhandsgranskning av städning (dry-run){% else %}Städning (GC) slutförd{% endif %}
         </h2>
       </div>
       {{ ui.status_badge('info' if gc_result.get('dry_run') else 'ok', 'Torrkörning' if gc_result.get('dry_run') else 'Utförd') }}
     </div>
-    <dl class="grid gap-3 sm:grid-cols-3 lg:grid-cols-6 text-xs">
+    <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
       <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
         <dt class="text-mist-400">Frigjort utrymme</dt>
         <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ '%.2f'|format((gc_result.get('bytes_reclaimed') or 0) / (1024 * 1024)) }} MB</dd>
@@ -62,6 +63,14 @@
       <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
         <dt class="text-mist-400">Media / Förslag</dt>
         <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ gc_result.get('removed_media_files', 0) }} / {{ gc_result.get('purged_proposals', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Sökcache-rader</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ gc_result.get('purged_search_cache_rows', 0) }}</dd>
+      </div>
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
+        <dt class="text-mist-400">Research-artefakter</dt>
+        <dd class="mt-1 font-mono text-sm font-semibold text-mist-100 tabular-nums">{{ gc_result.get('removed_research_artifacts', 0) }}</dd>
       </div>
       <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3">
         <dt class="text-mist-400">Roterade loggar</dt>
@@ -117,13 +126,13 @@
       {% endif %}
     </section>
 
-    <!-- 2. Jobbköer (Telegram & Messenger) -->
+    <!-- 2. Jobbköer (Telegram, Messenger & Research) -->
     <section class="az-card space-y-4" data-runtime-card="queues">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h2 class="font-display text-base font-semibold text-mist-100">Jobbköer (Telegram &amp; Messenger)</h2>
+        <h2 class="font-display text-base font-semibold text-mist-100">Jobbköer (Telegram, Messenger &amp; Research)</h2>
         {{ ui.status_badge('info', 'SQLite') }}
       </div>
-      <div class="grid gap-3 sm:grid-cols-2">
+      <div class="grid gap-3 sm:grid-cols-3">
         <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2">
           <div class="flex items-center justify-between gap-2">
             <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Telegram</h3>
@@ -166,6 +175,28 @@
           </dl>
           {% else %}
           <p class="az-muted text-xs">Inga jobb i Messenger-kön.</p>
+          {% endif %}
+        </div>
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2" data-research-queue="true">
+          <div class="flex items-center justify-between gap-2">
+            <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-300">Research</h3>
+            {% if res_queue.get('db_present') is sameas false %}
+            <span class="az-badge az-badge-neutral">ej initierad</span>
+            {% endif %}
+          </div>
+          {% if res_queue %}
+          <dl class="space-y-1 text-xs">
+            {% for status_key, count_val in res_queue.items() %}
+            {% if status_key != 'db_present' %}
+            <div class="flex items-center justify-between gap-2">
+              <dt class="font-mono text-mist-400">{{ status_key }}</dt>
+              <dd class="font-mono font-semibold text-mist-100 tabular-nums">{{ count_val }}</dd>
+            </div>
+            {% endif %}
+            {% endfor %}
+          </dl>
+          {% else %}
+          <p class="az-muted text-xs">Inga research-jobb i kön.</p>
           {% endif %}
         </div>
       </div>

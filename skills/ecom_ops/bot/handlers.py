@@ -143,13 +143,14 @@ from ecom_ops.research.config import research_enabled as _research_enabled
 from ecom_ops.research.models import RESEARCH_ID_RE, SearchPolicyError
 from ecom_ops.research.sanitizer import frame_untrusted_web_data, sanitize_untrusted_text
 from ecom_ops.research.tools import _format_search_hits_text
-from ecom_ops.research.worker import ensure_research_worker_started
 from ecom_ops.security import validate_order_id
 from ecom_ops.telemetry import default_telemetry
 
 ORDER_FAST_RE = re.compile(r"^\s*(?:order|ordernr|#)\s*(\d{4,12})\s*$", re.I)
 _FILE_PLAN_ID = re.compile(r"fe-[a-f0-9]{12}")
 _REVIEW_PLAN_ID = re.compile(r"wr-[a-f0-9]{12}")
+_RESEARCH_ID_PREFIX_RE = re.compile(r"^res-[0-9a-f]{4,12}$", re.I)
+_RESEARCH_TERMINAL_STATUSES = frozenset({"completed", "partial", "failed", "cancelled"})
 _BOUND_LEGACY_CALLBACK_RE = re.compile(
     r"^(?:order:set:([^:]+):[^:]+|cases:approve:([^:]+)|product:desc:([^:]+):[01])$",
     re.I,
@@ -966,6 +967,14 @@ class BotHandler:
                 return self._handle_research_command(
                     chat_id, research_args, on_progress=on_progress, task_id=task_id
                 )
+            if oc == "__JOBS__":
+                return self._handle_jobs_command(chat_id)
+            if isinstance(oc, str) and oc.startswith("__STEER__:"):
+                steer_args = oc.split(":", 1)[1].strip()
+                return self._handle_steer_command(chat_id, steer_args)
+            if isinstance(oc, str) and oc.startswith("__CANCEL__:"):
+                cancel_args = oc.split(":", 1)[1].strip()
+                return self._handle_cancel_command(chat_id, cancel_args)
             return self._bind_actions_in_reply(chat_id, as_reply(oc))
 
         # Attach any pending screenshot(s) from the prior photo-only message and clear once consumed.
@@ -1187,6 +1196,16 @@ class BotHandler:
                 step="await_other_text",
                 slots=other_slots,
             )
+            prop_kind = str(proposal_dict.get("dialog_kind") or "").strip().lower()
+            prop_cat = str(proposal_dict.get("category") or "").strip().lower()
+            if prop_kind == "research" or is_research_clarify_category(prop_cat):
+                return BotReply(
+                    text=(
+                        "Beskriv kort vad du vill ändra eller lägga till i researchen "
+                        "(t.ex. djup, marknad SE/NO/DK eller fokusområde), "
+                        "så anpassar jag uppdraget. Skriv /stop eller avbryt för att avbryta."
+                    )
+                )
             return BotReply(
                 text=(
                     "Beskriv kort med egna ord vad du vill ändra "
@@ -1198,12 +1217,23 @@ class BotHandler:
         clarify_cancel = _CLARIFY_CANCEL_RE.fullmatch(raw)
         if clarify_cancel:
             cid = clarify_cancel.group(1).lower()
+            is_research = self._is_research_clarify_id(chat_id, cid)
             cancelled = self._cancel_clarification(chat_id, cid)
             if not cancelled:
                 return BotReply(
-                    text="Förtydligandet är redan hanterat eller utgånget. Ingen ändring utförd."
+                    text=(
+                        "Förtydligandet är redan hanterat eller utgånget. Ingen research startad."
+                        if is_research
+                        else "Förtydligandet är redan hanterat eller utgånget. Ingen ändring utförd."
+                    )
                 )
-            return BotReply(text="Avbrutet — ingen ändring påbörjad.")
+            return BotReply(
+                text=(
+                    "Avbrutet — ingen research startad."
+                    if is_research
+                    else "Avbrutet — ingen ändring påbörjad."
+                )
+            )
 
         prop_yes = _PROPOSAL_YES_RE.fullmatch(raw)
         if prop_yes:
@@ -1374,6 +1404,10 @@ class BotHandler:
             self._clear_pending(chat_id)
             return BotReply(text="Avbrutet — ingen produktbeskrivning genererad.")
         if raw == "wpfile:no" or raw.startswith(("wpfile:no:", "wpfile:stage:")):
+            if raw.startswith("wpfile:stage:"):
+                blocked = self._mutations_blocked_reply()
+                if blocked:
+                    return blocked
             return handle_wpfile_callback(actor, raw, on_progress=on_progress)
         if raw == "wpreview:no" or raw.startswith(
             ("wpreview:no:", "wpreview:stage:", "wpreview:push_draft:")
@@ -1541,7 +1575,13 @@ class BotHandler:
                 if clarify_id:
                     self._cancel_clarification(chat_id, clarify_id)
                 self._clear_clarify_flow(chat_id)
-                return BotReply(text="Avbrutet — ingen ändring påbörjad.")
+                return BotReply(
+                    text=(
+                        "Avbrutet — ingen research startad."
+                        if active_dialog_kind == "research"
+                        else "Avbrutet — ingen ändring påbörjad."
+                    )
+                )
 
             if step == "await_choice":
                 if re.fullmatch(r"[1-4]", answer):
@@ -2418,6 +2458,31 @@ class BotHandler:
             }
         return None
 
+    def _is_research_clarify_id(self, chat_id: str | int, clarify_id: str) -> bool:
+        cid = clarify_id.strip().lower()
+        prev = self.store.get(chat_id) or {}
+        slots = dict(prev.get("slots") or {})
+        proposal_raw: Any = None
+        if str(slots.get("clarify_id") or "").strip().lower() == cid:
+            proposal_raw = slots.get("proposal")
+        if not isinstance(proposal_raw, dict):
+            cache = dict((prev.get("session") or {}).get("clarify_proposals") or {})
+            entry = cache.get(cid)
+            if isinstance(entry, dict):
+                proposal_raw = (entry.get("payload") or {}).get("proposal")
+        if not isinstance(proposal_raw, dict) and self.proposal_store is not None:
+            try:
+                prop = self.proposal_store.get_proposal(cid, chat_id=chat_id)
+                if isinstance(prop, dict):
+                    proposal_raw = (prop.get("payload") or {}).get("proposal")
+            except Exception:
+                proposal_raw = None
+        if not isinstance(proposal_raw, dict):
+            return False
+        prop_kind = str(proposal_raw.get("dialog_kind") or "").strip().lower()
+        prop_cat = str(proposal_raw.get("category") or "").strip().lower()
+        return prop_kind == "research" or is_research_clarify_category(prop_cat)
+
     def _cancel_clarification(self, chat_id: str | int, clarify_id: str) -> bool:
         cid = clarify_id.strip().lower()
         cancelled = False
@@ -3126,6 +3191,8 @@ class BotHandler:
                 start_worker=False,
             )
             if not _research_is_mock_mode() and _research_enabled():
+                from ecom_ops.research.worker import ensure_research_worker_started
+
                 ensure_research_worker_started()
         except AccessDenied:
             return BotReply(text="Åtkomst nekad: saknar behörighet för research-målet.")
@@ -3397,7 +3464,7 @@ class BotHandler:
             return BotReply(text="Ogiltigt research-id.")
         try:
             actor_obj = resolve_actor(actor)
-            if action in {"status", "show"}:
+            if action in {"status", "show", "list"}:
                 require_permission(actor_obj, Permission.WEB_SEARCH)
             elif action == "cancel":
                 require_permission(actor_obj, Permission.RESEARCH_RUN)
@@ -3410,6 +3477,8 @@ class BotHandler:
             return self._format_research_status_reply(rid, actor=actor_obj.name)
         if action == "show":
             return self._format_research_brief_reply(chat_id, rid, actor=actor_obj.name)
+        if action == "list":
+            return self._handle_research_command(chat_id, "list")
         service = get_research_service()
         try:
             res = service.cancel_research(rid, actor=actor_obj.name)
@@ -3418,6 +3487,155 @@ class BotHandler:
         if not res.get("ok"):
             return BotReply(text=f"Hittade inget research-jobb med id {rid} (eller saknar behörighet).")
         return BotReply(text=f"Avbrott begärt för {rid} ({res.get('result')}).")
+
+    def _resolve_peer_research_id(
+        self,
+        prefix_or_id: str,
+        *,
+        chat_id: str | int,
+        actor_name: str,
+    ) -> tuple[str | None, str]:
+        from ecom_ops.bot.job_store import research_jobs_summary_for_peer
+
+        needle = str(prefix_or_id or "").strip().lower()
+        if not _RESEARCH_ID_PREFIX_RE.fullmatch(needle):
+            return None, "invalid"
+        jobs = research_jobs_summary_for_peer(
+            self.channel, chat_id, actor_name, active_only=False, limit=50
+        )
+        matches = [
+            j["research_id"]
+            for j in jobs
+            if str(j.get("research_id") or "").lower().startswith(needle)
+        ]
+        if len(matches) == 1:
+            return matches[0], "ok"
+        if len(matches) > 1:
+            return None, "ambiguous"
+        if RESEARCH_ID_RE.fullmatch(needle):
+            try:
+                job = get_research_service().store.get_job(needle, actor=actor_name)
+            except AccessDenied:
+                return None, "denied"
+            if job is not None:
+                return job.research_id, "ok"
+        return None, "not_found"
+
+    def _handle_jobs_command(self, chat_id: str | int) -> BotReply:
+        try:
+            actor_obj = self._actor_obj(chat_id)
+        except (TelegramActorDenied, ChannelActorDenied):
+            return self._deny_actor()
+        from ecom_ops.bot.job_store import research_jobs_summary_for_peer
+
+        research_jobs = research_jobs_summary_for_peer(
+            self.channel,
+            chat_id,
+            actor_obj.name,
+            active_only=False,
+            limit=10,
+        )
+        if not research_jobs:
+            return BotReply(text="Inga aktiva eller väntande jobb i den här chatten.")
+        lines = ["Jobb i den här chatten:"]
+        for ritem in research_jobs:
+            topic_bit = f" · {ritem['topic']}" if ritem.get("topic") else ""
+            lines.append(
+                f"{ritem['research_id']} · research · {ritem['status']}{topic_bit}"
+            )
+        return BotReply(text="\n".join(lines))
+
+    def _handle_steer_command(self, chat_id: str | int, args: str) -> BotReply:
+        try:
+            actor_obj = self._actor_obj(chat_id)
+            require_permission(actor_obj, Permission.RESEARCH_RUN)
+        except (TelegramActorDenied, ChannelActorDenied):
+            return self._deny_actor()
+        except AccessDenied:
+            return BotReply(text="Åtkomst nekad: kräver behörighet research_run.")
+
+        parts = (args or "").strip().split(None, 1)
+        if not parts or not _RESEARCH_ID_PREFIX_RE.fullmatch(parts[0]):
+            return BotReply(
+                text="Använd /steer <res-id> <instruktion> för att styra ett research-jobb."
+            )
+        if len(parts) < 2 or not parts[1].strip():
+            return BotReply(
+                text="Ange en styrinstruktion efter jobb-id, t.ex. /steer res-... fokusera på Norge."
+            )
+        res_id, match_state = self._resolve_peer_research_id(
+            parts[0], chat_id=chat_id, actor_name=actor_obj.name
+        )
+        if match_state == "ambiguous":
+            return BotReply(text="Flera research-jobb matchar id:t. Ange ett längre id.")
+        if match_state == "denied":
+            return BotReply(text="Du saknar behörighet att styra det research-jobbet.")
+        if res_id is None:
+            return BotReply(text="Inget research-jobb med det id:t hittades.")
+
+        from ecom_ops.bot.job_store import MAX_STEERS_PER_JOB, count_research_steers
+
+        svc = get_research_service()
+        try:
+            job = svc.store.get_job(res_id, actor=actor_obj.name)
+        except AccessDenied:
+            return BotReply(text="Du saknar behörighet att styra det research-jobbet.")
+        if job is None:
+            return BotReply(text="Inget research-jobb med det id:t hittades.")
+        if str(job.status or "").lower() in _RESEARCH_TERMINAL_STATUSES:
+            return BotReply(text=f"Research-jobbet {res_id} är redan avslutat.")
+        if count_research_steers(svc.store.path.parent, res_id) >= MAX_STEERS_PER_JOB:
+            return BotReply(
+                text=f"Max antal styrningar ({MAX_STEERS_PER_JOB}) är redan använt för research {res_id}."
+            )
+        try:
+            svc.steer_research(res_id, parts[1].strip(), actor=actor_obj.name)
+        except AccessDenied:
+            return BotReply(text="Du saknar behörighet att styra det research-jobbet.")
+        except KeyError:
+            return BotReply(text="Inget research-jobb med det id:t hittades.")
+        except (ValueError, SearchPolicyError):
+            return BotReply(text="Styrningen blockerades av säkerhets- eller PII-policyn.")
+        return BotReply(text=f"↪ Styrning sparad för research {res_id}.")
+
+    def _handle_cancel_command(self, chat_id: str | int, args: str) -> BotReply:
+        try:
+            actor_obj = self._actor_obj(chat_id)
+        except (TelegramActorDenied, ChannelActorDenied):
+            return self._deny_actor()
+        raw_arg = (args or "").strip()
+        if not raw_arg:
+            return as_reply(dispatch_openclaw_command(chat_id, "/stop", self.store, channel=self.channel))
+        if not _RESEARCH_ID_PREFIX_RE.fullmatch(raw_arg):
+            return BotReply(text="Inget jobb med det id:t hittades.")
+        try:
+            require_permission(actor_obj, Permission.RESEARCH_RUN)
+        except AccessDenied:
+            return BotReply(text="Du saknar behörighet att avbryta det research-jobbet.")
+        res_id, match_state = self._resolve_peer_research_id(
+            raw_arg, chat_id=chat_id, actor_name=actor_obj.name
+        )
+        if match_state == "ambiguous":
+            return BotReply(text="Flera research-jobb matchar id:t. Ange ett längre id.")
+        if match_state == "denied":
+            return BotReply(text="Du saknar behörighet att avbryta det research-jobbet.")
+        if res_id is None:
+            return BotReply(text="Inget research-jobb med det id:t hittades.")
+        try:
+            outcome = get_research_service().cancel_research(res_id, actor=actor_obj.name)
+        except AccessDenied:
+            return BotReply(text="Du saknar behörighet att avbryta det research-jobbet.")
+        res_code = str(outcome.get("result") or "not_found")
+        res_messages = {
+            "cancelled": f"Research-jobbet {res_id} avbröts innan det startade.",
+            "cancel_requested": (
+                f"Avbrytning begärd för research {res_id}. "
+                "Jobbet stannar vid nästa säkra kontrollpunkt."
+            ),
+            "already_terminal": f"Research-jobbet {res_id} är redan avslutat.",
+            "not_found": "Inget research-jobb med det id:t hittades.",
+        }
+        return BotReply(text=res_messages.get(res_code, "Avbrytning kunde inte registreras."))
 
     def _handle_search_command(
         self,
@@ -3651,9 +3869,30 @@ class BotHandler:
                 return BotReply(text="Ange: /research steer <res-id> <notering>")
             if not note:
                 return BotReply(text="Ange styrningsnotering: /research steer <res-id> <notering>")
+            from ecom_ops.bot.job_store import MAX_STEERS_PER_JOB, count_research_steers
+
+            svc = get_research_service()
             try:
-                get_research_service().steer_research(rid, note, actor=actor_obj.name)
+                job = svc.store.get_job(rid, actor=actor_obj.name)
             except AccessDenied:
+                return BotReply(
+                    text=f"Hittade inget research-jobb med id {rid} (eller saknar behörighet)."
+                )
+            if job is None:
+                return BotReply(
+                    text=f"Hittade inget research-jobb med id {rid} (eller saknar behörighet)."
+                )
+            if str(job.status or "").lower() in _RESEARCH_TERMINAL_STATUSES:
+                return BotReply(
+                    text=f"Research-jobbet {rid} är redan avslutat ({job.status}) och kan inte styras."
+                )
+            if count_research_steers(svc.store.path.parent, rid) >= MAX_STEERS_PER_JOB:
+                return BotReply(
+                    text=f"Max antal styrningar ({MAX_STEERS_PER_JOB}) är redan använt för {rid}."
+                )
+            try:
+                svc.steer_research(rid, note, actor=actor_obj.name)
+            except (AccessDenied, KeyError):
                 return BotReply(
                     text=f"Hittade inget research-jobb med id {rid} (eller saknar behörighet)."
                 )

@@ -29,7 +29,7 @@ _SE_PERSONNUMMER_RE = re.compile(
 _NO_FODSELSNUMMER_RE = re.compile(
     r"(?<!\d)(?:0[1-9]|[12]\d|3[01])(?:0[1-9]|1[0-2])\d{2}\s?\d{5}(?!\d)"
 )
-_ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\ufeff]")
+_ZERO_WIDTH_RE = re.compile(r"[\u00ad\u034f\u200b-\u200f\u2060\ufeff]")
 
 
 def normalize_pii_text(raw: str) -> str:

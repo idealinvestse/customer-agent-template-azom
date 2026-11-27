@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -124,6 +125,10 @@ def web_cache_key(
     return None
 
 
+_UNTRUSTED_TAG_LINE_RE = re.compile(r"^\s*<<<\s*(?:END_)?UNTRUSTED_[A-Z0-9_]+[^>]*>>>\s*$")
+_UNTRUSTED_TAG_ANY_RE = re.compile(r"<<<\s*(?:END_)?UNTRUSTED_[A-Z0-9_]+[^>]*>>>")
+
+
 def compact_older_file_messages(messages: list[dict[str, str]]) -> None:
     """Trim older consumed file-tool and web/research payloads after step 10 while keeping the last 4 tool results intact."""
     if len(messages) <= 10:
@@ -139,8 +144,25 @@ def compact_older_file_messages(messages: list[dict[str, str]]) -> None:
             msg["content"] = f"{head.strip()} [komprimerad tidigare läsning: {{{tail[:450]}...]"
         elif content.startswith("Untrusted tool data for "):
             first_line, _, rest = content.partition("\n")
-            snippet = rest.strip()[:450]
-            msg["content"] = f"{first_line.strip()} [komprimerad tidigare data: {snippet}...]"
+            lines = [ln for ln in rest.splitlines() if ln.strip()]
+            open_tag = lines[0].strip() if lines and _UNTRUSTED_TAG_LINE_RE.match(lines[0]) else ""
+            close_tag = (
+                lines[-1].strip()
+                if len(lines) >= 2 and _UNTRUSTED_TAG_LINE_RE.match(lines[-1])
+                else ""
+            )
+            inner_lines = lines[1:-1] if (open_tag and close_tag) else lines
+            cleaned_body = _UNTRUSTED_TAG_ANY_RE.sub("", "\n".join(inner_lines)).strip()
+            snippet = cleaned_body[:450]
+            if open_tag and close_tag:
+                msg["content"] = (
+                    f"{first_line.strip()}\n"
+                    f"{open_tag}\n"
+                    f"[komprimerad tidigare data: {snippet}...]\n"
+                    f"{close_tag}"
+                )
+            else:
+                msg["content"] = f"{first_line.strip()} [komprimerad tidigare data: {snippet}...]"
         elif msg.get("role") == "assistant":
             msg["content"] = content[:800] + "\n...[kortad historik]"
 
@@ -281,6 +303,7 @@ class LoopBudget:
         error_class: str | None,
         elapsed: float,
         using_preview_bonus: bool,
+        web_cache_hit: bool = False,
     ) -> bool:
         """Record one file-loop tool execution with recovery-retry and preview-bonus exemptions."""
         self.tool_seconds += elapsed
@@ -298,12 +321,13 @@ class LoopBudget:
                 self.reads += 1
             if name in SEARCH_BUDGET_TOOLS:
                 self.searches += 1
-            if name in WEB_SEARCH_BUDGET_TOOLS:
-                self.web_searches += 1
-                self.web_seconds += elapsed
-            if name in WEB_FETCH_BUDGET_TOOLS:
-                self.web_fetches += 1
-                self.web_seconds += elapsed
+            if not web_cache_hit:
+                if name in WEB_SEARCH_BUDGET_TOOLS:
+                    self.web_searches += 1
+                    self.web_seconds += elapsed
+                if name in WEB_FETCH_BUDGET_TOOLS:
+                    self.web_fetches += 1
+                    self.web_seconds += elapsed
         return is_recovery
 
     def enforce_result_size(
@@ -705,6 +729,7 @@ class LoopResultBuilder:
             elif (
                 name in WORKSPACE_MUTATING_TOOLS
                 and output.data.get("ok") is True
+                and not (name == "wp_workspace_bulk_replace" and output.data.get("dry_run") is True)
                 and self.review_stage_plan_id is not None
                 and output.data.get("plan_id") == self.review_stage_plan_id
             ):

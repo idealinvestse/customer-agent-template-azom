@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from email.utils import parseaddr
 from typing import Any
 
 from ecom_ops import llm
-from ecom_ops.actions.support import extract_order_id
+from ecom_ops.actions.support import (
+    SupportCategory,
+    _draft_mentions_order_number,
+    extract_order_id,
+    soft_order_id_ask,
+)
 from ecom_ops.cases.results import ACTIVE_CASE_STATUSES, CaseActionResult
 from ecom_ops.cases.suggest import load_cases_ai_config
 from ecom_ops.order_context import resolve_order_context, woo_domain_from_market
 from ecom_ops.profile import load_profile
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
 from ecom_ops.research import get_research_service
+from ecom_ops.research.config import is_mock_mode
 from ecom_ops.research.models import RESEARCH_ID_RE
-from ecom_ops.research.sanitizer import frame_untrusted_web_data, sanitize_untrusted_text
+from ecom_ops.research.sanitizer import (
+    _DELIMITER_BARE_RE,
+    _DELIMITER_SPOOF_RE,
+    frame_untrusted_web_data,
+    sanitize_untrusted_text,
+)
 
 _MAX_FRAMED_BRIEF_BYTES = 4096
 
@@ -245,8 +257,11 @@ def regenerate_draft(
             and known_cat not in {"uncategorized", "other", "unknown"}
             and getattr(case, "classify_confidence", None) is not None
         )
+        raw_from = (case.from_addr or "").strip()
+        _, parsed_from = parseaddr(raw_from)
+        cust_email = parsed_from.strip() if "@" in parsed_from else raw_from
         handle_kwargs: dict[str, Any] = {
-            "customer_email": case.from_addr if "@" in (case.from_addr or "") else None,
+            "customer_email": cust_email if "@" in cust_email else None,
             "language": case.language or "sv",
             "site": case.site or load_profile().customer,
             "actor": load_profile().operator_actor,
@@ -254,6 +269,8 @@ def regenerate_draft(
             "order_context": order_ctx,
             "case_id": case.id,
         }
+        if framed_brief is not None or bool(use_mock) or (use_mock is None and is_mock_mode()):
+            handle_kwargs["allow_llm"] = False
         if can_skip_classify:
             handle_kwargs["known_category"] = known_cat
             handle_kwargs["known_confidence"] = case.classify_confidence
@@ -269,6 +286,7 @@ def regenerate_draft(
         if case.status == "escalated" and case.category == "abuse":
             category = "abuse"
 
+        effective_order_id = support.order_id or order_id
         if (
             framed_brief is not None
             and not getattr(support, "escalated", False)
@@ -285,7 +303,7 @@ def regenerate_draft(
                 category=category,
                 language=case.language or "sv",
                 customer_name=None,
-                order_id=support.order_id or order_id,
+                order_id=effective_order_id,
                 order_context=combined_ctx,
                 telemetry=svc.telemetry,
                 site=case.site or load_profile().customer,
@@ -293,7 +311,24 @@ def regenerate_draft(
                 actor=load_profile().operator_actor,
             )
             if llm_reply:
-                raw_reply = llm_reply
+                cleaned_reply = _DELIMITER_SPOOF_RE.sub("", llm_reply)
+                cleaned_reply = _DELIMITER_BARE_RE.sub("", cleaned_reply).strip()
+                if cleaned_reply:
+                    raw_reply = cleaned_reply
+                    if (
+                        not effective_order_id
+                        and category.lower()
+                        in {
+                            SupportCategory.ORDER_STATUS.value,
+                            SupportCategory.SHIPPING.value,
+                            SupportCategory.RETURN.value,
+                            SupportCategory.BILLING.value,
+                        }
+                        and not _draft_mentions_order_number(raw_reply)
+                    ):
+                        raw_reply = raw_reply.rstrip() + soft_order_id_ask(
+                            case.language or "sv"
+                        )
 
         draft = _enrich_draft_with_order(
             raw_reply,

@@ -157,11 +157,18 @@ WEB_SEARCH_INTENT_RE = re.compile(
     r"kolla\s+(?:p[åa]\s+(?:webben|n[äa]tet|internet)|online|upp\s+p[åa]\s+(?:n[äa]tet|webben))|"
     r"googla|"
     r"h[äa]mta\s+(?:url|webbsid(?:a|an)|sida(?:n)?\s+https?://)|"
-    r"web_search|web_fetch_extract"
+    r"web_search|web_fetch_extract|"
+    r"(?:h[äa]mta|l[äa]s|kolla(?:\s+in)?|bes[öo]k|sammanfatta|fetch|read|scrape|extract|summarize)"
+    r"(?:\s+\S+){0,4}\s+https?://\S+"
     r")\b"
-    r"|https?://\S+"
+    r"|^\s*https?://\S+\s*$"
     r")",
     re.I,
+)
+_EXPLICIT_STORE_WRITE_RE = re.compile(
+    r"\b(?:ändra|andra|uppdatera|byt|sätt|satt|skapa|publicera|aktivera|inaktivera|stäng\s+av|slå\s+(?:på|av)|update|change|set)\b"
+    r".{0,80}\b(?:sid(?:an|a)|inlägg(?:et)?|inlagg(?:et)?|produkt(?:en)?|order(?:n)?|sajttitel|tagline|plugin)\b",
+    re.I | re.S,
 )
 RESEARCH_INTENT_RE = re.compile(
     r"\b(?:"
@@ -283,10 +290,14 @@ ASSISTANT_ESCALATE_HINT_RE = re.compile(
 SYSTEM_PROMPT, _SYSTEM_PROMPT_VERSION = _build_system_prompt(mode="chat_wp_file")
 
 
+_STREAM_CONTROL_TAG_PUSH_RE = re.compile(r"<\s*/?\s*(?:tool_call|clarify)(?=[\s>/])", re.I)
+_STREAM_CONTROL_TAG_ANY_RE = re.compile(r"<\s*/?\s*(?:tool_call|clarify)\b", re.I)
+
+
 class _SafeTextStream:
     """Stream natural text while withholding model tool-call and clarify protocol markers."""
 
-    _MARKERS = ("<tool_call>", "<clarify>")
+    _MARKER_NAMES = ("tool_call", "clarify")
 
     def __init__(
         self,
@@ -310,27 +321,33 @@ class _SafeTextStream:
         except Exception:
             pass
 
+    @classmethod
+    def _trailing_partial_len(cls, combined: str) -> int:
+        last_lt = combined.rfind("<")
+        if last_lt < 0:
+            return 0
+        tail = combined[last_lt:]
+        if ">" in tail or "\n" in tail or "\r" in tail or len(tail) > 24:
+            return 0
+        rest = tail[1:].lstrip()
+        if rest.startswith("/"):
+            rest = rest[1:].lstrip()
+        low_rest = rest.lower()
+        if not low_rest or any(name.startswith(low_rest) for name in cls._MARKER_NAMES):
+            return len(tail)
+        return 0
+
     def push(self, delta: str) -> None:
         if self.blocked or not delta:
             return
         combined = self.pending + delta
-        low = combined.lower()
-        hits = [idx for marker in self._MARKERS if (idx := low.find(marker)) >= 0]
-        if hits:
-            marker_at = min(hits)
-            self._emit(combined[:marker_at])
+        hit = _STREAM_CONTROL_TAG_PUSH_RE.search(combined)
+        if hit is not None:
+            self._emit(combined[: hit.start()])
             self.pending = ""
             self.blocked = True
             return
-        hold = max(
-            (
-                n
-                for marker in self._MARKERS
-                for n in range(1, len(marker))
-                if low.endswith(marker[:n])
-            ),
-            default=0,
-        )
+        hold = self._trailing_partial_len(combined)
         if hold:
             self._emit(combined[:-hold])
             self.pending = combined[-hold:]
@@ -339,8 +356,10 @@ class _SafeTextStream:
             self.pending = ""
 
     def finish(self, content: str) -> None:
-        low_content = (content or "").lower()
-        if any(marker in low_content for marker in self._MARKERS):
+        if (
+            _STREAM_CONTROL_TAG_ANY_RE.search(content or "") is not None
+            or _STREAM_CONTROL_TAG_ANY_RE.search(self.pending) is not None
+        ):
             self.pending = ""
             self.blocked = True
             return
@@ -1630,8 +1649,18 @@ def gather_tool_results(
     if has_vision_wp_intent:
         return pref
 
-    is_research_or_web = bool(
-        RESEARCH_INTENT_RE.search(text) or WEB_SEARCH_INTENT_RE.search(text)
+    explicit_store_write = bool(
+        _EXPLICIT_STORE_WRITE_RE.search(text)
+        or parse_catalog_write(
+            text,
+            sticky_product_id=sticky_product_id,
+            sticky_page_id=sticky_page_id,
+        )
+        is not None
+    )
+    is_research_or_web = (
+        bool(RESEARCH_INTENT_RE.search(text) or WEB_SEARCH_INTENT_RE.search(text))
+        and not explicit_store_write
     )
     explicit_wp_workspace = bool(_WP_WORKSPACE_INTENT_RE.search(text))
     wp_code_bypass = (
@@ -2370,6 +2399,14 @@ def _wrap_non_wp_tool_for_llm(tool_name: str, body_out: str) -> str:
     )
 
 
+def _peer_id_from_conversation(channel: str, conversation_id: str) -> str:
+    raw = str(conversation_id or "").strip()
+    ch = str(channel or "").strip()
+    if ch and raw.lower().startswith(f"{ch.lower()}:"):
+        raw = raw[len(ch) + 1 :].strip()
+    return raw or "local"
+
+
 def _run_non_wp_read_loop(
     *,
     initial_content: str,
@@ -2481,7 +2518,7 @@ def _run_non_wp_read_loop(
                     offset=cursor,
                     actor=actor,
                     channel=channel,
-                    peer_id=conversation_id or "local",
+                    peer_id=_peer_id_from_conversation(channel, conversation_id),
                     taint=taint,
                     on_enqueue=on_enqueue,
                 )
@@ -2567,7 +2604,7 @@ def _run_non_wp_read_loop(
             offset=cursor,
             actor=actor,
             channel=channel,
-            peer_id=conversation_id or "local",
+            peer_id=_peer_id_from_conversation(channel, conversation_id),
             taint=taint,
             on_enqueue=on_enqueue,
         )
@@ -2863,8 +2900,17 @@ def run_chat(
             and not wp_state.site_switch
             and not wp_state.is_new_page_request
         )
-    is_research_or_web_turn = bool(
-        RESEARCH_INTENT_RE.search(user_message) or WEB_SEARCH_INTENT_RE.search(user_message)
+    is_research_or_web_turn = (
+        bool(RESEARCH_INTENT_RE.search(user_message) or WEB_SEARCH_INTENT_RE.search(user_message))
+        and not bool(
+            _EXPLICIT_STORE_WRITE_RE.search(user_message)
+            or parse_catalog_write(
+                user_message,
+                sticky_product_id=sticky_product_id,
+                sticky_page_id=sticky_page_id,
+            )
+            is not None
+        )
     )
     if (
         is_research_or_web_turn
@@ -3412,6 +3458,9 @@ def run_chat(
             wp_ops_context = wp_loop.wp_ops_context
             active_wp_review_out = wp_loop.active_wp_review_out
             attachments = wp_loop.attachments
+            wp_res_id = getattr(wp_loop, "last_research_id", None)
+            if wp_res_id:
+                last_research_id = str(wp_res_id).strip().lower()
         elif "<tool_call>" in (content or "").lower():
             taint_ctx = (
                 QueryTaintContext(order_ids=(str(pref.sticky_order_id or sticky_order_id),))

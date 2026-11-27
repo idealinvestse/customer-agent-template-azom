@@ -57,6 +57,7 @@ from ecom_ops.wp_ops.tools.registry import (
     WP_TOOL_LABELS,
     WP_TOOL_SHORT_LABELS,
 )
+from ecom_ops.wp_ops.tools.types import RESEARCH_ID_RE
 
 VISION_SYSTEM_GUIDE = (
     "Bifogad skärmdump (vision-läge): "
@@ -617,6 +618,7 @@ class WpLoopOutcome:
     file_stage_plan_id: str | None = None
     review_stage_plan_id: str | None = None
     attachments: tuple[str, ...] = ()
+    last_research_id: str | None = None
 
 
 def dispatch_wp_tool_loop(
@@ -667,6 +669,7 @@ def dispatch_wp_tool_loop(
     file_stage_plan_id: str | None = None
     review_stage_plan_id: str | None = None
     attachments: tuple[str, ...] = ()
+    last_research_id: str | None = None
 
     called_tool = tool_name_from(content)
     wp_turn_active = (
@@ -829,6 +832,22 @@ def dispatch_wp_tool_loop(
             },
         )
 
+    last_research_id: str | None = None
+    for row in getattr(wp_loop, "results", ()) or ():
+        if not isinstance(row, dict) or row.get("ok") is not True:
+            continue
+        raw_rid = row.get("research_id")
+        if isinstance(raw_rid, str):
+            cand_rid = raw_rid.strip().lower()
+            if RESEARCH_ID_RE.fullmatch(cand_rid):
+                last_research_id = cand_rid
+    if last_research_id is None and isinstance(active_wp_review_out, dict):
+        rids = active_wp_review_out.get("research_ids")
+        if isinstance(rids, list) and rids:
+            cand_rid = str(rids[-1] or "").strip().lower()
+            if RESEARCH_ID_RE.fullmatch(cand_rid):
+                last_research_id = cand_rid
+
     return WpLoopOutcome(
         handled=True,
         calls=wp_loop.calls,
@@ -839,6 +858,7 @@ def dispatch_wp_tool_loop(
         file_stage_plan_id=file_stage_plan_id,
         review_stage_plan_id=review_stage_plan_id,
         attachments=attachments,
+        last_research_id=last_research_id,
     )
 
 

@@ -11,7 +11,7 @@ _HIGH_RISK = re.compile(
 )
 _HIGH_RISK_PATH_PARTS = frozenset({"checkout", "cart", "gateway", "payment"})
 _CSS_COMMENT_RE = re.compile(r"/\*[\s\S]*?(?:\*/|$)")
-_CSS_HEX_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})[ \t\r\n\f]?")
+_CSS_HEX_ESCAPE_RE = re.compile(r"\\([0-9a-fA-F]{1,6})(?:\r\n|[ \t\r\n\f])?")
 _CSS_CHAR_ESCAPE_RE = re.compile(r"\\([^\r\n\f0-9a-fA-F])")
 _CSS_HIGH_RISK = re.compile(
     r"checkout|payment|gateway|kassan|betalning|<\?|<script\b|</|"

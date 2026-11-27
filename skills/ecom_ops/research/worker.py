@@ -19,9 +19,15 @@ import socket
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from ecom_ops.research.config import is_mock_mode, load_research_config
-from ecom_ops.research.engine import ResearchEngine
+from ecom_ops.integrations.search.errors import SearchConfigError
+from ecom_ops.research.config import (
+    is_mock_mode,
+    kill_switch_active,
+    load_research_config,
+    research_enabled,
+)
 from ecom_ops.research.models import ResearchJob
 from ecom_ops.research.store import ResearchStore
 from ecom_ops.runtime_env import env_flag
@@ -44,7 +50,7 @@ class ResearchWorkerPool:
         self,
         *,
         store: ResearchStore | None = None,
-        engine: ResearchEngine | None = None,
+        engine: Any | None = None,
         max_workers: int = 1,
         lease_s: int = 120,
         heartbeat_interval_s: float = 25.0,
@@ -53,7 +59,12 @@ class ResearchWorkerPool:
         on_job_complete: Callable[[ResearchJob], None] | None = None,
     ) -> None:
         self.store = store or ResearchStore()
-        self.engine = engine or ResearchEngine(store=self.store)
+        if engine is None:
+            from ecom_ops.research.engine import ResearchEngine
+
+            self.engine = ResearchEngine(store=self.store)
+        else:
+            self.engine = engine
         self.max_workers = max(1, min(4, int(max_workers)))
         self.lease_s = max(10, int(lease_s))
         self.heartbeat_interval_s = max(0.05, float(heartbeat_interval_s))
@@ -107,9 +118,10 @@ class ResearchWorkerPool:
         self._wakeup.set()
         with self._lock:
             threads = list(self._threads)
-            self._threads.clear()
         for t in threads:
             t.join(timeout=timeout)
+        with self._lock:
+            self._threads = [t for t in self._threads if t.is_alive()]
 
     def _run_claimed_job(self, job: ResearchJob, thread_worker_id: str) -> ResearchJob:
         hb_stop = threading.Event()
@@ -215,6 +227,17 @@ def ensure_research_worker_started(
         return None
     if not force and is_mock_mode():
         return None
+    if not is_mock_mode():
+        if kill_switch_active("research"):
+            raise SearchConfigError(
+                "Deep research is disabled by kill switch",
+                code="research_kill_switch",
+            )
+        if not research_enabled():
+            raise SearchConfigError(
+                "Live deep research is disabled (requires AZOM_USE_MOCK=0 and AZOM_RESEARCH_ENABLED=1)",
+                code="research_disabled",
+            )
     pool = get_research_worker_pool(data_dir=data_dir, on_job_complete=on_job_complete)
     if not pool.start():
         return None

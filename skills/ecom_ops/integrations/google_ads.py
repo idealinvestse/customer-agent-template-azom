@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
 
 from ecom_ops.marketing.config import load_marketing_config
@@ -229,11 +229,14 @@ class LiveGoogleAdsTransport:
     ) -> dict[str, Any]:
         from ecom_ops.integrations.marketing_live import parse_ads_search_campaigns
 
+        safe_days = max(1, min(int(days), 30))
+        end_date = datetime.now(UTC).date()
+        start_date = end_date - timedelta(days=safe_days - 1)
         query = (
             "SELECT campaign.id, campaign.name, campaign.status, "
             "metrics.cost_micros, metrics.clicks, metrics.conversions, "
             "metrics.conversions_value "
-            f"FROM campaign WHERE segments.date DURING LAST_{max(1, min(days, 30))}_DAYS"
+            f"FROM campaign WHERE segments.date BETWEEN '{start_date.isoformat()}' AND '{end_date.isoformat()}'"
         )
         payload = self._search(customer_id, query)
         return parse_ads_search_campaigns(payload, customer_id=customer_id)

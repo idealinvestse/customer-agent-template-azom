@@ -13,7 +13,7 @@ import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote_plus, urlencode, urlsplit, urlunsplit
 
 from ecom_ops.research.config import (
     effective_allowlist_domains,
@@ -77,6 +77,10 @@ _INTERNAL_PATH_TOKENS = (
 )
 
 _IPV4_PART_RE = re.compile(r"^(?:0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)$")
+_VALID_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_VALID_TLD_LABEL_RE = re.compile(r"^(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})$")
+_ADDR_POSTAL_CITY_4_RE = re.compile(r"\s+\d{4}\s+[A-Za-zÅÄÖØÆåäöøæ].*$")
+_ADDR_POSTAL_CITY_5_RE = re.compile(r"\s+\d{3}\s?\d{2}\s+[A-Za-zÅÄÖØÆåäöøæ].*$")
 
 _TRACKING_QUERY_PARAMS = frozenset({"fbclid", "gclid"})
 
@@ -203,8 +207,18 @@ def _is_ip_or_numeric_host(host: str) -> bool:
     return False
 
 
+def _normalize_domain(domain: str) -> str:
+    d = str(domain or "").strip().lower().lstrip(".").rstrip(".")
+    if not d:
+        return ""
+    try:
+        return d.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError:
+        return d
+
+
 def _host_matches_domain(host: str, domain: str) -> bool:
-    d = domain.strip().lower().lstrip(".")
+    d = _normalize_domain(domain)
     if not d:
         return False
     return host == d or host.endswith(f".{d}")
@@ -216,17 +230,22 @@ def _dashboard_public_host() -> str:
         return ""
     try:
         parsed = urlsplit(raw if "://" in raw else f"https://{raw}")
-        return (parsed.hostname or "").strip().lower().rstrip(".")
+        return _normalize_domain(parsed.hostname or "")
     except ValueError:
         return ""
 
 
-def _normalize_for_scan(raw: str) -> tuple[str, ...]:
+def _normalize_for_scan(raw: str, *, is_url: bool = False) -> tuple[str, ...]:
     decoded = normalize_pii_text(raw)
     stripped_raw = _BIDI_RE.sub("", raw)
     stripped_dec = _BIDI_RE.sub("", decoded)
+    raw_cands: list[str] = [raw, stripped_raw, decoded, stripped_dec]
+    if is_url:
+        plus_raw = unquote_plus(raw)
+        plus_dec = normalize_pii_text(plus_raw)
+        raw_cands.extend([plus_raw, plus_dec, _BIDI_RE.sub("", plus_dec)])
     out = []
-    for cand in (raw, stripped_raw, decoded, stripped_dec):
+    for cand in raw_cands:
         if cand and cand not in out:
             out.append(cand)
     return tuple(out)
@@ -236,6 +255,20 @@ def _word_boundary_match(token: str, candidates: tuple[str, ...]) -> bool:
     if not token:
         return False
     pattern = re.compile(rf"(?<!\w){re.escape(token)}(?!\w)", re.IGNORECASE)
+    return any(pattern.search(cand) for cand in candidates)
+
+
+def _taint_id_match(token: str, candidates: tuple[str, ...]) -> bool:
+    t = str(token or "").strip()
+    if not t:
+        return False
+    if t.isdigit():
+        pattern = re.compile(rf"(?<!\d){re.escape(t)}(?!\d)")
+        return any(pattern.search(cand) for cand in candidates)
+    if len(t) >= 5:
+        low = t.lower()
+        return any(low in cand.lower() for cand in candidates)
+    pattern = re.compile(rf"(?<![A-Za-z0-9]){re.escape(t)}(?![A-Za-z0-9])", re.IGNORECASE)
     return any(pattern.search(cand) for cand in candidates)
 
 
@@ -309,16 +342,33 @@ def _check_common_policy(
         for phone in taint.phones:
             digits = "".join(ch for ch in phone if ch.isdigit())
             if len(digits) >= 7:
-                if any(digits in dc for dc in digit_candidates):
-                    raise SearchPolicyError("OutboundQueryBlocked: taint_phone")
-                # Also match without leading 0 if Nordic national vs +46/+47
-                if digits.startswith("0") and len(digits) >= 8 and any(digits[1:] in dc for dc in digit_candidates):
+                variants: set[str] = {digits}
+                if digits.startswith("0") and len(digits) >= 8:
+                    variants.add(digits[1:])
+                e164_base = ""
+                if digits.startswith("00") and len(digits) > 4:
+                    e164_base = digits[2:]
+                elif phone.strip().startswith("+") or len(digits) >= 9:
+                    e164_base = digits
+                if e164_base:
+                    if len(e164_base) >= 7:
+                        variants.add(e164_base)
+                    for cc in ("46", "47", "45"):
+                        if e164_base.startswith(cc) and len(e164_base) - len(cc) >= 7:
+                            nat = e164_base[len(cc) :]
+                            variants.add(nat)
+                            variants.add(f"0{nat}")
+                if any(var in dc for var in variants for dc in digit_candidates):
                     raise SearchPolicyError("OutboundQueryBlocked: taint_phone")
 
         for addr in taint.addresses:
             norm_addr = " ".join(addr.split())
-            if len(norm_addr) >= 4 and _word_boundary_match(norm_addr, candidates):
-                raise SearchPolicyError("OutboundQueryBlocked: taint_address")
+            street = norm_addr.split(",", 1)[0].strip()
+            street_no5 = _ADDR_POSTAL_CITY_5_RE.sub("", street).strip()
+            street_no4 = _ADDR_POSTAL_CITY_4_RE.sub("", street_no5).strip()
+            for addr_cand in {norm_addr, street, street_no5, street_no4}:
+                if len(addr_cand) >= 4 and _word_boundary_match(addr_cand, candidates):
+                    raise SearchPolicyError("OutboundQueryBlocked: taint_address")
 
         for postal in taint.postal_codes:
             p = " ".join(postal.split())
@@ -329,11 +379,11 @@ def _check_common_policy(
                 raise SearchPolicyError("OutboundQueryBlocked: taint_postal")
 
         for oid in taint.order_ids:
-            if oid and _word_boundary_match(oid, candidates):
+            if oid and _taint_id_match(oid, candidates):
                 raise SearchPolicyError("OutboundQueryBlocked: taint_order_id")
 
         for trk in taint.tracking_numbers:
-            if trk and _word_boundary_match(trk, candidates):
+            if trk and _taint_id_match(trk, candidates):
                 raise SearchPolicyError("OutboundQueryBlocked: taint_tracking")
 
         for cid in taint.case_ids:
@@ -346,21 +396,31 @@ def _check_common_policy(
 class OutboundQueryFirewall:
     """Validates outbound search queries and fetch URLs fail-closed before egress."""
 
-    def check_query(self, query: str, *, taint: QueryTaintContext | None = None) -> str:
-        """Validate ``query`` and return normalized single-line text or raise ``SearchPolicyError``."""
-        if not isinstance(query, str):
+    def check_text(
+        self,
+        text: str,
+        *,
+        max_chars: int = 500,
+        taint: QueryTaintContext | None = None,
+    ) -> str:
+        """Validate ``text`` up to ``max_chars`` on the full normalized string without chunk splits."""
+        if not isinstance(text, str):
             raise SearchPolicyError("OutboundQueryBlocked: invalid_query_type")
-        if "\n" in query or "\r" in query or _CTRL_RE.search(query):
+        if "\n" in text or "\r" in text or _CTRL_RE.search(text):
             raise SearchPolicyError("OutboundQueryBlocked: control_chars_or_multiline")
-        cleaned = " ".join(query.strip().split())
+        cleaned = " ".join(text.strip().split())
         if not cleaned:
             raise SearchPolicyError("OutboundQueryBlocked: empty_query")
-        if len(cleaned) > MAX_QUERY_CHARS:
+        if max_chars > 0 and len(cleaned) > max_chars:
             raise SearchPolicyError("OutboundQueryBlocked: query_too_long")
 
-        candidates = _normalize_for_scan(cleaned)
+        candidates = _normalize_for_scan(cleaned, is_url=False)
         _check_common_policy(candidates, taint=taint, is_url=False)
         return cleaned
+
+    def check_query(self, query: str, *, taint: QueryTaintContext | None = None) -> str:
+        """Validate ``query`` and return normalized single-line text or raise ``SearchPolicyError``."""
+        return self.check_text(query, max_chars=MAX_QUERY_CHARS, taint=taint)
 
     def check_url(
         self,
@@ -390,8 +450,11 @@ class OutboundQueryFirewall:
 
         if parsed.scheme.lower() != "https":
             raise SearchPolicyError("OutboundQueryBlocked: non_https_blocked")
-        if parsed.username or parsed.password:
+        netloc = parsed.netloc or ""
+        if parsed.username is not None or parsed.password is not None or "@" in netloc:
             raise SearchPolicyError("OutboundQueryBlocked: userinfo_blocked")
+        if "[" in netloc or "]" in netloc:
+            raise SearchPolicyError("OutboundQueryBlocked: ip_literal_blocked")
         try:
             port = parsed.port
         except ValueError:
@@ -399,13 +462,27 @@ class OutboundQueryFirewall:
         if port not in (None, 443):
             raise SearchPolicyError("OutboundQueryBlocked: port_blocked")
 
-        host = (parsed.hostname or "").strip().lower().rstrip(".")
-        if not host:
+        raw_host = (parsed.hostname or "").strip().lower()
+        host_no_dot = raw_host.rstrip(".")
+        if not host_no_dot or raw_host.startswith(".") or ".." in host_no_dot:
             raise SearchPolicyError("OutboundQueryBlocked: missing_host")
+        try:
+            host = host_no_dot.encode("idna").decode("ascii").lower().rstrip(".")
+        except UnicodeError:
+            raise SearchPolicyError("OutboundQueryBlocked: invalid_host")
+        if not host or len(host) > 253:
+            raise SearchPolicyError("OutboundQueryBlocked: invalid_host")
         if host in _INTERNAL_HOST_EXACT or any(host.endswith(sfx) for sfx in _INTERNAL_HOST_SUFFIXES):
             raise SearchPolicyError("OutboundQueryBlocked: internal_host")
         if _is_ip_or_numeric_host(host):
             raise SearchPolicyError("OutboundQueryBlocked: ip_literal_blocked")
+        labels = host.split(".")
+        if (
+            len(labels) < 2
+            or not all(_VALID_HOST_LABEL_RE.fullmatch(lbl) for lbl in labels)
+            or _VALID_TLD_LABEL_RE.fullmatch(labels[-1]) is None
+        ):
+            raise SearchPolicyError("OutboundQueryBlocked: invalid_host")
 
         dash_host = _dashboard_public_host()
         if dash_host and _host_matches_domain(host, dash_host):
@@ -418,19 +495,23 @@ class OutboundQueryFirewall:
             if not k.lower().startswith("utm_") and k.lower() not in _TRACKING_QUERY_PARAMS
         ]
         clean_query = urlencode(filtered_params, doseq=True)
-        cleaned_url = urlunsplit(("https", parsed.netloc, parsed.path or "/", clean_query, ""))
+        cleaned_url = urlunsplit(("https", host, parsed.path or "/", clean_query, ""))
         if len(cleaned_url) > MAX_URL_CHARS:
             raise SearchPolicyError("OutboundQueryBlocked: url_too_long")
 
         # Check both raw and cleaned URL against PII, secrets, taint, internal IDs/paths
-        candidates = _normalize_for_scan(raw) + _normalize_for_scan(cleaned_url)
+        candidates = _normalize_for_scan(raw, is_url=True) + _normalize_for_scan(cleaned_url, is_url=True)
         _check_common_policy(candidates, taint=taint, is_url=True)
 
         # Canonical security precedence: denylist > allowlist
         cfg = load_research_config()
-        effective_deny: list[str] = list(cfg.egress.denylist_domains)
+        effective_deny: list[str] = [
+            nd for d in cfg.egress.denylist_domains if (nd := _normalize_domain(d))
+        ]
         if denylist_domains:
-            effective_deny.extend(str(d).strip().lower().lstrip(".") for d in denylist_domains if str(d).strip())
+            effective_deny.extend(
+                nd for d in denylist_domains if (nd := _normalize_domain(str(d)))
+            )
         if dash_host:
             effective_deny.append(dash_host)
         for denied in effective_deny:
@@ -440,10 +521,12 @@ class OutboundQueryFirewall:
         effective_allow: tuple[str, ...]
         if allowlist_domains is not None:
             effective_allow = tuple(
-                str(d).strip().lower().lstrip(".") for d in allowlist_domains if str(d).strip()
+                na for d in allowlist_domains if (na := _normalize_domain(str(d)))
             )
         else:
-            effective_allow = effective_allowlist_domains(cfg)
+            effective_allow = tuple(
+                na for d in effective_allowlist_domains(cfg) if (na := _normalize_domain(d))
+            )
 
         if effective_allow and not any(_host_matches_domain(host, allowed) for allowed in effective_allow):
             raise SearchPolicyError("OutboundQueryBlocked: domain_not_allowlisted")

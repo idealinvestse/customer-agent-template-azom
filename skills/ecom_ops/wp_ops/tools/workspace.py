@@ -632,7 +632,7 @@ def handle_open_review_workspace(tools: Any, ctx: ToolContext, arguments: dict[s
         "properties": {"site_id": {"type": "string"}},
         "additionalProperties": False,
     },
-    outcome=count_outcome("workspaces", "arbetsytor", "arbetsytor listade"),
+    outcome=count_outcome("plans", "arbetsytor", "arbetsytor listade"),
     in_file_schemas=True,
     in_extra_file_tools=True,
     requires_site=False,

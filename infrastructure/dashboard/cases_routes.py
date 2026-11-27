@@ -48,7 +48,9 @@ def _safe_case_research_query(case: object) -> str:
         "technical": "Android Auto Apple CarPlay kompatibilitet felsökning",
         "product": "bilstereo Apple CarPlay Android Auto kompatibilitet",
     }
-    return hints.get(cat, f"e-handel kundservice fakta {cat} {country_name}".strip())
+    known_cat = cat if cat in _known_categories() else ""
+    fallback = f"e-handel kundservice fakta {known_cat} {country_name}" if known_cat else f"e-handel kundservice fakta {country_name}"
+    return hints.get(cat, " ".join(fallback.split()))
 
 
 def _known_categories() -> list[str]:

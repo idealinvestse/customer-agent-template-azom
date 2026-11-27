@@ -63,7 +63,7 @@ def _complete_request(
     *,
     model: str | None = None,
     max_tokens: int | None = None,
-    temperature: float = 0.3,
+    temperature: float | None = None,
     timeout: int | None = None,
     telemetry: Telemetry | None = None,
     site: str = "azom",
@@ -87,6 +87,9 @@ def _complete_request(
     resolved_max_tokens = (
         max_tokens if use_profile else (400 if max_tokens is None else max_tokens)
     )
+    resolved_temperature = (
+        temperature if use_profile else (0.3 if temperature is None else temperature)
+    )
     resolved_timeout = (
         (45 if timeout is None else timeout)
         if use_profile
@@ -96,7 +99,7 @@ def _complete_request(
         messages=messages,
         model=model,
         max_output_tokens=resolved_max_tokens,  # type: ignore[arg-type]
-        temperature=temperature,
+        temperature=resolved_temperature,  # type: ignore[arg-type]
         timeout=resolved_timeout,
         site=site,
         case_id=case_id,
@@ -129,7 +132,7 @@ def chat_completion(
     *,
     model: str | None = None,
     max_tokens: int | None = None,
-    temperature: float = 0.3,
+    temperature: float | None = None,
     timeout: int | None = None,
     telemetry: Telemetry | None = None,
     site: str = "azom",

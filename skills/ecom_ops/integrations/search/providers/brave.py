@@ -94,10 +94,14 @@ class BraveSearchRoute:
         )
         latency_ms = int((time.monotonic() - started) * 1000)
 
-        web_block = data.get("web") or {}
+        web_block = data.get("web")
+        if web_block is None:
+            web_block = {}
         if not isinstance(web_block, dict):
             raise SearchUnavailableError("brave: invalid web field", code="invalid_json")
-        raw_results = web_block.get("results") or []
+        raw_results = web_block.get("results")
+        if raw_results is None:
+            raw_results = []
         if not isinstance(raw_results, list):
             raise SearchUnavailableError("brave: invalid web.results field", code="invalid_json")
 

@@ -44,6 +44,7 @@ _PRODUCT_WRITE_FIELDS = frozenset(
 )
 _STOCK_STATUSES = frozenset({"instock", "outofstock", "onbackorder"})
 _PRODUCT_STATUSES = frozenset({"draft", "pending", "private", "publish"})
+_TRACKING_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 # --------------------------------------------------------------------------- #
 # Data models
@@ -655,10 +656,13 @@ class WooCommerceClient:
         self, order_id: str | int, tracking_id: str
     ) -> dict[str, Any]:
         oid = validate_order_id(order_id)
+        tid = str(tracking_id or "").strip()
+        if not _TRACKING_ID_RE.match(tid):
+            raise SecurityError(f"Invalid tracking id: {tracking_id!r}")
         return self.transport.request(
             "DELETE",
             self._url(
-                f"/wp-json/wc/v3/orders/{oid}/shipment-trackings/{tracking_id}"
+                f"/wp-json/wc/v3/orders/{oid}/shipment-trackings/{tid}"
             ),
             auth=self._auth(),
             timeout=self.timeout,
@@ -949,9 +953,10 @@ class WooCommerceClient:
         return data if isinstance(data, dict) else {}
 
     def delete_webhook(self, webhook_id: str | int) -> dict[str, Any]:
+        wid = validate_order_id(webhook_id)
         data = self.transport.request(
             "DELETE",
-            self._url(f"/wp-json/wc/v3/webhooks/{webhook_id}"),
+            self._url(f"/wp-json/wc/v3/webhooks/{wid}"),
             auth=self._auth(),
             timeout=self.timeout,
         )

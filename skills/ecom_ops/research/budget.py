@@ -63,8 +63,11 @@ def research_budget_status(
     for ev in events:
         action = str(ev.get("action") or "")
         meta = ev.get("meta") if isinstance(ev.get("meta"), dict) else {}
+        cost_kind = str(meta.get("cost_kind") or "")
+        if cost_kind == "mock":
+            continue
         ts = str(ev.get("created_at") or "")
-        is_cached = bool(meta.get("cached")) or str(meta.get("cost_kind") or "") == "cached"
+        is_cached = bool(meta.get("cached")) or cost_kind == "cached"
 
         try:
             monthly_usd += float(meta.get("estimated_search_usd") or 0.0)

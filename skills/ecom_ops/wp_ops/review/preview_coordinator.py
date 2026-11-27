@@ -751,19 +751,24 @@ def live_preview(
         preview_html_path.unlink()
     preview_html_path.write_text(interactive_html, encoding="utf-8")
 
-    meta_changed = False
-    if display_path and str(plan.get("preview_path") or "") != display_path:
-        plan["preview_path"] = display_path
-        meta_changed = True
-    if clean_selector and str(plan.get("focus_selector") or "") != clean_selector:
-        plan["focus_selector"] = clean_selector
-        meta_changed = True
-    if is_standalone and draft_summary is not None and plan.get("page_draft") != draft_summary:
-        plan["page_draft"] = draft_summary
-        meta_changed = True
-    if meta_changed:
-        plans_obj._replace(plan)
-        write_manifest(root, plan)
+    if display_path or clean_selector or (is_standalone and draft_summary is not None):
+        with plans_obj._locks(site_id, plan_id):
+            fresh = plans_obj._row(site_id, plan_id)
+            if fresh is not None and plans_obj._fresh(fresh, allow_superseded_read=True) is None:
+                meta_changed = False
+                if display_path and str(fresh.get("preview_path") or "") != display_path:
+                    fresh["preview_path"] = display_path
+                    meta_changed = True
+                if clean_selector and str(fresh.get("focus_selector") or "") != clean_selector:
+                    fresh["focus_selector"] = clean_selector
+                    meta_changed = True
+                if is_standalone and draft_summary is not None and fresh.get("page_draft") != draft_summary:
+                    fresh["page_draft"] = draft_summary
+                    meta_changed = True
+                if meta_changed:
+                    plans_obj._replace(fresh)
+                    write_manifest(root, fresh)
+                plan = fresh
 
     preview_route_path = f"/wp/{site_id}/reviews/{plan_id}/preview"
     preview_public_url = sandbox_preview_url(site_id, plan_id)

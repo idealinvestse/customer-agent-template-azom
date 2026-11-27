@@ -163,11 +163,13 @@ def test_parallel_provider_nests_advanced_settings_and_header_only_key(
     assert all(len(q) <= 200 for q in sent_body["search_queries"])
     adv = sent_body["advanced_settings"]
     assert adv["max_results"] == 5
-    assert adv["source_policy"] == {
-        "include_domains": ["developer.woocommerce.com"],
-        "exclude_domains": ["pinterest.com"],
-    }
-    assert adv["fetch_policy"] == {"max_age_seconds": 30 * 86400}
+    source_policy = adv["source_policy"]
+    assert source_policy["include_domains"] == ["developer.woocommerce.com"]
+    assert source_policy["exclude_domains"] == ["pinterest.com"]
+    assert isinstance(source_policy.get("after_date"), str)
+    assert len(source_policy["after_date"]) == 10
+    assert source_policy["after_date"][4] == "-" and source_policy["after_date"][7] == "-"
+    assert "fetch_policy" not in adv
 
     # Verify extract() uses /v1/extract + advanced_settings + x-api-key + sanitizer
     def _extract_handler(url: str, **kwargs: Any):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+import urllib.parse
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ecom_ops.integrations.search.base import (
@@ -12,16 +14,27 @@ from ecom_ops.integrations.search.base import (
     SearchRequest,
     SearchResult,
 )
-from ecom_ops.integrations.search.errors import SearchUnavailableError
+from ecom_ops.integrations.search.errors import (
+    SearchConfigError,
+    SearchPolicyError,
+    SearchUnavailableError,
+)
 from ecom_ops.integrations.search.providers import (
     env_secret,
     pinned_json_request,
     require_api_key,
     scrub_query_for_provider,
 )
-from ecom_ops.research.config import load_research_config
+from ecom_ops.research.budget import can_run_fetch
+from ecom_ops.research.config import (
+    is_mock_mode,
+    kill_switch_active,
+    load_research_config,
+    web_fetch_enabled,
+)
 from ecom_ops.research.firewall import OutboundQueryFirewall, QueryTaintContext
 from ecom_ops.research.sanitizer import sanitize_untrusted_text
+from ecom_ops.telemetry import Telemetry, default_telemetry
 
 _API_ORIGIN = "https://api.parallel.ai"
 _SEARCH_URL = f"{_API_ORIGIN}/v1/search"
@@ -56,15 +69,17 @@ def _split_concise_queries(clean_query: str, *, max_len: int = 200, max_count: i
 
 def _build_advanced_settings(request: SearchRequest) -> dict[str, Any]:
     adv: dict[str, Any] = {"max_results": int(request.max_results)}
-    source_policy: dict[str, list[str]] = {}
+    source_policy: dict[str, Any] = {}
     if request.include_domains:
         source_policy["include_domains"] = list(request.include_domains)
     if request.exclude_domains:
         source_policy["exclude_domains"] = list(request.exclude_domains)
+    if request.freshness_days is not None:
+        days = max(0, int(request.freshness_days))
+        after_date = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
+        source_policy["after_date"] = after_date
     if source_policy:
         adv["source_policy"] = source_policy
-    if request.freshness_days is not None:
-        adv["fetch_policy"] = {"max_age_seconds": int(request.freshness_days) * 86400}
     return adv
 
 
@@ -183,10 +198,91 @@ class ParallelSearchRoute:
         taint: QueryTaintContext | None = None,
         objective: str | None = None,
         max_chars: int = 12_000,
+        telemetry: Telemetry | None = None,
+        actor: str | None = None,
+        site: str = "azom",
+        case_id: str | None = None,
     ) -> FetchResult:
         """Extract clean page content for a firewall-validated public HTTPS URL."""
+        char_limit = int(max_chars)
+        if char_limit <= 0:
+            raise ValueError("max_chars must be > 0")
+
+        cfg = load_research_config()
+        tel = telemetry or default_telemetry
+        fw = OutboundQueryFirewall()
+
+        try:
+            clean_url = fw.check_url(url, taint=taint)
+        except SearchPolicyError as exc:
+            tel.record(
+                action="web_fetch_policy_blocked",
+                site=site,
+                cost_usd=0.0,
+                case_id=case_id,
+                actor=actor,
+                meta={"error_class": "SearchPolicyError", "error_code": str(exc).split(":", 1)[-1].strip()},
+            )
+            raise
+
+        domain = (urllib.parse.urlsplit(clean_url).hostname or "").lower()
+
+        if is_mock_mode():
+            mock_raw = (
+                f"Mock Extract: {domain}\n\n"
+                f"Deterministic offline mock extract for {clean_url}."
+            )
+            truncated = len(mock_raw) > char_limit
+            clean_text = sanitize_untrusted_text(mock_raw, max_chars=char_limit)
+            tel.record(
+                action="web_fetch_page",
+                site=site,
+                units=1,
+                unit_type="api_calls",
+                cost_usd=0.0,
+                case_id=case_id,
+                actor=actor,
+                meta={
+                    "estimated_search_usd": 0.0,
+                    "cost_kind": "mock",
+                    "domain": domain,
+                    "status_code": 200,
+                    "content_type": "text/markdown",
+                    "truncated": truncated,
+                },
+            )
+            return FetchResult(
+                ok=True,
+                url=clean_url,
+                final_url=clean_url,
+                title=f"Mock Extract: {domain}",
+                text=clean_text,
+                content_type="text/markdown",
+                status_code=200,
+                latency_ms=1,
+                truncated=truncated,
+            )
+
+        if kill_switch_active("fetch"):
+            raise SearchConfigError("Web fetch disabled by kill switch", code="web_fetch_kill_switch")
+        if not web_fetch_enabled():
+            raise SearchConfigError(
+                "Live web fetch is disabled (requires AZOM_USE_MOCK=0 and AZOM_WEB_FETCH_ENABLED=1)",
+                code="web_fetch_disabled",
+            )
+        budget_ok, budget_reason = can_run_fetch(telemetry=tel, config=cfg)
+        if not budget_ok:
+            tel.record(
+                action="web_fetch_budget_skip",
+                site=site,
+                cost_usd=0.0,
+                case_id=case_id,
+                actor=actor,
+                meta={"domain": domain, "error_code": budget_reason},
+            )
+            raise SearchConfigError(f"Fetch budget exhausted ({budget_reason})", code=budget_reason)
+
         api_key = require_api_key(self.route_id, "PARALLEL_API_KEY")
-        clean_url = OutboundQueryFirewall().check_url(url, taint=taint)
         body: dict[str, Any] = {
             "urls": [clean_url],
             "advanced_settings": {"excerpts": True, "full_content": True},
@@ -226,10 +322,28 @@ class ParallelSearchRoute:
             excerpts = first.get("excerpts") or []
             if isinstance(excerpts, list):
                 raw_text = "\n\n".join(str(e) for e in excerpts if e)
-        truncated = len(raw_text) > max_chars
-        clean_text = sanitize_untrusted_text(raw_text, max_chars=max_chars)
+        truncated = char_limit > 0 and len(raw_text) > char_limit
+        clean_text = sanitize_untrusted_text(raw_text, max_chars=char_limit)
         clean_title = sanitize_untrusted_text(str(first.get("title") or ""), max_chars=300)
         final_url = str(first.get("url") or clean_url).strip() or clean_url
+        final_domain = (urllib.parse.urlsplit(final_url).hostname or domain).lower()
+        tel.record(
+            action="web_fetch_page",
+            site=site,
+            units=1,
+            unit_type="api_calls",
+            cost_usd=0.0,
+            case_id=case_id,
+            actor=actor,
+            meta={
+                "estimated_search_usd": _ESTIMATED_COST_USD,
+                "cost_kind": "estimated_external",
+                "domain": final_domain,
+                "status_code": 200,
+                "content_type": "text/markdown",
+                "truncated": truncated,
+            },
+        )
         return FetchResult(
             ok=True,
             url=clean_url,

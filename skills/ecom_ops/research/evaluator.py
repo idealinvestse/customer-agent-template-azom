@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from ecom_ops.integrations.search.base import SearchHit
 
 _STRIP_QUERY_PARAMS = frozenset({"fbclid", "gclid", "mc_cid", "mc_eid"})
-_CITATION_RE = re.compile(r"\[([sS]\d+)\]")
+_CITATION_RE = re.compile(r"\[(\s*[sS]\d+(?:\s*[,;]\s*[sS]\d+)*\s*)\]")
 
 _GOV_DOMAINS = frozenset(
     {
@@ -562,9 +562,9 @@ def _weighted_score(
 
 
 def _detect_conflicts(sources: list[EvaluatedSource], query: str) -> list[ConflictNote]:
+    del query
     conflicts: list[ConflictNote] = []
     seen_keys: set[tuple[str, tuple[str, ...]]] = set()
-    q_tokens = _tokenize(query)
 
     # 1. Cross-source polarity / status contradiction
     pos_sources: list[EvaluatedSource] = []
@@ -617,7 +617,7 @@ def _detect_conflicts(sources: list[EvaluatedSource], query: str) -> list[Confli
             norm_u = unit.lower()
             unit_map.setdefault(norm_u, set()).add(num.replace(",", "."))
         if unit_map:
-            source_units.append((src, unit_map, _tokenize(blob) | q_tokens))
+            source_units.append((src, unit_map, _tokenize(blob)))
 
     for idx, (s1, u1, t1) in enumerate(source_units):
         for s2, u2, t2 in source_units[idx + 1 :]:
@@ -855,18 +855,83 @@ def _scrub_citations_in_text(
         return ""
 
     def _replace(match: re.Match[str]) -> str:
-        cid = match.group(1).upper()
-        if cid in valid_ids:
-            kept_ids.add(cid)
-            return f"[{cid}]"
-        if cid not in removed_ids:
-            removed_ids.append(cid)
-        return ""
+        raw_group = match.group(1)
+        parts = [p.strip().upper() for p in re.split(r"[,;]", raw_group) if p.strip()]
+        kept_group: list[str] = []
+        for cid in parts:
+            if cid in valid_ids:
+                kept_ids.add(cid)
+                if cid not in kept_group:
+                    kept_group.append(cid)
+            elif cid not in removed_ids:
+                removed_ids.append(cid)
+        if not kept_group:
+            return ""
+        return "[" + ", ".join(kept_group) + "]"
 
     cleaned = _CITATION_RE.sub(_replace, text)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    cleaned = re.sub(r"\s+([.,;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]+([.,;:!?])", r"\1", cleaned)
     return cleaned.strip()
+
+
+def _sync_verified_markdown(
+    markdown: str,
+    new_citations: list[Citation],
+    new_gaps: list[str],
+    added_gap_notes: list[str],
+) -> str:
+    if not markdown:
+        return ""
+    lines = markdown.splitlines()
+
+    def _find_section(heading_prefixes: tuple[str, ...]) -> tuple[int, int] | None:
+        start_idx: int | None = None
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if start_idx is None:
+                if any(stripped.startswith(p) for p in heading_prefixes):
+                    start_idx = idx
+            elif stripped.startswith("## "):
+                return start_idx, idx
+        if start_idx is not None:
+            return start_idx, len(lines)
+        return None
+
+    # Update ## Kunskapsluckor & begränsningar if structured brief and new gaps were added
+    if added_gap_notes:
+        gap_span = _find_section(("## Kunskapsluckor", "## Gaps"))
+        if gap_span is not None:
+            _g_start, g_end = gap_span
+            existing_block = set(lines[_g_start + 1 : g_end])
+            inserts = [f"- {g}" for g in added_gap_notes if f"- {g}" not in existing_block]
+            if inserts:
+                lines = lines[:g_end] + inserts + lines[g_end:]
+        elif _find_section(("## Sammanfattning", "## Summary")) is not None:
+            src_span = _find_section(("## Källor", "## Sources"))
+            block = ["", "## Kunskapsluckor & begränsningar", *(f"- {g}" for g in new_gaps if g)]
+            if src_span is not None:
+                lines = lines[: src_span[0]] + block + [""] + lines[src_span[0] :]
+            else:
+                lines.extend(block)
+
+    # Re-sync ## Källor / ## Sources against verified new_citations
+    src_span = _find_section(("## Källor", "## Sources"))
+    if src_span is not None:
+        s_start, s_end = src_span
+        if new_citations:
+            heading = lines[s_start]
+            cit_lines = [heading]
+            for cit in new_citations:
+                pub = f" · {cit.published_at}" if cit.published_at else ""
+                cit_lines.append(f"- [{cit.id}] {cit.title} ({cit.domain}{pub}) — {cit.url}")
+            lines = lines[:s_start] + cit_lines + lines[s_end:]
+        else:
+            # Drop trailing blank line before removed section if any
+            trim_start = s_start - 1 if s_start > 0 and not lines[s_start - 1].strip() else s_start
+            lines = lines[:trim_start] + lines[s_end:]
+
+    return "\n".join(lines).strip() + ("\n" if markdown.endswith("\n") else "")
 
 
 def verify_citations(brief: ResearchBrief, sources: list[EvaluatedSource]) -> ResearchBrief:
@@ -927,17 +992,26 @@ def verify_citations(brief: ResearchBrief, sources: list[EvaluatedSource]) -> Re
             removed_ids.append(cid)
 
     new_gaps = list(brief.gaps)
+    added_gap_notes: list[str] = []
     new_status = brief.evidence_status
     if removed_ids:
         note = "Removed unverified citation(s): " + ", ".join(f"[{rid}]" for rid in removed_ids)
         if note not in new_gaps:
             new_gaps.append(note)
+            added_gap_notes.append(note)
         if (
             new_status == EvidenceStatus.GROUNDED
             and not kept_ids
             and not new_citations
         ):
             new_status = EvidenceStatus.PARTIAL
+
+    synced_markdown = _sync_verified_markdown(
+        new_markdown,
+        new_citations=new_citations,
+        new_gaps=new_gaps,
+        added_gap_notes=added_gap_notes,
+    )
 
     return replace(
         brief,
@@ -947,7 +1021,7 @@ def verify_citations(brief: ResearchBrief, sources: list[EvaluatedSource]) -> Re
         recommendations=new_recommendations,
         gaps=new_gaps,
         citations=new_citations,
-        markdown=new_markdown,
+        markdown=synced_markdown,
     )
 
 

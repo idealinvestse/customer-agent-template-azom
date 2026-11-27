@@ -188,6 +188,28 @@ def _active_research_jobs_for_steer(data_dir: Path, chat_id: str) -> list[dict[s
     return out
 
 
+def count_research_steers(data_dir: Path | str | None, research_id: str) -> int:
+    """Count total steers (consumed + pending) recorded for ``research_id``."""
+    base = Path(data_dir) if data_dir is not None else Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+    db_path = base / "research_jobs.sqlite3"
+    rid = str(research_id or "").strip().lower()
+    if not db_path.is_file() or not rid:
+        return 0
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.execute("PRAGMA busy_timeout=5000")
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM research_steers WHERE job_id=?",
+                (rid,),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
+
+
 class TelegramJobStore:
     """SQLite state store for one Telegram polling process and its workers."""
 
@@ -203,10 +225,10 @@ class TelegramJobStore:
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=10000")
-        conn.execute("PRAGMA foreign_keys=ON")
         try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute("PRAGMA foreign_keys=ON")
             yield conn
         finally:
             conn.close()
@@ -1735,6 +1757,7 @@ class TelegramJobStore:
     def get_proposal(
         self, proposal_id: str, *, chat_id: str | int | None = None
     ) -> dict[str, Any] | None:
+        now = _now()
         with self._connection() as conn:
             if chat_id is None:
                 row = conn.execute(
@@ -1746,6 +1769,17 @@ class TelegramJobStore:
                     "SELECT * FROM bot_proposals WHERE proposal_id=? AND chat_id=?",
                     (proposal_id, str(chat_id)),
                 ).fetchone()
+            if row is not None and str(row["state"]) == "open":
+                exp = row["expires_at"]
+                if exp is not None and float(exp) <= now:
+                    self._begin(conn)
+                    conn.execute(
+                        "UPDATE bot_proposals SET state='expired',consumed_at=? "
+                        "WHERE proposal_id=? AND state='open'",
+                        (now, proposal_id),
+                    )
+                    conn.commit()
+                    return None
         return self._proposal(row)
 
     def consume_proposal(
@@ -1757,16 +1791,24 @@ class TelegramJobStore:
             if chat_id is None:
                 changed = conn.execute(
                     "UPDATE bot_proposals SET state='consumed',consumed_at=? "
-                    "WHERE proposal_id=? AND state='open'",
-                    (now, proposal_id),
+                    "WHERE proposal_id=? AND state='open' "
+                    "AND (expires_at IS NULL OR expires_at > ?)",
+                    (now, proposal_id, now),
                 ).rowcount
             else:
                 changed = conn.execute(
                     "UPDATE bot_proposals SET state='consumed',consumed_at=? "
-                    "WHERE proposal_id=? AND chat_id=? AND state='open'",
-                    (now, proposal_id, str(chat_id)),
+                    "WHERE proposal_id=? AND chat_id=? AND state='open' "
+                    "AND (expires_at IS NULL OR expires_at > ?)",
+                    (now, proposal_id, str(chat_id), now),
                 ).rowcount
             if changed != 1:
+                conn.execute(
+                    "UPDATE bot_proposals SET state='expired',consumed_at=? "
+                    "WHERE proposal_id=? AND state='open' "
+                    "AND expires_at IS NOT NULL AND expires_at <= ?",
+                    (now, proposal_id, now),
+                )
                 conn.commit()
                 return None
             row = conn.execute(

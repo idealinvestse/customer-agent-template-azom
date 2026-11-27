@@ -20,7 +20,9 @@ from ecom_ops.bot.chat_agent import ChatCancelled
 from ecom_ops.bot.handlers import BotHandler
 from ecom_ops.bot.job_store import (
     JOB_LEASE_SECONDS,
+    MAX_STEERS_PER_JOB,
     TelegramJobStore,
+    count_research_steers,
     research_jobs_summary_for_peer,
 )
 from ecom_ops.bot.openclaw_commands import TELEGRAM_MENU_COMMANDS
@@ -38,6 +40,7 @@ from ecom_ops.bot.reply import (
     ActionMarkup,
     BotReply,
     as_reply,
+    bot_reply,
     safe_workspace_attachments,
     telegram_markup_to_actions,
     with_dashboard_footer,
@@ -466,10 +469,11 @@ def _send_attachments(
 def _send_reply(
     token: str,
     chat_id: object,
-    reply: BotReply,
+    reply: BotReply | str,
     *,
     reply_to_message_id: int | None = None,
 ) -> None:
+    reply = as_reply(reply)
     chunks = _telegram_safe_chunks(reply.text)
     reply_to = _valid_message_id(reply_to_message_id)
     for i, part in enumerate(chunks):
@@ -1615,7 +1619,7 @@ def _format_research_terminal_reply(
             if brief_url
             else None
         )
-        return BotReply(text=text, actions=actions)
+        return bot_reply(text, actions=actions)
 
     if status == "failed":
         err_cls = sanitize_status_fragment(getattr(job, "error_class", "") or "", max_len=60)
@@ -1629,7 +1633,7 @@ def _format_research_terminal_reply(
             if brief_url
             else None
         )
-        return BotReply(text=text, actions=actions)
+        return bot_reply(text, actions=actions)
 
     brief = (brief_payload or {}).get("brief") if isinstance(brief_payload, dict) else None
     brief = brief if isinstance(brief, dict) else {}
@@ -1673,7 +1677,7 @@ def _format_research_terminal_reply(
         if brief_url
         else None
     )
-    return BotReply(text=text, actions=actions)
+    return bot_reply(text, actions=actions)
 
 
 def _list_telegram_research_jobs(research_store: Any) -> list[Any]:
@@ -1821,6 +1825,10 @@ def _sync_research_updates(
                                 limiter.record_retry_after(chat_id, exc.retry_after)
                             elif is_missing_message_error(exc.status_code, exc.description):
                                 status_mid = None
+                                try:
+                                    research_store.update_progress(rid, status_message_id="")
+                                except Exception:
+                                    pass
                         except Exception:
                             pass
                 continue
@@ -1849,6 +1857,12 @@ def _sync_research_updates(
                     except TelegramApiError as exc:
                         if exc.status_code == 429 and exc.retry_after:
                             limiter.record_retry_after(chat_id, exc.retry_after)
+                        elif is_missing_message_error(exc.status_code, exc.description):
+                            status_mid = None
+                            try:
+                                research_store.update_progress(rid, status_message_id="")
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 
@@ -2021,43 +2035,53 @@ def _control_reply(
                     lines.append(f"• /cancel {jid[:8]} ({item.get('kind', 'read_turn')})")
                 reply = BotReply(text="\n".join(lines))
             elif result == "not_found" and not args:
-                active_research: list[dict[str, Any]] = []
-                try:
-                    actor_name = handler._resolve_actor(chat_id)
-                    active_research = research_jobs_summary_for_peer(
-                        "telegram",
-                        chat_id,
-                        actor_name,
-                        data_dir=data_dir,
-                        active_only=True,
-                        limit=5,
-                    )
-                except Exception:
-                    active_research = []
-                if len(active_research) == 1:
-                    from ecom_ops.research import get_research_service
-
-                    rid = active_research[0]["research_id"]
+                conv_has_flow = False
+                if action == "stop":
                     try:
-                        outcome = get_research_service(data_dir).cancel_research(
-                            rid, actor=actor_name
-                        )
-                        res_code = str(outcome.get("result") or "not_found")
-                        if res_code == "cancelled":
-                            reply = BotReply(text=f"Research-jobbet {rid} avbröts innan det startade.")
-                        else:
-                            reply = BotReply(
-                                text=f"Avbrytning begärd för research {rid}. Jobbet stannar vid nästa säkra kontrollpunkt."
-                            )
+                        conv_state = handler.store.get(chat_id)
+                        conv_has_flow = isinstance(conv_state, dict) and bool(conv_state.get("flow"))
                     except Exception:
-                        reply = BotReply(text="Kunde inte avbryta research-jobbet.")
-                elif len(active_research) > 1:
-                    lines = ["Flera research-jobb kör samtidigt. Ange vilket du vill avbryta:"]
-                    for ritem in active_research:
-                        lines.append(f"• /cancel {ritem['research_id']}")
-                    reply = BotReply(text="\n".join(lines))
-                else:
+                        conv_has_flow = False
+                if conv_has_flow:
                     reply = as_reply(handler.handle(chat_id, "/stop"))
+                else:
+                    active_research: list[dict[str, Any]] = []
+                    try:
+                        actor_name = handler._resolve_actor(chat_id)
+                        active_research = research_jobs_summary_for_peer(
+                            "telegram",
+                            chat_id,
+                            actor_name,
+                            data_dir=data_dir,
+                            active_only=True,
+                            limit=5,
+                        )
+                    except Exception:
+                        active_research = []
+                    if len(active_research) == 1:
+                        from ecom_ops.research import get_research_service
+
+                        rid = active_research[0]["research_id"]
+                        try:
+                            outcome = get_research_service(data_dir).cancel_research(
+                                rid, actor=actor_name
+                            )
+                            res_code = str(outcome.get("result") or "not_found")
+                            if res_code == "cancelled":
+                                reply = BotReply(text=f"Research-jobbet {rid} avbröts innan det startade.")
+                            else:
+                                reply = BotReply(
+                                    text=f"Avbrytning begärd för research {rid}. Jobbet stannar vid nästa säkra kontrollpunkt."
+                                )
+                        except Exception:
+                            reply = BotReply(text="Kunde inte avbryta research-jobbet.")
+                    elif len(active_research) > 1:
+                        lines = ["Flera research-jobb kör samtidigt. Ange vilket du vill avbryta:"]
+                        for ritem in active_research:
+                            lines.append(f"• /cancel {ritem['research_id']}")
+                        reply = BotReply(text="\n".join(lines))
+                    else:
+                        reply = as_reply(handler.handle(chat_id, "/stop"))
             else:
                 reply = BotReply(text=messages.get(result, "Avbrytning kunde inte registreras."))
     elif action == "steer":
@@ -2091,6 +2115,10 @@ def _control_reply(
                         reply = BotReply(text="Inget research-jobb med det id:t hittades.")
                     elif job.status in _RESEARCH_TERMINAL_STATUSES:
                         reply = BotReply(text=f"Research-jobbet {res_id} är redan avslutat.")
+                    elif count_research_steers(data_dir, res_id) >= MAX_STEERS_PER_JOB:
+                        reply = BotReply(
+                            text=f"Max antal styrningar ({MAX_STEERS_PER_JOB}) är redan använt för research {res_id}."
+                        )
                     else:
                         svc.steer_research(res_id, parts[1].strip(), actor=actor_name)
                         reply = BotReply(text=f"↪ Styrning sparad för research {res_id}.")

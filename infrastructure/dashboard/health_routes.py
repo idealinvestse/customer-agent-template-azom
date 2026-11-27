@@ -41,6 +41,7 @@ def register_health_routes(app: Flask) -> None:
                 "budget_ratio": extras.get("budget_ratio"),
                 "budget_pacing_warn": extras.get("budget_pacing_warn"),
                 "last_poll_errors": extras.get("last_poll_errors"),
+                "web_search_status": extras.get("web_search_status"),
             }
         )
 

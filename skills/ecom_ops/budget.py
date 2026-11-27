@@ -34,9 +34,9 @@ def budget_status(
         ratio = 0.8
     tel = telemetry or default_telemetry
     used = float(tel.sum_cost_usd())
-    used_ratio = (used / openrouter_cap) if openrouter_cap > 0 else 0.0
-    near_cap = used_ratio >= ratio
-    at_cap = used_ratio >= 1.0
+    used_ratio = (used / openrouter_cap) if openrouter_cap > 0 else 1.0
+    near_cap = (openrouter_cap <= 0) or (used_ratio >= ratio)
+    at_cap = (openrouter_cap <= 0) or (used >= openrouter_cap)
     day_start = datetime.now(UTC).replace(
         hour=0, minute=0, second=0, microsecond=0
     )

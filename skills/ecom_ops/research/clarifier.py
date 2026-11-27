@@ -243,37 +243,65 @@ def should_trigger_research_clarify(message: str) -> bool:
     return scope_signals < 2
 
 
-def _infer_profile(combined: str, spec_dict: dict[str, Any]) -> str:
+_ADDITIVE_NOTE_RE = re.compile(
+    r"\b(?:ocks[åa]|även|dessutom|l[äa]gg\s+till|samt|inklusive|plus)\b",
+    re.I,
+)
+_REPLACE_NOTE_RE = re.compile(
+    r"\b(?:ist[äa]llet|i\s+st[äa]llet|bara|endast|enbart|byt\s+till)\b",
+    re.I,
+)
+
+
+def _match_profile_kw(text: str) -> str | None:
+    if not text:
+        return None
+    if _DESIGN_KW_RE.search(text):
+        return "design_inspiration"
+    if _TECH_KW_RE.search(text):
+        return "technical_docs"
+    if _SUPPORT_KW_RE.search(text):
+        return "support_fact_check"
+    if _MARKETING_KW_RE.search(text):
+        return "marketing_intel"
+    if _MARKET_KW_RE.search(text):
+        return "competitor_market"
+    return None
+
+
+def _infer_profile(combined: str, spec_dict: dict[str, Any], *, note_text: str = "") -> str:
+    note_profile = _match_profile_kw(note_text)
+    if note_profile:
+        return note_profile
     raw_profile = str(spec_dict.get("profile_id") or spec_dict.get("profile") or "").strip().lower()
     if raw_profile in _KNOWN_PROFILES:
         return raw_profile
     raw_cat = str(spec_dict.get("category") or "").strip().lower()
     if is_research_clarify_category(raw_cat):
         return category_to_profile(raw_cat)
-    if _DESIGN_KW_RE.search(combined):
-        return "design_inspiration"
-    if _TECH_KW_RE.search(combined):
-        return "technical_docs"
-    if _SUPPORT_KW_RE.search(combined):
-        return "support_fact_check"
-    if _MARKETING_KW_RE.search(combined):
-        return "marketing_intel"
-    if _MARKET_KW_RE.search(combined):
-        return "competitor_market"
-    return "deep_general"
+    return _match_profile_kw(combined) or "deep_general"
 
 
-def _infer_depth(combined: str, spec_dict: dict[str, Any]) -> str:
+def _match_depth_kw(text: str) -> str | None:
+    if not text:
+        return None
+    if _DEPTH_QUICK_RE.search(text):
+        return "quick"
+    if _DEPTH_DEEP_RE.search(text):
+        return "deep"
+    if _DEPTH_STANDARD_RE.search(text):
+        return "standard"
+    return None
+
+
+def _infer_depth(combined: str, spec_dict: dict[str, Any], *, note_text: str = "") -> str:
+    note_depth = _match_depth_kw(note_text)
+    if note_depth:
+        return note_depth
     raw_depth = str(spec_dict.get("depth") or "").strip().lower()
     if raw_depth in _VALID_DEPTHS:
         return raw_depth
-    if _DEPTH_QUICK_RE.search(combined):
-        return "quick"
-    if _DEPTH_DEEP_RE.search(combined):
-        return "deep"
-    if _DEPTH_STANDARD_RE.search(combined):
-        return "standard"
-    return "standard"
+    return _match_depth_kw(combined) or "standard"
 
 
 def _parse_markets(
@@ -281,23 +309,39 @@ def _parse_markets(
     spec_dict: dict[str, Any],
     *,
     site_id: str | None,
+    note_text: str = "",
 ) -> tuple[list[str], str, str]:
-    markets: list[str] = []
+    prior_markets: list[str] = []
     raw_markets = spec_dict.get("markets") if "markets" in spec_dict else spec_dict.get("market")
     if isinstance(raw_markets, str):
         for token in raw_markets.split(","):
             norm = token.strip().upper()
-            if norm and norm not in markets:
-                markets.append(norm)
+            if norm and norm not in prior_markets:
+                prior_markets.append(norm)
     elif isinstance(raw_markets, (list, tuple)):
         for item in raw_markets:
             norm = str(item or "").strip().upper()
-            if norm and norm not in markets:
-                markets.append(norm)
+            if norm and norm not in prior_markets:
+                prior_markets.append(norm)
 
-    for code in _extract_markets_from_text(combined):
-        if code not in markets:
-            markets.append(code)
+    note_markets = _extract_markets_from_text(note_text) if note_text else []
+    markets: list[str] = list(prior_markets)
+    markets_overridden = False
+    if note_markets and prior_markets:
+        is_additive = bool(_ADDITIVE_NOTE_RE.search(note_text)) and not bool(
+            _REPLACE_NOTE_RE.search(note_text)
+        )
+        if is_additive:
+            for code in note_markets:
+                if code not in markets:
+                    markets.append(code)
+        else:
+            markets = list(note_markets)
+            markets_overridden = markets != prior_markets
+    else:
+        for code in _extract_markets_from_text(combined):
+            if code not in markets:
+                markets.append(code)
 
     if not markets and site_id:
         low_site = site_id.strip().lower()
@@ -312,13 +356,13 @@ def _parse_markets(
         markets = ["SE"]
 
     raw_country = str(spec_dict.get("country") or "").strip().upper()
-    if len(raw_country) == 2 and raw_country.isalpha():
+    if not markets_overridden and len(raw_country) == 2 and raw_country.isalpha():
         country = raw_country
     else:
         country = next((m for m in markets if m in {"SE", "NO", "DK"}), "SE")
 
     raw_locale = str(spec_dict.get("locale") or "").strip().lower()
-    if raw_locale:
+    if not markets_overridden and raw_locale:
         locale = raw_locale
     else:
         primary_mkt = markets[0] if markets else country
@@ -353,10 +397,17 @@ def build_research_spec(
         fallback_parts = note_texts or pick_texts
         clean_topic = " ".join(fallback_parts[:2]).strip()[:500] or "Allmän research"
 
+    note_joined = " ".join(note_texts)
     combined = "\n".join([clean_topic, *pick_texts, *note_texts])
-    profile_id = _infer_profile(combined, spec_dict)
-    depth = _infer_depth(" ".join([*pick_texts, *note_texts, clean_topic]), spec_dict)
-    markets, locale, country = _parse_markets(combined, spec_dict, site_id=site_id)
+    profile_id = _infer_profile(combined, spec_dict, note_text=note_joined)
+    depth = _infer_depth(
+        " ".join([*pick_texts, *note_texts, clean_topic]),
+        spec_dict,
+        note_text=note_joined,
+    )
+    markets, locale, country = _parse_markets(
+        combined, spec_dict, site_id=site_id, note_text=note_joined
+    )
 
     focus_domains: list[str] = []
     queries_seed: list[str] = []

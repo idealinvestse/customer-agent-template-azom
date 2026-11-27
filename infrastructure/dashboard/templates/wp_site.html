@@ -287,7 +287,7 @@
       <a class="az-btn-secondary az-btn-sm" href="/research">Research-hubb</a>
     </div>
 
-    <form method="post" action="/research/jobs" class="grid gap-3 sm:grid-cols-4 sm:items-end">
+    <form method="post" action="/research/jobs" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
       <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
       <input type="hidden" name="target_ref" value="wp_site:{{ site.id }}" />
       <input type="hidden" name="next_url" value="{{ url_for('wp_site_detail', site_id=site.id) }}" />

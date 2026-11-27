@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import email.utils
 import http.client
 import json
+import math
 import os
 import ssl
 from collections.abc import Collection, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from ecom_ops.integrations import _http_guard
@@ -47,15 +50,26 @@ def scrub_query_for_provider(
 
 
 def parse_retry_after_seconds(headers: Mapping[str, str] | None) -> float | None:
-    """Parse a numeric ``Retry-After`` header in seconds, or return None."""
+    """Parse a numeric or HTTP-date ``Retry-After`` header in seconds, or return None."""
     if not headers:
         return None
     for key, val in headers.items():
         if str(key).lower() == "retry-after":
+            raw = str(val).strip()
+            if not raw:
+                return None
             try:
-                sec = float(str(val).strip())
-                return sec if sec >= 0 else None
+                sec = float(raw)
+                return sec if math.isfinite(sec) and sec >= 0 else None
             except ValueError:
+                pass
+            try:
+                dt = email.utils.parsedate_to_datetime(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                delta = (dt - datetime.now(UTC)).total_seconds()
+                return max(0.0, delta) if math.isfinite(delta) else None
+            except (TypeError, ValueError, OverflowError):
                 return None
     return None
 

@@ -12,6 +12,7 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ecom_ops.research.budget import (
     can_run_fetch,
@@ -63,6 +64,41 @@ from ecom_ops.research.sanitizer import (
 _VALID_DEPTHS = frozenset({"quick", "standard", "deep"})
 _SERVICE_LOCK = threading.Lock()
 _SERVICES: dict[str, ResearchService] = {}
+
+
+def _host_matches_any(host: str, domains: Sequence[str]) -> bool:
+    clean = host.strip().lower().rstrip(".")
+    if not clean:
+        return False
+    for dom in domains:
+        norm = str(dom or "").strip().lower().lstrip(".")
+        if norm and (clean == norm or clean.endswith(f".{norm}")):
+            return True
+    return False
+
+
+def _filter_cached_sources(
+    sources: Sequence[Any],
+    *,
+    allowlist: Sequence[str],
+    denylist: Sequence[str],
+) -> list[dict[str, Any]]:
+    kept: list[dict[str, Any]] = []
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        raw_url = str(src.get("canonical_url") or src.get("url") or "").strip()
+        host = str(src.get("domain") or "").strip().lower()
+        if not host and raw_url:
+            host = (urlsplit(raw_url).hostname or "").strip().lower()
+        if not host:
+            continue
+        if denylist and _host_matches_any(host, denylist):
+            continue
+        if allowlist and not _host_matches_any(host, allowlist):
+            continue
+        kept.append(src)
+    return kept
 
 
 def _resolve_locale_country(
@@ -133,6 +169,10 @@ class ResearchService:
         if self._data_dir is not None:
             return self._data_dir
         return Path(os.environ.get("AZOM_DATA_DIR", ".azom-data"))
+
+    def _store_data_dir(self) -> Path:
+        store_path = getattr(self.store, "path", None)
+        return store_path.parent if store_path is not None else self._base_dir()
 
     @property
     def store(self):
@@ -223,8 +263,12 @@ class ResearchService:
 
         lang, ctry = _resolve_locale_country(locale, country, profile)
         eff_freshness = int(freshness_days) if freshness_days is not None else profile.freshness_days
+        clamped_max = max(1, min(10, int(max_results)))
         inc_doms = tuple(str(d).strip().lower().lstrip(".") for d in (include_domains or ()) if str(d).strip())
         exc_doms = tuple(str(d).strip().lower().lstrip(".") for d in (exclude_domains or ()) if str(d).strip())
+        allowlist = effective_allowlist_domains(cfg)
+        denylist = cfg.egress.denylist_domains
+        combined_deny = tuple(dict.fromkeys((*denylist, *exc_doms)))
 
         cache_key = ""
         if use_cache and cfg.cache.enabled and not is_mock_mode():
@@ -235,33 +279,46 @@ class ResearchService:
                 locale=f"{ctry or ''}:{lang or ''}",
                 filters={
                     "freshness_days": eff_freshness,
-                    "max_results": max_results,
+                    "max_results": clamped_max,
                     "include_domains": inc_doms,
                     "exclude_domains": exc_doms,
+                    "allowlist_domains": allowlist,
+                    "denylist_domains": denylist,
                 },
             )
             cached = self.cache.get(cache_key)
             if isinstance(cached, dict):
-                q_hash = hashlib.sha256(clean_query.encode("utf-8")).hexdigest()[:16]
-                self.telemetry.record(
-                    action="web_search_selected",
-                    site="azom",
-                    units=1,
-                    unit_type="api_calls",
-                    cost_usd=0.0,
-                    actor=actor_obj.name,
-                    meta={
-                        "estimated_search_usd": 0.0,
-                        "cost_kind": "cached",
-                        "query_hash": q_hash,
-                        "profile_id": profile.id,
-                        "provider": cached.get("provider", ""),
-                        "route_id": cached.get("route_id", ""),
-                        "hits_count": len(cached.get("sources") or []),
-                        "cached": True,
-                    },
+                filtered_sources = _filter_cached_sources(
+                    cached.get("sources") or [],
+                    allowlist=allowlist,
+                    denylist=combined_deny,
                 )
-                return {**cached, "cached": True}
+                if filtered_sources:
+                    q_hash = hashlib.sha256(clean_query.encode("utf-8")).hexdigest()[:16]
+                    self.telemetry.record(
+                        action="web_search_selected",
+                        site="azom",
+                        units=1,
+                        unit_type="api_calls",
+                        cost_usd=0.0,
+                        actor=actor_obj.name,
+                        meta={
+                            "estimated_search_usd": 0.0,
+                            "cost_kind": "cached",
+                            "query_hash": q_hash,
+                            "profile_id": profile.id,
+                            "provider": cached.get("provider", ""),
+                            "route_id": cached.get("route_id", ""),
+                            "hits_count": len(filtered_sources),
+                            "cached": True,
+                        },
+                    )
+                    return {
+                        **cached,
+                        "hits_count": len(filtered_sources),
+                        "sources": filtered_sources,
+                        "cached": True,
+                    }
 
         req = SearchRequest(
             query=clean_query,
@@ -269,7 +326,7 @@ class ResearchService:
             country=ctry,
             language=lang,
             freshness_days=eff_freshness,
-            max_results=max(1, min(10, int(max_results))),
+            max_results=clamped_max,
             include_domains=inc_doms,
             exclude_domains=exc_doms,
             include_content=False,
@@ -298,7 +355,7 @@ class ResearchService:
             "sources": [s.to_dict() for s in sources],
             "conflicts": [c.to_dict() for c in conflicts],
         }
-        if cache_key and cfg.cache.enabled and not is_mock_mode():
+        if cache_key and cfg.cache.enabled and not is_mock_mode() and sources:
             ttl_hours = (
                 cfg.cache.news_ttl_hours
                 if profile.id == "support_fact_check"
@@ -403,12 +460,25 @@ class ResearchService:
     ) -> ResearchJob:
         """Validate RBAC/firewall and enqueue an async Deep Research job (<1s)."""
         from ecom_ops.audit import log_action
+        from ecom_ops.integrations.search.errors import SearchConfigError
         from ecom_ops.rbac import Permission, require_permission, resolve_actor
         from ecom_ops.research.store import authorize_target_ref
 
         actor_obj = resolve_actor(actor)
         require_permission(actor_obj, Permission.RESEARCH_RUN)
         authorize_target_ref(actor_obj.name, target_ref)
+
+        if not is_mock_mode():
+            if kill_switch_active("research"):
+                raise SearchConfigError(
+                    "Deep research is disabled by kill switch",
+                    code="research_kill_switch",
+                )
+            if not research_enabled():
+                raise SearchConfigError(
+                    "Live deep research is disabled (requires AZOM_USE_MOCK=0 and AZOM_RESEARCH_ENABLED=1)",
+                    code="research_disabled",
+                )
 
         profile = get_profile(profile_id)
         norm_depth = (depth or "standard").strip().lower()
@@ -418,9 +488,18 @@ class ResearchService:
         clean_topic = " ".join(sanitize_untrusted_text(topic, max_chars=500).split())
         if not clean_topic:
             raise SearchPolicyError("OutboundQueryBlocked: empty_topic")
+        if taint is None and target_ref:
+            from ecom_ops.research.engine import resolve_taint_for_target_ref
+
+            taint = resolve_taint_for_target_ref(target_ref, self._store_data_dir())
         fw = OutboundQueryFirewall()
-        for offset in range(0, len(clean_topic), 250):
-            fw.check_query(clean_topic[offset : offset + 250], taint=taint)
+        clean_topic = fw.check_text(clean_topic, max_chars=500, taint=taint)
+
+        clean_seeds: list[str] = []
+        for raw_seed in (queries_seed or ()):
+            seed = str(raw_seed or "").strip()
+            if seed:
+                clean_seeds.append(fw.check_query(seed, taint=taint))
 
         lang, ctry = _resolve_locale_country(locale, country, profile)
         spec = ResearchSpec(
@@ -433,7 +512,7 @@ class ResearchService:
             focus_domains=[str(d).strip().lower().lstrip(".") for d in (focus_domains or ()) if str(d).strip()],
             exclude_domains=[str(d).strip().lower().lstrip(".") for d in (exclude_domains or ()) if str(d).strip()],
             target_ref=target_ref.strip() if target_ref else None,
-            queries_seed=[str(q).strip() for q in (queries_seed or ()) if str(q).strip()],
+            queries_seed=clean_seeds,
         )
         job = self.store.enqueue_job(
             spec,
@@ -518,13 +597,31 @@ class ResearchService:
             target_ref=target_ref,
         )
 
-    def steer_research(self, research_id: str, note: str, *, actor: str) -> dict[str, Any]:
+    def steer_research(
+        self,
+        research_id: str,
+        note: str,
+        *,
+        actor: str,
+        taint: QueryTaintContext | None = None,
+    ) -> dict[str, Any]:
         """Queue a follow-up steering note for ``research_id`` (owner or ``RESEARCH_ADMIN``)."""
-        from ecom_ops.rbac import Permission, require_permission, resolve_actor
+        from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
 
         actor_obj = resolve_actor(actor)
         require_permission(actor_obj, Permission.RESEARCH_RUN)
-        steer_id = self.store.add_steer(research_id, actor_obj.name, note)
+        if taint is None:
+            job = self.store.get_job(research_id)
+            if job is not None:
+                from ecom_ops.research.store import authorize_research_access
+
+                if not authorize_research_access(actor_obj.name, job, "steer"):
+                    raise AccessDenied(f"Actor {actor_obj.name!r} cannot steer research job {research_id}")
+                from ecom_ops.research.engine import _resolve_taint_for_job
+
+                taint = _resolve_taint_for_job(job, self._store_data_dir())
+        clean_note = OutboundQueryFirewall().check_query(note, taint=taint)
+        steer_id = self.store.add_steer(research_id, actor_obj.name, clean_note, taint=taint)
         return {"ok": True, "research_id": research_id, "steer_id": steer_id}
 
     def cancel_research(self, research_id: str, *, actor: str) -> dict[str, Any]:

@@ -636,11 +636,19 @@ def _open_sqlite_conn(db_path: Path, *, dry_run: bool) -> sqlite3.Connection:
             )
         except sqlite3.OperationalError:
             conn = sqlite3.connect(str(db_path), timeout=5.0)
-            conn.execute("PRAGMA query_only=ON")
-            conn.execute("PRAGMA busy_timeout=5000")
+            try:
+                conn.execute("PRAGMA query_only=ON")
+                conn.execute("PRAGMA busy_timeout=5000")
+            except Exception:
+                conn.close()
+                raise
             return conn
     conn = sqlite3.connect(str(db_path), timeout=5.0)
-    conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -676,67 +684,98 @@ def _purge_expired_search_cache(
         if "search_cache" not in tables:
             return 0, 0
 
-        exp_row = conn.execute(
-            """
-            SELECT COUNT(*), COALESCE(
-                SUM(CASE WHEN size_bytes > 0 THEN size_bytes ELSE LENGTH(CAST(payload_json AS BLOB)) END),
-                0
-            )
-            FROM search_cache
-            WHERE expires_at <= ?
-            """,
-            (float(now_ts),),
-        ).fetchone()
-        expired_count = int(exp_row[0] or 0) if exp_row else 0
-        expired_bytes = int(exp_row[1] or 0) if exp_row else 0
-
-        rem_row = conn.execute(
-            "SELECT COUNT(*) FROM search_cache WHERE expires_at > ?",
-            (float(now_ts),),
-        ).fetchone()
-        remaining = int(rem_row[0] or 0) if rem_row else 0
-        excess = max(0, remaining - max_entries)
-        excess_bytes = 0
-        if excess > 0:
-            ex_row = conn.execute(
-                """
-                SELECT COALESCE(SUM(sz), 0) FROM (
-                    SELECT CASE WHEN size_bytes > 0 THEN size_bytes ELSE LENGTH(CAST(payload_json AS BLOB)) END AS sz
-                    FROM search_cache
-                    WHERE expires_at > ?
-                    ORDER BY last_accessed_at ASC, created_at ASC
-                    LIMIT ?
-                )
-                """,
-                (float(now_ts), excess),
-            ).fetchone()
-            excess_bytes = int(ex_row[0] or 0) if ex_row else 0
-
         if dry_run:
+            exp_row = conn.execute(
+                """
+                SELECT COUNT(*), COALESCE(
+                    SUM(CASE WHEN size_bytes > 0 THEN size_bytes ELSE LENGTH(CAST(payload_json AS BLOB)) END),
+                    0
+                )
+                FROM search_cache
+                WHERE expires_at <= ?
+                """,
+                (float(now_ts),),
+            ).fetchone()
+            expired_count = int(exp_row[0] or 0) if exp_row else 0
+            expired_bytes = int(exp_row[1] or 0) if exp_row else 0
+
+            rem_row = conn.execute(
+                "SELECT COUNT(*) FROM search_cache WHERE expires_at > ?",
+                (float(now_ts),),
+            ).fetchone()
+            remaining = int(rem_row[0] or 0) if rem_row else 0
+            excess = max(0, remaining - max_entries)
+            excess_bytes = 0
+            if excess > 0:
+                ex_row = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(sz), 0) FROM (
+                        SELECT CASE WHEN size_bytes > 0 THEN size_bytes ELSE LENGTH(CAST(payload_json AS BLOB)) END AS sz
+                        FROM search_cache
+                        WHERE expires_at > ?
+                        ORDER BY last_accessed_at ASC, created_at ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (float(now_ts), excess),
+                ).fetchone()
+                excess_bytes = int(ex_row[0] or 0) if ex_row else 0
             return expired_count + excess, expired_bytes + excess_bytes
 
-        if expired_count > 0 or excess > 0:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                cur_exp = conn.execute("DELETE FROM search_cache WHERE expires_at <= ?", (float(now_ts),))
-                purged_rows += max(0, int(cur_exp.rowcount or 0))
-                if excess > 0:
-                    cur_ex = conn.execute(
-                        """
-                        DELETE FROM search_cache WHERE cache_key IN (
-                            SELECT cache_key FROM search_cache
-                            ORDER BY last_accessed_at ASC, created_at ASC
-                            LIMIT ?
-                        )
-                        """,
-                        (excess,),
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            exp_row = conn.execute(
+                """
+                SELECT COUNT(*), COALESCE(
+                    SUM(CASE WHEN size_bytes > 0 THEN size_bytes ELSE LENGTH(CAST(payload_json AS BLOB)) END),
+                    0
+                )
+                FROM search_cache
+                WHERE expires_at <= ?
+                """,
+                (float(now_ts),),
+            ).fetchone()
+            expired_bytes = int(exp_row[1] or 0) if exp_row else 0
+            cur_exp = conn.execute("DELETE FROM search_cache WHERE expires_at <= ?", (float(now_ts),))
+            deleted_exp = max(0, int(cur_exp.rowcount or 0))
+            purged_rows += deleted_exp
+            if deleted_exp > 0:
+                reclaimed_bytes += expired_bytes
+
+            rem_row = conn.execute("SELECT COUNT(*) FROM search_cache").fetchone()
+            remaining = int(rem_row[0] or 0) if rem_row else 0
+            excess = max(0, remaining - max_entries)
+            if excess > 0:
+                ex_row = conn.execute(
+                    """
+                    SELECT COALESCE(SUM(sz), 0) FROM (
+                        SELECT CASE WHEN size_bytes > 0 THEN size_bytes ELSE LENGTH(CAST(payload_json AS BLOB)) END AS sz
+                        FROM search_cache
+                        ORDER BY last_accessed_at ASC, created_at ASC
+                        LIMIT ?
                     )
-                    purged_rows += max(0, int(cur_ex.rowcount or 0))
-                conn.commit()
-                reclaimed_bytes = expired_bytes + excess_bytes
-            except Exception:
-                conn.rollback()
-                raise
+                    """,
+                    (excess,),
+                ).fetchone()
+                excess_bytes = int(ex_row[0] or 0) if ex_row else 0
+                cur_ex = conn.execute(
+                    """
+                    DELETE FROM search_cache WHERE cache_key IN (
+                        SELECT cache_key FROM search_cache
+                        ORDER BY last_accessed_at ASC, created_at ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (excess,),
+                )
+                deleted_ex = max(0, int(cur_ex.rowcount or 0))
+                purged_rows += deleted_ex
+                if deleted_ex > 0:
+                    reclaimed_bytes += excess_bytes
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     except Exception as exc:
         if errors is not None:
             errors.append(f"search_cache_purge:{type(exc).__name__}")
@@ -840,8 +879,19 @@ def _clean_expired_research_artifacts(
         if not dry_run and conn is not None and prunable_ids:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                marks = ",".join("?" for _ in prunable_ids)
-                conn.execute(f"DELETE FROM research_jobs WHERE id IN ({marks})", prunable_ids)
+                chunk_size = 500
+                for start in range(0, len(prunable_ids), chunk_size):
+                    chunk = prunable_ids[start : start + chunk_size]
+                    marks = ",".join("?" for _ in chunk)
+                    conn.execute(
+                        f"""
+                        DELETE FROM research_jobs
+                        WHERE id IN ({marks})
+                          AND COALESCE(pinned, 0) = 0
+                          AND status IN ('completed', 'partial', 'cancelled', 'failed')
+                        """,
+                        chunk,
+                    )
                 conn.commit()
             except Exception:
                 conn.rollback()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import threading
 from collections import defaultdict
 from functools import wraps
 from time import time as _time
@@ -19,6 +20,7 @@ _app: Flask | None = None
 _LOGIN_WINDOW_SEC = 300
 _LOGIN_MAX_FAILURES = 10
 _login_failures: dict[str, list[float]] = defaultdict(list)
+_login_failures_lock = threading.Lock()
 
 
 def init_auth(app: Flask) -> None:
@@ -43,19 +45,14 @@ def configure_secret_key(app: Flask | None = None) -> None:
         target = current_app
     key = os.environ.get("DASHBOARD_SECRET_KEY", "").strip()
     if not key:
-        material = (
-            os.environ.get("DASHBOARD_PASSWORD_HASH")
-            or os.environ.get("DASHBOARD_OSCAR_PASSWORD_HASH")
-            or os.environ.get("DASHBOARD_PASSWORD")
-            or os.environ.get("DASHBOARD_OSCAR_PASSWORD")
-            or ""
-        )
-        if material:
-            key = hashlib.sha256(f"azom-dash:{material}".encode()).hexdigest()
-        elif _is_mock():
+        if _is_mock():
             key = "azom-mock-dashboard-secret"
         else:
-            key = secrets.token_hex(32)
+            existing = target.secret_key if isinstance(target.secret_key, str) else ""
+            if existing and existing != "azom-mock-dashboard-secret":
+                key = existing
+            else:
+                key = secrets.token_hex(32)
     target.secret_key = key
 
 
@@ -145,23 +142,25 @@ def _validate_csrf() -> Response | None:
 def _login_rate_limited(ip: str) -> bool:
     now = _time()
     cutoff = now - _LOGIN_WINDOW_SEC
-    recent = [t for t in _login_failures[ip] if t > cutoff]
-    _login_failures[ip] = recent
-    return len(recent) >= _LOGIN_MAX_FAILURES
+    with _login_failures_lock:
+        recent = [t for t in _login_failures[ip] if t > cutoff]
+        _login_failures[ip] = recent
+        return len(recent) >= _LOGIN_MAX_FAILURES
 
 
 def _record_login_failure(ip: str) -> None:
     now = _time()
     cutoff = now - _LOGIN_WINDOW_SEC
-    if len(_login_failures) > 1000:
-        stale = [
-            key
-            for key, stamps in _login_failures.items()
-            if not any(t > cutoff for t in stamps)
-        ]
-        for key in stale:
-            _login_failures.pop(key, None)
-    _login_failures[ip].append(now)
+    with _login_failures_lock:
+        if len(_login_failures) > 1000:
+            stale = [
+                key
+                for key, stamps in _login_failures.items()
+                if not any(t > cutoff for t in stamps)
+            ]
+            for key in stale:
+                _login_failures.pop(key, None)
+        _login_failures[ip].append(now)
 
 
 def _auth_required(view):

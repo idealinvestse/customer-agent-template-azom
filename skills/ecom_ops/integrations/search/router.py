@@ -29,7 +29,6 @@ from ecom_ops.research.budget import can_run_search
 from ecom_ops.research.config import (
     ResearchConfig,
     effective_allowlist_domains,
-    effective_route_order,
     is_mock_mode,
     kill_switch_active,
     load_research_config,
@@ -149,14 +148,15 @@ class SearchRouter:
     ) -> list[str]:
         """Return live route priority honoring ``AZOM_SEARCH_ROUTE_ORDER`` and profile preferences."""
         cfg = config or load_research_config()
-        env_order = str(os.environ.get("AZOM_SEARCH_ROUTE_ORDER") or "").strip()
-        base_order = list(effective_route_order(cfg))
-        if env_order:
-            seen: list[str] = []
-            for rid in base_order:
-                if rid not in seen:
-                    seen.append(rid)
-            return seen
+        raw_env_order = str(os.environ.get("AZOM_SEARCH_ROUTE_ORDER") or "").strip()
+        if raw_env_order:
+            env_ids: list[str] = []
+            for part in raw_env_order.split(","):
+                norm = part.strip().lower()
+                if norm and norm != "mock" and norm in self._routes and norm not in env_ids:
+                    env_ids.append(norm)
+            if env_ids:
+                return env_ids
 
         preferred: tuple[str, ...] = ()
         if profile_id:
@@ -166,9 +166,9 @@ class SearchRouter:
                 preferred = ()
 
         merged: list[str] = []
-        for rid in (*preferred, *base_order):
+        for rid in (*preferred, *cfg.default_route_order):
             norm = str(rid or "").strip().lower()
-            if norm and norm not in merged and norm != "mock":
+            if norm and norm != "mock" and norm in self._routes and norm not in merged:
                 merged.append(norm)
         return merged
 
@@ -365,10 +365,12 @@ class SearchRouter:
 
         errors: list[str] = []
         skipped_transient: list[str] = []
+        auth_blocked: list[str] = []
+        configured_count = 0
         attempts = 0
 
         def _execute_route(rid: str, *, bypass_breaker: bool = False) -> SearchResult | None:
-            nonlocal attempts
+            nonlocal attempts, configured_count
             route = self._routes.get(rid)
             if route is None or rid == "mock":
                 errors.append(f"{rid}: unknown")
@@ -379,6 +381,9 @@ class SearchRouter:
             if not route.is_configured():
                 errors.append(f"{rid}: not_configured")
                 return None
+
+            if not bypass_breaker:
+                configured_count += 1
 
             allowed, br_state, rem_s = circuit_breaker.allow_attempt(
                 rid,
@@ -402,6 +407,8 @@ class SearchRouter:
                 )
                 if br_state == "open":
                     skipped_transient.append(rid)
+                elif br_state == "open_auth":
+                    auth_blocked.append(rid)
                 return None
 
             attempts += 1
@@ -491,10 +498,20 @@ class SearchRouter:
             if res is not None:
                 return res
 
-        if attempts == 0 and not skipped_transient:
+        if configured_count == 0:
             raise SearchConfigError(
                 "No configured live search route available: " + "; ".join(errors),
                 code="no_configured_route",
+            )
+        if attempts == 0:
+            if auth_blocked and len(auth_blocked) == configured_count:
+                raise SearchAuthError(
+                    "All configured search routes blocked by auth breaker: " + "; ".join(errors),
+                    code="circuit_open_auth",
+                )
+            raise SearchUnavailableError(
+                "All configured search routes skipped by circuit breaker: " + "; ".join(errors),
+                code="circuit_open",
             )
         raise SearchUnavailableError(
             "All configured search routes failed: " + "; ".join(errors),

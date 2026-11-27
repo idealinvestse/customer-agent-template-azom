@@ -17,9 +17,27 @@ from ecom_ops.wp_ops.agent_tools import context_matches
 
 FILE_PLAN_ID_RE = re.compile(r"^fe-[a-f0-9]{12}$")
 REVIEW_PLAN_ID_RE = re.compile(r"^wr-[a-f0-9]{12}$")
+RESEARCH_ID_RE = re.compile(r"^res-[0-9a-f]{12}$")
 SITE_ID_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 MAX_REVIEW_HASH_CACHE = 24
+MAX_REVIEW_RESEARCH_IDS = 10
 ACTIVE_WP_REVIEW_TTL_SECONDS = 12 * 60 * 60
+
+
+def _normalize_research_ids(*sources: Any, limit: int = MAX_REVIEW_RESEARCH_IDS) -> list[str]:
+    out: list[str] = []
+    for src in sources:
+        if not isinstance(src, (list, tuple)):
+            continue
+        for item in src:
+            if not isinstance(item, str):
+                continue
+            norm = item.strip().lower()
+            if RESEARCH_ID_RE.fullmatch(norm) and norm not in out:
+                out.append(norm)
+    if len(out) > limit:
+        out = out[-limit:]
+    return out
 
 
 def is_allowed_chat_image_path(item: Any) -> str | None:
@@ -155,6 +173,7 @@ def valid_active_wp_review(
             for p in (review.get("changed_files") or ())
             if isinstance(p, str) and str(p).strip()
         ][:12],
+        "research_ids": _normalize_research_ids(review.get("research_ids")),
         "last_image_paths": _validate_image_paths(review.get("last_image_paths"), limit=2),
         "preview_images": _validate_image_paths(review.get("preview_images"), limit=4),
         "updated_at": updated_raw,
@@ -215,6 +234,7 @@ def merge_active_wp_review(
     changed_files = [
         str(p).strip()[:160] for p in raw_changed if isinstance(p, str) and str(p).strip()
     ][:12]
+    research_ids = _normalize_research_ids(base.get("research_ids"), m.get("research_ids"))
     last_images = (
         _validate_image_paths(inbound_images, limit=2)
         if inbound_images
@@ -236,6 +256,7 @@ def merge_active_wp_review(
         "focus_selector": focus_selector,
         "theme_slug": theme_slug,
         "changed_files": changed_files,
+        "research_ids": research_ids,
         "last_image_paths": last_images,
         "preview_images": preview_images,
         "updated_at": datetime.now(UTC).isoformat(),

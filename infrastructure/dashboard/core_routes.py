@@ -125,6 +125,7 @@ def _iso_to_epoch(value: object) -> float:
 def register_core_routes(app: Flask) -> None:
     @app.route("/metrics")
     def prometheus_metrics():
+        import contextlib
         import hmac
         import os
         import sqlite3
@@ -165,13 +166,12 @@ def register_core_routes(app: Flask) -> None:
         db_path = data_dir / "cases.db"
         if db_path.is_file():
             try:
-                conn = sqlite3.connect(str(db_path))
-                for status in ("open", "escalated", "replied", "closed"):
-                    count = conn.execute(
-                        "SELECT COUNT(*) FROM cases WHERE status = ?", (status,)
-                    ).fetchone()[0]
-                    lines.append(f'azom_cases{{status="{status}"}} {count}')
-                conn.close()
+                with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
+                    for status in ("open", "escalated", "replied", "closed"):
+                        count = conn.execute(
+                            "SELECT COUNT(*) FROM cases WHERE status = ?", (status,)
+                        ).fetchone()[0]
+                        lines.append(f'azom_cases{{status="{status}"}} {count}')
             except Exception:
                 pass
         probe_path = data_dir / "probe_last.json"

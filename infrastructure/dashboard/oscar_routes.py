@@ -796,6 +796,8 @@ def register_oscar_routes(app: Flask) -> None:
             "removed_pv_dirs": removed_pv,
             "removed_media_files": int(summary.get("removed_media_files") or 0),
             "purged_proposals": int(summary.get("purged_proposals") or 0),
+            "purged_search_cache_rows": int(summary.get("purged_search_cache_rows") or 0),
+            "removed_research_artifacts": int(summary.get("removed_research_artifacts") or 0),
             "rotated_logs": rotated_count,
             "errors": list(summary.get("errors") or [])[:5],
         }

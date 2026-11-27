@@ -6,13 +6,29 @@ All HTTP I/O stays inside ``ecom_ops.integrations.search`` via lazy calls to
 
 from __future__ import annotations
 
+import inspect
+import json
 from typing import Any
 
 from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
 from ecom_ops.wp_ops.tools.registry import register_tool
 from ecom_ops.wp_ops.tools.scrub import site_bound_secrets
-from ecom_ops.wp_ops.tools.types import RESEARCH_ID_RE, SITE_ID_RE, ToolContext, ToolOutput
+from ecom_ops.wp_ops.tools.types import (
+    RESEARCH_ID_RE,
+    SITE_ID_RE,
+    WEB_FETCH_MAX_RESULT_BYTES,
+    WEB_RESEARCH_GET_MAX_RESULT_BYTES,
+    WEB_SEARCH_MAX_RESULT_BYTES,
+    ToolContext,
+    ToolOutput,
+)
 from ecom_ops.wp_ops.tools.validation import error_payload, short_text
+
+_RESEARCH_RESULT_BYTE_CAPS: dict[str, int] = {
+    "web_search": WEB_SEARCH_MAX_RESULT_BYTES,
+    "web_fetch_extract": WEB_FETCH_MAX_RESULT_BYTES,
+    "web_research_get": WEB_RESEARCH_GET_MAX_RESULT_BYTES,
+}
 
 
 def _web_search_outcome(data: dict[str, Any], _reads: int | None) -> str:
@@ -81,6 +97,78 @@ def _taint_for_ctx(tools: Any, ctx: ToolContext) -> Any:
     return QueryTaintContext(secrets=tuple(extra_secrets)) if extra_secrets else None
 
 
+def _derive_peer_id(channel: str, conversation_id: str) -> str:
+    raw = str(conversation_id or "").strip()
+    if not raw:
+        return "local"
+    prefix = f"{channel}:"
+    if channel and raw.startswith(prefix):
+        stripped = raw[len(prefix) :].strip()
+        return stripped or "local"
+    return raw
+
+
+def _json_utf8_bytes(obj: Any) -> int:
+    return len(json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _trim_payload_to_cap(payload: dict[str, Any], max_bytes: int) -> None:
+    """Trim ``payload['content']`` cleanly so adding ``live_calls`` never exceeds ``max_bytes``."""
+    if _json_utf8_bytes(payload) <= max_bytes:
+        return
+    content = payload.get("content")
+    if not isinstance(content, str) or not content:
+        return
+    lines = content.split("\n")
+    has_envelope = (
+        len(lines) >= 3
+        and lines[0].startswith("<<<UNTRUSTED_")
+        and lines[-1].startswith("<<<END_UNTRUSTED_")
+    )
+    if has_envelope:
+        head, tail = lines[0], lines[-1]
+        inner = "\n".join(lines[1:-1])
+
+        def _render(n: int) -> str:
+            if n <= 0:
+                return f"{head}\n...\n{tail}"
+            if n >= len(inner):
+                return f"{head}\n{inner}\n{tail}"
+            return f"{head}\n{inner[:n].rstrip()}...\n{tail}"
+    else:
+        inner = content
+
+        def _render(n: int) -> str:
+            if n <= 0:
+                return "..."
+            if n >= len(inner):
+                return inner
+            return f"{inner[:n].rstrip()}..."
+
+    lo, hi = 0, len(inner)
+    best = _render(0)
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate_text = _render(mid)
+        payload["content"] = candidate_text
+        if _json_utf8_bytes(payload) <= max_bytes:
+            best = candidate_text
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    payload["content"] = best
+
+
+def _accepts_data_dir(fn: Any) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "data_dir" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
 def _run_research_facade(
     name: str,
     tools: Any,
@@ -89,19 +177,35 @@ def _run_research_facade(
 ) -> ToolOutput:
     from ecom_ops.research.tools import execute_research_tool
 
-    res = execute_research_tool(
-        name,
-        arguments,
-        actor=ctx.actor,
-        channel=ctx.channel or "wp_chat",
-        peer_id=ctx.conversation_id or "local",
-        taint=_taint_for_ctx(tools, ctx),
-        on_enqueue=None,
-    )
+    channel = ctx.channel or "wp_chat"
+    peer_id = _derive_peer_id(channel, ctx.conversation_id)
+    data_dir = getattr(tools.service, "data_dir", None)
+
+    def _on_research_enqueue(_job: Any) -> None:
+        from ecom_ops.research.config import is_mock_mode, research_enabled
+        from ecom_ops.research.worker import ensure_research_worker_started
+
+        if not is_mock_mode() and research_enabled():
+            ensure_research_worker_started(data_dir=data_dir)
+
+    kwargs: dict[str, Any] = {
+        "actor": ctx.actor,
+        "channel": channel,
+        "peer_id": peer_id,
+        "taint": _taint_for_ctx(tools, ctx),
+        "on_enqueue": _on_research_enqueue,
+    }
+    if _accepts_data_dir(execute_research_tool):
+        kwargs["data_dir"] = data_dir
+
+    res = execute_research_tool(name, arguments, **kwargs)
     payload = dict(res) if isinstance(res, dict) else error_payload("ToolFailed")
     payload.setdefault("live_calls", payload.get("provenance") == "live")
     if not payload.get("ok") and "status" not in payload:
         payload["status"] = "denied" if payload.get("error_class") == "AccessDenied" else "unknown"
+    cap = _RESEARCH_RESULT_BYTE_CAPS.get(name)
+    if cap is not None:
+        _trim_payload_to_cap(payload, cap)
     return ToolOutput(payload)
 
 

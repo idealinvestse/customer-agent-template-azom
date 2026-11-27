@@ -132,6 +132,8 @@ def resolve_file(root: str, kind: str, slug: str, relative: str) -> str:
         raise PathRejected("relative")
     if any(SEGMENT_RE.fullmatch(part) is None for part in parts):
         raise PathRejected("segment")
+    if sensitive_relative("/".join(parts)):
+        raise PathRejected("sensitive")
     leaf = parts[-1]
     if leaf.endswith(".azom-bak"):
         raise PathRejected("backup")

@@ -259,6 +259,12 @@ def record_failure(
         if isinstance(exc, SearchConfigError):
             if "budget" in err_code:
                 _bump(state="open", duration_s=60.0, threshold=1)
+            else:
+                ent = entries.get(rk)
+                if isinstance(ent, dict) and ent.get("state") == "half_open":
+                    ent = dict(ent)
+                    ent["probe_in_flight_until"] = 0.0
+                    entries[rk] = ent
             return
 
         if isinstance(exc, SearchAuthError):

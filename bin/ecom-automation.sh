@@ -41,9 +41,11 @@ shift || true
 
 if [[ "$cmd" == "critical" ]]; then
   summary="${*:-unspecified critical event}"
-  "$PY" - <<PY
+  "$PY" - "$summary" <<'PY'
+import sys
 from ecom_ops.escalation import EscalationService
-t = EscalationService().escalate_critical(${summary@Q} if False else """${summary//\"/\\\"}""")
+
+t = EscalationService().escalate_critical(sys.argv[1])
 print(f"Escalated to {t.assignee}: {t.id}")
 PY
   exit 0

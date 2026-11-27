@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from ecom_ops.bot.reply import ActionButton, ActionMarkup, BotReply, as_reply
+from ecom_ops.integrations._http_guard import (
+    PinnedHTTPSConnection,
+)
+from ecom_ops.integrations._http_guard import (
+    is_public_global_ip as _guard_is_public_global_ip,
+)
 from ecom_ops.model_router.base import detect_image_format
 from ecom_ops.runtime_profile import null_send_active
 
@@ -385,13 +391,83 @@ def _messenger_send_disabled() -> bool:
     return os.environ.get("MESSENGER_SEND_ENABLED", "").strip().lower() in _FALSE_FLAGS
 
 
+_IPV4_COMPAT_NETWORK = ipaddress.IPv6Network("::/96")
+_SIXTOFOUR_NETWORK = ipaddress.IPv6Network("2002::/16")
+_TEREDO_NETWORK = ipaddress.IPv6Network("2001::/32")
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+_MAX_IMAGE_REDIRECTS = 3
+
+
+def _is_safe_public_ip(raw_ip: str) -> bool:
+    text = str(raw_ip or "").strip()
+    if not text or "%" in text:
+        return False
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    if not _guard_is_public_global_ip(text):
+        return False
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address):
+        if (
+            addr.sixtofour is not None
+            or addr in _SIXTOFOUR_NETWORK
+            or addr.teredo is not None
+            or addr in _TEREDO_NETWORK
+            or addr in _IPV4_COMPAT_NETWORK
+            or addr in _NAT64_WELL_KNOWN
+            or addr in _NAT64_LOCAL
+        ):
+            return False
+    return True
+
+
+def _resolve_pinned_public_ips(host: str, port: int = 443) -> list[str]:
+    clean = (host or "").strip().lower().rstrip(".")
+    if clean.startswith("[") and clean.endswith("]"):
+        clean = clean[1:-1]
+    if not clean or clean == "localhost" or clean.endswith((".local", ".internal", ".invalid", ".example")):
+        raise urllib.error.URLError("Unsafe host blocked")
+    try:
+        ipaddress.ip_address(clean)
+        if not _is_safe_public_ip(clean):
+            raise urllib.error.URLError("Non-public IP blocked")
+        return [clean]
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(clean, int(port), type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise urllib.error.URLError(f"DNS resolution failed: {exc}") from exc
+    if not infos:
+        raise urllib.error.URLError("Empty DNS result")
+    pinned: list[str] = []
+    seen: set[str] = set()
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            raise urllib.error.URLError("Malformed sockaddr")
+        ip_str = str(sockaddr[0]).split("%", 1)[0]
+        if not _is_safe_public_ip(ip_str):
+            raise urllib.error.URLError("Non-public resolved IP blocked")
+        if ip_str not in seen:
+            seen.add(ip_str)
+            pinned.append(ip_str)
+    if not pinned:
+        raise urllib.error.URLError("No public IPs resolved")
+    return pinned
+
+
 def _host_is_public_ip(host: str) -> bool:
     clean = (host or "").strip().lower().rstrip(".")
     if not clean or clean == "localhost" or clean.endswith((".local", ".internal", ".invalid", ".example")):
         return False
     try:
-        ip = ipaddress.ip_address(clean)
-        return ip.is_global
+        ipaddress.ip_address(clean)
+        return _is_safe_public_ip(clean)
     except ValueError:
         pass
     try:
@@ -405,11 +481,7 @@ def _host_is_public_ip(host: str) -> bool:
         if not sockaddr:
             return False
         ip_str = str(sockaddr[0]).split("%", 1)[0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        if not ip.is_global:
+        if not _is_safe_public_ip(ip_str):
             return False
     return True
 
@@ -424,7 +496,8 @@ def _validate_public_https_image_url(url: str) -> str | None:
         return None
     if parsed.scheme.lower() != "https":
         return None
-    if parsed.username or parsed.password:
+    netloc = parsed.netloc or ""
+    if parsed.username is not None or parsed.password is not None or "@" in netloc:
         return None
     try:
         port = parsed.port
@@ -439,11 +512,52 @@ def _validate_public_https_image_url(url: str) -> str | None:
 
 
 class _SafeHttpsImageRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, *, max_redirects: int = _MAX_IMAGE_REDIRECTS) -> None:
+        self._max_redirects = max_redirects
+        self._hops = 0
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self._hops += 1
+        if self._hops > self._max_redirects:
+            raise urllib.error.URLError("Too many redirects")
         resolved = urllib.parse.urljoin(req.full_url, str(newurl or ""))
         if _validate_public_https_image_url(resolved) is None:
             raise urllib.error.URLError("Unsafe redirect target blocked")
         return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+
+def _pinned_https_connection_factory(host: str, *, timeout: float = 15.0, **_kwargs: Any) -> PinnedHTTPSConnection:
+    clean_host = (host or "").strip()
+    port = 443
+    if clean_host.startswith("["):
+        end = clean_host.find("]")
+        if end < 0:
+            raise urllib.error.URLError("Malformed IPv6 host")
+        host_only = clean_host[1:end]
+        rest = clean_host[end + 1 :]
+        if rest.startswith(":"):
+            port = int(rest[1:])
+    elif ":" in clean_host:
+        host_only, port_s = clean_host.rsplit(":", 1)
+        port = int(port_s)
+    else:
+        host_only = clean_host
+    if port != 443:
+        raise urllib.error.URLError("Non-443 port blocked")
+    pinned_ips = _resolve_pinned_public_ips(host_only, port=443)
+    read_timeout = max(0.5, float(timeout or 15.0))
+    return PinnedHTTPSConnection(
+        host_only.rstrip("."),
+        port=443,
+        pinned_ips=pinned_ips,
+        connect_timeout=min(5.0, read_timeout),
+        read_timeout=read_timeout,
+    )
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):  # type: ignore[override]
+        return self.do_open(_pinned_https_connection_factory, req)
 
 
 def download_messenger_image(
@@ -462,6 +576,7 @@ def download_messenger_image(
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         _SafeHttpsImageRedirectHandler(),
+        _PinnedHTTPSHandler(),
     )
     req = urllib.request.Request(
         safe_url,
