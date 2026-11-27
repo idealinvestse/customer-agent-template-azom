@@ -140,6 +140,10 @@
             {{ icon('globe', 'sm') }}
             <span data-nav-label>Webbplatser</span>
           </a>
+          <a href="/shop-intel" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/shop-intel') else '' }}"{% if path.startswith('/shop-intel') %} aria-current="page"{% endif %}>
+            {{ icon('activity', 'sm') }}
+            <span data-nav-label>Butiksanalys</span>
+          </a>
           <a href="/settings" class="az-nav-link {{ 'az-nav-link-active' if path.startswith('/settings') else '' }}"{% if path.startswith('/settings') %} aria-current="page"{% endif %}>
             {{ icon('settings', 'sm') }}
             <span data-nav-label>Inställningar</span>
