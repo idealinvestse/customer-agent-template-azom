@@ -944,6 +944,160 @@ def _clean_expired_research_artifacts(
     return removed_artifacts, reclaimed
 
 
+def prune_shop_intel_runs(
+    data_dir: Path | None = None,
+    *,
+    dry_run: bool = False,
+    max_runs: int | None = None,
+    retention_days: int | None = None,
+    now_dt: datetime | None = None,
+    errors: list[str] | None = None,
+) -> tuple[int, int]:
+    """Prune expired/excess Shop Intelligence runs per site while keeping the latest baseline run."""
+    root = _resolve_data_dir(data_dir)
+    db_path = root / "shop_intel.sqlite3"
+    if not db_path.is_file() or db_path.is_symlink() or not _is_safe_contained(db_path, root):
+        return 0, 0
+
+    try:
+        from ecom_ops.shop_intel.config import load_shop_intel_config
+
+        cfg = load_shop_intel_config()
+        eff_max_runs = max(1, int(max_runs if max_runs is not None else cfg.max_runs_per_site))
+        eff_retention_days = max(1, int(retention_days if retention_days is not None else cfg.retention_days))
+    except Exception:
+        eff_max_runs = max(1, int(max_runs if max_runs is not None else 30))
+        eff_retention_days = max(1, int(retention_days if retention_days is not None else 90))
+
+    ref_dt = (now_dt or datetime.now(UTC)).astimezone(UTC)
+    cutoff_dt = ref_dt - timedelta(days=eff_retention_days)
+
+    conn: sqlite3.Connection | None = None
+    to_delete: list[str] = []
+    reclaimed_bytes = 0
+    try:
+        conn = _open_sqlite_conn(db_path, dry_run=bool(dry_run))
+        tables = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        if "intel_runs" not in tables:
+            return 0, 0
+
+        rows = conn.execute(
+            "SELECT run_id, site_id, created_at FROM intel_runs ORDER BY site_id ASC, created_at DESC"
+        ).fetchall()
+        by_site: dict[str, list[tuple[str, str]]] = {}
+        for row in rows:
+            rid = str(row[0] or "").strip()
+            sid = str(row[1] or "").strip()
+            created_at = str(row[2] or "").strip()
+            if not rid or not sid:
+                continue
+            by_site.setdefault(sid, []).append((rid, created_at))
+
+        for site_rows in by_site.values():
+            for idx, (rid, created_at) in enumerate(site_rows):
+                # Always preserve idx == 0 (the latest baseline run for this site).
+                if idx == 0:
+                    continue
+                parsed_dt = _parse_iso_utc(created_at)
+                is_expired = (
+                    parsed_dt < cutoff_dt
+                    if parsed_dt is not None
+                    else created_at < cutoff_dt.isoformat()
+                )
+                if idx >= eff_max_runs or is_expired:
+                    to_delete.append(rid)
+
+        if not to_delete:
+            return 0, 0
+
+        def _sum_deleted_bytes(c: sqlite3.Connection, ids: list[str]) -> int:
+            total = 0
+            chunk_size = 500
+            for start in range(0, len(ids), chunk_size):
+                chunk = ids[start : start + chunk_size]
+                marks = ",".join("?" for _ in chunk)
+                total += int(
+                    c.execute(
+                        f"SELECT COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) FROM intel_runs WHERE run_id IN ({marks})",
+                        tuple(chunk),
+                    ).fetchone()[0]
+                    or 0
+                )
+                if "intel_facts" in tables:
+                    total += int(
+                        c.execute(
+                            f"SELECT COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) FROM intel_facts WHERE run_id IN ({marks})",
+                            tuple(chunk),
+                        ).fetchone()[0]
+                        or 0
+                    )
+                if "intel_security_findings" in tables:
+                    total += int(
+                        c.execute(
+                            f"SELECT COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) FROM intel_security_findings WHERE run_id IN ({marks})",
+                            tuple(chunk),
+                        ).fetchone()[0]
+                        or 0
+                    )
+                if "intel_diffs" in tables:
+                    total += int(
+                        c.execute(
+                            f"SELECT COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) FROM intel_diffs WHERE curr_run_id IN ({marks})",
+                            tuple(chunk),
+                        ).fetchone()[0]
+                        or 0
+                    )
+            return total
+
+        reclaimed_bytes = _sum_deleted_bytes(conn, to_delete)
+        if dry_run:
+            return len(to_delete), reclaimed_bytes
+
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            chunk_size = 500
+            for start in range(0, len(to_delete), chunk_size):
+                chunk = to_delete[start : start + chunk_size]
+                marks = ",".join("?" for _ in chunk)
+                if "intel_facts" in tables:
+                    conn.execute(
+                        f"DELETE FROM intel_facts WHERE run_id IN ({marks})",
+                        tuple(chunk),
+                    )
+                if "intel_security_findings" in tables:
+                    conn.execute(
+                        f"DELETE FROM intel_security_findings WHERE run_id IN ({marks})",
+                        tuple(chunk),
+                    )
+                if "intel_diffs" in tables:
+                    conn.execute(
+                        f"DELETE FROM intel_diffs WHERE curr_run_id IN ({marks})",
+                        tuple(chunk),
+                    )
+                conn.execute(
+                    f"DELETE FROM intel_runs WHERE run_id IN ({marks})",
+                    tuple(chunk),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    except Exception as exc:
+        if errors is not None:
+            errors.append(f"shop_intel_prune:{type(exc).__name__}")
+        return 0, 0
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return len(to_delete), reclaimed_bytes
+
+
 def run_ops_gc(
     *,
     data_dir: Path | None = None,
@@ -1014,6 +1168,14 @@ def run_ops_gc(
     )
     bytes_reclaimed += research_bytes
 
+    purged_shop_intel_runs, shop_intel_bytes = prune_shop_intel_runs(
+        root,
+        dry_run=bool(dry_run),
+        now_dt=now_dt,
+        errors=errors,
+    )
+    bytes_reclaimed += shop_intel_bytes
+
     rotated_logs, log_bytes = _rotate_jsonl_logs(
         root,
         rotate_max_mb=rotate_max_mb,
@@ -1033,6 +1195,7 @@ def run_ops_gc(
         "purged_proposals": purged_proposals,
         "purged_search_cache_rows": purged_search_cache_rows,
         "removed_research_artifacts": removed_research_artifacts,
+        "purged_shop_intel_runs": purged_shop_intel_runs,
         "rotated_logs": rotated_logs,
         "bytes_reclaimed": bytes_reclaimed,
         "mb_reclaimed": round(bytes_reclaimed / (1024 * 1024), 2),

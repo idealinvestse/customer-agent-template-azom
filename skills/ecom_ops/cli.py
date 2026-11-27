@@ -1037,6 +1037,66 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_table_args(p_seo_autopilot)
 
+    p_si = sub.add_parser(
+        "shop-intel",
+        help="Webshop Intelligence: store learning, tailored context, diffs, security & schedules",
+    )
+    si_sub = p_si.add_subparsers(dest="shop_intel_command", required=True)
+
+    p_si_run = si_sub.add_parser("run", help="Run read-only Shop Intelligence learning pass")
+    p_si_run.add_argument("--site", default=None, dest="si_site_id")
+    p_si_run.add_argument("--mode", default="full", choices=("full", "quick", "security"))
+    p_si_run.add_argument("--domains", default="", help="Comma-separated domain filter")
+
+    p_si_status = si_sub.add_parser("status", help="Show Shop Intel status, gates, and recent runs")
+    p_si_status.add_argument("--site", default=None, dest="si_site_id")
+
+    p_si_query = si_sub.add_parser("query", help="Query learned facts and dossier knowledge")
+    p_si_query.add_argument("--site", default=None, dest="si_site_id")
+    p_si_query.add_argument("--domain", default=None)
+    p_si_query.add_argument("--query", default=None)
+    p_si_query.add_argument("--purpose", default=None)
+    p_si_query.add_argument("--max-chars", type=int, default=None, dest="max_chars")
+
+    p_si_sec = si_sub.add_parser("security", help="Show latest Shop Intel security posture & findings")
+    p_si_sec.add_argument("--site", default=None, dest="si_site_id")
+    p_si_sec.add_argument(
+        "--severity",
+        default=None,
+        choices=("critical", "high", "medium", "low", "info"),
+    )
+    p_si_sec.add_argument("--limit", type=int, default=50)
+
+    p_si_diff = si_sub.add_parser("diff", help="Show configuration & security drift diffs (sid-*)")
+    p_si_diff.add_argument("--site", default=None, dest="si_site_id")
+    p_si_diff.add_argument("--limit", type=int, default=20)
+
+    p_si_ctx = si_sub.add_parser(
+        "context",
+        help="Build bounded, nonce-framed SHOP_INTEL_CONTEXT slice for a purpose",
+    )
+    p_si_ctx.add_argument("--site", default=None, dest="si_site_id")
+    p_si_ctx.add_argument("--purpose", required=True)
+    p_si_ctx.add_argument("--max-chars", type=int, default=None, dest="max_chars")
+
+    p_si_exp = si_sub.add_parser("export", help="Export latest Shop Intel dossier artifact (md|json)")
+    p_si_exp.add_argument("--site", default=None, dest="si_site_id")
+    p_si_exp.add_argument("--format", default="json", choices=("md", "json"), dest="export_fmt")
+
+    p_si_srun = si_sub.add_parser("schedule-run", help="Run due Shop Intelligence schedules")
+    p_si_srun.add_argument("--site", default=None, dest="si_site_id")
+
+    p_si_sset = si_sub.add_parser(
+        "schedule-set",
+        help="Configure recurring Shop Intel schedule (Oscar WP_OPS_ADMIN / RESEARCH_ADMIN only)",
+    )
+    p_si_sset.add_argument("--site", default=None, dest="si_site_id")
+    p_si_sset.add_argument("--interval-hours", type=int, default=24, dest="interval_hours")
+    p_si_sset.add_argument("--mode", default="full", choices=("full", "quick", "security"))
+    si_en_grp = p_si_sset.add_mutually_exclusive_group()
+    si_en_grp.add_argument("--enabled", action="store_true", dest="sched_enabled", default=True)
+    si_en_grp.add_argument("--disabled", action="store_false", dest="sched_enabled")
+
     return parser
 
 
@@ -1975,6 +2035,7 @@ def _run_cli_command(
                     f"proposals={res['purged_proposals']} "
                     f"search_cache={res['purged_search_cache_rows']} "
                     f"research_artifacts={res['removed_research_artifacts']} "
+                    f"shop_intel={res.get('purged_shop_intel_runs', 0)} "
                     f"rotated={len(res['rotated_logs'])} "
                     f"reclaimed={res['mb_reclaimed']:.2f} MB "
                     f"errors={len(res['errors'])}"
@@ -2742,6 +2803,144 @@ def _run_cli_command(
         except (AccessDenied, KeyError, ValueError) as exc:
             return _cli_error_result(exc)
         parser.error(f"Unknown seo command: {scmd}")
+        return 2
+
+    if args.command == "shop-intel":
+        from ecom_ops.rbac import AccessDenied, Permission, resolve_actor
+        from ecom_ops.shop_intel import build_tailored_context, get_shop_intel_service
+        from ecom_ops.wp_ops.registry import load_sites
+
+        svc = get_shop_intel_service()
+        icmd = args.shop_intel_command
+        default_customer = load_profile().customer
+        explicit_global_site = (
+            args.site if getattr(args, "site", None) and args.site != default_customer else None
+        )
+        si_site = getattr(args, "si_site_id", None) or explicit_global_site
+        if si_site:
+            resolved_site = str(si_site).strip().lower()
+        else:
+            sites = load_sites(data_dir=svc.data_dir, apply_overlay=False)
+            resolved_site = sites[0].id if sites else "mock-shop"
+
+        try:
+            if icmd == "run":
+                raw_domains = [d.strip() for d in (args.domains or "").split(",") if d.strip()]
+                res = svc.run_learning(
+                    site_id=resolved_site,
+                    actor=args.actor,
+                    mode=args.mode,
+                    domains=raw_domains or None,
+                )
+                return _print(res)
+            if icmd == "status":
+                res = svc.get_status(site_id=si_site, actor=args.actor)
+                return _print(res)
+            if icmd == "query":
+                res = svc.query_knowledge(
+                    resolved_site,
+                    domain=args.domain,
+                    query=args.query,
+                    purpose=args.purpose,
+                    max_chars=args.max_chars,
+                    actor=args.actor,
+                )
+                return _print(res)
+            if icmd == "security":
+                res = svc.get_security_report(
+                    resolved_site,
+                    severity=args.severity,
+                    limit=args.limit,
+                    actor=args.actor,
+                )
+                return _print(res)
+            if icmd == "diff":
+                res = svc.get_diffs(resolved_site, limit=args.limit, actor=args.actor)
+                return _print(res)
+            if icmd == "context":
+                actor_obj = resolve_actor(args.actor)
+                if not (
+                    actor_obj.has(Permission.WP_OPS_READ) or actor_obj.has(Permission.READ)
+                ):
+                    raise AccessDenied(
+                        f"Actor {actor_obj.name!r} (role={actor_obj.role}) lacks WP_OPS_READ or READ"
+                    )
+                ctx = build_tailored_context(
+                    resolved_site,
+                    purpose=args.purpose,
+                    data_dir=svc.data_dir,
+                    max_chars=args.max_chars,
+                )
+                return _print(
+                    {
+                        "ok": True,
+                        "site_id": resolved_site,
+                        "purpose": args.purpose,
+                        "present": ctx is not None,
+                        "context": ctx,
+                    }
+                )
+            if icmd == "export":
+                res = svc.export_dossier(
+                    resolved_site,
+                    fmt=args.export_fmt,
+                    actor=args.actor,
+                )
+                return _print(res)
+            if icmd == "schedule-run":
+                if si_site:
+                    from datetime import UTC, datetime
+
+                    actor_obj = resolve_actor(args.actor)
+                    has_run = (
+                        actor_obj.has(Permission.RESEARCH_RUN)
+                        or actor_obj.has(Permission.WP_OPS_OPERATE)
+                        or actor_obj.has(Permission.WP_OPS_ADMIN)
+                    )
+                    if not (actor_obj.has(Permission.WP_OPS_READ) and has_run):
+                        raise AccessDenied(
+                            f"Actor {actor_obj.name!r} lacks Shop Intel run permission"
+                        )
+                    sched = svc.store.get_schedule(resolved_site)
+                    now_iso = datetime.now(UTC).isoformat()
+                    executed: list[dict[str, Any]] = []
+                    if sched and sched.get("enabled"):
+                        nxt = sched.get("next_run_at")
+                        if not nxt or str(nxt) <= now_iso:
+                            r = svc.run_learning(
+                                resolved_site,
+                                actor=args.actor,
+                                mode=str(sched.get("mode") or "full"),
+                            )
+                            executed.append(
+                                {
+                                    "site_id": resolved_site,
+                                    "ok": bool(r.get("ok")),
+                                    "result": r,
+                                }
+                            )
+                    return _print(
+                        {
+                            "ok": True,
+                            "site_id": resolved_site,
+                            "executed_count": len(executed),
+                            "executed": executed,
+                        }
+                    )
+                res = svc.run_due_schedules(actor=args.actor)
+                return _print(res)
+            if icmd == "schedule-set":
+                res = svc.configure_schedule(
+                    resolved_site,
+                    enabled=bool(args.sched_enabled),
+                    interval_hours=args.interval_hours,
+                    mode=args.mode,
+                    actor=args.actor,
+                )
+                return _print(res)
+        except (AccessDenied, KeyError, ValueError) as exc:
+            return _cli_error_result(exc)
+        parser.error(f"Unknown shop-intel command: {icmd}")
         return 2
 
     parser.error(f"Unknown command: {args.command}")

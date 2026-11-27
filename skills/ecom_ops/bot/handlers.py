@@ -81,6 +81,10 @@ from ecom_ops.bot.reply import (
     yes_no_actions,
 )
 from ecom_ops.bot.seo_handlers import SEO_INTENT_RE, handle_seo_command
+from ecom_ops.bot.shop_intel_handlers import (
+    SHOP_INTEL_INTENT_RE,
+    handle_shop_intel_command,
+)
 from ecom_ops.bot.site_content import (
     execute_plugin_status,
     execute_post_update,
@@ -216,6 +220,7 @@ def _is_unrelated_lookup(
         CASES_INTENT_RE.search(raw)
         or MARKETING_INTENT_RE.search(raw)
         or SEO_INTENT_RE.search(raw)
+        or SHOP_INTEL_INTENT_RE.search(raw)
         or RECENT_ORDERS_RE.search(raw)
         or OPS_INTENT_RE.search(raw)
         or CAPABILITIES_RE.search(raw)
@@ -949,11 +954,26 @@ class BotHandler:
         if seo_command is not None:
             return seo_command
 
+        shop_intel_command = handle_shop_intel_command(self, chat_id, raw, on_progress=on_progress)
+        if shop_intel_command is not None:
+            return shop_intel_command
+
         # OpenClaw slash commands first
         oc = self._dispatch_oc_with_progress(
             chat_id, raw, on_progress=on_progress
         )
         if oc is not None:
+            cmd_tok = raw.split()[0].split("@", 1)[0].lower() if raw.startswith("/") else ""
+            if isinstance(oc, str) and cmd_tok in {"/help", "/start", "/commands"} and "/shop-intel" not in oc:
+                if cmd_tok == "/commands":
+                    oc = (
+                        f"{oc}\n/shop-intel — Webshop Intelligence & säkerhetsdrift "
+                        "(alias: /store-learn)"
+                    )
+                elif "/seo ·" in oc:
+                    oc = oc.replace("/seo ·", "/seo · /shop-intel ·", 1)
+                else:
+                    oc = f"{oc}\n/shop-intel · /store-learn"
             if oc == "__ORDER_PROMPT__":
                 self._merge_state(
                     chat_id, flow="order_lookup", step="await_id", slots={}
