@@ -1,0 +1,46 @@
+# Azom Shop Intelligence configuration.
+# Fail-closed posture: live WooCommerce/WordPress/Bridge/SFTP collection requires
+# AZOM_USE_MOCK=0, process-env AZOM_SHOP_INTEL_LIVE_ENABLED=1, and kill switch
+# AZOM_SHOP_INTEL_KILL unset/0. Deterministic collectors make zero LLM calls.
+
+schema_version: 1
+live_enabled: false
+kill_switch_env: AZOM_SHOP_INTEL_KILL
+live_enable_env: AZOM_SHOP_INTEL_LIVE_ENABLED
+
+max_products_sample: 200
+max_pages_sample: 50
+max_runs_per_site: 30
+retention_days: 90
+default_schedule_interval_hours: 24
+
+context_budgets:
+  support_draft: 2200
+  product_copy: 2200
+  wp_coder: 3200
+  chat_general: 1800
+  seo: 2200
+  security_audit: 2400
+
+domains:
+  platform_rules:
+    enabled: true
+    description: "WooCommerce settings, shipping zones/methods, free-shipping thresholds, payment gateways, tax classes, platform versions."
+  catalog_pricing:
+    enabled: true
+    description: "Bounded product catalog, categories, global attributes, pricing distribution, SKU prefixes, stock health, upsell/cross-sell density."
+  theme_architecture:
+    enabled: true
+    description: "Active/parent theme, block/classic/hybrid classification, Site Editor templates, theme.json palette/fonts, Woo overrides, MU-plugins."
+  brand_voice_copy:
+    enabled: true
+    description: "Nordic languages (sv/nb/da/en), formality (du vs ni), copy structure, USP phrases, CTA vocabulary, site identity."
+  policies_legal:
+    enabled: true
+    description: "Return, withdrawal, shipping, warranty, terms, privacy, about, and FAQ pages with grounded rule extraction and content hashes."
+  plugins_ecosystem:
+    enabled: true
+    description: "Active and inactive plugins, functional grouping, custom azom-* plugins, REST namespaces, and secret-stripped webhook hosts."
+  security_posture:
+    enabled: true
+    description: "Static posture checks and cross-run drift alerts with 0-100 score and severity-graded findings."
