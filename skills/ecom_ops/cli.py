@@ -517,6 +517,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_res_cancel = res_sub.add_parser("cancel", help="Cancel a research job")
     p_res_cancel.add_argument("--id", required=True, dest="research_id")
 
+    p_res_profiles = res_sub.add_parser(
+        "profiles", help="List goal/ambition research profiles or recommend one"
+    )
+    p_res_profiles.add_argument("--id", default=None, dest="profile_id")
+    p_res_profiles.add_argument("--recommend", default=None, dest="recommend_goal")
+    p_res_profiles.add_argument(
+        "--ambition",
+        default=None,
+        choices=("quick", "standard", "deep"),
+    )
+
     return parser
 
 
@@ -1301,6 +1312,48 @@ def _run_cli_command(
                 return _print(svc.steer_research(args.research_id, args.note, actor=args.actor))
             if rcmd == "cancel":
                 return _print(svc.cancel_research(args.research_id, actor=args.actor))
+            if rcmd == "profiles":
+                from ecom_ops.rbac import Permission, require_permission, resolve_actor
+                from ecom_ops.research.profiles import (
+                    get_profile,
+                    list_profiles,
+                    recommend_profile,
+                )
+
+                actor_obj = resolve_actor(args.actor)
+                require_permission(actor_obj, Permission.WEB_SEARCH)
+                if getattr(args, "recommend_goal", None):
+                    rec = recommend_profile(
+                        args.recommend_goal,
+                        ambition=getattr(args, "ambition", None),
+                    )
+                    return _print(
+                        {
+                            "ok": True,
+                            "mode": "recommend",
+                            "recommended": rec.to_dict(),
+                        }
+                    )
+                if getattr(args, "profile_id", None):
+                    prof = get_profile(args.profile_id)
+                    return _print(
+                        {
+                            "ok": True,
+                            "mode": "detail",
+                            "profile": prof.to_dict(),
+                        }
+                    )
+                profs = list_profiles()
+                amb = getattr(args, "ambition", None)
+                if amb:
+                    profs = [p for p in profs if p.ambition == amb]
+                return _print(
+                    {
+                        "ok": True,
+                        "count": len(profs),
+                        "profiles": [p.to_dict() for p in profs],
+                    }
+                )
         except (AccessDenied, SearchRouteError, SearchPolicyError, KeyError, ValueError) as exc:
             return _cli_error_result(exc)
         parser.error(f"Unknown research command: {rcmd}")

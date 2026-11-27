@@ -212,24 +212,34 @@
         <form method="post" action="/research/jobs" class="space-y-3">
           <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
           <input type="hidden" name="target_ref" value="case:{{ case.id }}" />
-          <input type="hidden" name="profile_id" value="support_fact_check" />
           <input type="hidden" name="depth" value="quick" />
           <input type="hidden" name="market" value="{{ case_market or 'SE' }}" />
           <input type="hidden" name="next_url" value="/cases/{{ case.id }}" />
-          <div class="flex flex-wrap gap-2">
-            <input
-              type="text"
-              name="topic"
-              maxlength="300"
-              required
-              class="az-input flex-1 text-xs"
-              value="{{ case_research_query | default('') }}"
-              placeholder="Entitetsbaserad fråga (t.ex. PostNord driftstörning eller konsumentköplagen)"
-            />
-            <button type="submit" class="az-btn-secondary az-btn-sm shrink-0" data-busy-label="Startar...">
-              {{ icon('search', 'xs') }}
-              <span>Starta faktakoll</span>
-            </button>
+          <div class="grid gap-2 sm:grid-cols-3">
+            <div class="sm:col-span-2">
+              <input
+                type="text"
+                name="topic"
+                maxlength="300"
+                required
+                aria-label="Faktakoll-fråga"
+                class="az-input text-xs"
+                value="{{ case_research_query | default('') }}"
+                placeholder="Entitetsbaserad fråga (t.ex. PostNord driftstörning eller konsumentköplagen)"
+              />
+            </div>
+            <div class="flex gap-2">
+              <select name="profile_id" aria-label="Sökprofil" class="az-select text-xs">
+                <option value="auto">Automatisk (rekommenderad)</option>
+                <option value="support_fact_check" selected>support_fact_check</option>
+                <option value="regulatory_compliance">regulatory_compliance</option>
+                <option value="product_spec_deep">product_spec_deep</option>
+              </select>
+              <button type="submit" class="az-btn-secondary az-btn-sm shrink-0" data-busy-label="Startar...">
+                {{ icon('search', 'xs') }}
+                <span>Starta faktakoll</span>
+              </button>
+            </div>
           </div>
         </form>
 

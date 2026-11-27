@@ -2,10 +2,10 @@
 name: web-research
 description: >
   Universal autonomous web search and asynchronous Deep Research for AzomOps-Agent.
-  Defines the 5 universal research tools, 6 situation-adaptive profiles, 4-mode
-  autonomy rubric, source evaluation & [S#] citation verification, outbound PII/taint
-  firewall, DNS-pinned HTTPS SSRF guard, multi-provider router, and strict HITL/RBAC
-  boundaries.
+  Defines the 5 universal research tools, 12 goal- and ambition-adaptive profiles
+  (failover, ensemble, staged), 4-mode autonomy rubric, source evaluation & [S#]
+  citation verification, outbound PII/taint firewall, DNS-pinned HTTPS SSRF guard,
+  multi-provider router, and strict HITL/RBAC boundaries.
 version: "3.0.0"
 ---
 
@@ -13,7 +13,7 @@ version: "3.0.0"
 
 **Purpose:** Enable AzomOps-Agent to autonomously search public HTTPS sources, extract clean text, and run non-blocking multi-round Deep Research (`res-<12hex>`) across chat, WordPress workspaces, cases, product copy, marketing, CLI, and dashboard without leaking PII/secrets or weakening HITL gates.  
 **Audience:** Coding agents, prompt maintainers, and the OpenClaw chat agent (`Messenger` and `Telegram`).  
-**Read this first:** [`AGENTS.md`](../../AGENTS.md), [`docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md), [`SOUL.md`](../../SOUL.md), [`docs/WEB_SEARCH_RESEARCH.md`](../../docs/WEB_SEARCH_RESEARCH.md).
+**Read this first:** [`AGENTS.md`](../../AGENTS.md), [`docs/CURRENT_STATE.md`](../../docs/CURRENT_STATE.md), [`SOUL.md`](../../SOUL.md), [`docs/WEB_SEARCH_RESEARCH.md`](../../docs/WEB_SEARCH_RESEARCH.md), [`skills/research-profiles/SKILL.md`](../research-profiles/SKILL.md).
 
 ## Universal tool surface (5 core tools)
 
@@ -27,16 +27,24 @@ Registered in `skills/ecom_ops/research/tools.py` and `skills/ecom_ops/wp_ops/to
 | `web_research_status` | `WEB_SEARCH` | Inspect progress, current round, query/fetch counters, and `evidence_status` for a `res-<12hex>` job. |
 | `web_research_get` | `WEB_SEARCH` | Read scrubbed, nonce-framed sections (`summary`, `findings`, `recommendations`, `gaps`, `conflicts`, `citations`, `markdown`, `all`) of a completed or partial brief. Capped at **8 KiB** (`8192` B). |
 
-## Six situation-adaptive profiles (`config/research.yaml`)
+## Twelve goal- & ambition-adaptive profiles (`config/research.yaml`, [`research-profiles`](../research-profiles/SKILL.md))
 
-| Profile | Primary use cases | Default markets | Freshness | Corroboration mode | Authority focus |
-|---------|-------------------|-----------------|-----------|--------------------|-----------------|
-| `design_inspiration` | WP UI iteration, thank-you/landing/PDP layouts, conversion UX | `en`, `sv`, `nb`, `da` | 730 d | `inspiration_and_heuristics` | `baymard.com`, `nngroup.com`, `smashingmagazine.com`, `web.dev`, `wordpress.org` |
-| `technical_docs` | WooCommerce 9.x/10.x hooks, Checkout Blocks, HPOS, `theme.json`, PHP/CSS | `en` | 540 d | `authoritative_primary` | `developer.wordpress.org`, `woocommerce.com`, `developer.mozilla.org`, `php.net`, `github.com` |
-| `competitor_market` | Nordic e-commerce/car-multimedia positioning, pricing, USP, warranty norms | `SE`, `NO`, `DK` | 365 d | `triangulated_market` | Nordic competitors, trade press, market benchmarks |
-| `support_fact_check` | PostNord/Bring/DHL outages, SE/NO/DK consumer law, OEM product specs | `SE`, `NO`, `DK` | 30 d | `strict_factual` | `postnord.*`, `bring.*`, `dhl.com`, `konsumentverket.se`, `forbrukerradet.no`, `lovdata.no`, `forbrug.dk` |
-| `marketing_intel` | Google Ads/GA4/Consent Mode v2 updates, seasonality, waste-term context | `SE`, `NO`, `DK`, `en` | 365 d | `triangulated_market` | `support.google.com`, `developers.google.com`, `blog.google` |
-| `deep_general` | Open-ended strategic/ops research via `/research` or Dashboard | `SE`, `en` | 365 d | `triangulated_factual` | Balanced credible web (spam/farms penalized) |
+Each profile combines search engines (`failover`, `ensemble` via `SearchRouter.search_multi()`, or `staged` per-round `round_providers`) and extraction tools (`snippet_only`, `direct`, `parallel_extract_first`, or `hybrid`). Use `recommend_profile(goal, ambition=...)` or `python -m ecom_ops --mock research profiles` to pick the best starting point.
+
+| Profile | Ambition · Mode · Fetch | Primary use cases | Default markets | Freshness | Corroboration mode |
+|---------|-------------------------|-------------------|-----------------|-----------|--------------------|
+| `quick_pulse` | `quick` · `failover` · `snippet_only` | Ultra-fast 14d status, news & release checks | `SE`, `NO`, `DK`, `en` | 14 d | `strict_factual` |
+| `support_fact_check` | `quick` · `failover` · `direct` | PostNord/Bring/DHL outages, consumer law, OEM basics | `SE`, `NO`, `DK` | 30 d | `strict_factual` |
+| `technical_docs` | `standard` · `failover` · `parallel_extract_first` | WooCommerce HPOS/Blocks, `theme.json`, PHP/CSS docs | `en` | 540 d | `authoritative_primary` |
+| `design_inspiration` | `standard` · `ensemble` · `parallel_extract_first` | WP UI iteration, thank-you/landing/PDP conversion UX | `en`, `sv`, `nb`, `da` | 730 d | `inspiration_and_heuristics` |
+| `marketing_intel` | `standard` · `ensemble` · `direct` | Google Ads/GA4/Consent Mode v2, seasonality, waste terms | `SE`, `NO`, `DK`, `en` | 365 d | `triangulated_market` |
+| `product_spec_deep` | `standard` · `ensemble` · `parallel_extract_first` | CarPlay/Android Auto/CAN-bus specs & OEM fitment | `en`, `SE` | 730 d | `authoritative_primary` |
+| `seo_content_radar` | `standard` · `ensemble` · `direct` | Nordic search intent, FAQ clusters, schema & copy gaps | `SE`, `NO`, `DK` | 365 d | `triangulated_market` |
+| `competitor_market` | `deep` · `staged` · `hybrid` | Nordic e-commerce positioning, pricing, USP, warranty norms | `SE`, `NO`, `DK` | 365 d | `triangulated_market` |
+| `regulatory_compliance` | `deep` · `staged` · `direct` | Nordic/EU consumer law, GDPR, IMY, Lovdata & CE/RoHS | `SE`, `NO`, `DK` | 180 d | `strict_factual` |
+| `conversion_teardown` | `deep` · `staged` · `parallel_extract_first` | Deep CRO audit combining Exa UX studies & store extract | `en`, `SE`, `NO`, `DK` | 540 d | `inspiration_and_heuristics` |
+| `deep_general` | `deep` · `staged` · `hybrid` | Open-ended strategic/ops research via `/research` or Hub | `SE`, `en` | 365 d | `triangulated_factual` |
+| `metasearch_triangulation` | `deep` · `ensemble` · `hybrid` | Maximum all-engine fusion & conflict check (+ SearXNG) | `SE`, `NO`, `DK`, `en` | 365 d | `triangulated_factual` |
 
 ## Four-mode autonomy rubric
 

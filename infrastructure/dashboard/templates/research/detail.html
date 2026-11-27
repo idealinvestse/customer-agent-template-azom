@@ -20,6 +20,8 @@
 {% set rj_sources = sources | default([]) %}
 {% set rj_brief = brief if (brief is defined and brief is mapping) else {} %}
 {% set allow_mutate = can_mutate if can_mutate is defined else true %}
+{% set pmeta = profile_meta if (profile_meta is defined and profile_meta is mapping) else {} %}
+{% set pmeta_label = pmeta.get('title') or rj_profile %}
 
 <script type="application/json" id="research-events-init">
   {{ rj_events | tojson }}
@@ -45,10 +47,14 @@
 
   {% call ui.page_header(
     rj_topic,
-    rj_id ~ " · " ~ rj_profile ~ " · " ~ rj_depth ~ " · " ~ rj_country ~ "/" ~ rj_locale,
+    rj_id ~ " · " ~ pmeta_label ~ ( (" (" ~ pmeta.get('combination_mode') ~ " / " ~ pmeta.get('fetch_strategy') ~ ")") if pmeta.get('combination_mode') else "" ) ~ " · " ~ rj_depth ~ " · " ~ rj_country ~ "/" ~ rj_locale,
     badge_text=rj_status,
     badge_tone='ok' if rj_status == 'completed' else ('warn' if rj_status in ['partial', 'cancelled'] else ('error' if rj_status == 'failed' else 'info'))
   ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/research?profile={{ rj_profile }}">
+      {{ icon('search', 'xs') }}
+      <span>Ny liknande i Hub</span>
+    </a>
     <a class="az-btn-secondary az-btn-sm" href="/research/{{ rj_id }}/export?format=md">
       <span>Exportera MD</span>
     </a>

@@ -10,16 +10,27 @@
 {% set q_cap = st.get('daily_queries_cap') if st.get('daily_queries_cap') is not none else (st.get('max_queries_per_day') | default(0)) %}
 {% set usd_used = st.get('monthly_external_usd') | default(0.0) %}
 {% set usd_cap = st.get('monthly_external_usd_cap') | default(0.0) %}
-{% set cur_profile = selected_profile | default('deep_general') %}
+{% set cur_profile = selected_profile | default('auto') %}
 {% set cur_locale = quick_locale | default('SE') %}
 {% set profile_list = profiles | default([]) %}
 {% set job_list = jobs | default([]) %}
+{% set p_cards = provider_cards | default([]) %}
+{% set presets = quick_presets | default([]) %}
+{% set rs = research_settings | default({}) %}
+{% set live_gates = rs.get('live_gates') if rs.get('live_gates') is mapping else {} %}
+{% set keys_present = rs.get('provider_keys_present') if rs.get('provider_keys_present') is mapping else {} %}
 
 <div class="space-y-5" data-research-hub="true">
   {% call ui.page_header(
     "Research & Webbsök",
     "Verifierad webbsökning (PII-tvättad) och asynkron djupresearch med källcitat."
   ) %}
+    {% if is_oscar %}
+    <a class="az-btn-secondary az-btn-sm" href="#research-setup">
+      {{ icon('key', 'xs') }}
+      <span>API-nycklar &amp; Setup</span>
+    </a>
+    {% endif %}
     <a class="az-btn-secondary az-btn-sm" href="/research">
       {{ icon('refresh', 'xs') }}
       <span>Uppdatera</span>
@@ -47,10 +58,51 @@
         <span>Månadsbudget: <strong class="text-mist-100">{{ fmt_usd(usd_used) }}</strong> / {{ fmt_usd(usd_cap) }}</span>
       </div>
     </div>
-    {% if st.get('message') %}
-    <p class="az-muted text-xs">{{ st.get('message') }}</p>
+
+    {% if p_cards %}
+    <div class="flex flex-wrap items-center gap-2 border-t border-ink-700/70 pt-3">
+      {% for pc in p_cards %}
+      <span class="inline-flex items-center gap-1.5 rounded-lg border border-ink-700/80 bg-ink-950/60 px-2.5 py-1 text-xs">
+        <span class="font-medium text-mist-200">{{ pc.label or pc.id }}</span>
+        {% if pc.configured %}
+          {{ ui.status_badge('ok', 'Konfigurerad') }}
+        {% else %}
+          {{ ui.status_badge('neutral', 'Ej nyckel') }}
+        {% endif %}
+      </span>
+      {% endfor %}
+    </div>
     {% endif %}
+
+    <p class="az-muted text-xs">
+      Kunden behöver bara ange API-nycklar — automatiskt läge väljer rätt motorer och djup per fråga.
+      {% if st.get('message') %} {{ st.get('message') }}{% endif %}
+    </p>
   </section>
+
+  <!-- 1-Click Snabbstarter -->
+  {% if presets %}
+  <section class="az-card space-y-2.5">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0">Snabbstarter (1-klick)</h2>
+      <span class="text-xs text-mist-400">Fyller i rekommenderad profil och djup utan att radera din text</span>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      {% for pr in presets %}
+      <button
+        type="button"
+        class="az-btn-secondary az-btn-sm"
+        data-research-preset="{{ pr.id }}"
+        data-preset-mode="{{ pr.mode or 'research' }}"
+        data-preset-profile="{{ pr.profile_id or 'auto' }}"
+        data-preset-depth="{{ pr.depth or 'auto' }}"
+        data-preset-placeholder="{{ pr.placeholder or '' }}"
+        title="{{ pr.hint or '' }}"
+      >{{ pr.label }}</button>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   <!-- Two-column launch panels: Quick Search + Async Deep Research -->
   <div class="grid gap-5 lg:grid-cols-2">
@@ -80,12 +132,13 @@
           <div>
             <label class="az-label" for="quick-search-profile">Sökprofil</label>
             <select id="quick-search-profile" name="profile_id" class="az-select">
+              <option value="auto" {% if cur_profile in ('', 'auto') %}selected{% endif %}>Automatisk (rekommenderad)</option>
               {% if profile_list %}
                 {% for prof in profile_list %}
-                <option value="{{ prof.id }}" {% if cur_profile == prof.id %}selected{% endif %}>{{ prof.id }}</option>
+                <option value="{{ prof.id }}" {% if cur_profile == prof.id %}selected{% endif %}>{{ prof.title or prof.id }} — {{ prof.ambition }} · {{ prof.combination_mode }}</option>
                 {% endfor %}
               {% else %}
-                {% for pid in ['deep_general', 'support_fact_check', 'marketing_intel', 'competitor_market', 'design_inspiration', 'technical_docs'] %}
+                {% for pid in ['deep_general', 'support_fact_check', 'marketing_intel', 'competitor_market', 'design_inspiration', 'technical_docs', 'quick_pulse', 'product_spec_deep', 'seo_content_radar', 'regulatory_compliance', 'conversion_teardown', 'metasearch_triangulation'] %}
                 <option value="{{ pid }}" {% if cur_profile == pid %}selected{% endif %}>{{ pid }}</option>
                 {% endfor %}
               {% endif %}
@@ -100,6 +153,7 @@
             </select>
           </div>
         </div>
+        <p class="text-xs text-mist-400" data-auto-preview-search></p>
         <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Söker...">
           {{ icon('search', 'xs') }}
           <span>Kör snabbsök</span>
@@ -132,12 +186,13 @@
           <div>
             <label class="az-label" for="deep-research-profile">Profil</label>
             <select id="deep-research-profile" name="profile_id" class="az-select">
+              <option value="auto" {% if cur_profile in ('', 'auto') %}selected{% endif %}>Automatisk (rekommenderad)</option>
               {% if profile_list %}
                 {% for prof in profile_list %}
-                <option value="{{ prof.id }}" {% if cur_profile == prof.id %}selected{% endif %}>{{ prof.id }}</option>
+                <option value="{{ prof.id }}" {% if cur_profile == prof.id %}selected{% endif %}>{{ prof.title or prof.id }} — {{ prof.ambition }} · {{ prof.combination_mode }}</option>
                 {% endfor %}
               {% else %}
-                {% for pid in ['deep_general', 'support_fact_check', 'marketing_intel', 'competitor_market', 'design_inspiration', 'technical_docs'] %}
+                {% for pid in ['deep_general', 'support_fact_check', 'marketing_intel', 'competitor_market', 'design_inspiration', 'technical_docs', 'quick_pulse', 'product_spec_deep', 'seo_content_radar', 'regulatory_compliance', 'conversion_teardown', 'metasearch_triangulation'] %}
                 <option value="{{ pid }}" {% if cur_profile == pid %}selected{% endif %}>{{ pid }}</option>
                 {% endfor %}
               {% endif %}
@@ -146,8 +201,9 @@
           <div>
             <label class="az-label" for="deep-research-depth">Djup</label>
             <select id="deep-research-depth" name="depth" class="az-select">
+              <option value="auto" selected>Automatisk (följer profil)</option>
               <option value="quick">quick</option>
-              <option value="standard" selected>standard</option>
+              <option value="standard">standard</option>
               <option value="deep">deep</option>
             </select>
           </div>
@@ -171,6 +227,7 @@
             placeholder="T.ex. marketing:general eller product:1234"
           />
         </div>
+        <p class="text-xs text-mist-400" data-auto-preview-deep></p>
         <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Startar jobb...">
           {{ icon('rocket', 'xs') }}
           <span>Starta djupresearch</span>
@@ -187,6 +244,9 @@
         <h2 class="az-section-title mb-0">Sökresultat</h2>
         {{ ui.status_badge('info', quick_result.get('evidence_status') or 'mock') }}
         {{ ui.status_badge('neutral', quick_result.get('provenance') or 'mock') }}
+        {% if quick_result.get('auto_selected') %}
+        <span class="az-badge az-badge-info">Auto: {{ quick_result.get('resolved_profile_title') or quick_result.get('resolved_profile_id') }}</span>
+        {% endif %}
         {% if quick_result.get('provider') %}
         <span class="az-badge az-badge-neutral font-mono">{{ quick_result.get('provider') }}</span>
         {% endif %}
@@ -320,6 +380,314 @@
     </div>
     {% else %}
     {{ ui.empty_state('Inga research-jobb ännu', 'Starta en asynkron djupresearch ovan för att samla in och verifiera källor.', icon_name='search') }}
+    {% endif %}
+  </section>
+
+  <!-- Search Profiles & Skill Playbooks Catalog -->
+  {% if profile_list %}
+  <section class="az-card space-y-4" data-research-profiles-catalog="true">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 class="az-section-title mb-1">Sökprofiler &amp; Research-skills ({{ profile_list | length }})</h2>
+        <p class="az-muted text-xs">Förkonfigurerade kombinationer av Parallel, Exa, Brave, Tavily, opt-in SearXNG och sidextraktion efter mål och ambition.</p>
+      </div>
+      <div class="flex flex-wrap gap-1.5" role="group" aria-label="Filtrera profiler efter ambition">
+        <button type="button" class="az-btn-secondary az-btn-sm bg-ink-800 ring-1 ring-steel-500/35 text-steel-200" data-profile-ambition-filter="all" aria-pressed="true">Alla</button>
+        <button type="button" class="az-btn-secondary az-btn-sm" data-profile-ambition-filter="quick" aria-pressed="false">Snabb</button>
+        <button type="button" class="az-btn-secondary az-btn-sm" data-profile-ambition-filter="standard" aria-pressed="false">Standard</button>
+        <button type="button" class="az-btn-secondary az-btn-sm" data-profile-ambition-filter="deep" aria-pressed="false">Djup</button>
+      </div>
+    </div>
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {% for prof in profile_list %}
+      <article class="rounded-lg border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2 flex flex-col justify-between" data-profile-card="true" data-ambition="{{ prof.ambition or 'standard' }}">
+        <div class="space-y-2">
+          <div class="flex flex-wrap items-center justify-between gap-1.5">
+            <h3 class="text-sm font-semibold text-mist-100">{{ prof.title or prof.id }}</h3>
+            <code class="az-code font-mono">{{ prof.id }}</code>
+          </div>
+          <div class="flex flex-wrap items-center gap-1.5 text-xs">
+            {{ ui.status_badge('info', prof.ambition or 'standard') }}
+            {{ ui.status_badge('neutral', prof.combination_mode or 'failover') }}
+            <span class="az-badge az-badge-neutral font-mono">{{ prof.fetch_strategy or 'direct' }}</span>
+          </div>
+          {% if prof.goal or prof.description %}
+          <p class="text-xs leading-relaxed text-mist-200">{{ prof.goal or prof.description }}</p>
+          {% endif %}
+          <div class="text-xs text-mist-400 font-mono">
+            {{ (prof.preferred_providers or []) | join(' → ') }}
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-1.5 border-t border-ink-700/70 pt-2">
+          <button
+            type="button"
+            class="az-btn-secondary az-btn-sm"
+            data-apply-profile-search="{{ prof.id }}"
+          >Använd i snabbsök</button>
+          <button
+            type="button"
+            class="az-btn-secondary az-btn-sm"
+            data-apply-profile-deep="{{ prof.id }}"
+            data-profile-ambition="{{ prof.ambition or 'standard' }}"
+          >Välj för djupresearch</button>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <!-- Configuration & API Keys -->
+  <section id="research-setup" class="{{ 'az-card-oscar' if is_oscar else 'az-card' }} space-y-5 scroll-mt-20" data-research-config="true">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 class="az-section-title mb-1 {{ 'text-oscar-300' if is_oscar else '' }}">Konfiguration &amp; API-nycklar</h2>
+        <p class="az-muted text-xs">
+          {% if is_oscar %}
+            Klistra in API-nycklar nedan — automatiskt läge använder de konfigurerade motorerna per profil. Sparas till <code class="az-code font-mono">secrets.env</code> (0600) och returneras aldrig i klartext.
+          {% else %}
+            Lässtatus för sökmotorer. Oscar hanterar API-nycklar och servergates under <code class="az-code font-mono">/oscar/secrets</code> &amp; <code class="az-code font-mono">#research-setup</code>.
+          {% endif %}
+        </p>
+      </div>
+      {% if is_oscar %}
+      <form method="post" action="/research/config/test">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="route_id" value="all" />
+        <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Testar...">
+          {{ icon('refresh', 'xs') }}
+          <span>Testa alla</span>
+        </button>
+      </form>
+      {% endif %}
+    </div>
+
+    {% set key_specs = p_cards if p_cards else [
+      {'id': 'parallel', 'label': 'Parallel', 'env_key': 'PARALLEL_API_KEY', 'role_hint': 'Parallel: web search + extract', 'configured': keys_present.get('parallel', false)},
+      {'id': 'exa', 'label': 'Exa', 'env_key': 'EXA_API_KEY', 'role_hint': 'Exa: semantisk UX/research', 'configured': keys_present.get('exa', false)},
+      {'id': 'brave', 'label': 'Brave', 'env_key': 'BRAVE_SEARCH_API_KEY', 'role_hint': 'Brave: snabb nordisk index', 'configured': keys_present.get('brave', false)},
+      {'id': 'tavily', 'label': 'Tavily', 'env_key': 'TAVILY_API_KEY', 'role_hint': 'Tavily: djupwebb', 'configured': keys_present.get('tavily', false)},
+      {'id': 'searxng', 'label': 'SearXNG', 'env_key': 'SEARXNG_API_KEY', 'role_hint': 'SearXNG: egen instans (valfritt)', 'configured': keys_present.get('searxng', false)}
+    ] %}
+
+    {% if is_oscar %}
+    <!-- Per-provider quick test strip (separate forms, never nested) -->
+    <div class="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
+      {% for kp in key_specs %}
+      <div class="flex items-center justify-between gap-2 rounded-lg border border-ink-700/80 bg-ink-950/60 px-3 py-2">
+        <div class="min-w-0">
+          <div class="text-xs font-semibold text-mist-100">{{ kp.label or kp.id }}</div>
+          {% if kp.configured %}
+            {{ ui.status_badge('ok', 'Konfigurerad') }}
+          {% else %}
+            {{ ui.status_badge('neutral', 'Saknas') }}
+          {% endif %}
+        </div>
+        <form method="post" action="/research/config/test" class="shrink-0">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <input type="hidden" name="route_id" value="{{ kp.id }}" />
+          <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Testar...">Testa</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Primary Card: Paste API Keys -->
+    <form method="post" action="/research/config/keys" class="rounded-xl border border-ink-700/80 bg-ink-950/55 p-4 space-y-4">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+      <div>
+        <h3 class="font-display text-sm font-semibold text-oscar-300">Snabbsetup: Klistra in API-nycklar</h3>
+        <p class="text-xs text-mist-400 mt-0.5">Tomt fält lämnar nuvarande nyckel oförändrad.</p>
+      </div>
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        {% for kp in key_specs %}
+        {% set is_ok = kp.configured or keys_present.get(kp.id, false) %}
+        <div>
+          <label class="az-label flex flex-wrap items-center justify-between gap-2" for="research-key-{{ kp.env_key }}">
+            <span>
+              <span class="text-mist-100">{{ kp.label or kp.id }}</span>
+              <code class="az-code font-mono ml-1">{{ kp.env_key }}</code>
+            </span>
+            {% if is_ok %}
+              {{ ui.status_badge('ok', 'Konfigurerad') }}
+            {% else %}
+              {{ ui.status_badge('neutral', 'Saknas') }}
+            {% endif %}
+          </label>
+          <div class="flex items-center gap-2" data-secret-field>
+            <input
+              id="research-key-{{ kp.env_key }}"
+              class="az-input font-mono text-xs"
+              type="password"
+              name="{{ kp.env_key }}"
+              autocomplete="new-password"
+              placeholder="{% if is_ok %}Konfigurerad (tomt = oförändrat){% else %}Klistra in API-nyckel{% endif %}"
+            />
+            <button
+              type="button"
+              class="az-btn-secondary shrink-0 px-2.5 py-2"
+              data-toggle-secret="research-key-{{ kp.env_key }}"
+              aria-pressed="false"
+              aria-label="Visa värde för {{ kp.env_key }}"
+            >
+              <span data-eye-open>{{ icon('eye', 'sm') }}</span>
+              <span data-eye-off class="hidden">{{ icon('eye-off', 'sm') }}</span>
+              <span class="sr-only" data-toggle-label>Visa</span>
+            </button>
+          </div>
+          {% if kp.role_hint %}
+          <p class="mt-1 text-xs text-mist-400">{{ kp.role_hint }}</p>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 pt-1">
+        <button type="submit" class="az-btn-oscar az-btn-sm" data-busy-label="Sparar...">
+          {{ icon('key', 'xs') }}
+          <span>Spara API-nycklar</span>
+        </button>
+      </div>
+    </form>
+
+    <!-- Collapsible Advanced Settings -->
+    <details class="rounded-xl border border-ink-700/80 bg-ink-950/55 p-4">
+      <summary class="cursor-pointer font-display text-sm font-semibold text-mist-200">
+        Valfri finjustering (motorordning, marknad, dagsbudget &amp; cache)
+      </summary>
+      <div class="mt-4 space-y-4">
+        <form method="post" action="/research/config/settings" class="space-y-4">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div class="sm:col-span-2 lg:col-span-1">
+              <label class="az-label" for="cfg-route-order">Motorordning (AZOM_SEARCH_ROUTE_ORDER)</label>
+              <input
+                id="cfg-route-order"
+                name="AZOM_SEARCH_ROUTE_ORDER"
+                type="text"
+                class="az-input font-mono text-xs"
+                value="{{ rs.get('route_order', '') }}"
+                placeholder="Automatisk per profil (lämna tomt)"
+              />
+            </div>
+            <div>
+              <label class="az-label" for="cfg-default-country">Standardland (AZOM_RESEARCH_DEFAULT_COUNTRY)</label>
+              {% set cur_c = rs.get('default_country', 'SE') %}
+              <select id="cfg-default-country" name="AZOM_RESEARCH_DEFAULT_COUNTRY" class="az-select">
+                {% for c_opt in ['SE', 'NO', 'DK', 'EN'] %}
+                <option value="{{ c_opt }}" {% if cur_c == c_opt %}selected{% endif %}>{{ c_opt }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="az-label" for="cfg-default-lang">Standardspråk (AZOM_RESEARCH_DEFAULT_LANG)</label>
+              {% set cur_l = rs.get('default_lang', 'sv') %}
+              <select id="cfg-default-lang" name="AZOM_RESEARCH_DEFAULT_LANG" class="az-select">
+                {% for l_opt in ['sv', 'nb', 'da', 'en'] %}
+                <option value="{{ l_opt }}" {% if cur_l == l_opt %}selected{% endif %}>{{ l_opt }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="az-label" for="cfg-max-queries">Max sökningar / dag</label>
+              <input
+                id="cfg-max-queries"
+                name="max_queries_per_day"
+                type="number"
+                min="1"
+                max="5000"
+                class="az-input font-mono tabular-nums"
+                value="{{ rs.get('max_queries_per_day', 200) }}"
+                required
+              />
+            </div>
+            <div>
+              <label class="az-label" for="cfg-max-fetches">Max sidhämtningar / dag</label>
+              <input
+                id="cfg-max-fetches"
+                name="max_fetches_per_day"
+                type="number"
+                min="0"
+                max="5000"
+                class="az-input font-mono tabular-nums"
+                value="{{ rs.get('max_fetches_per_day', 300) }}"
+                required
+              />
+            </div>
+            <div>
+              <label class="az-label" for="cfg-usd-cap">Månadstak externt (USD)</label>
+              <input
+                id="cfg-usd-cap"
+                name="monthly_external_usd_cap"
+                type="number"
+                min="0"
+                max="500"
+                step="0.5"
+                class="az-input font-mono tabular-nums"
+                value="{{ rs.get('monthly_external_usd_cap', 25.0) }}"
+                required
+              />
+            </div>
+          </div>
+
+          <label for="cfg-cache-enabled" class="flex cursor-pointer items-center gap-2.5 text-sm text-mist-200">
+            <input
+              id="cfg-cache-enabled"
+              name="cache_enabled"
+              type="checkbox"
+              value="1"
+              class="az-checkbox"
+              {% if rs.get('cache_enabled', true) %}checked{% endif %}
+            />
+            <span>Aktivera lokal cache för webbsök &amp; hämtningar (<code class="az-code font-mono">cache_enabled</code>)</span>
+          </label>
+
+          <button type="submit" class="az-btn-oscar az-btn-sm" data-busy-label="Sparar...">Spara research-inställningar</button>
+        </form>
+
+        <!-- Read-only server/systemd gates -->
+        <div class="border-t border-ink-700/70 pt-3 space-y-2">
+          <p class="text-xs font-medium text-mist-300">Server- &amp; systemd-styrda säkerhetsgates (skrivskyddade i UI)</p>
+          <div class="flex flex-wrap gap-2 text-xs">
+            {{ ui.status_badge('warn' if live_gates.get('mock_mode', st.get('mock_mode')) else 'ok', 'AZOM_USE_MOCK: ' ~ ('1' if live_gates.get('mock_mode', st.get('mock_mode')) else '0')) }}
+            {{ ui.status_badge('ok' if live_gates.get('web_search_enabled') else 'neutral', 'AZOM_WEB_SEARCH_ENABLED: ' ~ ('1' if live_gates.get('web_search_enabled') else '0')) }}
+            {{ ui.status_badge('ok' if live_gates.get('web_fetch_enabled') else 'neutral', 'AZOM_WEB_FETCH_ENABLED: ' ~ ('1' if live_gates.get('web_fetch_enabled') else '0')) }}
+            {{ ui.status_badge('ok' if live_gates.get('research_enabled') else 'neutral', 'AZOM_RESEARCH_ENABLED: ' ~ ('1' if live_gates.get('research_enabled') else '0')) }}
+            {{ ui.status_badge('error' if live_gates.get('kill_search') else 'neutral', 'AZOM_WEB_SEARCH_KILL: ' ~ ('1' if live_gates.get('kill_search') else '0')) }}
+            {{ ui.status_badge('error' if live_gates.get('kill_research') else 'neutral', 'AZOM_RESEARCH_KILL: ' ~ ('1' if live_gates.get('kill_research') else '0')) }}
+          </div>
+        </div>
+      </div>
+    </details>
+    {% else %}
+    <!-- Non-Oscar read-only provider readiness -->
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Sökmotorstatus">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Motor</th>
+            <th scope="col">Roll</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for kp in key_specs %}
+          <tr>
+            <td class="font-medium text-mist-100">{{ kp.label or kp.id }}</td>
+            <td class="text-xs text-mist-300">{{ kp.role_hint or '' }}</td>
+            <td>
+              {% if kp.configured %}
+                {{ ui.status_badge('ok', 'Konfigurerad') }}
+              {% else %}
+                {{ ui.status_badge('neutral', 'Ej nyckel') }}
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
     {% endif %}
   </section>
 </div>

@@ -303,6 +303,7 @@ python -m ecom_ops --mock research show --id <res-id> [--section full|summary|so
 python -m ecom_ops --mock research status --id <res-id>
 python -m ecom_ops --mock research steer --id <res-id> --note "..."
 python -m ecom_ops --mock research cancel --id <res-id>
+python -m ecom_ops --mock research profiles [--id <profile-id>] [--recommend "<goal>" --ambition quick|standard|deep]
 # expect: JSON with ok: true, provenance: "mock" (in mock mode), and res-<12hex> identifiers
 ```
 

@@ -20,13 +20,19 @@ from flask import (
     url_for,
 )
 
-from auth import _auth_required, _dashboard_actor
+from auth import _auth_required, _dashboard_actor, _oscar_required
+from ecom_ops.audit import log_action
 from ecom_ops.integrations._http_guard import safe_public_https_url
 from ecom_ops.integrations.search.errors import SearchRouteError
+from ecom_ops.integrations.search.router import (
+    LIVE_ROUTE_IDS,
+    get_search_router,
+    reset_search_router,
+)
 from ecom_ops.ops_status import web_search_readiness
 from ecom_ops.rbac import AccessDenied, Permission, require_permission
 from ecom_ops.research import ResearchService, list_profiles, research_budget_status
-from ecom_ops.research.config import is_mock_mode
+from ecom_ops.research.config import is_mock_mode, load_research_config
 from ecom_ops.research.evaluator import classify_claim_kind
 from ecom_ops.research.models import (
     RESEARCH_ID_RE,
@@ -34,7 +40,7 @@ from ecom_ops.research.models import (
     ResearchJob,
     SearchPolicyError,
 )
-from ecom_ops.research.profiles import get_profile
+from ecom_ops.research.profiles import get_profile, recommend_profile
 from ecom_ops.research.store import (
     ResearchStore,
     authorize_research_access,
@@ -42,9 +48,129 @@ from ecom_ops.research.store import (
 )
 from ecom_ops.runtime_env import env_flag
 from ecom_ops.telemetry import Telemetry
+from settings_store import (
+    load_research_settings_view,
+    save_research_settings,
+    save_secrets,
+)
 from support import _dashboard_context, _data_dir, _flash, _flash_q, _fmt_dt
 
 research_bp = Blueprint("research", __name__)
+
+_VALID_DEPTHS = frozenset({"quick", "standard", "deep"})
+_RESEARCH_API_KEYS: tuple[str, ...] = (
+    "PARALLEL_API_KEY",
+    "EXA_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "TAVILY_API_KEY",
+    "SEARXNG_API_KEY",
+)
+_PROVIDER_CARD_META: tuple[dict[str, str], ...] = (
+    {
+        "id": "parallel",
+        "label": "Parallel",
+        "env_key": "PARALLEL_API_KEY",
+        "role_hint": "Webbsökning + sidextraktion (primary)",
+    },
+    {
+        "id": "exa",
+        "label": "Exa",
+        "env_key": "EXA_API_KEY",
+        "role_hint": "Semantisk UX-, CRO- & research-sökning",
+    },
+    {
+        "id": "brave",
+        "label": "Brave Search",
+        "env_key": "BRAVE_SEARCH_API_KEY",
+        "role_hint": "Snabbt nordiskt webbindex & nyheter",
+    },
+    {
+        "id": "tavily",
+        "label": "Tavily",
+        "env_key": "TAVILY_API_KEY",
+        "role_hint": "Djupwebb & strukturerat sidinnehåll",
+    },
+    {
+        "id": "searxng",
+        "label": "SearXNG",
+        "env_key": "SEARXNG_API_KEY",
+        "role_hint": "Egen instans (valfri, kräver SEARXNG_BASE_URL i processmiljö)",
+    },
+)
+_QUICK_PRESETS: tuple[dict[str, str], ...] = (
+    {
+        "id": "thankyou_ux",
+        "label": "Tacksida UX",
+        "profile_id": "design_inspiration",
+        "depth": "standard",
+        "mode": "research",
+        "hint": "UX- & konverteringsmönster för tacksida och checkout",
+        "placeholder": "T.ex. WooCommerce thank you page UX best practices order tracking",
+    },
+    {
+        "id": "product_spec_carplay",
+        "label": "Produkt-spec / CarPlay",
+        "profile_id": "product_spec_deep",
+        "depth": "standard",
+        "mode": "research",
+        "hint": "OEM-passform, CAN-bus, kablage och tekniska begränsningar",
+        "placeholder": "T.ex. Volvo XC60 2016 wireless CarPlay CAN-bus compatibility specs",
+    },
+    {
+        "id": "support_postnord",
+        "label": "PostNord / Support faktakoll",
+        "profile_id": "support_fact_check",
+        "depth": "quick",
+        "mode": "search",
+        "hint": "Färska fraktstörningar, ombud och konsumentregler utan kund-PII",
+        "placeholder": "T.ex. PostNord driftstörning paketombud Sverige",
+    },
+    {
+        "id": "ads_ga4",
+        "label": "Google Ads / GA4",
+        "profile_id": "marketing_intel",
+        "depth": "standard",
+        "mode": "search",
+        "hint": "Consent Mode v2, GA4-nyheter och säsongssökord",
+        "placeholder": "T.ex. Google Ads Consent Mode v2 ecommerce GA4 update",
+    },
+    {
+        "id": "seo_gaps",
+        "label": "SEO innehållsluckor",
+        "profile_id": "seo_content_radar",
+        "depth": "standard",
+        "mode": "research",
+        "hint": "Sökintention och innehållsluckor på SE/NO/DK",
+        "placeholder": "T.ex. trådlös CarPlay Volvo innehållsluckor köpguide SE",
+    },
+    {
+        "id": "competitor_nordic",
+        "label": "Konkurrentanalys SE/NO/DK",
+        "profile_id": "competitor_market",
+        "depth": "deep",
+        "mode": "research",
+        "hint": "Nordiska konkurrenter, prisnivåer, garanti och USP",
+        "placeholder": "T.ex. nordiska konkurrenter bilstereo CarPlay adapter SE NO DK",
+    },
+    {
+        "id": "gdpr_consumer_law",
+        "label": "GDPR / Konsumenträtt",
+        "profile_id": "regulatory_compliance",
+        "depth": "deep",
+        "mode": "research",
+        "hint": "Konsumentköplagen, ångerrätt, IMY/GDPR och nordisk juridik",
+        "placeholder": "T.ex. konsumentköplagen reklamation bilelektronik Sverige",
+    },
+    {
+        "id": "triangulated_deep",
+        "label": "Triangulerad djupresearch",
+        "profile_id": "metasearch_triangulation",
+        "depth": "deep",
+        "mode": "research",
+        "hint": "Maximal bredd och källtriangulering över flera sökmotorer",
+        "placeholder": "T.ex. eftermarknad CarPlay Android Auto trender Norden 2026",
+    },
+)
 
 
 def _research_store() -> ResearchStore:
@@ -221,25 +347,61 @@ def _build_search_status() -> dict[str, Any]:
     }
 
 
+def _build_provider_cards() -> tuple[list[dict[str, Any]], int]:
+    router = get_search_router()
+    routes_map = router.routes()
+    cfg = load_research_config()
+    cards: list[dict[str, Any]] = []
+    configured_count = 0
+    for meta in _PROVIDER_CARD_META:
+        rid = meta["id"]
+        route_info = routes_map.get(rid) or {}
+        configured = bool(route_info.get("configured"))
+        if rid == "searxng":
+            enabled = configured
+        else:
+            p_cfg = cfg.providers.get(rid)
+            enabled = not (isinstance(p_cfg, dict) and p_cfg.get("enabled") is False)
+        if configured:
+            configured_count += 1
+        cards.append(
+            {
+                "id": rid,
+                "label": meta["label"],
+                "env_key": meta["env_key"],
+                "role_hint": meta["role_hint"],
+                "configured": configured,
+                "enabled": enabled,
+            }
+        )
+    return cards, configured_count
+
+
 def _hub_context(
     *,
     quick_result: dict[str, Any] | None = None,
     quick_query: str = "",
-    selected_profile: str = "deep_general",
+    selected_profile: str = "auto",
     selected_locale: str = "SE",
     flash: str | None = None,
 ) -> dict[str, Any]:
     actor_name = g.actor["name"]
     actor_obj = _dashboard_actor(g.actor)
+    research_settings = load_research_settings_view()
     store = _research_store()
     jobs = [_job_view(j) for j in store.list_jobs(actor=actor_name, limit=50)]
     profiles = [p.to_dict() for p in list_profiles()]
+    provider_cards, configured_provider_count = _build_provider_cards()
     raw_loc = (selected_locale or "").strip()
     norm_locale = "SE" if raw_loc.lower() in {"", "sv"} else raw_loc
     extra: dict[str, Any] = {
         "jobs": jobs,
         "profiles": profiles,
         "search_status": _build_search_status(),
+        "provider_cards": provider_cards,
+        "configured_provider_count": configured_provider_count,
+        "research_settings": research_settings,
+        "quick_presets": [dict(p) for p in _QUICK_PRESETS],
         "quick_result": quick_result,
         "quick_query": quick_query,
         "quick_locale": norm_locale,
@@ -330,11 +492,167 @@ def research_hub():
     actor_obj = _dashboard_actor(g.actor)
     if not (actor_obj.has(Permission.WEB_SEARCH) or actor_obj.has(Permission.RESEARCH_RUN)):
         return Response("Saknar behörighet", 403)
-    selected_profile = (request.args.get("profile") or "deep_general").strip() or "deep_general"
+    selected_profile = (request.args.get("profile") or "auto").strip() or "auto"
     return render_template(
         "research/hub.html",
         **_hub_context(selected_profile=selected_profile),
     )
+
+
+@research_bp.route("/research/recommend", methods=["GET"])
+@_auth_required
+def research_recommend():
+    actor_obj = _dashboard_actor(g.actor)
+    if not (actor_obj.has(Permission.WEB_SEARCH) or actor_obj.has(Permission.RESEARCH_RUN)):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    q = (request.args.get("q") or "").strip()[:500]
+    raw_ambition = (request.args.get("ambition") or "auto").strip().lower()
+    ambition = raw_ambition if raw_ambition in {"", "auto", "quick", "standard", "deep"} else "auto"
+    resolved = recommend_profile(
+        q,
+        ambition=None if ambition in {"", "auto"} else ambition,
+    )
+    resolved_depth = (
+        resolved.ambition if resolved.ambition in _VALID_DEPTHS else "standard"
+    ) if ambition in {"", "auto"} else ambition
+
+    router = get_search_router()
+    routes_info = router.routes()
+    configured_providers = [
+        rid for rid in LIVE_ROUTE_IDS if bool((routes_info.get(rid) or {}).get("configured"))
+    ]
+    search_status = web_search_readiness()
+    return jsonify(
+        {
+            "ok": True,
+            "profile": resolved.to_dict(),
+            "resolved_depth": resolved_depth,
+            "configured_providers": configured_providers,
+            "live_ready": bool(search_status.get("ready")),
+        }
+    )
+
+
+@research_bp.route("/research/config/keys", methods=["POST"])
+@_oscar_required
+def research_config_keys():
+    updates: dict[str, str] = {}
+    for key in _RESEARCH_API_KEYS:
+        raw_val = request.form.get(key, "")
+        if raw_val.strip():
+            updates[key] = raw_val
+
+    try:
+        saved = save_secrets(updates)
+    except ValueError:
+        err_msg = "Ogiltig API-nyckel (kontrolltecken är inte tillåtna)."
+        _flash(err_msg, "error")
+        return redirect(url_for("research.research_hub") + f"?{_flash_q(err=err_msg)}#research-setup")
+
+    if saved:
+        reset_search_router()
+        log_action(
+            actor=g.actor["name"],
+            action="research_keys_updated",
+            target="research_config",
+            details={"keys": sorted(saved)},
+        )
+        msg = f"Sparade {len(saved)} API-nycklar ({', '.join(sorted(saved))})"
+        _flash(msg, "ok")
+        q = _flash_q(msg)
+    else:
+        msg = "Inga API-nycklar angivna"
+        _flash(msg, "info")
+        q = _flash_q(info=msg)
+    return redirect(url_for("research.research_hub") + f"?{q}#research-setup")
+
+
+@research_bp.route("/research/config/settings", methods=["POST"])
+@_oscar_required
+def research_config_settings():
+    form_data = dict(request.form)
+    cache_vals = request.form.getlist("cache_enabled")
+    form_data["cache_enabled"] = (
+        "1"
+        if any(str(v).strip().lower() in {"1", "true", "yes", "on"} for v in cache_vals)
+        else "0"
+    )
+    try:
+        saved_view = save_research_settings(form_data)
+    except ValueError as exc:
+        err_msg = str(exc) or "Ogiltiga research-inställningar"
+        _flash(err_msg, "error")
+        return redirect(url_for("research.research_hub") + f"?{_flash_q(err=err_msg)}#research-setup")
+
+    reset_search_router()
+    log_action(
+        actor=g.actor["name"],
+        action="research_settings_updated",
+        target="research_config",
+        details={
+            "route_order": saved_view.get("route_order", ""),
+            "default_country": saved_view.get("default_country"),
+            "default_lang": saved_view.get("default_lang"),
+            "max_queries_per_day": saved_view.get("max_queries_per_day"),
+            "max_fetches_per_day": saved_view.get("max_fetches_per_day"),
+            "monthly_external_usd_cap": saved_view.get("monthly_external_usd_cap"),
+            "cache_enabled": saved_view.get("cache_enabled"),
+        },
+    )
+    msg = "Research-inställningar sparade"
+    _flash(msg, "ok")
+    return redirect(url_for("research.research_hub") + f"?{_flash_q(msg)}#research-setup")
+
+
+@research_bp.route("/research/config/test", methods=["POST"])
+@_oscar_required
+def research_config_test():
+    route_id = (request.form.get("route_id") or "all").strip().lower()
+    if route_id not in set(LIVE_ROUTE_IDS) | {"all"}:
+        err_msg = "Okänd sökmotor för test."
+        _flash(err_msg, "error")
+        return redirect(url_for("research.research_hub") + f"?{_flash_q(err=err_msg)}#research-setup")
+
+    router = get_search_router()
+    targets = list(LIVE_ROUTE_IDS) if route_id == "all" else [route_id]
+    parts: list[str] = []
+    has_error = False
+    has_missing = False
+    for rid in targets:
+        try:
+            res = router.test_route(rid)
+        except Exception as exc:
+            has_error = True
+            parts.append(f"{rid}: error ({type(exc).__name__})")
+            continue
+        ok = bool(res.get("ok"))
+        status = str(res.get("status") or ("ok" if ok else "error")).strip().lower()
+        raw_code = str(res.get("error_code") or res.get("error_class") or "").strip()
+        safe_code = "".join(ch for ch in raw_code if ch.isalnum() or ch in {"_", "-"})[:40]
+        if ok:
+            parts.append(f"{rid}: ok")
+        else:
+            if status == "missing":
+                has_missing = True
+            else:
+                has_error = True
+            if safe_code:
+                parts.append(f"{rid}: {status} ({safe_code})")
+            else:
+                parts.append(f"{rid}: {status}")
+
+    summary = "Söktest: " + ", ".join(parts)
+    if has_error:
+        _flash(summary, "error")
+        q = _flash_q(err=summary)
+    elif has_missing:
+        _flash(summary, "warn")
+        q = _flash_q(warn=summary)
+    else:
+        _flash(summary, "ok")
+        q = _flash_q(summary)
+    return redirect(url_for("research.research_hub") + f"?{q}#research-setup")
 
 
 @research_bp.route("/research/search", methods=["POST"])
@@ -346,9 +664,9 @@ def research_search():
         return Response("Saknar behörighet", 403)
 
     query = (request.form.get("query") or "").strip()
-    profile_id = (
-        request.form.get("profile_id") or request.form.get("profile") or "deep_general"
-    ).strip() or "deep_general"
+    raw_profile = (request.form.get("profile_id") or request.form.get("profile") or "auto").strip()
+    auto_selected = raw_profile.lower() in {"", "auto"}
+    selected_profile = "auto" if auto_selected else raw_profile
     locale = (request.form.get("locale") or "").strip() or None
 
     if not query:
@@ -359,17 +677,20 @@ def research_search():
             **_hub_context(
                 quick_result=None,
                 quick_query="",
-                selected_profile=profile_id,
+                selected_profile=selected_profile,
                 selected_locale=locale or "SE",
                 flash=f"error:{err_msg}",
             ),
         )
 
+    resolved_profile = recommend_profile(query) if auto_selected else None
+    effective_profile_id = resolved_profile.id if resolved_profile is not None else raw_profile
+
     try:
         raw_result = _research_service().quick_search(
             query,
             actor=g.actor["name"],
-            profile_id=profile_id,
+            profile_id=effective_profile_id,
             locale=locale,
         )
     except AccessDenied:
@@ -382,7 +703,7 @@ def research_search():
             **_hub_context(
                 quick_result=None,
                 quick_query=query,
-                selected_profile=profile_id,
+                selected_profile=selected_profile,
                 selected_locale=locale or "SE",
                 flash=f"error:{err_msg}",
             ),
@@ -396,7 +717,7 @@ def research_search():
             **_hub_context(
                 quick_result=None,
                 quick_query=query,
-                selected_profile=profile_id,
+                selected_profile=selected_profile,
                 selected_locale=locale or "SE",
                 flash=f"error:{err_msg}",
             ),
@@ -409,18 +730,22 @@ def research_search():
             **_hub_context(
                 quick_result=None,
                 quick_query=query,
-                selected_profile=profile_id,
+                selected_profile=selected_profile,
                 selected_locale=locale or "SE",
                 flash=f"error:{err_msg}",
             ),
         )
 
     quick_result = dict(raw_result)
+    if auto_selected and resolved_profile is not None:
+        quick_result["auto_selected"] = True
+        quick_result["resolved_profile_id"] = resolved_profile.id
+        quick_result["resolved_profile_title"] = resolved_profile.title or resolved_profile.id
     ev_status = str(quick_result.get("evidence_status") or "")
     quick_result["sources"] = [
         _annotate_source(
             src,
-            str(quick_result.get("profile_id") or profile_id),
+            str(quick_result.get("profile_id") or effective_profile_id),
             evidence_status=ev_status,
         )
         for src in (quick_result.get("sources") or [])
@@ -431,7 +756,7 @@ def research_search():
         **_hub_context(
             quick_result=quick_result,
             quick_query=query,
-            selected_profile=profile_id,
+            selected_profile=selected_profile,
             selected_locale=locale or "SE",
         ),
     )
@@ -446,10 +771,29 @@ def research_jobs_create():
         return Response("Saknar behörighet", 403)
 
     topic = (request.form.get("topic") or request.form.get("query") or "").strip()
-    profile_id = (
-        request.form.get("profile_id") or request.form.get("profile") or "deep_general"
-    ).strip() or "deep_general"
-    depth = (request.form.get("depth") or "standard").strip().lower() or "standard"
+    raw_profile = (request.form.get("profile_id") or request.form.get("profile") or "auto").strip()
+    raw_depth = (request.form.get("depth") or "auto").strip().lower()
+    profile_auto = raw_profile.lower() in {"", "auto"}
+    depth_auto = raw_depth in {"", "auto"}
+
+    if profile_auto:
+        resolved = recommend_profile(topic, ambition=None if depth_auto else raw_depth)
+        profile_id = resolved.id
+        if depth_auto:
+            depth = resolved.ambition if resolved.ambition in _VALID_DEPTHS else "standard"
+        else:
+            depth = raw_depth
+    else:
+        profile_id = raw_profile
+        if depth_auto:
+            try:
+                prof_amb = get_profile(profile_id).ambition
+                depth = prof_amb if prof_amb in _VALID_DEPTHS else "standard"
+            except KeyError:
+                depth = "standard"
+        else:
+            depth = raw_depth
+
     market = (request.form.get("market") or "").strip().upper()
     locale = (request.form.get("locale") or "").strip() or None
     target_ref = (request.form.get("target_ref") or "").strip() or None
@@ -504,7 +848,8 @@ def research_jobs_create():
         dest = next_url or url_for("research.research_detail", res_id=job.research_id)
         sep = "&" if "?" in dest else "?"
         return redirect(f"{dest}{sep}{_flash_q(err=err_msg)}")
-    msg = f"Research startad ({job.research_id})"
+    auto_suffix = f" (auto: {profile_id}/{depth})" if (profile_auto or depth_auto) else ""
+    msg = f"Research startad ({job.research_id}){auto_suffix}"
     _flash(msg, "ok")
     if next_url:
         sep = "&" if "?" in next_url else "?"
@@ -528,6 +873,10 @@ def research_detail(res_id: str):
     actor_obj = _dashboard_actor(g.actor)
     brief_res = store.read_brief(res_id, actor=actor_name)
     profile_id = job.spec.profile_id if job.spec is not None else "deep_general"
+    try:
+        profile_meta = get_profile(profile_id).to_dict()
+    except KeyError:
+        profile_meta = get_profile("deep_general").to_dict()
 
     brief: dict[str, Any] | None = None
     sources: list[dict[str, Any]] = []
@@ -549,6 +898,7 @@ def research_detail(res_id: str):
         "research/detail.html",
         **_dashboard_context(
             job=_job_view(job),
+            profile_meta=profile_meta,
             brief=brief,
             sources=sources,
             events=events,

@@ -58,7 +58,7 @@ from ecom_ops.research.models import (
     SearchPolicyError,
     SearchProfile,
 )
-from ecom_ops.research.profiles import get_profile
+from ecom_ops.research.profiles import get_profile, providers_for_round
 from ecom_ops.research.sanitizer import frame_untrusted_web_data, sanitize_untrusted_text
 from ecom_ops.research.store import ResearchStore
 from ecom_ops.telemetry import Telemetry, default_telemetry
@@ -506,11 +506,24 @@ class ResearchEngine:
         candidates: list[str] = list(spec.queries_seed or ())
         if raw_topic:
             candidates.append(raw_topic)
-        if spec.markets and raw_topic:
-            market_str = " ".join(spec.markets[:2])
-            candidates.append(f"{raw_topic} {market_str}")
+        primary_market = (
+            spec.markets[0]
+            if spec.markets
+            else (spec.country or (profile.market_defaults[0] if profile.market_defaults else "SE"))
+        )
         if steers and raw_topic:
             candidates.append(f"{raw_topic} {steers[-1]}")
+        elif raw_topic and profile.query_templates:
+            for tmpl in profile.query_templates[:2]:
+                rendered = (
+                    str(tmpl)
+                    .replace("{topic}", raw_topic)
+                    .replace("{market}", primary_market)
+                )
+                candidates.append(rendered)
+        elif spec.markets and raw_topic:
+            market_str = " ".join(spec.markets[:2])
+            candidates.append(f"{raw_topic} {market_str}")
         elif profile.id == "design_inspiration" and raw_topic:
             candidates.append(f"{raw_topic} UX conversion best practices")
         elif profile.id == "technical_docs" and raw_topic:
@@ -585,6 +598,10 @@ class ResearchEngine:
                 "task": "plan_initial_queries",
                 "topic": sanitize_untrusted_text(spec.topic, max_chars=500),
                 "profile_id": profile.id,
+                "profile_goal": sanitize_untrusted_text(profile.goal, max_chars=240),
+                "ambition": profile.ambition,
+                "combination_mode": profile.combination_mode,
+                "query_templates": list(profile.query_templates),
                 "depth": spec.depth,
                 "markets": list(spec.markets or profile.market_defaults),
                 "focus_domains": list(spec.focus_domains),
@@ -772,14 +789,17 @@ class ResearchEngine:
             if clean_steers
             else ""
         )
+        deliverables = ", ".join(profile.deliverable_sections)
         user_msg = (
             f"Research ID: {job.research_id}\n"
             f"Topic: {sanitize_untrusted_text(spec.topic, max_chars=400)}\n"
-            f"Profile: {profile.id} | Corroboration mode: {profile.corroboration_mode}\n"
-            f"Evidence status: {evidence_status} | Provenance: {provenance}\n"
-            f"{steer_block}"
-            f"Conflicts:\n{conflict_text}\n\n"
-            f"Untrusted source extracts (cite ONLY valid [S#] IDs below):\n{framed_sources}"
+            f"Profile: {profile.id} | Ambition: {profile.ambition} | Output format: {spec.output_format or profile.output_format_default} | Corroboration mode: {profile.corroboration_mode}\n"
+            + (f"Profile goal: {sanitize_untrusted_text(profile.goal, max_chars=240)}\n" if profile.goal else "")
+            + (f"Target sections: {deliverables}\n" if deliverables else "")
+            + f"Evidence status: {evidence_status} | Provenance: {provenance}\n"
+            + f"{steer_block}"
+            + f"Conflicts:\n{conflict_text}\n\n"
+            + f"Untrusted source extracts (cite ONLY valid [S#] IDs below):\n{framed_sources}"
         )
         try:
             content, _cost = llm.chat_completion(
@@ -1129,9 +1149,37 @@ class ResearchEngine:
                         actor=job.actor,
                         site="azom",
                     )
+                    round_routes = providers_for_round(profile, round_num)
+                    if profile.combination_mode in {"ensemble", "staged"}:
+                        eff_fanout = max(
+                            1,
+                            min(5, int(profile.fanout_by_depth.get(spec.depth, 1))),
+                        )
+                    else:
+                        eff_fanout = 1
+                    rem_budget_q = max(1, limits["max_queries"] - queries_used)
+                    eff_fanout = min(eff_fanout, rem_budget_q)
+
                     try:
-                        res = self.search_router.search(req, telemetry=self.telemetry)
-                        queries_used += 1
+                        if (
+                            not mock_mode
+                            and (eff_fanout > 1 or profile.combination_mode == "staged")
+                            and hasattr(self.search_router, "search_multi")
+                        ):
+                            res = self.search_router.search_multi(
+                                req,
+                                max_providers=eff_fanout,
+                                route_ids=round_routes,
+                                telemetry=self.telemetry,
+                            )
+                            provider_count = max(
+                                1,
+                                len([p for p in str(res.provider or "").split("+") if p]),
+                            )
+                            queries_used += provider_count
+                        else:
+                            res = self.search_router.search(req, telemetry=self.telemetry)
+                            queries_used += 1
                         estimated_search_usd += float(res.estimated_cost_usd or 0.0)
                         all_hits.extend(res.hits)
                     except SearchPolicyError:
@@ -1159,7 +1207,9 @@ class ResearchEngine:
                     return _finalize_cancelled()
 
                 if (
-                    fetches_used < limits["max_fetches"]
+                    profile.fetch_strategy != "snippet_only"
+                    and profile.max_fetch_default > 0
+                    and fetches_used < limits["max_fetches"]
                     and evaluated_sources
                     and (time.monotonic() - started_at) < limits["max_wall_s"]
                 ):
@@ -1173,7 +1223,23 @@ class ResearchEngine:
                             s for s in evaluated_sources
                             if (s.canonical_url or s.url) not in fetched_urls
                         ][:k_left]
-                        for src in candidates_to_fetch:
+                        parallel_extractor = None
+                        if (
+                            not mock_mode
+                            and profile.fetch_strategy in {"parallel_extract_first", "hybrid"}
+                        ):
+                            try:
+                                from ecom_ops.integrations.search.providers.parallel import (
+                                    ParallelSearchRoute,
+                                )
+
+                                candidate_px = ParallelSearchRoute()
+                                if candidate_px.is_configured():
+                                    parallel_extractor = candidate_px
+                            except Exception:
+                                parallel_extractor = None
+
+                        for idx_cand, src in enumerate(candidates_to_fetch):
                             if _is_cancelled():
                                 return _finalize_cancelled()
                             if (time.monotonic() - started_at) >= limits["max_wall_s"]:
@@ -1181,15 +1247,33 @@ class ResearchEngine:
                                 break
                             target_url = src.canonical_url or src.url
                             fetched_urls.add(target_url)
+                            use_parallel = parallel_extractor is not None and (
+                                profile.fetch_strategy == "parallel_extract_first"
+                                or (profile.fetch_strategy == "hybrid" and idx_cand < 2)
+                            )
                             try:
-                                fres = self.fetcher.fetch(
-                                    target_url,
-                                    taint=taint,
-                                    telemetry=self.telemetry,
-                                    max_extracted_chars=cfg.egress.max_extracted_chars,
-                                    actor=job.actor,
-                                    site="azom",
-                                )
+                                fres = None
+                                if use_parallel:
+                                    try:
+                                        fres = parallel_extractor.extract(
+                                            target_url,
+                                            taint=taint,
+                                            telemetry=self.telemetry,
+                                            max_chars=cfg.egress.max_extracted_chars,
+                                            actor=job.actor,
+                                            site="azom",
+                                        )
+                                    except SearchRouteError:
+                                        fres = None
+                                if fres is None or not fres.ok:
+                                    fres = self.fetcher.fetch(
+                                        target_url,
+                                        taint=taint,
+                                        telemetry=self.telemetry,
+                                        max_extracted_chars=cfg.egress.max_extracted_chars,
+                                        actor=job.actor,
+                                        site="azom",
+                                    )
                                 fetches_used += 1
                                 if fres.ok and fres.text:
                                     fetched_content[target_url] = (fres.title, fres.text)

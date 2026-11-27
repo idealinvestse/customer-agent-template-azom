@@ -1049,6 +1049,221 @@
   document.addEventListener('alpine:init', registerAlpineComponents);
   if (window.Alpine) registerAlpineComponents();
 
+  /* ------------------------------------------------------------------ */
+  /* 8. Research Hub Interactivity (Auto-Preview, Presets, Filter)      */
+  /* ------------------------------------------------------------------ */
+  function initResearchHub() {
+    var hub = document.querySelector('[data-research-hub="true"]');
+    if (!hub) return;
+
+    var searchInput = document.getElementById('quick-search-query');
+    var searchProfile = document.getElementById('quick-search-profile');
+    var searchPreview = hub.querySelector('[data-auto-preview-search]');
+
+    var deepInput = document.getElementById('deep-research-topic');
+    var deepProfile = document.getElementById('deep-research-profile');
+    var deepDepth = document.getElementById('deep-research-depth');
+    var deepPreview = hub.querySelector('[data-auto-preview-deep]');
+
+    var searchTimer = null;
+    var deepTimer = null;
+    var searchSeq = 0;
+    var deepSeq = 0;
+
+    function formatPreviewText(data) {
+      if (!data || !data.profile) return '';
+      var prof = data.profile;
+      var title = String(prof.title || prof.id || '');
+      var mode = String(prof.combination_mode || '');
+      var fetchStrat = String(prof.fetch_strategy || '');
+      var depth = String(data.resolved_depth || prof.ambition || '');
+      var providers = Array.isArray(prof.preferred_providers)
+        ? prof.preferred_providers.join(' -> ')
+        : '';
+      var parts = [];
+      if (mode) parts.push(mode);
+      if (fetchStrat) parts.push(fetchStrat);
+      if (depth) parts.push('djup: ' + depth);
+      if (providers) parts.push('motorer: ' + providers);
+      return 'Automatiskt val: ' + title + (parts.length ? ' (' + parts.join(' · ') + ')' : '');
+    }
+
+    function fetchRecommend(text, ambition, previewEl, seqState, isSearch) {
+      if (!previewEl) return;
+      var trimmed = (text || '').trim();
+      if (trimmed.length < 3) {
+        previewEl.textContent = '';
+        return;
+      }
+      var reqId = seqState + 1;
+      if (isSearch) searchSeq = reqId;
+      else deepSeq = reqId;
+
+      var url =
+        '/research/recommend?q=' +
+        encodeURIComponent(trimmed) +
+        '&ambition=' +
+        encodeURIComponent(ambition || 'auto');
+
+      fetch(url, {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      })
+        .then(function (res) {
+          if (!res.ok) throw new Error('recommend');
+          return res.json();
+        })
+        .then(function (data) {
+          if ((isSearch && reqId !== searchSeq) || (!isSearch && reqId !== deepSeq)) return;
+          if (data && data.ok && data.profile) {
+            previewEl.textContent = formatPreviewText(data);
+          } else {
+            previewEl.textContent = '';
+          }
+        })
+        .catch(function () {
+          if ((isSearch && reqId !== searchSeq) || (!isSearch && reqId !== deepSeq)) return;
+          previewEl.textContent = '';
+        });
+    }
+
+    function refreshSearchPreview() {
+      if (!searchPreview || !searchInput || !searchProfile) return;
+      var profVal = (searchProfile.value || '').trim();
+      if (profVal && profVal !== 'auto') {
+        searchPreview.textContent = '';
+        return;
+      }
+      fetchRecommend(searchInput.value, 'auto', searchPreview, searchSeq, true);
+    }
+
+    function refreshDeepPreview() {
+      if (!deepPreview || !deepInput || !deepProfile) return;
+      var profVal = (deepProfile.value || '').trim();
+      if (profVal && profVal !== 'auto') {
+        deepPreview.textContent = '';
+        return;
+      }
+      var ambition = deepDepth ? deepDepth.value : 'auto';
+      fetchRecommend(deepInput.value, ambition || 'auto', deepPreview, deepSeq, false);
+    }
+
+    function scheduleSearchPreview() {
+      if (searchTimer) window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(refreshSearchPreview, 250);
+    }
+
+    function scheduleDeepPreview() {
+      if (deepTimer) window.clearTimeout(deepTimer);
+      deepTimer = window.setTimeout(refreshDeepPreview, 250);
+    }
+
+    if (searchInput) searchInput.addEventListener('input', scheduleSearchPreview);
+    if (searchProfile) searchProfile.addEventListener('change', refreshSearchPreview);
+    if (deepInput) deepInput.addEventListener('input', scheduleDeepPreview);
+    if (deepProfile) deepProfile.addEventListener('change', refreshDeepPreview);
+    if (deepDepth) deepDepth.addEventListener('change', refreshDeepPreview);
+
+    function selectHasOption(sel, val) {
+      if (!sel || !val) return false;
+      for (var i = 0; i < sel.options.length; i += 1) {
+        if (sel.options[i].value === val) return true;
+      }
+      return false;
+    }
+
+    // 1-Click Snabbstarter
+    hub.querySelectorAll('[data-research-preset]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var mode = btn.getAttribute('data-preset-mode') || 'search';
+        var profId = btn.getAttribute('data-preset-profile') || 'auto';
+        var depthVal = btn.getAttribute('data-preset-depth') || '';
+        var placeholder = btn.getAttribute('data-preset-placeholder') || '';
+
+        if (mode === 'search' && searchInput) {
+          if (searchProfile && selectHasOption(searchProfile, profId)) {
+            searchProfile.value = profId;
+          }
+          if (placeholder) searchInput.placeholder = placeholder;
+          searchInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          searchInput.focus();
+          refreshSearchPreview();
+        } else if (deepInput) {
+          if (deepProfile && selectHasOption(deepProfile, profId)) {
+            deepProfile.value = profId;
+          }
+          if (deepDepth && depthVal && selectHasOption(deepDepth, depthVal)) {
+            deepDepth.value = depthVal;
+          }
+          if (placeholder) deepInput.placeholder = placeholder;
+          deepInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          deepInput.focus();
+          refreshDeepPreview();
+        }
+      });
+    });
+
+    // Profile Catalog Filter
+    var filterBtns = Array.prototype.slice.call(
+      hub.querySelectorAll('[data-profile-ambition-filter]')
+    );
+    var profileCards = Array.prototype.slice.call(hub.querySelectorAll('[data-profile-card]'));
+    filterBtns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var targetAmb = btn.getAttribute('data-profile-ambition-filter') || 'all';
+        filterBtns.forEach(function (other) {
+          var active = other === btn;
+          other.setAttribute('aria-pressed', active ? 'true' : 'false');
+          other.classList.toggle('bg-ink-800', active);
+          other.classList.toggle('ring-1', active);
+          other.classList.toggle('ring-steel-500/35', active);
+          other.classList.toggle('text-steel-200', active);
+        });
+        profileCards.forEach(function (card) {
+          var cardAmb = card.getAttribute('data-ambition') || '';
+          var show = targetAmb === 'all' || cardAmb === targetAmb;
+          card.classList.toggle('hidden', !show);
+        });
+      });
+    });
+
+    // Profile Card Action Buttons
+    hub.querySelectorAll('[data-apply-profile-search]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var profId = btn.getAttribute('data-apply-profile-search') || '';
+        if (searchProfile && selectHasOption(searchProfile, profId)) {
+          searchProfile.value = profId;
+        }
+        if (searchInput) {
+          searchInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          searchInput.focus();
+        }
+        refreshSearchPreview();
+      });
+    });
+
+    hub.querySelectorAll('[data-apply-profile-deep]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var profId = btn.getAttribute('data-apply-profile-deep') || '';
+        var amb = btn.getAttribute('data-profile-ambition') || '';
+        if (deepProfile && selectHasOption(deepProfile, profId)) {
+          deepProfile.value = profId;
+        }
+        if (deepDepth && (amb === 'quick' || amb === 'standard' || amb === 'deep') && selectHasOption(deepDepth, amb)) {
+          deepDepth.value = amb;
+        }
+        if (deepInput) {
+          deepInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          deepInput.focus();
+        }
+        refreshDeepPreview();
+      });
+    });
+
+    refreshSearchPreview();
+    refreshDeepPreview();
+  }
+
   function boot() {
     initDrawer();
     initDialogLightDismiss();
@@ -1056,6 +1271,7 @@
     initConfirmAndBusy();
     initUtilityHooks();
     initVanillaXaiPolling();
+    initResearchHub();
   }
 
   if (document.readyState === 'loading') {

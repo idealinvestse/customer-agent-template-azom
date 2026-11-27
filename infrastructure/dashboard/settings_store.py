@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import tempfile
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -580,3 +581,233 @@ def resolve_escalation(ticket_id: str, *, resolved_by: str | None = None) -> boo
     if found:
         _atomic_write_0600(path, "\n".join(out) + ("\n" if out else ""))
     return found
+
+
+ALLOW_RESEARCH_RUNTIME_KEYS = frozenset(
+    {
+        "AZOM_SEARCH_ROUTE_ORDER",
+        "AZOM_RESEARCH_DEFAULT_COUNTRY",
+        "AZOM_RESEARCH_DEFAULT_LANG",
+    }
+)
+_VALID_RESEARCH_ROUTES = frozenset({"parallel", "exa", "brave", "tavily", "searxng"})
+_RESEARCH_PROVIDER_ENV_KEYS: tuple[tuple[str, str], ...] = (
+    ("parallel", "PARALLEL_API_KEY"),
+    ("exa", "EXA_API_KEY"),
+    ("brave", "BRAVE_SEARCH_API_KEY"),
+    ("tavily", "TAVILY_API_KEY"),
+    ("searxng", "SEARXNG_BASE_URL"),
+)
+
+
+def _safe_int_setting(raw: Any, default: int) -> int:
+    if raw is None or isinstance(raw, bool):
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float_setting(raw: Any, default: float) -> float:
+    if raw is None or isinstance(raw, bool):
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if math.isfinite(val) else default
+
+
+def _parse_int_range(raw: Any, label: str, *, minimum: int, maximum: int) -> int:
+    if isinstance(raw, bool):
+        raise ValueError(f"{label} måste vara ett heltal ({minimum}–{maximum})")
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        raise ValueError(f"{label} måste vara ett heltal ({minimum}–{maximum})")
+    try:
+        val = int(text)
+    except ValueError:
+        raise ValueError(f"{label} måste vara ett heltal ({minimum}–{maximum})") from None
+    if val < minimum or val > maximum:
+        raise ValueError(f"{label} måste vara mellan {minimum} och {maximum}")
+    return val
+
+
+def _parse_float_range(raw: Any, label: str, *, minimum: float, maximum: float) -> float:
+    if isinstance(raw, bool):
+        raise ValueError(f"{label} måste vara ett tal ({minimum}–{maximum})")
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        raise ValueError(f"{label} måste vara ett tal ({minimum}–{maximum})")
+    try:
+        val = float(text)
+    except ValueError:
+        raise ValueError(f"{label} måste vara ett tal ({minimum}–{maximum})") from None
+    if not math.isfinite(val) or val < minimum or val > maximum:
+        raise ValueError(f"{label} måste vara mellan {minimum} och {maximum}")
+    return val
+
+
+def load_research_settings_view() -> dict[str, Any]:
+    """Load non-secret research configuration, provider readiness, and read-only server gates."""
+    from ecom_ops.research.config import (
+        is_mock_mode,
+        kill_switch_active,
+        research_enabled,
+        web_fetch_enabled,
+        web_search_enabled,
+    )
+
+    apply_env_overlays()
+    raw = _load_yaml("research.yaml")
+    budgets = raw.get("budgets") if isinstance(raw.get("budgets"), dict) else {}
+    cache = raw.get("cache") if isinstance(raw.get("cache"), dict) else {}
+
+    route_order = str(os.environ.get("AZOM_SEARCH_ROUTE_ORDER", "") or "").strip()
+    default_country = str(os.environ.get("AZOM_RESEARCH_DEFAULT_COUNTRY", "SE") or "SE").strip().upper()
+    if not default_country:
+        default_country = "SE"
+    default_lang = str(os.environ.get("AZOM_RESEARCH_DEFAULT_LANG", "sv") or "sv").strip().lower()
+    if not default_lang:
+        default_lang = "sv"
+
+    provider_keys_present = {
+        rid: bool(os.environ.get(env_key, "").strip())
+        for rid, env_key in _RESEARCH_PROVIDER_ENV_KEYS
+    }
+
+    return {
+        "route_order": route_order,
+        "default_country": default_country,
+        "default_lang": default_lang,
+        "max_queries_per_day": _safe_int_setting(budgets.get("max_queries_per_day"), 200),
+        "max_fetches_per_day": _safe_int_setting(budgets.get("max_fetches_per_day"), 300),
+        "monthly_external_usd_cap": _safe_float_setting(
+            budgets.get("monthly_external_usd_cap"), 25.0
+        ),
+        "cache_enabled": _as_bool(cache.get("enabled"), default=True),
+        "provider_keys_present": provider_keys_present,
+        "live_gates": {
+            "mock_mode": is_mock_mode(),
+            "web_search_enabled": web_search_enabled(),
+            "web_fetch_enabled": web_fetch_enabled(),
+            "research_enabled": research_enabled(),
+            "kill_search": kill_switch_active("search"),
+            "kill_research": kill_switch_active("research"),
+        },
+    }
+
+
+def save_research_settings(form_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate and save allowlisted non-secret research runtime overlays and YAML budgets/cache."""
+    from ecom_ops.research.config import clear_research_config_cache
+    from ecom_ops.runtime_env import PROTECTED_OVERLAY_KEYS
+
+    for raw_k, raw_v in form_data.items():
+        _reject_control_chars("nyckel", str(raw_k))
+        if raw_v is not None:
+            _reject_control_chars(str(raw_k), str(raw_v))
+
+    env_updates: dict[str, str] = {}
+    cleared_route_order = False
+
+    route_key = (
+        "AZOM_SEARCH_ROUTE_ORDER"
+        if "AZOM_SEARCH_ROUTE_ORDER" in form_data
+        else ("route_order" if "route_order" in form_data else None)
+    )
+    if route_key is not None:
+        raw_order = str(form_data.get(route_key) or "").strip()
+        if raw_order == "":
+            env_updates["AZOM_SEARCH_ROUTE_ORDER"] = ""
+            cleared_route_order = True
+        else:
+            parts = [p.strip().lower() for p in raw_order.split(",") if p.strip()]
+            invalid = [p for p in parts if p not in _VALID_RESEARCH_ROUTES]
+            if invalid:
+                raise ValueError(f"Ogiltig sökmotor i motorordning: {', '.join(invalid)}")
+            deduped = list(dict.fromkeys(parts))
+            if deduped:
+                env_updates["AZOM_SEARCH_ROUTE_ORDER"] = ",".join(deduped)
+            else:
+                env_updates["AZOM_SEARCH_ROUTE_ORDER"] = ""
+                cleared_route_order = True
+
+    country_key = (
+        "AZOM_RESEARCH_DEFAULT_COUNTRY"
+        if "AZOM_RESEARCH_DEFAULT_COUNTRY" in form_data
+        else ("default_country" if "default_country" in form_data else None)
+    )
+    if country_key is not None:
+        country = str(form_data.get(country_key) or "").strip().upper()
+        if len(country) != 2 or not (country.isascii() and country.isalpha()):
+            raise ValueError("Ogiltig landskod (ange två bokstäver, t.ex. SE, NO, DK, GB eller US)")
+        env_updates["AZOM_RESEARCH_DEFAULT_COUNTRY"] = country
+
+    lang_key = (
+        "AZOM_RESEARCH_DEFAULT_LANG"
+        if "AZOM_RESEARCH_DEFAULT_LANG" in form_data
+        else ("default_lang" if "default_lang" in form_data else None)
+    )
+    if lang_key is not None:
+        lang = str(form_data.get(lang_key) or "").strip().lower()
+        if len(lang) != 2 or not (lang.isascii() and lang.isalpha()):
+            raise ValueError("Ogiltig språkkod (ange två bokstäver, t.ex. sv, nb, da eller en)")
+        env_updates["AZOM_RESEARCH_DEFAULT_LANG"] = lang
+
+    research_yaml = _load_yaml("research.yaml")
+    budgets = dict(research_yaml.get("budgets") or {}) if isinstance(research_yaml.get("budgets"), dict) else {}
+    cache = dict(research_yaml.get("cache") or {}) if isinstance(research_yaml.get("cache"), dict) else {}
+    yaml_dirty = False
+
+    if "max_queries_per_day" in form_data:
+        budgets["max_queries_per_day"] = _parse_int_range(
+            form_data.get("max_queries_per_day"),
+            "max_queries_per_day",
+            minimum=1,
+            maximum=5000,
+        )
+        yaml_dirty = True
+
+    if "max_fetches_per_day" in form_data:
+        budgets["max_fetches_per_day"] = _parse_int_range(
+            form_data.get("max_fetches_per_day"),
+            "max_fetches_per_day",
+            minimum=0,
+            maximum=5000,
+        )
+        yaml_dirty = True
+
+    if "monthly_external_usd_cap" in form_data:
+        budgets["monthly_external_usd_cap"] = _parse_float_range(
+            form_data.get("monthly_external_usd_cap"),
+            "monthly_external_usd_cap",
+            minimum=0.0,
+            maximum=500.0,
+        )
+        yaml_dirty = True
+
+    if "cache_enabled" in form_data:
+        cache["enabled"] = _as_bool(form_data.get("cache_enabled"), default=True)
+        yaml_dirty = True
+
+    if yaml_dirty:
+        research_yaml["budgets"] = budgets
+        research_yaml["cache"] = cache
+        _save_yaml("research.yaml", research_yaml)
+
+    allow_keys = frozenset(k for k in ALLOW_RESEARCH_RUNTIME_KEYS if k not in PROTECTED_OVERLAY_KEYS)
+    if env_updates:
+        _write_env_file(
+            _data_dir() / "runtime.env",
+            env_updates,
+            allow_keys=allow_keys,
+        )
+
+    clear_research_config_cache()
+    view = load_research_settings_view()
+    if cleared_route_order:
+        os.environ.pop("AZOM_SEARCH_ROUTE_ORDER", None)
+        view["route_order"] = ""
+    return view

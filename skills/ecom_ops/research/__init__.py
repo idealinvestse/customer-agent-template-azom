@@ -55,7 +55,12 @@ from ecom_ops.research.models import (
     SourceType,
     new_research_id,
 )
-from ecom_ops.research.profiles import get_profile, list_profiles
+from ecom_ops.research.profiles import (
+    get_profile,
+    list_profiles,
+    providers_for_round,
+    recommend_profile,
+)
 from ecom_ops.research.sanitizer import (
     frame_untrusted_web_data,
     sanitize_untrusted_text,
@@ -233,6 +238,7 @@ class ResearchService:
         country: str | None = None,
         freshness_days: int | None = None,
         max_results: int = 5,
+        max_providers: int | None = None,
         include_domains: Sequence[str] | None = None,
         exclude_domains: Sequence[str] | None = None,
         taint: QueryTaintContext | None = None,
@@ -264,6 +270,12 @@ class ResearchService:
         lang, ctry = _resolve_locale_country(locale, country, profile)
         eff_freshness = int(freshness_days) if freshness_days is not None else profile.freshness_days
         clamped_max = max(1, min(10, int(max_results)))
+        if max_providers is not None:
+            eff_fanout = max(1, min(5, int(max_providers)))
+        elif profile.combination_mode == "ensemble":
+            eff_fanout = max(1, min(5, int(profile.fanout_by_depth.get("quick", 1))))
+        else:
+            eff_fanout = 1
         inc_doms = tuple(str(d).strip().lower().lstrip(".") for d in (include_domains or ()) if str(d).strip())
         exc_doms = tuple(str(d).strip().lower().lstrip(".") for d in (exclude_domains or ()) if str(d).strip())
         allowlist = effective_allowlist_domains(cfg)
@@ -280,6 +292,7 @@ class ResearchService:
                 filters={
                     "freshness_days": eff_freshness,
                     "max_results": clamped_max,
+                    "max_providers": eff_fanout,
                     "include_domains": inc_doms,
                     "exclude_domains": exc_doms,
                     "allowlist_domains": allowlist,
@@ -335,7 +348,15 @@ class ResearchService:
             actor=actor_obj.name,
             site="azom",
         )
-        result = self.search_router.search(req, telemetry=self.telemetry)
+        if eff_fanout > 1 and hasattr(self.search_router, "search_multi"):
+            result = self.search_router.search_multi(
+                req,
+                max_providers=eff_fanout,
+                route_ids=profile.preferred_providers,
+                telemetry=self.telemetry,
+            )
+        else:
+            result = self.search_router.search(req, telemetry=self.telemetry)
         provenance = "mock" if result.provenance in {"mock", "mock_fixture"} else "live"
         sources, evidence_status, conflicts = evaluate_search_hits(
             result.hits,
@@ -346,6 +367,9 @@ class ResearchService:
         payload = {
             "ok": True,
             "profile_id": profile.id,
+            "combination_mode": profile.combination_mode,
+            "fetch_strategy": profile.fetch_strategy,
+            "providers_used": [p for p in str(result.provider or "").split("+") if p],
             "evidence_status": str(evidence_status),
             "provenance": provenance,
             "route_id": result.route_id,
@@ -358,8 +382,8 @@ class ResearchService:
         if cache_key and cfg.cache.enabled and not is_mock_mode() and sources:
             ttl_hours = (
                 cfg.cache.news_ttl_hours
-                if profile.id == "support_fact_check"
-                else (cfg.cache.docs_ttl_hours if profile.id == "technical_docs" else cfg.cache.default_ttl_hours)
+                if profile.id in {"support_fact_check", "quick_pulse"}
+                else (cfg.cache.docs_ttl_hours if profile.id in {"technical_docs", "product_spec_deep"} else cfg.cache.default_ttl_hours)
             )
             self.cache.set(cache_key, payload, ttl_seconds=ttl_hours * 3600, kind="search")
         return payload
@@ -375,7 +399,7 @@ class ResearchService:
         use_cache: bool = True,
     ) -> dict[str, Any]:
         """Fetch and extract clean text from one public HTTPS URL."""
-        from ecom_ops.integrations.search.errors import SearchConfigError
+        from ecom_ops.integrations.search.errors import SearchConfigError, SearchRouteError
         from ecom_ops.rbac import Permission, require_permission, resolve_actor
 
         actor_obj = resolve_actor(actor)
@@ -408,14 +432,35 @@ class ResearchService:
             if isinstance(cached, dict):
                 return {**cached, "cached": True}
 
-        fres = self.fetcher.fetch(
-            clean_url,
-            taint=taint,
-            telemetry=self.telemetry,
-            max_extracted_chars=char_limit,
-            actor=actor_obj.name,
-            site="azom",
-        )
+        fres = None
+        if not is_mock_mode() and profile.fetch_strategy in {"parallel_extract_first", "hybrid"}:
+            try:
+                from ecom_ops.integrations.search.providers.parallel import ParallelSearchRoute
+
+                p_route = ParallelSearchRoute()
+                if p_route.is_configured():
+                    fres = p_route.extract(
+                        clean_url,
+                        taint=taint,
+                        max_chars=char_limit,
+                        telemetry=self.telemetry,
+                        actor=actor_obj.name,
+                        site="azom",
+                    )
+            except SearchPolicyError:
+                raise
+            except SearchRouteError:
+                fres = None
+
+        if fres is None or not fres.ok:
+            fres = self.fetcher.fetch(
+                clean_url,
+                taint=taint,
+                telemetry=self.telemetry,
+                max_extracted_chars=char_limit,
+                actor=actor_obj.name,
+                site="azom",
+            )
         domain = clean_url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
         payload = {
             "ok": fres.ok,
@@ -434,7 +479,11 @@ class ResearchService:
             "error_code": fres.error_code,
         }
         if fres.ok and cache_key and cfg.cache.enabled and not is_mock_mode():
-            ttl_hours = cfg.cache.docs_ttl_hours if profile.id == "technical_docs" else cfg.cache.default_ttl_hours
+            ttl_hours = (
+                cfg.cache.docs_ttl_hours
+                if profile.id in {"technical_docs", "product_spec_deep"}
+                else cfg.cache.default_ttl_hours
+            )
             self.cache.set(cache_key, payload, ttl_seconds=ttl_hours * 3600, kind="fetch")
         return payload
 
@@ -713,6 +762,8 @@ __all__ = [
     "list_profiles",
     "load_research_config",
     "new_research_id",
+    "providers_for_round",
+    "recommend_profile",
     "research_budget_status",
     "research_enabled",
     "reset_research_service",

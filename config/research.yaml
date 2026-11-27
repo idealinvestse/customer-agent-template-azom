@@ -86,8 +86,15 @@ egress:
   denylist_domains: []
   allowlist_domains: []
 
+# 12 goal- & ambition-adaptive search profiles (see skills/research-profiles/SKILL.md)
 profiles:
   design_inspiration:
+    title: "UX & Design Inspiration"
+    ambition: standard
+    combination_mode: ensemble
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    fetch_strategy: parallel_extract_first
+    output_format_default: ux_patterns
     preferred_providers: [exa, parallel, tavily, brave]
     market_defaults: [en, sv, nb, da]
     freshness_days: 730
@@ -100,6 +107,12 @@ profiles:
       - wordpress.org
     pii_strictness: standard
   technical_docs:
+    title: "Teknisk Primärdokumentation"
+    ambition: standard
+    combination_mode: failover
+    fanout_by_depth: {quick: 1, standard: 1, deep: 2}
+    fetch_strategy: parallel_extract_first
+    output_format_default: checklist
     preferred_providers: [parallel, exa, brave, tavily]
     market_defaults: [en]
     freshness_days: 540
@@ -112,6 +125,16 @@ profiles:
       - github.com
     pii_strictness: standard
   competitor_market:
+    title: "Nordisk Konkurrent- & Marknadsanalys"
+    ambition: deep
+    combination_mode: staged
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    round_providers:
+      1: [parallel, exa]
+      2: [brave, tavily]
+      3: [parallel, exa, brave]
+    fetch_strategy: hybrid
+    output_format_default: comparison
     preferred_providers: [parallel, exa, brave, tavily]
     market_defaults: [SE, NO, DK]
     freshness_days: 365
@@ -119,6 +142,12 @@ profiles:
     authority_domains: []
     pii_strictness: high
   support_fact_check:
+    title: "Faktakoll: Frakt, Drift & Support"
+    ambition: quick
+    combination_mode: failover
+    fanout_by_depth: {quick: 1, standard: 2, deep: 2}
+    fetch_strategy: direct
+    output_format_default: brief
     preferred_providers: [parallel, brave, exa, tavily]
     market_defaults: [SE, NO, DK]
     freshness_days: 30
@@ -136,6 +165,12 @@ profiles:
       - forbrug.dk
     pii_strictness: strict
   marketing_intel:
+    title: "Marketing & Ads Intelligence"
+    ambition: standard
+    combination_mode: ensemble
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    fetch_strategy: direct
+    output_format_default: brief
     preferred_providers: [exa, parallel, brave, tavily]
     market_defaults: [SE, NO, DK, en]
     freshness_days: 365
@@ -146,9 +181,130 @@ profiles:
       - blog.google
     pii_strictness: high
   deep_general:
+    title: "Djup Strategisk Research"
+    ambition: deep
+    combination_mode: staged
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    round_providers:
+      1: [parallel, exa]
+      2: [tavily, brave]
+      3: [parallel, exa, tavily]
+    fetch_strategy: hybrid
+    output_format_default: brief
     preferred_providers: [parallel, exa, tavily, brave]
     market_defaults: [SE, en]
     freshness_days: 365
     corroboration_mode: triangulated_factual
     authority_domains: []
     pii_strictness: high
+  quick_pulse:
+    title: "Snabbpuls & Färska Händelser"
+    ambition: quick
+    combination_mode: failover
+    fanout_by_depth: {quick: 1, standard: 1, deep: 2}
+    fetch_strategy: snippet_only
+    output_format_default: brief
+    preferred_providers: [brave, parallel, tavily, exa]
+    market_defaults: [SE, NO, DK, en]
+    freshness_days: 14
+    corroboration_mode: strict_factual
+    authority_domains: []
+    pii_strictness: strict
+    max_fetch_default: 0
+  product_spec_deep:
+    title: "Produkt- & Hårdvaruspecifikation"
+    ambition: standard
+    combination_mode: ensemble
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    fetch_strategy: parallel_extract_first
+    output_format_default: spec_sheet
+    preferred_providers: [parallel, exa, brave, tavily]
+    market_defaults: [en, SE]
+    freshness_days: 730
+    corroboration_mode: authoritative_primary
+    authority_domains:
+      - developer.apple.com
+      - android.com
+      - crutchfield.com
+      - github.com
+    pii_strictness: standard
+    max_fetch_default: 4
+  seo_content_radar:
+    title: "SEO, Sökintention & Innehållsluckor"
+    ambition: standard
+    combination_mode: ensemble
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    fetch_strategy: direct
+    output_format_default: checklist
+    preferred_providers: [exa, brave, tavily, parallel]
+    market_defaults: [SE, NO, DK]
+    freshness_days: 365
+    corroboration_mode: triangulated_market
+    authority_domains:
+      - developers.google.com
+      - ahrefs.com
+      - semrush.com
+      - moz.com
+    pii_strictness: high
+    max_fetch_default: 3
+  regulatory_compliance:
+    title: "Regelverk, Juridik & Compliance"
+    ambition: deep
+    combination_mode: staged
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    round_providers:
+      1: [parallel, brave]
+      2: [tavily, exa]
+      3: [parallel, brave, searxng]
+    fetch_strategy: direct
+    output_format_default: risk_brief
+    preferred_providers: [parallel, brave, tavily, exa, searxng]
+    market_defaults: [SE, NO, DK]
+    freshness_days: 180
+    corroboration_mode: strict_factual
+    authority_domains:
+      - konsumentverket.se
+      - imy.se
+      - forbrukerradet.no
+      - lovdata.no
+      - forbrug.dk
+      - eur-lex.europa.eu
+    pii_strictness: strict
+    max_fetch_default: 4
+  conversion_teardown:
+    title: "CRO & Konverteringsanalys"
+    ambition: deep
+    combination_mode: staged
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    round_providers:
+      1: [exa, parallel]
+      2: [tavily, brave]
+      3: [parallel, exa]
+    fetch_strategy: parallel_extract_first
+    output_format_default: ux_patterns
+    preferred_providers: [exa, parallel, tavily, brave]
+    market_defaults: [en, SE, NO, DK]
+    freshness_days: 540
+    corroboration_mode: inspiration_and_heuristics
+    authority_domains:
+      - baymard.com
+      - nngroup.com
+      - cxl.com
+      - smashingmagazine.com
+      - web.dev
+    pii_strictness: standard
+    max_fetch_default: 4
+  metasearch_triangulation:
+    title: "Maximal Metasök & Triangulering"
+    ambition: deep
+    combination_mode: ensemble
+    fanout_by_depth: {quick: 2, standard: 3, deep: 4}
+    fetch_strategy: hybrid
+    output_format_default: matrix
+    preferred_providers: [parallel, exa, brave, tavily, searxng]
+    market_defaults: [SE, NO, DK, en]
+    freshness_days: 365
+    corroboration_mode: triangulated_factual
+    authority_domains: []
+    pii_strictness: high
+    max_fetch_default: 5

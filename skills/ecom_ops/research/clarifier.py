@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from ecom_ops.research.models import ResearchSpec
+from ecom_ops.research.profiles import get_profile
 from ecom_ops.research.sanitizer import sanitize_untrusted_text
 
 RESEARCH_CLARIFY_CATEGORIES: tuple[str, ...] = (
@@ -26,18 +27,10 @@ _CATEGORY_TO_PROFILE: dict[str, str] = {
     "research_general": "deep_general",
 }
 
-_KNOWN_PROFILES = frozenset(
-    {
-        "design_inspiration",
-        "technical_docs",
-        "competitor_market",
-        "support_fact_check",
-        "marketing_intel",
-        "deep_general",
-    }
-)
 _VALID_DEPTHS = frozenset({"quick", "standard", "deep"})
-_VALID_OUTPUT_FORMATS = frozenset({"brief", "comparison", "checklist", "ux_patterns"})
+_VALID_OUTPUT_FORMATS = frozenset(
+    {"brief", "comparison", "checklist", "ux_patterns", "matrix", "spec_sheet", "risk_brief"}
+)
 
 _SITE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _WR_PLAN_RE = re.compile(r"^wr-[0-9a-f]{12}$")
@@ -253,6 +246,27 @@ _REPLACE_NOTE_RE = re.compile(
 )
 
 
+_EXTRA_PROFILE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("regulatory_compliance", re.compile(r"\b(?:gdpr|imy|eur-lex|ce-m[äa]rk\w*|compliance|regelv\w*)\b", re.I)),
+    ("conversion_teardown", re.compile(r"\b(?:cro|teardown|friktion)\b", re.I)),
+    ("product_spec_deep", re.compile(r"\b(?:can[- ]?bus|passform|kablage|oem\s+spec)\b", re.I)),
+    ("metasearch_triangulation", re.compile(r"\b(?:triangul\w*|metas[öo]k|searxng)\b", re.I)),
+    ("quick_pulse", re.compile(r"\b(?:snabbpuls|nul[äa]ge\s+idag|release\s+notes)\b", re.I)),
+    ("seo_content_radar", re.compile(r"\b(?:inneh[åa]llsluck\w*|schema\.org|strukturerad\s+data)\b", re.I)),
+)
+
+
+def _is_known_profile(name: str) -> bool:
+    norm = (name or "").strip().lower()
+    if not norm:
+        return False
+    try:
+        get_profile(norm)
+        return True
+    except KeyError:
+        return False
+
+
 def _match_profile_kw(text: str) -> str | None:
     if not text:
         return None
@@ -266,6 +280,9 @@ def _match_profile_kw(text: str) -> str | None:
         return "marketing_intel"
     if _MARKET_KW_RE.search(text):
         return "competitor_market"
+    for pid, pat in _EXTRA_PROFILE_RULES:
+        if pat.search(text):
+            return pid
     return None
 
 
@@ -274,7 +291,7 @@ def _infer_profile(combined: str, spec_dict: dict[str, Any], *, note_text: str =
     if note_profile:
         return note_profile
     raw_profile = str(spec_dict.get("profile_id") or spec_dict.get("profile") or "").strip().lower()
-    if raw_profile in _KNOWN_PROFILES:
+    if _is_known_profile(raw_profile):
         return raw_profile
     raw_cat = str(spec_dict.get("category") or "").strip().lower()
     if is_research_clarify_category(raw_cat):

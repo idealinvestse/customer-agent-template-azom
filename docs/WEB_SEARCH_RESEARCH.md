@@ -58,7 +58,7 @@ All external HTTP I/O is isolated under `skills/ecom_ops/integrations/search/` a
 
 ```text
 config/
-└── research.yaml                            # Fail-closed defaults, providers, budgets, cache, egress, 6 profiles
+└── research.yaml                            # Fail-closed defaults, providers, budgets, cache, egress, 12 profiles
 
 skills/ecom_ops/
 ├── integrations/
@@ -82,7 +82,7 @@ skills/ecom_ops/
 │   ├── __init__.py                          # ResearchService, get_research_service()
 │   ├── config.py                            # Fail-closed gate helpers + mtime-cached config/research.yaml loader
 │   ├── models.py                            # res-<12hex>, SearchProfile, ResearchSpec, ResearchJob, ResearchBrief
-│   ├── profiles.py                          # 6 builtin SearchProfiles merged with config/research.yaml
+│   ├── profiles.py                          # 12 goal/ambition SearchProfiles + recommend_profile() + YAML overrides
 │   ├── firewall.py                          # OutboundQueryFirewall, QueryTaintContext
 │   ├── sanitizer.py                         # sanitize_untrusted_text(), frame_untrusted_web_data()
 │   ├── evaluator.py                         # URL canonicalization, corroboration, EvidenceStatus, claim classification
@@ -147,18 +147,24 @@ Live route priority defaults to `parallel,exa,brave,tavily,searxng` (overridable
 
 `PROTECTED_OVERLAY_KEYS` are never read from `AZOM_DATA_DIR/runtime.env` or `AZOM_DATA_DIR/secrets.env` — systemd / process env always wins so dashboard-written overlays cannot flip live egress gates or kill-switches.
 
-## 4. The 6 Search Profiles
+## 4. The 12 Search Profiles & Multi-Tool Combinations
 
-Defined in `skills/ecom_ops/research/profiles.py` and overridable in `config/research.yaml`:
+Defined in `skills/ecom_ops/research/profiles.py`, documented as skill playbooks in [`skills/research-profiles/SKILL.md`](../skills/research-profiles/SKILL.md), and overridable in `config/research.yaml`. Each profile pairs a **`combination_mode`** (`failover`, `ensemble` via `SearchRouter.search_multi()`, or `staged` via `round_providers`) with a **`fetch_strategy`** (`snippet_only`, `direct`, `parallel_extract_first`, or `hybrid`):
 
-| Profile ID | Preferred providers | Market defaults | Freshness | Corroboration mode | PII strictness |
-|------------|---------------------|-----------------|-----------|--------------------|----------------|
-| `design_inspiration` | `exa, parallel, tavily, brave` | `en, sv, nb, da` | 730d | `inspiration_and_heuristics` | `standard` |
-| `technical_docs` | `parallel, exa, brave, tavily` | `en` | 540d | `authoritative_primary` | `standard` |
-| `competitor_market` | `parallel, exa, brave, tavily` | `SE, NO, DK` | 365d | `triangulated_market` | `high` |
-| `support_fact_check` | `parallel, brave, exa, tavily` | `SE, NO, DK` | 30d | `strict_factual` | `strict` |
-| `marketing_intel` | `exa, parallel, brave, tavily` | `SE, NO, DK, en` | 365d | `triangulated_market` | `high` |
-| `deep_general` | `parallel, exa, tavily, brave` | `SE, en` | 365d | `triangulated_factual` | `high` |
+| Profile ID | Ambition | Combination · Fetch | Preferred providers | Market defaults | Freshness | Corroboration mode | PII strictness |
+|------------|----------|---------------------|---------------------|-----------------|-----------|--------------------|----------------|
+| `quick_pulse` | `quick` | `failover` · `snippet_only` | `brave, parallel, tavily, exa` | `SE, NO, DK, en` | 14d | `strict_factual` | `strict` |
+| `support_fact_check` | `quick` | `failover` · `direct` | `parallel, brave, exa, tavily` | `SE, NO, DK` | 30d | `strict_factual` | `strict` |
+| `technical_docs` | `standard` | `failover` · `parallel_extract_first` | `parallel, exa, brave, tavily` | `en` | 540d | `authoritative_primary` | `standard` |
+| `design_inspiration` | `standard` | `ensemble` · `parallel_extract_first` | `exa, parallel, tavily, brave` | `en, sv, nb, da` | 730d | `inspiration_and_heuristics` | `standard` |
+| `marketing_intel` | `standard` | `ensemble` · `direct` | `exa, parallel, brave, tavily` | `SE, NO, DK, en` | 365d | `triangulated_market` | `high` |
+| `product_spec_deep` | `standard` | `ensemble` · `parallel_extract_first` | `parallel, exa, brave, tavily` | `en, SE` | 730d | `authoritative_primary` | `standard` |
+| `seo_content_radar` | `standard` | `ensemble` · `direct` | `exa, brave, tavily, parallel` | `SE, NO, DK` | 365d | `triangulated_market` | `high` |
+| `competitor_market` | `deep` | `staged` · `hybrid` | `parallel, exa, brave, tavily` | `SE, NO, DK` | 365d | `triangulated_market` | `high` |
+| `regulatory_compliance` | `deep` | `staged` · `direct` | `parallel, brave, tavily, exa, searxng` | `SE, NO, DK` | 180d | `strict_factual` | `strict` |
+| `conversion_teardown` | `deep` | `staged` · `parallel_extract_first` | `exa, parallel, tavily, brave` | `en, SE, NO, DK` | 540d | `inspiration_and_heuristics` | `standard` |
+| `deep_general` | `deep` | `staged` · `hybrid` | `parallel, exa, tavily, brave` | `SE, en` | 365d | `triangulated_factual` | `high` |
+| `metasearch_triangulation` | `deep` | `ensemble` · `hybrid` | `parallel, exa, brave, tavily, searxng` | `SE, NO, DK, en` | 365d | `triangulated_factual` | `high` |
 
 ## 5. Autonomy, `<clarify>` scoping & async worker pool
 
@@ -208,6 +214,7 @@ python -m ecom_ops --mock research status --id res-000000000001
 python -m ecom_ops --mock research show --id res-000000000001 --section summary
 python -m ecom_ops --mock research steer --id res-000000000001 --note "Fokusera på Norge"
 python -m ecom_ops --mock research cancel --id res-000000000001
+python -m ecom_ops --mock research profiles [--id conversion_teardown] [--recommend "mål..." --ambition deep]
 
 # Surface integrations:
 python -m ecom_ops --mock cases research --id <case-uuid> --depth quick --wait
@@ -220,16 +227,20 @@ python -m ecom_ops --mock product-desc --product-id 42 --language sv --research
 
 | Route | Permission | Purpose |
 |-------|------------|---------|
-| `GET /research` | `WEB_SEARCH` or `RESEARCH_RUN` | Research Hub: quick search form, async job queue, budget & provider readiness status. |
-| `POST /research/search` | `WEB_SEARCH` | Run synchronous quick search from the Hub. |
-| `POST /research/jobs` | `RESEARCH_RUN` | Enqueue async Deep Research job (optional `target_ref`, starts lazy worker when live). |
-| `GET /research/<res_id>` | `WEB_SEARCH` + `authorize_research_access("view")` | Detail view: brief, `[S#]` citations, claim classification, events, steers. |
+| `GET /research` | `WEB_SEARCH` or `RESEARCH_RUN` | Research Hub: defaults to `Automatisk (rekommenderad)` profile (`auto`) and `Automatisk (följer profil)` depth (`auto`) with live preview, 8 1-click presets (`_QUICK_PRESETS`), ambition-filtered catalog of the 12 profiles, async job queue, budget & provider readiness badges, and `#research-setup` (Oscar-writable, Jonatan read-only). |
+| `GET /research/recommend` | `WEB_SEARCH` or `RESEARCH_RUN` | JSON auto-recommendation endpoint (`?q=...&ambition=auto|quick|standard|deep`) returning `ok`, resolved `profile`, `resolved_depth`, `configured_providers`, and `live_ready`. |
+| `POST /research/search` | `WEB_SEARCH` | Run synchronous quick search from the Hub; `profile_id=auto` resolves via `recommend_profile()`, enforces `OutboundQueryFirewall`, and renders resolved profile metadata (`Auto: ...`). |
+| `POST /research/jobs` | `RESEARCH_RUN` | Enqueue async Deep Research job; `profile_id=auto` and `depth=auto` resolve via `recommend_profile()` / profile `ambition`, optional `target_ref`, starts lazy worker when live. |
+| `POST /research/config/keys` | `_oscar_required` (`full_admin`) | Oscar-only API-key quick setup (`PARALLEL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, `SEARXNG_API_KEY`). Writes non-empty fields to `AZOM_DATA_DIR/secrets.env` (`0600`) without overwriting blank fields or echoing values in HTML, redirects, or `audit.jsonl`, then resets `SearchRouter`. |
+| `POST /research/config/settings` | `_oscar_required` (`full_admin`) | Oscar-only non-secret settings: saves `AZOM_SEARCH_ROUTE_ORDER` (blank resets to automatic), `AZOM_RESEARCH_DEFAULT_COUNTRY`, and `AZOM_RESEARCH_DEFAULT_LANG` to `AZOM_DATA_DIR/runtime.env`; updates `budgets` and `cache.enabled` in `config/research.yaml`; clears research config cache and resets `SearchRouter`. Never writes `PROTECTED_OVERLAY_KEYS` (`AZOM_WEB_SEARCH_ENABLED`, `AZOM_WEB_FETCH_ENABLED`, `AZOM_RESEARCH_ENABLED`, `AZOM_WEB_SEARCH_KILL`, `AZOM_RESEARCH_KILL`, `SEARXNG_BASE_URL`, etc.). |
+| `POST /research/config/test` | `_oscar_required` (`full_admin`) | Oscar-only isolated route probe (`route_id=all` or `parallel|exa|brave|tavily|searxng`) calling `SearchRouter.test_route()` and redirecting to `/research#research-setup` with a non-secret status flash. |
+| `GET /research/<res_id>` | `WEB_SEARCH` + `authorize_research_access("view")` | Detail view: `profile_meta` (`title`, `combination_mode`, `fetch_strategy`), `"Ny liknande i Hub"` link (`/research?profile=<profile_id>`), brief, `[S#]` citations, claim classification, events, steers. |
 | `GET /research/<res_id>/status` | `WEB_SEARCH` + `authorize_research_access("view")` | JSON polling endpoint (`since_seq`, progress, status, evidence_status). |
 | `POST /research/<res_id>/steer` | `RESEARCH_RUN` + `authorize_research_access("steer")` | Queue a steering note for an active job. |
 | `POST /research/<res_id>/cancel` | `RESEARCH_RUN` + `authorize_research_access("cancel")` | Request cooperative cancellation. |
 | `GET /research/<res_id>/export` | `WEB_SEARCH` + `authorize_research_access("export")` | Download brief as Markdown (`?format=md`) or JSON (`?format=json`). |
 
-Linked research panels also appear on `/cases/<id>`, `/marketing`, `/wp/<site_id>`, and `/wp/<site_id>/reviews/<plan_id>`.
+Linked contextual research panels also appear on `/cases/<id>`, `/marketing`, `/wp/<site_id>`, and `/wp/<site_id>/reviews/<plan_id>` — each renders `<select name="profile_id">` with the `auto` (`Automatisk (rekommenderad)`) option while preserving `target_ref` and `_csrf`.
 
 ### Housekeeping (`ops gc`)
 

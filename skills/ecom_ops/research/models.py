@@ -72,11 +72,43 @@ class SearchProfile:
         }
     )
     max_fetch_default: int = 3
+    title: str = ""
+    goal: str = ""
+    ambition: str = "standard"
+    combination_mode: str = "failover"
+    fanout_by_depth: dict[str, int] = field(
+        default_factory=lambda: {"quick": 1, "standard": 2, "deep": 3}
+    )
+    round_providers: dict[int, tuple[str, ...]] = field(default_factory=dict)
+    fetch_strategy: str = "direct"
+    output_format_default: str = "brief"
+    when_to_use: str = ""
+    query_templates: tuple[str, ...] = ()
+    deliverable_sections: tuple[str, ...] = ()
+    recommended_tools: tuple[str, ...] = (
+        "web_search",
+        "web_fetch_extract",
+        "web_research_start",
+    )
+    skill_doc: str = "skills/research-profiles/SKILL.md"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "title": self.title or self.id,
             "description": self.description,
+            "goal": self.goal,
+            "ambition": self.ambition,
+            "combination_mode": self.combination_mode,
+            "fanout_by_depth": dict(self.fanout_by_depth),
+            "round_providers": {str(k): list(v) for k, v in self.round_providers.items()},
+            "fetch_strategy": self.fetch_strategy,
+            "output_format_default": self.output_format_default,
+            "when_to_use": self.when_to_use,
+            "query_templates": list(self.query_templates),
+            "deliverable_sections": list(self.deliverable_sections),
+            "recommended_tools": list(self.recommended_tools),
+            "skill_doc": self.skill_doc,
             "preferred_providers": list(self.preferred_providers),
             "market_defaults": list(self.market_defaults),
             "freshness_days": self.freshness_days,

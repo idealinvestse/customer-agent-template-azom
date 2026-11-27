@@ -6,6 +6,7 @@ import hashlib
 import os
 import time
 import urllib.parse
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -516,6 +517,253 @@ class SearchRouter:
         raise SearchUnavailableError(
             "All configured search routes failed: " + "; ".join(errors),
             code="all_routes_failed",
+        )
+
+    @staticmethod
+    def _canonical_hit_key(hit: SearchHit) -> str:
+        raw = str(hit.url or "").strip()
+        try:
+            parts = urllib.parse.urlsplit(raw)
+        except ValueError:
+            return raw.lower()
+        host = (parts.hostname or "").lower().rstrip(".")
+        path = parts.path.rstrip("/") or "/"
+        kept_qs = [
+            (k, v)
+            for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=False)
+            if not k.lower().startswith("utm_")
+            and k.lower() not in {"fbclid", "gclid", "mc_cid", "mc_eid"}
+        ]
+        qs = urllib.parse.urlencode(kept_qs)
+        return f"https://{host}{path}?{qs}" if qs else f"https://{host}{path}"
+
+    def search_multi(
+        self,
+        request: SearchRequest,
+        *,
+        max_providers: int = 2,
+        route_ids: Sequence[str] | None = None,
+        telemetry: Telemetry | None = None,
+    ) -> SearchResult:
+        """Fuse deduplicated hits across up to ``max_providers`` live routes (mock uses offline fixture)."""
+        tel = telemetry or default_telemetry
+        cfg = load_research_config()
+        q_hash = _query_hash(request.query)
+        mock_mode = is_mock_mode()
+
+        if not mock_mode:
+            if kill_switch_active("search"):
+                raise SearchConfigError(
+                    "Web search is disabled by kill switch",
+                    code="web_search_kill_switch",
+                )
+            if not web_search_enabled():
+                raise SearchConfigError(
+                    "Live web search is disabled (requires AZOM_USE_MOCK=0 and AZOM_WEB_SEARCH_ENABLED=1)",
+                    code="web_search_disabled",
+                )
+            budget_ok, budget_reason = can_run_search(telemetry=tel, config=cfg)
+            if not budget_ok:
+                raise SearchConfigError(
+                    f"Search budget exhausted ({budget_reason})",
+                    code=budget_reason,
+                )
+
+        clean_request, denylist, allowlist = self._prepare_request(request, cfg)
+
+        if mock_mode:
+            raw_res = self._routes["mock"].search(clean_request)
+            filtered_hits = _filter_hits(
+                raw_res.hits,
+                denylist=denylist,
+                allowlist=allowlist,
+                exclude_domains=clean_request.exclude_domains,
+            )
+            res = replace(raw_res, hits=filtered_hits)
+            tel.record(
+                action="web_search_selected",
+                site=clean_request.site,
+                units=1,
+                unit_type="api_calls",
+                cost_usd=0.0,
+                case_id=clean_request.case_id,
+                actor=clean_request.actor,
+                meta={
+                    "estimated_search_usd": 0.0,
+                    "cost_kind": "mock",
+                    "query_hash": q_hash,
+                    "profile_id": clean_request.profile_id,
+                    "provider": res.provider,
+                    "providers_used": [res.provider],
+                    "route_id": res.route_id,
+                    "hits_count": len(res.hits),
+                    "latency_ms": res.latency_ms,
+                    "cached": False,
+                },
+            )
+            return res
+
+        env_order = str(os.environ.get("AZOM_SEARCH_ROUTE_ORDER") or "").strip()
+        base_order = self.ordered_route_ids(clean_request.profile_id, config=cfg)
+        if not env_order and route_ids:
+            candidate_ids: list[str] = []
+            for rid in (*route_ids, *base_order):
+                norm = str(rid or "").strip().lower()
+                if norm and norm != "mock" and norm in self._routes and norm not in candidate_ids:
+                    candidate_ids.append(norm)
+        else:
+            candidate_ids = base_order
+
+        target_k = max(1, min(5, int(max_providers)))
+        succeeded_routes: list[str] = []
+        fused_hits: list[SearchHit] = []
+        seen_urls: dict[str, int] = {}
+        total_cost = 0.0
+        total_latency = 0
+        errors: list[str] = []
+        skipped_transient: list[str] = []
+        auth_blocked: list[str] = []
+        configured_count = 0
+        attempts = 0
+
+        def _try_route(rid: str, *, bypass_breaker: bool = False) -> bool:
+            nonlocal attempts, configured_count, total_cost, total_latency
+            route = self._routes.get(rid)
+            if route is None or rid == "mock":
+                return False
+            if not self._is_route_enabled(rid, cfg):
+                errors.append(f"{rid}: disabled")
+                return False
+            if not route.is_configured():
+                errors.append(f"{rid}: not_configured")
+                return False
+            if not bypass_breaker:
+                configured_count += 1
+            allowed, br_state, rem_s = circuit_breaker.allow_attempt(rid, bypass=bypass_breaker)
+            if not allowed:
+                errors.append(f"{rid}: circuit_{br_state}")
+                if br_state == "open":
+                    skipped_transient.append(rid)
+                elif br_state == "open_auth":
+                    auth_blocked.append(rid)
+                return False
+
+            attempts += 1
+            try:
+                raw_res = route.search(clean_request)
+            except SearchPolicyError:
+                raise
+            except (
+                SearchAuthError,
+                SearchRateLimitError,
+                SearchUnavailableError,
+                SearchConfigError,
+            ) as exc:
+                circuit_breaker.record_failure(rid, exc)
+                errors.append(f"{rid}: {type(exc).__name__}")
+                return False
+
+            circuit_breaker.record_success(rid)
+            succeeded_routes.append(rid)
+            total_cost += float(raw_res.estimated_cost_usd or 0.0)
+            total_latency += int(raw_res.latency_ms or 0)
+            filtered = _filter_hits(
+                raw_res.hits,
+                denylist=denylist,
+                allowlist=allowlist,
+                exclude_domains=clean_request.exclude_domains,
+            )
+            for hit in filtered:
+                key = self._canonical_hit_key(hit)
+                existing_idx = seen_urls.get(key)
+                if existing_idx is None:
+                    seen_urls[key] = len(fused_hits)
+                    fused_hits.append(hit)
+                else:
+                    prev = fused_hits[existing_idx]
+                    prev_richness = len(prev.content or "") + len(prev.snippet or "")
+                    cur_richness = len(hit.content or "") + len(hit.snippet or "")
+                    if cur_richness > prev_richness or hit.score > prev.score:
+                        fused_hits[existing_idx] = SearchHit(
+                            url=prev.url,
+                            title=hit.title or prev.title,
+                            snippet=hit.snippet if len(hit.snippet) >= len(prev.snippet) else prev.snippet,
+                            published_at=hit.published_at or prev.published_at,
+                            provider=f"{prev.provider}+{hit.provider}" if hit.provider not in prev.provider else prev.provider,
+                            score=max(prev.score, hit.score),
+                            author=hit.author or prev.author,
+                            raw_excerpts=hit.raw_excerpts or prev.raw_excerpts,
+                            content=(hit.content if len(hit.content or "") >= len(prev.content or "") else prev.content),
+                        )
+            return True
+
+        for rid in candidate_ids:
+            if len(succeeded_routes) >= target_k:
+                break
+            if succeeded_routes:
+                b_ok, _ = can_run_search(telemetry=tel, config=cfg)
+                if not b_ok:
+                    break
+            _try_route(rid)
+
+        if attempts == 0 and skipped_transient and not succeeded_routes:
+            _try_route(skipped_transient[0], bypass_breaker=True)
+
+        if not succeeded_routes:
+            if configured_count == 0:
+                raise SearchConfigError(
+                    "No configured live search route available: " + "; ".join(errors),
+                    code="no_configured_route",
+                )
+            if attempts == 0:
+                if auth_blocked and len(auth_blocked) == configured_count:
+                    raise SearchAuthError(
+                        "All configured search routes blocked by auth breaker: " + "; ".join(errors),
+                        code="circuit_open_auth",
+                    )
+                raise SearchUnavailableError(
+                    "All configured search routes skipped by circuit breaker: " + "; ".join(errors),
+                    code="circuit_open",
+                )
+            raise SearchUnavailableError(
+                "All configured search routes failed: " + "; ".join(errors),
+                code="all_routes_failed",
+            )
+
+        max_fused = max(int(clean_request.max_results), int(clean_request.max_results) * target_k)
+        fused_sorted = sorted(fused_hits, key=lambda h: float(h.score or 0.0), reverse=True)[:max_fused]
+        joined_provider = "+".join(succeeded_routes)
+        route_label = succeeded_routes[0] if len(succeeded_routes) == 1 else f"multi:{joined_provider}"
+        tel.record(
+            action="web_search_selected",
+            site=clean_request.site,
+            units=len(succeeded_routes),
+            unit_type="api_calls",
+            cost_usd=0.0,
+            case_id=clean_request.case_id,
+            actor=clean_request.actor,
+            meta={
+                "estimated_search_usd": total_cost,
+                "cost_kind": "estimated_external",
+                "query_hash": q_hash,
+                "profile_id": clean_request.profile_id,
+                "provider": joined_provider,
+                "providers_used": succeeded_routes,
+                "route_id": route_label,
+                "hits_count": len(fused_sorted),
+                "latency_ms": total_latency,
+                "cached": False,
+            },
+        )
+        return SearchResult(
+            ok=True,
+            route_id=route_label,
+            provider=joined_provider,
+            hits=tuple(fused_sorted),
+            provenance="live_api",
+            latency_ms=total_latency,
+            cached=False,
+            estimated_cost_usd=total_cost,
         )
 
     def test_route(self, route_id: str) -> dict[str, Any]:
