@@ -53,7 +53,9 @@ Product story for humans (Swedish): [`FUNKTIONER.md`](FUNKTIONER.md). GitHub lan
 | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) | Developers / Oscar | Google Ads + GA4 mock-first HITL |
 | [`MODEL_ROUTER.md`](MODEL_ROUTER.md) | Developers / Oscar | Model routes, ChatGPT OAuth, xAI, OpenRouter |
 | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) | Developers / Oscar | Web search providers, Deep Research worker, PII/SSRF firewall, `/research` |
+| [`SHOP_INTEL.md`](SHOP_INTEL.md) | Developers / Ops | Webshop Intelligence (`shop_intel`): 7-domain learning, `si-*`/`sid-*`/`sif-*`, `/shop-intel` |
 | [`../skills/ecom-ops/SKILL.md`](../skills/ecom-ops/SKILL.md) | Skill hosts | Skill card |
+| [`../skills/webshop-intelligence/SKILL.md`](../skills/webshop-intelligence/SKILL.md) | Skill hosts | Webshop Intelligence (`shop_intel`) skill card |
 | [`../skills/wordpress-review/SKILL.md`](../skills/wordpress-review/SKILL.md) | Skill hosts | Homepage source review, three evidence layers |
 | [`../skills/wordpress-theme-dev/SKILL.md`](../skills/wordpress-theme-dev/SKILL.md) | Skill hosts | Theme workspace, no production write |
 | [`../skills/wordpress-plugin-dev/SKILL.md`](../skills/wordpress-plugin-dev/SKILL.md) | Skill hosts | Site plugin workspace, third-party read-only |
@@ -77,6 +79,7 @@ Each major surface has one **primary** living doc:
 | Marketing Google (Ads+GA4) | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
 | Model router | [`MODEL_ROUTER.md`](MODEL_ROUTER.md) · [`runbooks/model-oauth.md`](runbooks/model-oauth.md) |
 | Web search & Deep Research | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
+| Webshop Intelligence (`shop_intel`) | [`SHOP_INTEL.md`](SHOP_INTEL.md) |
 | Telegram | [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) |
 | Messenger | [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) |
 | Woo / WordPress content API | [`WOO_WORDPRESS.md`](WOO_WORDPRESS.md) |

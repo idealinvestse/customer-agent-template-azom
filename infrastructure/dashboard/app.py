@@ -37,6 +37,7 @@ from oscar_routes import register_oscar_routes  # noqa: E402
 from research_routes import register_research_routes  # noqa: E402
 from seo_routes import register_seo_routes  # noqa: E402
 from settings_store import apply_env_overlays  # noqa: E402
+from shop_intel_routes import register_shop_intel_routes  # noqa: E402
 from support import _fmt_dt  # noqa: E402
 from webhooks import register_webhook_routes  # noqa: E402
 from wp_routes import register_wp_routes  # noqa: E402
@@ -152,6 +153,7 @@ def create_app() -> Flask:
     register_oauth_routes(application)
     register_research_routes(application)
     register_seo_routes(application)
+    register_shop_intel_routes(application)
 
     @application.context_processor
     def _inject_csrf() -> dict[str, str]:

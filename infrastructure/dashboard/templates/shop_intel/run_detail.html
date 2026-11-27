@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Butiksanalys {{ run.get('run_id') }} – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Snapshot-detaljer, drift &amp; agentkontext{% endblock %}
+{% block content %}
+{% set prov = run.get('provenance') or 'mock' %}
+{% set score = run.get('security_score', 100) %}
+
+<div class="space-y-5" data-shop-intel="true" data-shop-intel-page="run_detail">
+  {{ ui.breadcrumb([
+    {'label': 'Butiksanalys', 'href': '/shop-intel?site_id=' ~ (site_id | url_quote)},
+    {'label': run.get('run_id') or 'Körning'}
+  ]) }}
+
+  {% call ui.page_header(
+    "Körning " ~ (run.get('run_id') or ''),
+    "Webbplats: " ~ site_id ~ " · Läge: " ~ (run.get('mode') or 'full') ~ " · Aktör: " ~ (run.get('actor') or '—') ~ " · Tid: " ~ (run.get('created_at_fmt') or run.get('created_at') or '—'),
+    badge_text=prov ~ " · " ~ score ~ "/100",
+    badge_tone="warn" if prov == "mock" else ("ok" if score >= 85 else "error")
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/shop-intel/export?site_id={{ site_id | url_quote }}&amp;format=md">
+      {{ icon('download', 'xs') }}
+      <span>Exportera Markdown</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/shop-intel/export?site_id={{ site_id | url_quote }}&amp;format=json">
+      {{ icon('download', 'xs') }}
+      <span>Exportera JSON</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/shop-intel?site_id={{ site_id | url_quote }}">
+      {{ icon('arrow-left', 'xs') }}
+      <span>Tillbaka</span>
+    </a>
+  {% endcall %}
+
+  <!-- Summary KPIs -->
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {{ ui.kpi_card(
+      'Säkerhetspoäng',
+      score ~ '/100',
+      hint='Källa: ' ~ prov,
+      tone='ok' if score >= 85 else ('warn' if score >= 60 else 'danger'),
+      icon_name='shield'
+    ) }}
+    {{ ui.kpi_card(
+      'Inlärda fakta',
+      facts | length,
+      hint=(run.get('domains_collected') or []) | length ~ ' domäner insamlade',
+      tone='info',
+      icon_name='clipboard-list'
+    ) }}
+    {{ ui.kpi_card(
+      'Säkerhetsfynd',
+      findings | length,
+      hint='Identifierade i denna körning',
+      tone='warn' if findings else 'ok',
+      icon_name='alert-triangle'
+    ) }}
+    {{ ui.kpi_card(
+      'Drift vs föregående',
+      diffs | length,
+      hint='Ändringar mot tidigare snapshot',
+      tone='warn' if diffs else 'ok',
+      icon_name='activity'
+    ) }}
+  </div>
+
+  {% if run.get('warnings') %}
+    {{ ui.info_callout('warn', 'Varningar under insamling', (run.get('warnings') or []) | join(' · ')) }}
+  {% endif %}
+
+  <!-- Diff vs previous run -->
+  <section class="az-card space-y-4" data-run-diffs="true">
+    <h2 class="az-section-title mb-0">Drift jämfört med föregående körning ({{ diffs | length }})</h2>
+    {% if diffs %}
+    <div class="space-y-3">
+      {% for diff in diffs %}
+      {% set dsev = (diff.get('severity') or 'info') | lower %}
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/55 p-3.5 space-y-2">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div class="flex flex-wrap items-center gap-2">
+            {{ ui.status_badge('error' if dsev in ['critical', 'high'] else ('warn' if dsev == 'medium' else 'info'), dsev) }}
+            <span class="font-mono text-mist-300">{{ diff.get('domain') }}</span>
+            <span class="font-semibold text-mist-100">{{ diff.get('summary') }}</span>
+          </div>
+          {% if diff.get('prev_run_id') %}
+          <a class="font-mono text-steel-300 hover:underline" href="/shop-intel/runs/{{ diff.get('prev_run_id') }}">Föregående: {{ diff.get('prev_run_id') }}</a>
+          {% endif %}
+        </div>
+        {% if diff.get('changes') %}
+        <details class="rounded border border-ink-700/60 bg-ink-900/50 p-2">
+          <summary class="cursor-pointer text-xs font-semibold text-steel-300">Visa ändringsdetaljer ({{ (diff.get('changes') or []) | length }})</summary>
+          <pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-mist-300">{{ fmt_json(diff.get('changes')) }}</pre>
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="az-muted text-xs">Inga driftändringar registrerade mot föregående körning.</p>
+    {% endif %}
+  </section>
+
+  <!-- Security findings -->
+  <section class="az-card space-y-4" data-run-findings="true">
+    <h2 class="az-section-title mb-0">Säkerhetsfynd ({{ findings | length }})</h2>
+    {% if findings %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Säkerhetsfynd för körning">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Allvarlighet</th>
+            <th scope="col">Kod</th>
+            <th scope="col">Titel &amp; Beskrivning</th>
+            <th scope="col">Rekommendation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in findings %}
+          {% set fsev = (f.get('severity') or 'info') | lower %}
+          <tr>
+            <td>{{ ui.status_badge('error' if fsev in ['critical', 'high'] else ('warn' if fsev == 'medium' else 'info'), fsev) }}</td>
+            <td class="font-mono text-xs text-mist-200">{{ f.get('code') }}</td>
+            <td class="text-xs">
+              <div class="font-semibold text-mist-100">{{ f.get('title') }}</div>
+              <div class="text-mist-300">{{ f.get('detail') }}</div>
+            </td>
+            <td class="text-xs text-mist-300">{{ f.get('recommendation') or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-xs">Inga säkerhetsfynd i denna körning.</p>
+    {% endif %}
+  </section>
+
+  <!-- Tailored context slices preview -->
+  <section class="az-card space-y-4" data-run-context-previews="true">
+    <div>
+      <h2 class="az-section-title mb-1">Förhandsvisning av skräddarsydd agentkontext</h2>
+      <p class="az-muted text-xs">Så här ser den budgetbegränsade, nonce-inramade kontexten (<code class="az-code">SHOP_INTEL_CONTEXT</code>) ut för respektive agentroll.</p>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      {% for cp in context_previews %}
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/55 p-3.5 space-y-2" data-context-purpose="{{ cp.purpose }}">
+        <div class="flex items-center justify-between gap-2">
+          <h3 class="text-xs font-semibold text-mist-100">{{ cp.label }}</h3>
+          {{ ui.status_badge('ok' if cp.content else 'neutral', (cp.content | length ~ ' tecken') if cp.content else 'Inaktiv / tom') }}
+        </div>
+        {% if cp.content %}
+        <pre class="max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded border border-ink-700/60 bg-ink-900/70 p-2.5 font-mono text-[11px] text-mist-200">{{ cp.content }}</pre>
+        {% else %}
+        <p class="text-xs text-mist-500">Ingen aktiv kontext (kontrollera att AZOM_SHOP_INTEL_INJECT inte är 0).</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <!-- Snapshot Facts -->
+  <section class="az-card space-y-4" data-run-facts="true">
+    <h2 class="az-section-title mb-0">Snapshot-fakta per domän ({{ facts | length }})</h2>
+    {% if facts_by_domain %}
+    <div class="space-y-3">
+      {% for dom, dom_facts in facts_by_domain.items() %}
+      <details class="rounded-xl border border-ink-700/80 bg-ink-950/55 p-3.5" {% if loop.first %}open{% endif %}>
+        <summary class="cursor-pointer flex items-center justify-between gap-2 text-xs font-semibold text-mist-100">
+          <span>{{ domain_titles.get(dom, dom) }} <span class="font-mono text-mist-400">({{ dom }})</span></span>
+          <span class="az-badge az-badge-neutral">{{ dom_facts | length }} fakta</span>
+        </summary>
+        <div class="mt-3 space-y-2">
+          {% for fact in dom_facts %}
+          <div class="rounded border border-ink-700/60 bg-ink-900/55 p-2.5 text-xs space-y-1">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-mono font-semibold text-steel-200">{{ fact.get('key') }}</span>
+              <span class="text-mist-400">{{ fact.get('source') }}</span>
+            </div>
+            <pre class="whitespace-pre-wrap break-words font-mono text-[11px] text-mist-300">{{ fmt_json(fact.get('value')) or fact.get('value') }}</pre>
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="az-muted text-xs">Inga fakta sparade i denna körning.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

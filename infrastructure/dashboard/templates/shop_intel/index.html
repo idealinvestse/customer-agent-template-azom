@@ -1,0 +1,437 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Butiksanalys – Azom Agent Dashboard{% endblock %}
+{% block page_subtitle %}Butiksintelligens, domänfakta &amp; säkerhetsdrift{% endblock %}
+{% block content %}
+{% set g = gates | default({}) %}
+{% set is_mock_mode = g.get('mock_mode', runtime.mock_mode if runtime else true) %}
+{% set live_open = (not is_mock_mode) and g.get('live_enabled', false) and (not g.get('kill_active', false)) %}
+{% set run_prov = latest_run.get('provenance') if latest_run else ('mock' if is_mock_mode else 'live') %}
+
+<div class="space-y-5" data-shop-intel="true" data-shop-intel-page="index">
+  {% call ui.page_header(
+    "Butiksanalys",
+    "Skrivskyddad och PII-tvättad inlärning av plattform, katalog, tema, varumärkesröst, policyer, plugins och säkerhetsdrift.",
+    badge_text="mock" if is_mock_mode else ("live" if live_open else "live spärrad"),
+    badge_tone="warn" if is_mock_mode else ("ok" if live_open else "error")
+  ) %}
+    {% if latest_run %}
+    <a class="az-btn-secondary az-btn-sm" href="/shop-intel/export?site_id={{ selected_site | url_quote }}&amp;format=md">
+      {{ icon('download', 'xs') }}
+      <span>Exportera Markdown</span>
+    </a>
+    <a class="az-btn-secondary az-btn-sm" href="/shop-intel/export?site_id={{ selected_site | url_quote }}&amp;format=json">
+      {{ icon('download', 'xs') }}
+      <span>Exportera JSON</span>
+    </a>
+    {% endif %}
+    <a class="az-btn-secondary az-btn-sm" href="/shop-intel?site_id={{ selected_site | url_quote }}">
+      {{ icon('refresh', 'xs') }}
+      <span>Uppdatera</span>
+    </a>
+  {% endcall %}
+
+  {% if g.get('kill_active') %}
+    {{ ui.flash_banner('error', 'Nödstopp (AZOM_SHOP_INTEL_KILL) är aktivt. Nya analyser är blockerade tills spärren tas bort.', dismissible=False) }}
+  {% elif (not is_mock_mode) and (not g.get('live_enabled')) %}
+    {{ ui.info_callout('warn', 'Live-läge är spärrat (fail-closed)', 'Sätt AZOM_SHOP_INTEL_LIVE_ENABLED=1 i processmiljön för att tillåta live-insamling mot WooCommerce och WordPress.') }}
+  {% endif %}
+
+  <!-- Site selector bar -->
+  <section class="az-card p-3.5" data-shop-intel-site-bar="true">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <form method="get" action="/shop-intel" class="flex flex-wrap items-center gap-2">
+        <label class="text-xs font-semibold text-mist-300" for="shop-intel-site-select">Webbplats:</label>
+        <select id="shop-intel-site-select" name="site_id" class="az-select text-xs">
+          {% for s in sites %}
+          <option value="{{ s.id }}" {% if s.id == selected_site %}selected{% endif %}>{{ s.display_name }} ({{ s.id }})</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="az-btn-secondary az-btn-sm">Byt sajt</button>
+      </form>
+      <div class="flex flex-wrap items-center gap-2 text-xs">
+        {{ ui.status_badge('warn' if is_mock_mode else 'ok', 'Datakälla: ' ~ ('mock' if is_mock_mode else 'live')) }}
+        {% if latest_run %}
+          {{ ui.status_badge('warn' if run_prov == 'mock' else 'ok', 'Snapshot: ' ~ run_prov) }}
+        {% endif %}
+        <a class="az-btn-secondary az-btn-sm" href="/wp/{{ selected_site | url_quote }}">WP-översikt</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- KPI Cards -->
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {{ ui.kpi_card(
+      'Senaste analys',
+      latest_run.get('created_at_fmt') or latest_run.get('created_at') if latest_run else 'Ingen ännu',
+      hint=((latest_run.get('run_id') ~ ' · ' ~ latest_run.get('mode') ~ ' · ' ~ run_prov) if latest_run else 'Kör en analys nedan'),
+      tone=('warn' if run_prov == 'mock' else 'ok') if latest_run else 'neutral',
+      href=('/shop-intel/runs/' ~ latest_run.get('run_id')) if latest_run else None,
+      link_label='Visa körning',
+      icon_name='activity'
+    ) }}
+    {{ ui.kpi_card(
+      'Täckning %',
+      (coverage_pct ~ '%') if latest_run else '0%',
+      hint=domains_collected_count ~ ' av ' ~ total_domains_count ~ ' domäner insamlade',
+      tone='ok' if coverage_pct == 100 else ('info' if coverage_pct > 0 else 'neutral'),
+      icon_name='globe'
+    ) }}
+    {{ ui.kpi_card(
+      'Inlärda fakta',
+      facts_count,
+      hint='PII-tvättade nyckelfakta för ' ~ selected_site,
+      tone='info' if facts_count > 0 else 'neutral',
+      icon_name='clipboard-list'
+    ) }}
+    {% set sec_score = latest_run.get('security_score') if latest_run else none %}
+    {{ ui.kpi_card(
+      'Säkerhetspoäng / Driftvarningar',
+      (sec_score ~ '/100') if sec_score is not none else '—',
+      hint=all_findings_count ~ ' fynd · ' ~ (diffs | length) ~ ' driftvarningar',
+      tone=('ok' if sec_score >= 85 else ('warn' if sec_score >= 60 else 'danger')) if sec_score is not none else 'neutral',
+      icon_name='shield'
+    ) }}
+  </div>
+
+  <!-- Manual Run Form + Schedule Card -->
+  <div class="grid gap-5 lg:grid-cols-3">
+    <section class="az-card space-y-4 lg:col-span-2" data-shop-intel-run-card="true">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="az-section-title mb-1">Kör manuell butiksanalys</h2>
+          <p class="az-muted text-xs">Skrivskyddad analys (0 LLM-kostnad, inga kund- eller orderanrop). Välj läge och starta inlärning för <code class="az-code">{{ selected_site }}</code>.</p>
+        </div>
+        {{ ui.status_badge('warn' if is_mock_mode else 'ok', 'mock' if is_mock_mode else 'live') }}
+      </div>
+
+      {% if can_run %}
+      <form method="post" action="/shop-intel/run" class="space-y-3">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="site_id" value="{{ selected_site }}" />
+
+        <div class="grid gap-3 sm:grid-cols-2 lg:items-end">
+          <div>
+            <label class="az-label" for="shop-intel-mode">Analysläge</label>
+            <select id="shop-intel-mode" name="mode" class="az-select">
+              <option value="full" selected>Full analys (alla 7 domäner)</option>
+              <option value="quick">Snabb analys (6 kärndomäner, utan tema-SFTP)</option>
+              <option value="security">Säkerhetsgranskning (plattform, tema, policy, plugins, säkerhet)</option>
+            </select>
+          </div>
+          <div class="flex items-end">
+            <button type="submit" class="az-btn-primary w-full sm:w-auto" data-busy-label="Analyserar...">
+              {{ icon('rocket', 'xs') }}
+              <span>Kör butiksanalys</span>
+            </button>
+          </div>
+        </div>
+
+        <details class="rounded-lg border border-ink-700/70 bg-ink-950/45 p-3">
+          <summary class="cursor-pointer text-xs font-semibold text-mist-200">Välj specifika domäner (valfritt)</summary>
+          <div class="mt-2.5 grid gap-2 sm:grid-cols-2">
+            {% for dm in domain_meta %}
+            <label class="flex cursor-pointer items-center gap-2 text-xs text-mist-200">
+              <input class="az-checkbox" type="checkbox" name="domains" value="{{ dm.id }}" />
+              <span>{{ dm.title }} <span class="font-mono text-mist-500">({{ dm.id }})</span></span>
+            </label>
+            {% endfor %}
+          </div>
+        </details>
+      </form>
+      {% else %}
+      {{ ui.info_callout('info', 'Endast läsbehörighet', 'Din roll saknar behörighet att starta nya analyser.') }}
+      {% endif %}
+    </section>
+
+    <!-- Oscar-only Recurring Schedule Card -->
+    <section class="{{ 'az-card-oscar' if can_schedule else 'az-card' }} space-y-4" data-shop-intel-schedule-card="true">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="az-section-title mb-0 {{ 'text-oscar-400/90' if can_schedule else '' }}">Återkommande schema</h2>
+        {% if schedule and schedule.get('enabled') %}
+          {{ ui.status_badge('ok', 'Aktivt (' ~ schedule.get('interval_hours', 24) ~ 'h)') }}
+        {% else %}
+          {{ ui.status_badge('neutral', 'Pausat') }}
+        {% endif %}
+      </div>
+
+      {% if schedule %}
+      <dl class="space-y-1 text-xs text-mist-300">
+        <div class="flex justify-between gap-2">
+          <dt class="text-mist-400">Läge:</dt>
+          <dd class="font-mono text-mist-100">{{ schedule.get('mode', 'full') }}</dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-mist-400">Senast körd:</dt>
+          <dd class="tabular-nums">{{ schedule.get('last_run_at_fmt') or '—' }}</dd>
+        </div>
+        <div class="flex justify-between gap-2">
+          <dt class="text-mist-400">Nästa körning:</dt>
+          <dd class="tabular-nums">{{ schedule.get('next_run_at_fmt') or '—' }}</dd>
+        </div>
+      </dl>
+      {% else %}
+      <p class="az-muted text-xs">Inget återkommande schema sparat för <code class="az-code">{{ selected_site }}</code> ännu.</p>
+      {% endif %}
+
+      {% if can_schedule %}
+      <form method="post" action="/shop-intel/schedule" class="space-y-3 border-t border-ink-700/70 pt-3">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <input type="hidden" name="site_id" value="{{ selected_site }}" />
+
+        <label class="flex cursor-pointer items-center gap-2 text-xs text-mist-200" for="shop-intel-sched-enabled">
+          <input
+            id="shop-intel-sched-enabled"
+            class="az-checkbox"
+            type="checkbox"
+            name="enabled"
+            value="1"
+            {% if schedule and schedule.get('enabled') %}checked{% endif %}
+          />
+          <span>Aktivera automatisk körning</span>
+        </label>
+
+        <div class="grid gap-2.5 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="shop-intel-sched-hours">Intervall (timmar)</label>
+            <input
+              id="shop-intel-sched-hours"
+              name="interval_hours"
+              type="number"
+              min="1"
+              max="720"
+              class="az-input"
+              value="{{ schedule.get('interval_hours', 24) if schedule else 24 }}"
+            />
+          </div>
+          <div>
+            <label class="az-label" for="shop-intel-sched-mode">Läge</label>
+            {% set cur_sched_mode = schedule.get('mode', 'full') if schedule else 'full' %}
+            <select id="shop-intel-sched-mode" name="mode" class="az-select">
+              <option value="full" {% if cur_sched_mode == 'full' %}selected{% endif %}>Full</option>
+              <option value="quick" {% if cur_sched_mode == 'quick' %}selected{% endif %}>Snabb</option>
+              <option value="security" {% if cur_sched_mode == 'security' %}selected{% endif %}>Säkerhet</option>
+            </select>
+          </div>
+        </div>
+
+        <button type="submit" class="az-btn-oscar az-btn-sm w-full" data-busy-label="Sparar...">
+          {{ icon('sliders', 'xs') }}
+          <span>Spara schema (Oscar)</span>
+        </button>
+      </form>
+      {% else %}
+      <p class="text-xs text-mist-400">Endast Oscar (<code class="az-code">WP_OPS_ADMIN</code>) kan ändra återkommande schema.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <!-- 7-Domain Explorer -->
+  <section class="az-card space-y-4" data-shop-intel-domains="true">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <h2 class="az-section-title mb-1">Domänutforskare (7 domäner)</h2>
+        <p class="az-muted text-xs">Visar inlärda fakta från senaste snapshot ({{ filtered_facts_count }} visade fakta).</p>
+      </div>
+      <form method="get" action="/shop-intel" class="flex flex-wrap items-center gap-2">
+        <input type="hidden" name="site_id" value="{{ selected_site }}" />
+        <select name="domain" class="az-select text-xs" aria-label="Filtrera domän">
+          <option value="">Alla 7 domäner</option>
+          {% for dm in domain_meta %}
+          <option value="{{ dm.id }}" {% if selected_domain == dm.id %}selected{% endif %}>{{ dm.title }}</option>
+          {% endfor %}
+        </select>
+        <input
+          type="text"
+          name="q"
+          class="az-input text-xs w-44"
+          value="{{ search_q }}"
+          maxlength="200"
+          placeholder="Sök nyckel eller värde..."
+          aria-label="Sök i domänfakta"
+        />
+        <button type="submit" class="az-btn-secondary az-btn-sm">
+          {{ icon('filter', 'xs') }}
+          <span>Filtrera</span>
+        </button>
+        {% if selected_domain or search_q %}
+        <a class="az-btn-secondary az-btn-sm" href="/shop-intel?site_id={{ selected_site | url_quote }}">Rensa</a>
+        {% endif %}
+      </form>
+    </div>
+
+    {% if latest_run %}
+    <div class="grid gap-4 md:grid-cols-2">
+      {% for card in domain_cards %}
+      <article class="rounded-xl border border-ink-700/80 bg-ink-950/55 p-4 space-y-3" data-domain-card="{{ card.id }}">
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 class="font-display text-sm font-semibold text-mist-100">{{ card.title }}</h3>
+            <p class="text-xs text-mist-400">{{ card.description }}</p>
+          </div>
+          {% if card.collected %}
+            {{ ui.status_badge('ok', card.facts_count ~ ' fakta') }}
+          {% else %}
+            {{ ui.status_badge('neutral', 'Ej insamlad') }}
+          {% endif %}
+        </div>
+
+        {% if card.facts %}
+        <details class="rounded-lg border border-ink-700/60 bg-ink-900/50 p-2.5" {% if selected_domain or search_q %}open{% endif %}>
+          <summary class="cursor-pointer text-xs font-semibold text-steel-300">Visa {{ card.facts | length }} fakta ({{ card.id }})</summary>
+          <div class="mt-2.5 space-y-2 max-h-64 overflow-y-auto pr-1">
+            {% for fact in card.facts %}
+            <div class="rounded border border-ink-700/60 bg-ink-950/70 p-2 text-xs space-y-1">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-mono font-semibold text-mist-100">{{ fact.get('key') }}</span>
+                <span class="az-badge az-badge-neutral">{{ fact.get('source') or '—' }}</span>
+              </div>
+              <pre class="whitespace-pre-wrap break-words font-mono text-[11px] text-mist-300">{{ fmt_json(fact.get('value')) or fact.get('value') }}</pre>
+            </div>
+            {% endfor %}
+          </div>
+        </details>
+        {% elif card.data %}
+        <details class="rounded-lg border border-ink-700/60 bg-ink-900/50 p-2.5">
+          <summary class="cursor-pointer text-xs font-semibold text-steel-300">Visa domändata ({{ card.id }})</summary>
+          <pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-mist-300 max-h-60 overflow-y-auto">{{ fmt_json(card.data) }}</pre>
+        </details>
+        {% else %}
+        <p class="text-xs text-mist-500">Inga matchande fakta i denna domän.</p>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+      {{ ui.empty_state('Ingen butiksanalys körd för ' ~ selected_site, 'Starta en manuell analys ovan för att samla in de 7 domänerna.', icon_name='globe') }}
+    {% endif %}
+  </section>
+
+  <!-- Security & Drift Findings Table -->
+  <section class="az-card space-y-4" data-shop-intel-security="true">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <h2 class="az-section-title mb-1">Säkerhetsfynd &amp; Driftvarningar</h2>
+        <p class="az-muted text-xs">Statiska säkerhetskontroller samt ändringar jämfört med föregående körning.</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-1.5 text-xs">
+        <a class="az-btn-secondary az-btn-sm {{ 'ring-1 ring-steel-400' if not selected_severity else '' }}" href="/shop-intel?site_id={{ selected_site | url_quote }}">Alla</a>
+        {% for sev in ['critical', 'high', 'medium', 'low', 'info'] %}
+        <a class="az-btn-secondary az-btn-sm {{ 'ring-1 ring-steel-400' if selected_severity == sev else '' }}" href="/shop-intel?site_id={{ selected_site | url_quote }}&amp;severity={{ sev }}">{{ sev }}</a>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% if findings %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Säkerhetsfynd">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Allvarlighet</th>
+            <th scope="col">Kod &amp; Kategori</th>
+            <th scope="col">Fynd</th>
+            <th scope="col">Rekommendation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in findings %}
+          {% set fsev = (f.get('severity') or 'info') | lower %}
+          <tr>
+            <td>
+              {{ ui.status_badge('error' if fsev in ['critical', 'high'] else ('warn' if fsev == 'medium' else 'info'), fsev) }}
+            </td>
+            <td class="text-xs">
+              <div class="font-mono text-mist-100">{{ f.get('code') }}</div>
+              <div class="text-mist-400">{{ f.get('category') }}</div>
+            </td>
+            <td class="text-xs">
+              <div class="font-medium text-mist-100">{{ f.get('title') }}</div>
+              <div class="text-mist-300">{{ f.get('detail') }}</div>
+            </td>
+            <td class="text-xs text-mist-300">{{ f.get('recommendation') or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-xs">Inga säkerhetsfynd matchade filtret för {{ selected_site }}.</p>
+    {% endif %}
+
+    {% if diffs %}
+    <div class="border-t border-ink-700/70 pt-4 space-y-2.5">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-mist-400">Driftvarningar ({{ diffs | length }})</h3>
+      <div class="az-table-wrap" tabindex="0" role="region" aria-label="Driftvarningar">
+        <table class="az-table">
+          <thead>
+            <tr>
+              <th scope="col">Allvarlighet</th>
+              <th scope="col">Domän</th>
+              <th scope="col">Sammanfattning</th>
+              <th scope="col">Körning</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in diffs %}
+            {% set dsev = (d.get('severity') or 'info') | lower %}
+            <tr>
+              <td>{{ ui.status_badge('error' if dsev in ['critical', 'high'] else ('warn' if dsev == 'medium' else 'info'), dsev) }}</td>
+              <td class="font-mono text-xs text-mist-200">{{ d.get('domain') }}</td>
+              <td class="text-xs text-mist-100">{{ d.get('summary') }}</td>
+              <td class="font-mono text-xs">
+                <a class="text-steel-300 hover:underline" href="/shop-intel/runs/{{ d.get('curr_run_id') }}">{{ d.get('curr_run_id') }}</a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
+  <!-- Recent Runs List -->
+  <section class="az-card space-y-4" data-shop-intel-runs="true">
+    <h2 class="az-section-title mb-0">Senaste körningar ({{ recent_runs | length }})</h2>
+    {% if recent_runs %}
+    <div class="az-table-wrap" tabindex="0" role="region" aria-label="Senaste butiksanalyser">
+      <table class="az-table">
+        <thead>
+          <tr>
+            <th scope="col">Körnings-ID</th>
+            <th scope="col">Källa</th>
+            <th scope="col">Läge</th>
+            <th scope="col">Säkerhetspoäng</th>
+            <th scope="col">Fynd / Drift</th>
+            <th scope="col">Skapad</th>
+            <th scope="col">Detaljer</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in recent_runs %}
+          {% set r_prov = r.get('provenance') or 'mock' %}
+          {% set r_score = r.get('security_score', 100) %}
+          <tr>
+            <td class="font-mono text-xs">
+              <a class="text-steel-300 hover:underline" href="/shop-intel/runs/{{ r.get('run_id') }}">{{ r.get('run_id') }}</a>
+            </td>
+            <td>{{ ui.status_badge('warn' if r_prov == 'mock' else 'ok', r_prov) }}</td>
+            <td class="font-mono text-xs text-mist-200">{{ r.get('mode') }}</td>
+            <td>{{ ui.status_badge('ok' if r_score >= 85 else ('warn' if r_score >= 60 else 'error'), r_score ~ '/100') }}</td>
+            <td class="text-xs tabular-nums text-mist-300">{{ r.get('findings_count', 0) }} fynd · {{ r.get('diffs_count', 0) }} drift</td>
+            <td class="text-xs tabular-nums text-mist-400">{{ r.get('created_at_fmt') or r.get('created_at') or '—' }}</td>
+            <td>
+              <a class="az-btn-secondary az-btn-sm" href="/shop-intel/runs/{{ r.get('run_id') }}">Öppna</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="az-muted text-xs">Inga körningar sparade för {{ selected_site }} ännu.</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

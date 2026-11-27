@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Azom Webshop Intelligence daily learning & drift timer
+Requires=azom-shop-intel.service
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

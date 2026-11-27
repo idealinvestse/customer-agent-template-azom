@@ -364,6 +364,25 @@ python -m ecom_ops --mock --actor jonatan seo autopilot --site mock-shop --topic
 # note: live seo fix-apply / batch-apply requires AZOM_USE_MOCK=0, AZOM_SEO_WRITE_ENABLED=1, AZOM_SEO_KILL unset, and Oscar WP_OPS_ADMIN; seo autopilot & seo vendors are strictly HITL (never auto-buy links or auto-apply WP edits)
 ```
 
+### `shop-intel`
+
+Fail-closed, zero-PII Webshop Intelligence & store learning (`skills/ecom_ops/shop_intel/`, [`SHOP_INTEL.md`](SHOP_INTEL.md)):
+
+```bash
+# cwd: repository root
+# env: AZOM_USE_MOCK=1
+python -m ecom_ops --mock --actor jonatan shop-intel status [--site mock-shop]
+python -m ecom_ops --mock --actor jonatan shop-intel run [--site mock-shop] [--mode full|quick|security] [--domains platform_rules,policies_legal]
+python -m ecom_ops --mock --actor jonatan shop-intel query [--site mock-shop] [--domain policies_legal] [--query TEXT] [--purpose support_draft|product_copy|wp_coder|chat_general|seo|security_audit] [--max-chars 1800]
+python -m ecom_ops --mock --actor jonatan shop-intel security [--site mock-shop] [--severity critical|high|medium|low|info] [--limit 50]
+python -m ecom_ops --mock --actor jonatan shop-intel diff [--site mock-shop] [--limit 20]
+python -m ecom_ops --mock --actor jonatan shop-intel context [--site mock-shop] --purpose support_draft|product_copy|wp_coder|chat_general|seo|security_audit [--max-chars 1800]
+python -m ecom_ops --mock --actor jonatan shop-intel export [--site mock-shop] [--format json|md]
+python -m ecom_ops --mock --actor agent shop-intel schedule-run [--site mock-shop]
+python -m ecom_ops --mock --actor oscar shop-intel schedule-set [--site mock-shop] [--interval-hours 24] [--mode full|quick|security] [--enabled | --disabled]
+# expect: JSON with ok: true, provenance: "mock" (in mock mode), si-*/sid-*/sif-* IDs (schedule-set requires Oscar WP_OPS_ADMIN or RESEARCH_ADMIN)
+```
+
 ## Environment that changes CLI behavior
 
 | Env | Effect |
@@ -387,6 +406,9 @@ python -m ecom_ops --mock --actor jonatan seo autopilot --site mock-shop --topic
 | `AZOM_SEO_KILL=1` | Emergency kill-switch halting all SEO Studio writes and SEO rollbacks (process env only) |
 | `AZOM_GSC_ENABLED=1` | Live read-only Google Search Console (`webmasters.readonly`) gate (process env only; requires `AZOM_USE_MOCK=0`) |
 | `AZOM_GSC_KILL=1` | Emergency kill-switch forcing Google Search Console connector off (process env only) |
+| `AZOM_SHOP_INTEL_LIVE_ENABLED=1` | Live Webshop Intelligence collection gate (process env only; requires `AZOM_USE_MOCK=0`) |
+| `AZOM_SHOP_INTEL_KILL=1` | Emergency kill-switch forcing all Shop Intel learning and scheduled runs off (process env only) |
+| `AZOM_SHOP_INTEL_INJECT=0` | Disable `SHOP_INTEL_CONTEXT` prompt injection while preserving stored dossiers (default `1`) |
 
 ## Related
 
@@ -395,6 +417,7 @@ python -m ecom_ops --mock --actor jonatan seo autopilot --site mock-shop --topic
 - Mail setup (Swedish): [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md)
 - Marketing Google: [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md)
 - Web search & research: [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md)
+- Webshop Intelligence: [`SHOP_INTEL.md`](SHOP_INTEL.md)
 - System map: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)
 
 ## System Launcher (`ecom_ops.launcher`)

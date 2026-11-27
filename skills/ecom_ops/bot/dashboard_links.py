@@ -114,6 +114,24 @@ def research_brief_url(research_id: str) -> str | None:
     return dashboard_url(f"/research/{rid}")
 
 
+def shop_intel_url(site_id: str | None = None, *, run_id: str | None = None) -> str | None:
+    """Build an authenticated Shop Intelligence URL only from a configured HTTPS origin."""
+    if not _https_dashboard_origin():
+        return None
+    query: dict[str, str] | None = None
+    if site_id is not None:
+        site = str(site_id or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", site):
+            return None
+        query = {"site_id": site}
+    if run_id is not None:
+        rid = str(run_id or "").strip().lower()
+        if not re.fullmatch(r"si-[a-f0-9]{12}", rid):
+            return None
+        return dashboard_url(f"/shop-intel/runs/{rid}", query=query)
+    return dashboard_url("/shop-intel", query=query)
+
+
 def seo_dashboard_url(
     site_id: str | None = None,
     *,

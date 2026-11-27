@@ -51,6 +51,8 @@ PROTECTED_OVERLAY_KEYS = frozenset(
         "AZOM_SEO_KILL",
         "AZOM_GSC_ENABLED",
         "AZOM_GSC_KILL",
+        "AZOM_SHOP_INTEL_LIVE_ENABLED",
+        "AZOM_SHOP_INTEL_KILL",
     }
 )
 

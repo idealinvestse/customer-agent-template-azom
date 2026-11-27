@@ -470,7 +470,7 @@ def test_theme_json_operations_v3_and_rejections() -> None:
 
 
 def test_playbooks_topics_selection_and_formatting() -> None:
-    assert len(PLAYBOOK_TOPICS) == 20
+    assert len(PLAYBOOK_TOPICS) == 22
     for topic in PLAYBOOK_TOPICS:
         pb = get_playbook(topic)
         assert pb["ok"] is True

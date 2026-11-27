@@ -47,6 +47,8 @@ _PRODUCT_WRITE_FIELDS = frozenset(
 _STOCK_STATUSES = frozenset({"instock", "outofstock", "onbackorder"})
 _PRODUCT_STATUSES = frozenset({"draft", "pending", "private", "publish"})
 _TRACKING_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SETTINGS_GROUPS = frozenset({"general", "products", "shipping", "tax", "checkout", "account"})
+_ZONE_ID_RE = re.compile(r"^\d{1,12}$")
 
 # --------------------------------------------------------------------------- #
 # Data models
@@ -148,8 +150,24 @@ class InMemoryWooTransport:
                 "description": "",
                 "short_description": "",
                 "type": "simple",
+                "status": "publish",
+                "price": "1490",
+                "regular_price": "1490",
+                "sale_price": "",
+                "on_sale": False,
                 "stock_status": "instock",
                 "stock_quantity": 12,
+                "manage_stock": True,
+                "categories": [
+                    {"id": 15, "name": "Trådlös CarPlay", "slug": "tradlos-carplay"},
+                ],
+                "attributes": [
+                    {"id": 1, "name": "CarPlay", "options": ["Trådlös Apple CarPlay"]},
+                    {"id": 2, "name": "Bilmodell", "options": ["Volvo", "BMW", "Audi", "VW"]},
+                ],
+                "upsell_ids": [502],
+                "cross_sell_ids": [503],
+                "permalink": "https://mock.local/produkt/azom-pro-headset/",
             }
         }
         self.categories: dict[str, dict[str, Any]] = {
@@ -169,7 +187,204 @@ class InMemoryWooTransport:
                 "description": "",
                 "count": 5,
             },
+            "17": {
+                "id": 17,
+                "name": "Biltillbehör & Fästen",
+                "slug": "biltillbehor",
+                "parent": 0,
+                "description": "Nordiska bilfästen, kablar och USB-tillbehör.",
+                "count": 4,
+            },
         }
+        self.settings_groups: dict[str, list[dict[str, Any]]] = {
+            "general": [
+                {"id": "woocommerce_default_country", "label": "Land/region", "value": "SE"},
+                {"id": "woocommerce_currency", "label": "Valuta", "value": "SEK"},
+                {
+                    "id": "woocommerce_allowed_countries",
+                    "label": "Säljländers läge",
+                    "value": "specific",
+                },
+                {
+                    "id": "woocommerce_specific_allowed_countries",
+                    "label": "Tillåtna länder",
+                    "value": ["SE", "NO", "DK"],
+                },
+                {"id": "woocommerce_calc_taxes", "label": "Aktivera momskalkyler", "value": "yes"},
+            ],
+            "products": [
+                {"id": "woocommerce_weight_unit", "label": "Viktenhet", "value": "kg"},
+                {"id": "woocommerce_dimension_unit", "label": "Måttenhet", "value": "cm"},
+                {"id": "woocommerce_manage_stock", "label": "Lagerhantering", "value": "yes"},
+                {"id": "woocommerce_notify_low_stock_amount", "label": "Låg lagernivå", "value": "3"},
+            ],
+            "shipping": [
+                {"id": "woocommerce_ship_to_countries", "label": "Fraktländer", "value": "specific"},
+                {
+                    "id": "woocommerce_shipping_cost_requires_address",
+                    "label": "Dölj frakt tills adress anges",
+                    "value": "no",
+                },
+            ],
+            "tax": [
+                {"id": "woocommerce_prices_include_tax", "label": "Priser inkluderar moms", "value": "yes"},
+                {"id": "woocommerce_tax_based_on", "label": "Beräkna moms baserat på", "value": "shipping"},
+                {"id": "woocommerce_default_tax_rate_percent", "label": "Standardmoms", "value": "25"},
+            ],
+            "checkout": [
+                {"id": "woocommerce_enable_guest_checkout", "label": "Gästkassa", "value": "yes"},
+                {"id": "woocommerce_force_ssl_checkout", "label": "Tvinga HTTPS", "value": "yes"},
+            ],
+            "account": [
+                {"id": "woocommerce_enable_signup_and_login_from_checkout", "label": "Skapa konto i kassan", "value": "yes"},
+                {"id": "woocommerce_enable_myaccount_registration", "label": "Registrering på Mitt konto", "value": "no"},
+            ],
+        }
+        self.shipping_zones: list[dict[str, Any]] = [
+            {"id": 1, "name": "Sverige", "order": 0},
+            {"id": 2, "name": "Norge", "order": 1},
+            {"id": 0, "name": "Övriga Norden", "order": 99},
+        ]
+        self.shipping_zone_methods: dict[str, list[dict[str, Any]]] = {
+            "1": [
+                {
+                    "id": 101,
+                    "instance_id": 101,
+                    "title": "PostNord Varubrev / Ombud",
+                    "order": 1,
+                    "enabled": True,
+                    "method_id": "flat_rate",
+                    "method_title": "Fast frakt",
+                    "settings": {
+                        "title": {"value": "PostNord Varubrev / Ombud"},
+                        "cost": {"value": "59"},
+                    },
+                },
+                {
+                    "id": 102,
+                    "instance_id": 102,
+                    "title": "Fri frakt över 999 kr",
+                    "order": 2,
+                    "enabled": True,
+                    "method_id": "free_shipping",
+                    "method_title": "Fri frakt",
+                    "settings": {
+                        "title": {"value": "Fri frakt över 999 kr"},
+                        "requires": {"value": "min_amount"},
+                        "min_amount": {"value": "999"},
+                    },
+                },
+            ],
+            "2": [
+                {
+                    "id": 201,
+                    "instance_id": 201,
+                    "title": "Bring Pakke til hentested",
+                    "order": 1,
+                    "enabled": True,
+                    "method_id": "flat_rate",
+                    "method_title": "Fast frakt",
+                    "settings": {
+                        "title": {"value": "Bring Pakke til hentested"},
+                        "cost": {"value": "79"},
+                    },
+                },
+                {
+                    "id": 202,
+                    "instance_id": 202,
+                    "title": "Fri frakt over 999 NOK",
+                    "order": 2,
+                    "enabled": True,
+                    "method_id": "free_shipping",
+                    "method_title": "Fri frakt",
+                    "settings": {
+                        "title": {"value": "Fri frakt over 999 NOK"},
+                        "requires": {"value": "min_amount"},
+                        "min_amount": {"value": "999"},
+                    },
+                },
+            ],
+            "0": [
+                {
+                    "id": 301,
+                    "instance_id": 301,
+                    "title": "PostNord Norden",
+                    "order": 1,
+                    "enabled": True,
+                    "method_id": "flat_rate",
+                    "method_title": "Fast frakt",
+                    "settings": {
+                        "title": {"value": "PostNord Norden"},
+                        "cost": {"value": "99"},
+                    },
+                },
+            ],
+        }
+        self.payment_gateways: list[dict[str, Any]] = [
+            {
+                "id": "kco",
+                "title": "Klarna Checkout",
+                "description": "Betala med kort, faktura, delbetalning eller Swish via Klarna.",
+                "enabled": True,
+                "method_title": "Klarna Checkout",
+                "supports": ["products", "refunds"],
+            },
+            {
+                "id": "vipps",
+                "title": "Vipps",
+                "description": "Rask betaling med Vipps i Norge.",
+                "enabled": True,
+                "method_title": "Vipps",
+                "supports": ["products", "refunds"],
+            },
+            {
+                "id": "stripe",
+                "title": "Stripe Kortbetalning",
+                "description": "Visa, Mastercard och Apple Pay.",
+                "enabled": True,
+                "method_title": "Stripe",
+                "supports": ["products", "refunds"],
+            },
+            {
+                "id": "bacs",
+                "title": "Banköverföring",
+                "description": "Direkt banköverföring.",
+                "enabled": False,
+                "method_title": "BACS",
+                "supports": ["products"],
+            },
+        ]
+        self.tax_classes: list[dict[str, Any]] = [
+            {"slug": "standard", "name": "Standardmoms 25%", "rate_percent": 25.0},
+            {"slug": "reduced-rate", "name": "Reducerad moms 12%", "rate_percent": 12.0},
+            {"slug": "zero-rate", "name": "Momsfri 0%", "rate_percent": 0.0},
+        ]
+        self.product_attributes: list[dict[str, Any]] = [
+            {
+                "id": 1,
+                "name": "CarPlay",
+                "slug": "pa_carplay",
+                "type": "select",
+                "order_by": "menu_order",
+                "has_archives": True,
+            },
+            {
+                "id": 2,
+                "name": "Bilmodell",
+                "slug": "pa_bilmodell",
+                "type": "select",
+                "order_by": "menu_order",
+                "has_archives": True,
+            },
+            {
+                "id": 3,
+                "name": "Årsmodell",
+                "slug": "pa_arsmodell",
+                "type": "select",
+                "order_by": "menu_order",
+                "has_archives": False,
+            },
+        ]
         # V2.1 mock stores
         self.trackings: dict[str, list[dict[str, Any]]] = {
             "1001": [
@@ -269,6 +484,18 @@ class InMemoryWooTransport:
             return self.system_status_payload
         if "/webhooks" in url:
             return self._handle_webhooks(method, url, json, params)
+        if "/settings/" in url:
+            return self._handle_settings_group(method, url)
+        if "/shipping/zones" in url:
+            return self._handle_shipping_zones(method, url)
+        if "/payment_gateways" in url:
+            if method.upper() == "GET":
+                return [dict(row) for row in self.payment_gateways]
+            raise SecurityError(f"Unhandled mock payment_gateways URL: {method} {url}")
+        if "/taxes/classes" in url:
+            if method.upper() == "GET":
+                return [dict(row) for row in self.tax_classes]
+            raise SecurityError(f"Unhandled mock tax_classes URL: {method} {url}")
         raise SecurityError(f"Unhandled mock URL: {method} {url}")
 
     # --- helpers --------------------------------------------------------- #
@@ -376,6 +603,10 @@ class InMemoryWooTransport:
         params: dict[str, Any] | None,
     ) -> Any:
         clean_url = url.split("?")[0].rstrip("/")
+        if clean_url.endswith("/products/attributes"):
+            if method.upper() == "GET":
+                return [dict(row) for row in self.product_attributes]
+            raise SecurityError(f"Unhandled mock product attributes URL: {method} {url}")
         if clean_url.endswith("/products/categories"):
             if method.upper() == "GET":
                 rows = list(self.categories.values())
@@ -482,6 +713,30 @@ class InMemoryWooTransport:
             self.webhooks.pop(wid, None)
             return {"deleted": True, "id": wid}
         raise SecurityError(f"Unhandled mock webhooks URL: {method} {url}")
+
+    def _handle_settings_group(self, method: str, url: str) -> list[dict[str, Any]]:
+        if method.upper() != "GET":
+            raise SecurityError(f"Unhandled mock settings URL: {method} {url}")
+        clean_url = url.split("?")[0].rstrip("/")
+        group_id = clean_url.rsplit("/settings/", 1)[-1].strip().lower()
+        if group_id not in _SETTINGS_GROUPS:
+            raise SecurityError(f"WooCommerce API error 404: settings group {group_id}")
+        return [dict(row) for row in self.settings_groups.get(group_id, [])]
+
+    def _handle_shipping_zones(self, method: str, url: str) -> list[dict[str, Any]]:
+        if method.upper() != "GET":
+            raise SecurityError(f"Unhandled mock shipping URL: {method} {url}")
+        clean_url = url.split("?")[0].rstrip("/")
+        if clean_url.endswith("/shipping/zones"):
+            return [dict(row) for row in self.shipping_zones]
+        tail = clean_url.split("/shipping/zones/", 1)[-1]
+        parts = [p for p in tail.split("/") if p]
+        if len(parts) == 2 and parts[1] == "methods":
+            zid = parts[0]
+            if not _ZONE_ID_RE.fullmatch(zid):
+                raise SecurityError(f"Invalid shipping zone id: {zid!r}")
+            return [dict(row) for row in self.shipping_zone_methods.get(zid, [])]
+        raise SecurityError(f"Unhandled mock shipping URL: {method} {url}")
 
 
 # --------------------------------------------------------------------------- #
@@ -948,6 +1203,76 @@ class WooCommerceClient:
             self._url("/wp-json/wc/v3/products/categories"),
             auth=self._auth(),
             params=params,
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def list_product_attributes(self) -> list[dict[str, Any]]:
+        """List global WooCommerce product attributes (/wc/v3/products/attributes)."""
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wc/v3/products/attributes"),
+            auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    # --- settings / shipping / gateways / taxes (read-only) -------------- #
+
+    def get_settings_group(self, group_id: str) -> list[dict[str, Any]]:
+        """Fetch read-only WooCommerce settings for an allowlisted group."""
+        clean = str(group_id or "").strip().lower()
+        if clean not in _SETTINGS_GROUPS:
+            raise SecurityError(
+                f"Invalid WooCommerce settings group {group_id!r}. Allowed: {sorted(_SETTINGS_GROUPS)}"
+            )
+        data = self.transport.request(
+            "GET",
+            self._url(f"/wp-json/wc/v3/settings/{clean}"),
+            auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def list_shipping_zones(self) -> list[dict[str, Any]]:
+        """List WooCommerce shipping zones (/wc/v3/shipping/zones)."""
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wc/v3/shipping/zones"),
+            auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def list_shipping_zone_methods(self, zone_id: int | str) -> list[dict[str, Any]]:
+        """List shipping methods configured for a shipping zone."""
+        zid = str(zone_id if zone_id is not None else "").strip()
+        if not _ZONE_ID_RE.fullmatch(zid):
+            raise SecurityError(f"Invalid shipping zone id: {zone_id!r}")
+        data = self.transport.request(
+            "GET",
+            self._url(f"/wp-json/wc/v3/shipping/zones/{zid}/methods"),
+            auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def list_payment_gateways(self) -> list[dict[str, Any]]:
+        """List WooCommerce payment gateways (/wc/v3/payment_gateways)."""
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wc/v3/payment_gateways"),
+            auth=self._auth(),
+            timeout=self.timeout,
+        )
+        return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+
+    def list_tax_classes(self) -> list[dict[str, Any]]:
+        """List WooCommerce tax classes (/wc/v3/taxes/classes)."""
+        data = self.transport.request(
+            "GET",
+            self._url("/wp-json/wc/v3/taxes/classes"),
+            auth=self._auth(),
             timeout=self.timeout,
         )
         return [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
