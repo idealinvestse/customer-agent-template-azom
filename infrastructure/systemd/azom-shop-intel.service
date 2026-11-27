@@ -1,0 +1,22 @@
+[Unit]
+Description=Azom Webshop Intelligence scheduled learning & drift check (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=azom
+Group=azom
+WorkingDirectory=/opt/azom-agent
+EnvironmentFile=-/opt/azom-agent/.env
+Environment=PYTHONPATH=/opt/azom-agent/skills
+Environment=AZOM_CONFIG_DIR=/opt/azom-agent/config
+Environment=AZOM_DATA_DIR=/var/lib/azom
+Environment=AZOM_USE_MOCK=0
+ExecStart=/opt/azom-agent/bin/shop-intel.sh
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/azom /var/log/azom /opt/azom-agent/.azom-data
