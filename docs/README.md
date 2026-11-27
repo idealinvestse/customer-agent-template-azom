@@ -6,10 +6,13 @@
 
 Language split: **Swedish** = ops/pilot/runbooks · **English** = agents/dev/architecture. See [`DOC_STYLE.md`](DOC_STYLE.md).
 
+Product story for humans (Swedish): [`FUNKTIONER.md`](FUNKTIONER.md). GitHub landing: [`../README.md`](../README.md).
+
 ## Ops (Swedish)
 
 | Doc | Audience | Topic |
 |-----|----------|--------|
+| [`FUNKTIONER.md`](FUNKTIONER.md) | Oscar / Jonatan / GitHub | What 3.0.0 does and how the pieces fit |
 | [`PILOT_OPS.md`](PILOT_OPS.md) | Oscar / Jonatan | Daily drift, dashboard, **live soak**, runbooks |
 | [`CASES.md`](CASES.md) | Support ops | Cases 2.0 + Path B + **FU9 auto-send gates** |
 | [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md) | Oscar / ops | Gmail/Outlook/Graph/IMAP/POP3 setup |
@@ -49,6 +52,9 @@ Language split: **Swedish** = ops/pilot/runbooks · **English** = agents/dev/arc
 | [`MODEL_ROUTER.md`](MODEL_ROUTER.md) | Developers / Oscar | Model routes, ChatGPT OAuth, xAI, OpenRouter |
 | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) | Developers / Oscar | Web search providers, Deep Research worker, PII/SSRF firewall, `/research` |
 | [`../skills/ecom-ops/SKILL.md`](../skills/ecom-ops/SKILL.md) | Skill hosts | Skill card |
+| [`../skills/wordpress-review/SKILL.md`](../skills/wordpress-review/SKILL.md) | Skill hosts | Homepage source review, three evidence layers |
+| [`../skills/wordpress-theme-dev/SKILL.md`](../skills/wordpress-theme-dev/SKILL.md) | Skill hosts | Theme workspace, no production write |
+| [`../skills/wordpress-plugin-dev/SKILL.md`](../skills/wordpress-plugin-dev/SKILL.md) | Skill hosts | Site plugin workspace, third-party read-only |
 | [`../README.md`](../README.md) | Everyone | Project intro + quick start |
 
 ## Coverage matrix
@@ -57,6 +63,7 @@ Each major surface has one **primary** living doc:
 
 | Surface | Primary doc |
 |---------|-------------|
+| Product story (what it does) | [`FUNKTIONER.md`](FUNKTIONER.md) |
 | Current status / blockers | [`CURRENT_STATE.md`](CURRENT_STATE.md) |
 | Maturity scores (code vs ops) | [`MATURITY.md`](MATURITY.md) |
 | Architecture / RBAC / security | [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md) |

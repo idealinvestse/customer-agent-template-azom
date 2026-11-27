@@ -4,6 +4,8 @@
 **Audience:** Oscar (host/secrets) och Jonatan (approve). Coding agents får läsa men **får inte** markera soak som klar.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`CASES.md`](CASES.md), [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md).
 
+**I korthet:** Piloten är en butik, en kö och två chattar. Jonatan godkänner kundsvar. Oscar äger värd, hemligheter och modeller. Funktionskartan som förklarar hela produkten är [`FUNKTIONER.md`](FUNKTIONER.md). Den här filen är hur ni kör den, inklusive live-soak som ännu inte är gjord.
+
 ## Ordlista
 
 | Term | Betydelse |
@@ -32,7 +34,8 @@
 | Telegram | Backup | [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md) |
 | Dashboard `/cases` | Full power | denna fil + [`CASES.md`](CASES.md) |
 | Dashboard `/marketing` | Ads+GA4 ledger / HITL | [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md) |
-| Dashboard `/research` | Webbsök & asynkron Deep Research (`res-*`) | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
+| Dashboard `/research` | Webbsök och asynkron Deep Research (`res-*`) | [`WEB_SEARCH_RESEARCH.md`](WEB_SEARCH_RESEARCH.md) |
+| Dashboard `/wp` | Webbplatser, granskning, lokal staging | [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
 | Dashboard `/onboarding` | Checklist, Gmail connect | — |
 | Dashboard `/settings` | Jonatan non-secret | — |
 | Dashboard `/oscar` | Secrets, probes, eskaleringar | — |
@@ -48,10 +51,15 @@
 | `/cases` | Kö, filter `suggest=1`, draft, approve, close, skugg-badges |
 | `/cases/<id>` | Orderpanel, spara draft, regenerate, approve-confirm |
 | `/marketing` | Ads+GA4 digest + suggest HITL |
-| `/research` | Snabbsök, asynkrona research-jobb (`res-*`), status, styrning & export |
-| `/oscar` | Admin: secrets, probes, resolve escalations |
+| `/research` | Snabbsök, asynkrona research-jobb (`res-*`), status, styrning och export |
+| `/wp` | Webbplatser, granskning, lokal staging. Produktionsskriv är av |
+| `/interact` | Utkast-sandlåda. Skickar inte |
+| `/data/telemetry`, `/data/audit` | Förbrukning och spår |
+| `/oscar` | Admin: secrets, probes, modeller, resolve escalations |
+| `/oscar/behavior` | Versionerade promptar |
 | `/oauth/gmail/start` | Gmail browser OAuth |
 | `/oauth/google/start` | Marketing Google OAuth (Oscar) |
+| `/oauth/openai/start` | ChatGPT-session (Oscar) |
 | `/health` | Liveness + poll-readiness (publik) |
 
 Basic Auth: `jonatan` / `DASHBOARD_PASSWORD` · `oscar` / `DASHBOARD_OSCAR_PASSWORD`.  

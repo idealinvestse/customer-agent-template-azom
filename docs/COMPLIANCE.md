@@ -4,6 +4,8 @@
 **Audience:** Oscar (ansvarig). Coding agents ska inte “stänga” DPIA.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`PILOT_OPS.md`](PILOT_OPS.md), [`CASES.md`](CASES.md).
 
+**I korthet:** Spårbarhet ingår. Kundmejl har retention, Oscar kan exportera och radera, och tokens ligger i datakatalogen med snäv behörighet. En färdig DPIA är fortfarande Oscars, inte något en kodändring får bocka av.
+
 **Senast uppdaterad:** 2026-08-15 · **Ansvarig:** Oscar (full_admin)  
 **Obs:** Full DPIA vid pilotstart är fortfarande ett mänskligt ägarskap — markera inte som klar i kod-PRs.
 

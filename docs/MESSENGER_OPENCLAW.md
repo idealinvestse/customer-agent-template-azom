@@ -4,6 +4,8 @@
 **Audience:** Jonatan, Oscar, coding agents.  
 **Read this first:** [`SOUL.md`](../SOUL.md), [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md), [`CASES.md`](CASES.md), [`PILOT_OPS.md`](PILOT_OPS.md).
 
+**I korthet:** Det här är Jonatans vardagschatt. Kön, ordern och godkänn-knappen finns där. Webhooken svarar Meta direkt och jobbar i en kö, så ett långsamt utkast tappar inte händelsen. Tom lista i drift betyder att ingen kommer in.
+
 ## Ordlista
 
 | Term | Betydelse |

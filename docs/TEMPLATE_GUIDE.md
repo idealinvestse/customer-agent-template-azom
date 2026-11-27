@@ -4,6 +4,8 @@
 **Audience:** Developers preparing a new deployment.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`DOC_STYLE.md`](DOC_STYLE.md), [`AGENTS.md`](../AGENTS.md).
 
+**What you get:** A finished single-shop agent you can retarget. Change the profile, the domains, the voice, and the credentials. Leave the approve rails, the empty-allowlist deny, and the never-suggest categories where they are.
+
 ## Glossary
 
 | Term | Meaning |

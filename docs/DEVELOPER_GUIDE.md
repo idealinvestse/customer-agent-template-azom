@@ -4,6 +4,8 @@
 **Audience:** Developers and coding agents.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`DOC_STYLE.md`](DOC_STYLE.md), [`AGENTS.md`](../AGENTS.md).
 
+**What you get:** The whole product on your machine with `AZOM_USE_MOCK=1`: cases, dashboard, bots, marketing fixtures, and WordPress review, without calling the shop. CI is ruff plus coverage at or above 70%. What the product is for: [`FUNKTIONER.md`](FUNKTIONER.md).
+
 ## Glossary
 
 | Term | Meaning |

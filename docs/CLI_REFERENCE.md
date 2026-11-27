@@ -4,6 +4,8 @@
 **Audience:** Developers and coding agents.  
 **Read this first:** [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md), [`CURRENT_STATE.md`](CURRENT_STATE.md).
 
+**What you get:** Every operator command in one place: cases, mail, marketing, WordPress site ops, KPIs, and the launcher. Flags below are the ones `skills/ecom_ops/cli.py` actually accepts. The product tour is [`FUNKTIONER.md`](FUNKTIONER.md).
+
 ## Entry points
 
 | Entry | What it starts |
@@ -329,6 +331,7 @@ python -m ecom_ops --mock research profiles [--id <profile-id>] [--recommend "<g
 
 ## Related
 
+- Product tour (Swedish): [`FUNKTIONER.md`](FUNKTIONER.md)
 - Cases ops (Swedish): [`CASES.md`](CASES.md)
 - Mail setup (Swedish): [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md)
 - Marketing Google: [`MARKETING_GOOGLE.md`](MARKETING_GOOGLE.md)

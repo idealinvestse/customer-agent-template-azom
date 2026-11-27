@@ -15,6 +15,8 @@ version: "3.0.0"
 **Audience:** Coding agents running a homepage source review.  
 **Read this first:** `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/wordpress-theme-dev/SKILL.md`, `skills/wordpress-plugin-dev/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, then `ecom_ops.wp_ops.review_knowledge`.
 
+**What you get:** A source review that keeps the editor's content, the theme files, and the rendered page as three different facts. It can name what is wrong. It cannot approve a deploy.
+
 ## Task
 
 A request such as "granska startsidans källkod" is this task. The server runs four site-bound tools, in order:

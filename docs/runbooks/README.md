@@ -4,6 +4,8 @@
 **Audience:** Oscar / ops.  
 **Read this first:** [`../PILOT_OPS.md`](../PILOT_OPS.md), [`../CURRENT_STATE.md`](../CURRENT_STATE.md).
 
+**I korthet:** När mejl, OAuth, budget, webhook eller dashboard stannar finns en väg tillbaka här. Varje guide är symptom, diagnos, fix och verifiering. Ingen av dem får markera live-soak eller auto-send som klart.
+
 Varje runbook följer samma form: trigger → diagnoskommandon → fix → verifiering.
 
 | Runbook | Scenario |

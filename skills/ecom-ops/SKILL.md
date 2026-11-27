@@ -1,11 +1,11 @@
 ---
 name: ecom-ops
 description: >
-  Azom WooCommerce ops (order-status, product desc, support, mail, SSH, cases, bounded WordPress reads and preview-only update/restore plans).
-  V2: dashboard onboarding, Gmail OAuth, OpenClaw Messenger/Telegram hybrid,
-  Cases 2.0 + Path B suggest-approve rails. Google Ads + GA4 marketing ledger
-  (read → suggest → HITL mutate). Critical/code edits escalate to Oscar.
-  Never silent customer mail or silent Ads mutate — human approve required.
+  AzomOps-Agent for one WooCommerce shop: order status, product copy, support
+  drafts, human-approved cases, mail, dashboard, Messenger and Telegram,
+  Google Ads and GA4 reads, and bounded WordPress review. Customer mail,
+  campaign changes, and production file writes wait for an explicit approve.
+  Critical edits and secrets escalate to Oscar.
 version: "3.0.0"
 ---
 
@@ -14,6 +14,8 @@ version: "3.0.0"
 **Purpose:** Skill card for agent hosts (Moss / OpenClaw-style) describing what this package can do.  
 **Audience:** Coding agents and skill hosts.  
 **Read this first:** repository root `AGENTS.md`, `docs/CURRENT_STATE.md`, `SOUL.md`.
+
+**What this skill is:** The operating card for one shop. It drafts, looks up orders, and proposes changes. Customer mail goes out only on an explicit approve path. Ads mutations and production theme writes stay refused. The human-facing tour is `docs/FUNKTIONER.md`.
 
 **Identity / hard rules:** `SOUL.md`  
 **System map:** `docs/SYSTEM_OVERVIEW.md`  
@@ -46,9 +48,10 @@ version: "3.0.0"
 | mail send/fetch | `ecom_ops.actions.mail` | `python -m ecom_ops --mock mail send\|fetch\|reply` |
 | marketing Ads+GA4 | `ecom_ops.actions.marketing` | `python -m ecom_ops --mock marketing digest\|health\|consistency\|suggests\|research\|…` |
 | web search / research | `ecom_ops.research` | `python -m ecom_ops --mock search --query "..."` · `fetch-url --url "https://..."` · `research start\|list\|show\|status\|steer\|cancel` |
+| WordPress site ops | `ecom_ops.wp_ops` | `python -m ecom_ops --mock wp sites\|status\|check\|file-propose` |
 | runtime status | CLI | `python -m ecom_ops status` · `python -m ecom_ops smoke` · `python -m ecom_ops ops status [--json]` · `python -m ecom_ops --actor oscar ops gc [--dry-run] [--grace-hours N]` |
 
-## V2 surfaces
+## Surfaces
 
 | Surface | Entry |
 |---------|--------|
@@ -74,7 +77,7 @@ WordPress operations use the named, site-bound tools `wp_list_sites`, `wp_site_s
 `AZOM_TELEGRAM_MODEL_ROUTE` pins one route for Telegram free text and does not fall through on failure. Customer mail requires `/cases approve` or the approve button/postback; never from free text. Ads mutations remain blocked outside the dashboard/CLI approval rails.
 
 
-Telegram runs durable per-chat jobs from a SQLite inbox with a bounded worker pool. Read turns can take up to three steer messages at safe checkpoints; approved actions queue later input and never run concurrently with another approved action for the same site. `/status`, `/jobs`, `/cancel`, and Oscar-only `/reconcile` are Telegram receiver controls. Messenger remains synchronous.
+Telegram runs durable per-chat jobs from a SQLite inbox with a bounded worker pool. Read turns can take up to three steer messages at safe checkpoints; approved actions queue later input and never run concurrently with another approved action for the same site. `/status`, `/jobs`, `/cancel`, and Oscar-only `/reconcile` are Telegram receiver controls. Messenger enqueues each webhook event in `messenger_jobs.sqlite3` and returns HTTP 200 immediately in production (inline drain during synchronous Flask tests). It does not render Telegram's live status board.
 
 ## Mail providers
 

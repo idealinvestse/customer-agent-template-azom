@@ -4,6 +4,8 @@
 **Audience:** Oscar (secrets) och operatörer; coding agents som rör mail-integration.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`.env.example`](../.env.example), [`CASES.md`](CASES.md).
 
+**I korthet:** Samma ärendeflöde oavsett om inkorgen är Gmail, Outlook, Exchange Graph, IMAP eller POP3. Kundsvar går via godkänt ärende. Gmail kan kopplas i webbläsaren. NO och DK förblir av tills Oscar säger ja.
+
 ## Ordlista
 
 | Term | Betydelse |

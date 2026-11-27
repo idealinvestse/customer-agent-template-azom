@@ -4,6 +4,8 @@
 **Audience:** Jonatan, Oscar, coding agents.  
 **Read this first:** [`SOUL.md`](../SOUL.md), [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) (daily driver), [`CASES.md`](CASES.md).
 
+**I korthet:** Samma hjärna som Messenger, byggd som backup. Kön, livestatus och flera läsjobb samtidigt gör att ett långt WordPress-svar inte blockerar nästa fråga. Fritext skickar inte kundmejl.
+
 ## Ordlista
 
 | Term | Betydelse |

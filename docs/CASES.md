@@ -4,6 +4,8 @@
 **Audience:** Jonatan, Oscar, coding agents.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`PILOT_OPS.md`](PILOT_OPS.md), [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md).
 
+**I korthet:** Varje supportmejl blir ett ärende med orderfakta och ett svar ni kan godkänna. ★ betyder “det här ser säkert ut”, och den skickar inget. Auto-send är inte inkopplat. Hela produktbilden: [`FUNKTIONER.md`](FUNKTIONER.md).
+
 ## Ordlista
 
 | Term | Betydelse |

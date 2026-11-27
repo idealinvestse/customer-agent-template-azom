@@ -4,6 +4,8 @@
 **Audience:** Developers and coding agents.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`DOC_STYLE.md`](DOC_STYLE.md), [`AGENTS.md`](../AGENTS.md).
 
+**What you get:** One shop, one agent, three places to work. Mail becomes a case with an order-backed draft. Messenger and Telegram read the store and the site, then wait for a button before any write. The dashboard is the full view: queue, Ads and GA4, WordPress review, and Oscar's model admin. Customer mail, campaign changes, and production file writes stay on an explicit approve path. The Swedish walkthrough is [`FUNKTIONER.md`](FUNKTIONER.md).
+
 ## Glossary
 
 | Term | Meaning |
@@ -28,12 +30,13 @@
   WordPress API  ◄── wordpress client (posts/pages/media/users/settings)
   Woo Webhooks   ◄── /webhooks/woo (HMAC-SHA256) ── Dashboard route
                                                     │
-  OpenRouter ────────── llm.py (drafts, chat, product-desc optional)
+  Model router ──────── llm.py  (ChatGPT OAuth → Grok Build → xAI key → OpenRouter)
+  WordPress ops ◄────── wp_ops/ (review, workspace, mock staging; production write refused)
                                                     │
         ┌───────────────┬───────────────────────────┼──────────────┐
         ▼               ▼                           ▼              ▼
-   CLI ecom_ops    Dashboard Flask         Messenger + Telegram   Escalations
-   (operator)      (Jonatan / Oscar)       (shared BotHandler)     JSONL
+   CLI ecom_ops    Dashboard Flask         Messenger queue +      Escalations
+   + launcher      (Jonatan / Oscar)       Telegram jobs           JSONL
 ```
 
 | Layer | Path | Role |
@@ -42,7 +45,7 @@
 | Skill metadata | `skills/ecom-ops/SKILL.md` | Moss/agent skill card |
 | Config (ro in Docker) | `config/*.yaml`, `customer.json` | sites, rbac, mailboxes, limits, cases_ai |
 | Data (rw) | `AZOM_DATA_DIR` | cases.db, oauth, secrets.env, telemetry, probes |
-| Dashboard | `infrastructure/dashboard/` | Thin `app.py` factory + `auth.py` / `core_routes.py` / `cases_routes.py` / `oscar_routes.py` / `marketing_routes.py` / `research_routes.py` / `oauth_routes.py` / `webhooks.py` / `health_routes.py` |
+| Dashboard | `infrastructure/dashboard/` | Thin `app.py` factory + `auth.py` / `core_routes.py` / `cases_routes.py` / `oscar_routes.py` / `marketing_routes.py` / `research_routes.py` / `wp_routes.py` / `oauth_routes.py` / `webhooks.py` / `health_routes.py` |
 | Deploy | `bin/install*.sh`, `infrastructure/systemd/`, Docker | One-shot + services |
 
 **Surface roles:**
@@ -62,9 +65,9 @@ Auth source of truth: `config/rbac.yaml` + `skills/ecom_ops/rbac.py`.
 
 | Actor | Role | Typical powers |
 |-------|------|----------------|
-| **Jonatan** | `viewer` | Read + mail/SSH read + **CASE_REPLY** + **MARKETING_READ** + **MARKETING_SUGGEST** (negatives approve) + **WP_OPS_READ** + **WEB_SEARCH** + **RESEARCH_RUN** |
-| **Oscar** | `full_admin` | All permissions: secrets, probes, escalations, experiment flags, **MARKETING_MUTATE**, `cases shadow-report`, `retention-purge`, **WP_OPS_ADMIN**, **RESEARCH_ADMIN** |
-| **agent** | `operator` | order/product/support, **MAIL_SEND** + **MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ** only, **WP_OPS_OPERATE**, **WEB_SEARCH** + **RESEARCH_RUN** |
+| **Jonatan** | `viewer` | Read + mail/SSH read + **CASE_REPLY** + **MARKETING_READ** + **MARKETING_SUGGEST** + **WP_OPS_READ** + **WEB_SEARCH** + **RESEARCH_RUN** |
+| **Oscar** | `full_admin` | Secrets, probes, escalations, experiment flags, **MARKETING_MUTATE**, `cases shadow-report`, `retention-purge`, **WP_OPS_ADMIN**, **RESEARCH_ADMIN**. **WP_OPS_RESTORE** still refuses |
+| **agent** | `operator` | order/product/support, **MAIL_SEND** + **MAIL_READ**, **CASE_REPLY**, SSH read, cases poll, **MARKETING_READ**, **WP_OPS_OPERATE** (staging health, mock backup, staging drill), **WEB_SEARCH** + **RESEARCH_RUN** |
 
 - Telegram: `TELEGRAM_ACTOR_MAP` maps chat → actor. Non-empty map ⇒ unmapped denied. Allowlist: `TELEGRAM_ALLOWED_CHAT_IDS`.
 - Messenger: `MESSENGER_ACTOR_MAP` / `MESSENGER_ALLOWED_PSIDS` — **fail-closed when empty in live mode**.
@@ -117,10 +120,12 @@ See [`CASES.md`](CASES.md) for the full operator guide (Swedish).
 See [`MESSENGER_OPENCLAW.md`](MESSENGER_OPENCLAW.md) and [`TELEGRAM_OPENCLAW.md`](TELEGRAM_OPENCLAW.md). Identity: [`SOUL.md`](../SOUL.md).
 
 1. Slash / postback commands — session, tools, cases, order, health, brief, marketing (read-only).
-2. Free text — intent → read tools and confirm-only write proposals → SOUL-aligned LLM response. WordPress drift uses a named-tool loop bound to the selected site (3 calls / 30 seconds). Theme and plugin files use a separate turn (4 reads, 1 search, 8 calls, 45 seconds) that can propose a diff and cannot write it. “Granska startsidans källkod” is a third turn: four site-bound homepage steps, no order tools, and no order digest. A missing PHP binary leaves `php_lint` unavailable; browser and sandbox remain unavailable until their runtimes run.
+2. Free text — intent → read tools and confirm-only write proposals → SOUL-aligned LLM response. WordPress drift uses a named-tool loop bound to the selected site (3 calls / 30 seconds). Theme and plugin files use a separate turn (16 calls, 10 reads, 5 searches, 60 seconds, 28 KiB per result / 80 KiB total, plus a web sub-budget) that can propose a diff and cannot write it. “Granska startsidans källkod” (or a named page) is a third turn: four site-bound steps, no order tools, and no order digest. A missing PHP binary leaves `php_lint` unavailable; browser and sandbox remain unavailable until their runtimes run.
 3. Explicit write UX — confirm button/postback, `/cases approve`, dashboard, CLI. **Never silent send.** WordPress update/restore plans are previews only and cannot execute.
 
-**Telegram background jobs:** A durable inbox acknowledges updates before moving the poll cursor. A bounded worker pool runs up to 3 concurrent read tasks (`task_id`) per chat while serializing approved write actions per chat and via SQLite `bot_resource_locks`. `/status`, `/jobs`, `/steer`, `/task`, `/stop`, `/cancel`, and Oscar-only `/reconcile` stay responsive while work runs. Hybrid routing (`steer_router.py`) steers a specific task on Telegram reply (or `/steer`) and classifies unthreaded follow-ups into steer vs. new parallel task; write proposals use durable single-use `bot_proposals` (`proposal:yes:pr-<id>`) and atomic `append_turn_atomic` session merges. Telegram conversation state migrates from JSON into the job database. Messenger remains on its existing synchronous webhook and store.
+**Telegram background jobs:** A durable inbox acknowledges updates before moving the poll cursor. A bounded worker pool runs up to 3 concurrent read tasks (`task_id`) per chat while serializing approved write actions per chat and via SQLite `bot_resource_locks`. `/status`, `/jobs`, `/steer`, `/task`, `/stop`, `/cancel`, and Oscar-only `/reconcile` stay responsive while work runs. Hybrid routing (`steer_router.py`) steers a specific task on Telegram reply (or `/steer`) and classifies unthreaded follow-ups into steer vs. new parallel task; write proposals use durable single-use `bot_proposals` (`proposal:yes:pr-<id>`) and atomic `append_turn_atomic` session merges. Telegram conversation state migrates from JSON into the job database.
+
+**Messenger queue:** `POST /webhooks/messenger` inserts into `AZOM_DATA_DIR/messenger_jobs.sqlite3` (WAL, `mid` dedup) and returns HTTP 200 immediately in production. A worker (default 2) sends `typing_on` and chunks replies at 1950 characters. Restart reconciles `running` rows back to `pending`. Synchronous Flask tests drain the queue inline unless `AZOM_MESSENGER_ASYNC_IN_TESTS=1`. Messenger does not render Telegram's `LiveStatusBoard`.
 
 **Telegram progress UX:** Text turns, slash commands, and approved actions emit structured `ProgressEvent` updates rendered in-place by `LiveStatusBoard` (step progress, elapsed time, provenance, sanitized outcome, and periodic 8s heartbeat with model-router phase labels), threaded via `reply_to_message_id` and governed by `PerChatRateLimiter` (handling HTTP 400 not-modified and HTTP 429 `retry_after`). Model text streams into an editable answer draft (with chunk 2+ buffered during parallel runs until `finish()`). Messenger does not pass these callbacks and remains final-response only. This is Azom's Bot API implementation of the progress/edit pattern; it is separate from OpenClaw's native stream mode and never exposes private reasoning, PII, or tool arguments.
 
@@ -154,6 +159,7 @@ Messenger webhook: `GET|POST /webhooks/messenger` (HMAC + verify token; not Basi
 | `/oscar/behavior` | Oscar | Edit chat, classify, draft, and product-copy prompts; chat runtime policy remains fixed |
 | `/oscar/telegram` | Oscar | Telegram process status. Allowlist stays in the process env |
 | `/oscar/secrets/test` | Oscar | Connection probes (incl. ga4 / google_ads / merchant) |
+| `/oauth/openai/start`, `/callback` | Oscar | ChatGPT OAuth. No fallback on an isolated model test |
 | `/oauth/gmail/start`, `/status` | auth | Gmail OAuth start / status |
 | `/oauth/gmail/callback` | public | Google redirect (OAuth `state` validated) |
 | `/oauth/google/start`, `/status` | Oscar | Marketing Google OAuth start / status |
@@ -193,10 +199,11 @@ python -m ecom_ops --mock [--null-send] cases poll|list|show|reply|draft|regener
 python -m ecom_ops --actor oscar cases shadow-report [--days 7]
 python -m ecom_ops --actor oscar cases retention-purge [--dry-run]
 python -m ecom_ops --mock marketing digest|health|suggests|…
-python -m ecom_ops --mock wp sites|status|show|check|backup|backups|restore-drill
+python -m ecom_ops --mock wp sites|status|show|check|backup|backups|restore-drill|files|file-propose|file-apply
 python -m ecom_ops --mock search|fetch-url|research ...
 python -m ecom_ops kpis|classify-eval|draft-eval|drift-check|trends|soak-preflight
 python -m ecom_ops.bot
+python -m ecom_ops.launcher --check|--init-env|--target all|dashboard|bot
 ```
 
 Global flags: `--mock`, `--null-send`, `--actor`, `--site`.  
@@ -321,12 +328,17 @@ Authoritative detail: [`CURRENT_STATE.md`](CURRENT_STATE.md). Per-surface code a
 | Oscar A1 live soak | **Ops next — human gate** |
 | FU9 auto-send wire | **Not wired** — see [`CASES.md`](CASES.md) |
 | V3.0.0 production maturity + template profile | Shipped (code) — soak/NO-DK/mutate still human-gated |
+| Model router (ChatGPT OAuth, optional xAI, OpenRouter fallback) | Shipped — live SIWC connect is Oscar's step — [`MODEL_ROUTER.md`](MODEL_ROUTER.md) |
+| WordPress site ops + theme/plugin toolbox | Shipped in repo — production write and restore stay refused — [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) |
+| Dashboard (Tailwind, Alpine CSP, cases, marketing, `/wp`, Oscar models) | Shipped |
+| Telegram jobs + Messenger queue | Shipped in repo — production acceptance remains human |
 | Multi-tenant SaaS / FAQ / Meta ads | Deferred / parked |
 
 ## Related living docs
 
 | Topic | Doc |
 |-------|-----|
+| Product story (SV) | [`FUNKTIONER.md`](FUNKTIONER.md) |
 | Maturity scores (EN) | [`MATURITY.md`](MATURITY.md) |
 | Pilot ops (SV) | [`PILOT_OPS.md`](PILOT_OPS.md) |
 | Cases (SV) | [`CASES.md`](CASES.md) |

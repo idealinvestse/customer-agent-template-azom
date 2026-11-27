@@ -4,6 +4,8 @@
 **Audience:** Developers and coding agents.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
 
+**What you get:** The shop's own APIs as the source of truth: WooCommerce orders and shipment tracking, WordPress pages and posts, per market `se` / `no` / `dk`. Site review and theme edits are a separate surface in [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md). This client does not install themes or restore a site.
+
 ## Glossary
 
 | Term | Meaning |

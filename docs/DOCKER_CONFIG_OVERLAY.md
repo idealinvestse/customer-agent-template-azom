@@ -4,6 +4,8 @@
 **Audience:** Ops / developers som kör compose.  
 **Read this first:** [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), [`CURRENT_STATE.md`](CURRENT_STATE.md).
 
+**I korthet:** Imagen `azom-agent:3.0` kör samma agent. Konfigurationen är skrivskyddad. Hemligheter, ärendedatabas och OAuth ligger i `/app/.azom-data`, inte i systemd-sökvägen `/var/lib/azom`.
+
 ## Ordlista
 
 | Term | Betydelse |

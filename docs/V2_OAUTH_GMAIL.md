@@ -4,6 +4,8 @@
 **Audience:** Jonatan (consent) / Oscar (client id/secret).  
 **Read this first:** [`MAIL_PROVIDERS.md`](MAIL_PROVIDERS.md), [`.env.example`](../.env.example), [`CURRENT_STATE.md`](CURRENT_STATE.md).
 
+**I korthet:** Jonatan kopplar Gmail i webbläsaren en gång. Token stannar i datakatalogen. Därefter kan poll och godkända svar använda inkorgen utan att lösenordet ligger i chatten.
+
 ## Ordlista
 
 | Term | Betydelse |

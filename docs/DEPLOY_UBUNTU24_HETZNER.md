@@ -4,6 +4,8 @@
 **Audience:** Oscar / ops.  
 **Read this first:** [`AUTO_INSTALL.md`](AUTO_INSTALL.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md), [`PILOT_OPS.md`](PILOT_OPS.md).
 
+**I korthet:** Piloten är byggd för en liten VPS. 4 GB räcker för dashboard, bot och mejl. Installationsskriptet gör jobbet. Den här filen förklarar storlek, nät och varför 2 GB blir trångt.
+
 ## Rekommenderad VPS-storlek
 
 | Scenario | Hetzner typ | Spec | ~pris/mån | När |

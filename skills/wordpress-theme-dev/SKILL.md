@@ -15,6 +15,8 @@ version: "3.0.0"
 **Audience:** Coding agents and the OpenClaw chat agent operating on registered sites.  
 **Read this first:** `AGENTS.md`, `SOUL.md`, `docs/WP_SKILL_GUARDRAILS.md`, `skills/ecom-ops/SKILL.md`, `skills/web-research/SKILL.md`, `skills/change-verification/SKILL.md`, `skills/wordpress-ui-iteration/SKILL.md`, `skills/wordpress-page-builder/SKILL.md`, `skills/wordpress-review/SKILL.md`, `docs/WORDPRESS_OPS.md`.
 
+**What you get:** Child themes, `theme.json`, WooCommerce template overrides, and multi-file refactors inside an isolated workspace. Staging is a button on the local mock tree. Production stays closed.
+
 ## File-loop caps and safety boundaries
 
 See `docs/WP_SKILL_GUARDRAILS.md` for full shared loop budgets, untrusted-bytes handling, URL/zero-PII guards, and HITL/RBAC gates. Key theme-specific rules:

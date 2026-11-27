@@ -4,6 +4,8 @@
 **Audience:** Coding agents and developers. Oscar operates the live connect steps in [`runbooks/model-oauth.md`](runbooks/model-oauth.md).  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
 
+**What you get:** One front door for every draft and chat reply. ChatGPT on Azom's own OAuth session, optional Grok Build, optional xAI API key, then OpenRouter inside a 100 USD cap. A failed route stays failed. Order lookups and case tools keep working when the language model does not.
+
 ## Glossary
 
 | Term | Meaning |

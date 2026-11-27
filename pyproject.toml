@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "azom-ecom-ops"
 version = "3.0.0"
-description = "Azom ecom-ops agent V3: production-mature single-tenant ops, HITL cases, marketing reads"
+description = "AzomOps-Agent 3.0: one-shop WooCommerce ops with human-approved mail, cases, Messenger and Telegram, Ads and GA4 reads, bounded WordPress review, and fail-closed web research"
 readme = "README.md"
 requires-python = ">=3.11"
 # Production target: Ubuntu 24.04 ships Python 3.12; local/CI may use 3.11+

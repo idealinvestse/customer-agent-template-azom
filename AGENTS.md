@@ -10,6 +10,7 @@
 2. [`SOUL.md`](SOUL.md) — voice + hard HITL constraints (Swedish customer/ops voice)  
 3. [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) — architecture  
 4. Surface docs:
+   - Product story for humans: [`docs/FUNKTIONER.md`](docs/FUNKTIONER.md) (Swedish). Not a status override.
    - Cases / FU9: [`docs/CASES.md`](docs/CASES.md) (Swedish)
    - Pilot / soak: [`docs/PILOT_OPS.md`](docs/PILOT_OPS.md) (Swedish)
    - Dev/tests: [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md)

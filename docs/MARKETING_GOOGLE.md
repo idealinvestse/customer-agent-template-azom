@@ -4,6 +4,8 @@
 **Audience:** Oscar (secrets/live), Jonatan (read + suggest approve), coding agents.  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`SOUL.md`](../SOUL.md), [`CLI_REFERENCE.md`](CLI_REFERENCE.md).
 
+**What you get:** One ledger for Ads, GA4, and Woo revenue. Jonatan reads it and approves suggestions. Live reads are shipped. Changing a campaign, sending Measurement Protocol hits, or writing Merchant data stays off until Oscar enables that path. Woo revenue is the commerce number. Ads ROAS and GA revenue stay labeled as their own views.
+
 ## Truth hierarchy (hard)
 
 1. **Woo order revenue** = commerce truth.  

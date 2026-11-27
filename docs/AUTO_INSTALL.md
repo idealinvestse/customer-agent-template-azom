@@ -4,6 +4,8 @@
 **Audience:** Oscar / ops som installerar på Hetzner.  
 **Read this first:** [`DEPLOY_UBUNTU24_HETZNER.md`](DEPLOY_UBUNTU24_HETZNER.md), [`CURRENT_STATE.md`](CURRENT_STATE.md), därefter [`PILOT_OPS.md`](PILOT_OPS.md) för post-install soak.
 
+**I korthet:** Ett skript tar en tom Ubuntu-VPS till dashboard, Telegram-bot, mejlpoll och backup. Live-soak är ett senare steg som bara Oscar och Jonatan bockar av.
+
 ## Snabbast (på ny server)
 
 ```bash

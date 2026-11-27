@@ -4,6 +4,8 @@
 **Audience:** Coding agents and developers. Oscar and Jonatan may skim the stage summary. Operators run the pilot from [`PILOT_OPS.md`](PILOT_OPS.md).  
 **Read this first:** [`CURRENT_STATE.md`](CURRENT_STATE.md), [`DOC_STYLE.md`](DOC_STYLE.md), [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md).
 
+**What you get:** An honest split between code that exists and operations evidence that does not yet. High code scores do not close live soak, auto-send, or NO/DK mailboxes. The product story is [`FUNKTIONER.md`](FUNKTIONER.md).
+
 When this file and [`CURRENT_STATE.md`](CURRENT_STATE.md) disagree, **`CURRENT_STATE.md` wins**. Scores below are a review snapshot. They are not a soak sign-off and not permission to enable a gated feature.
 
 ## Glossary
