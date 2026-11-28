@@ -24,11 +24,21 @@ from urllib.parse import quote, urlencode, urlparse
 
 from ecom_ops.integrations._http_guard import pinned_https_request
 from ecom_ops.integrations._http_transport import _redact_error_text
+from ecom_ops.oauth.gsc import (
+    GSC_READONLY_SCOPE as _OAUTH_GSC_SCOPE,
+)
+from ecom_ops.oauth.gsc import (
+    GscOAuthStore,
+    gsc_oauth_client_id,
+    gsc_oauth_client_secret,
+    gsc_oauth_configured,
+    gsc_oauth_redirect_uri,
+)
 from ecom_ops.runtime_env import env_flag
 from ecom_ops.security import SecurityError
 from ecom_ops.wp_ops.config import is_mock_mode
 
-GSC_READONLY_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+GSC_READONLY_SCOPE = _OAUTH_GSC_SCOPE
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _GSC_API_ORIGIN = "https://searchconsole.googleapis.com"
 _OAUTH_ORIGIN = "https://oauth2.googleapis.com"
@@ -74,28 +84,34 @@ def _resolve_property_url(site_url: str | None = None, market: str | None = None
 
 
 def _isolated_gsc_credentials() -> dict[str, str]:
-    """Read ONLY isolated GSC env vars (never Gmail / GA4 / Marketing tokens)."""
+    """Read ONLY isolated GSC env vars or GscOAuthStore (never Gmail / GA4 / Marketing)."""
+    client_id = gsc_oauth_client_id()
+    client_secret = gsc_oauth_client_secret()
+    refresh_token = (
+        os.environ.get("GSC_OAUTH_REFRESH_TOKEN")
+        or os.environ.get("AZOM_GSC_REFRESH_TOKEN")
+        or ""
+    ).strip()
+    access_token = (
+        os.environ.get("GSC_OAUTH_ACCESS_TOKEN")
+        or os.environ.get("AZOM_GSC_ACCESS_TOKEN")
+        or ""
+    ).strip()
+    if not refresh_token or not access_token:
+        bundle = GscOAuthStore().load()
+        if bundle:
+            if not refresh_token and bundle.refresh_token:
+                refresh_token = bundle.refresh_token
+            if not access_token and bundle.access_token:
+                if bundle.expires_at is None or time.time() < float(bundle.expires_at) - 60:
+                    access_token = bundle.access_token
+                elif not refresh_token:
+                    access_token = bundle.access_token
     return {
-        "client_id": (
-            os.environ.get("GSC_OAUTH_CLIENT_ID")
-            or os.environ.get("AZOM_GSC_CLIENT_ID")
-            or ""
-        ).strip(),
-        "client_secret": (
-            os.environ.get("GSC_OAUTH_CLIENT_SECRET")
-            or os.environ.get("AZOM_GSC_CLIENT_SECRET")
-            or ""
-        ).strip(),
-        "refresh_token": (
-            os.environ.get("GSC_OAUTH_REFRESH_TOKEN")
-            or os.environ.get("AZOM_GSC_REFRESH_TOKEN")
-            or ""
-        ).strip(),
-        "access_token": (
-            os.environ.get("GSC_OAUTH_ACCESS_TOKEN")
-            or os.environ.get("AZOM_GSC_ACCESS_TOKEN")
-            or ""
-        ).strip(),
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "access_token": access_token,
     }
 
 
@@ -130,6 +146,14 @@ def gsc_status(
 ) -> dict[str, Any]:
     """Return current GSC connector readiness without leaking credentials."""
     prop_url = _resolve_property_url(site_url, market)
+    oauth_cfg = gsc_oauth_configured()
+    oauth_conn = GscOAuthStore().has_tokens()
+    redirect_uri = gsc_oauth_redirect_uri()
+    base_meta = {
+        "oauth_configured": oauth_cfg,
+        "oauth_connected": oauth_conn,
+        "redirect_uri": redirect_uri,
+    }
     if gsc_kill_active():
         return {
             "connected": False,
@@ -137,6 +161,7 @@ def gsc_status(
             "property_url": prop_url,
             "note": "GSC är avstängd via nödstopp (AZOM_GSC_KILL=1).",
             "scope": GSC_READONLY_SCOPE,
+            **base_meta,
         }
     if is_mock_mode():
         return {
@@ -145,6 +170,7 @@ def gsc_status(
             "property_url": prop_url,
             "note": "Mock-läge aktivt (deterministiska nordiska GSC-fixturer, endast läsning).",
             "scope": GSC_READONLY_SCOPE,
+            **base_meta,
         }
     if not env_flag("AZOM_GSC_ENABLED"):
         return {
@@ -153,6 +179,7 @@ def gsc_status(
             "property_url": prop_url,
             "note": "Live GSC kräver AZOM_GSC_ENABLED=1 i processmiljön (fail-closed).",
             "scope": GSC_READONLY_SCOPE,
+            **base_meta,
         }
     creds = _isolated_gsc_credentials()
     if not _has_gsc_credentials(creds):
@@ -166,6 +193,7 @@ def gsc_status(
                 "GSC_OAUTH_CLIENT_SECRET + GSC_OAUTH_REFRESH_TOKEN)."
             ),
             "scope": GSC_READONLY_SCOPE,
+            **base_meta,
         }
     return {
         "connected": True,
@@ -173,6 +201,7 @@ def gsc_status(
         "property_url": prop_url,
         "note": "Live GSC ansluten (endast läsning, webmasters.readonly).",
         "scope": GSC_READONLY_SCOPE,
+        **base_meta,
     }
 
 

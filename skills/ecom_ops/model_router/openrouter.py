@@ -224,6 +224,7 @@ class OpenRouterRoute:
             )
 
         try:
+            response.encoding = "utf-8"
             if streaming:
                 delta_cb = request.on_text_delta
                 if request.on_phase_change is not None or hard_deadline is not None:

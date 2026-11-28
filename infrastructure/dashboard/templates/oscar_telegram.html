@@ -7,7 +7,7 @@
 <div class="space-y-6">
   {% call ui.page_header(
     "Oscar · Telegram & Kanaler",
-    "Effektiv processmiljö. Allowlist och actor map läses inte från secrets.env.",
+    "Hantera tillåtna Telegram User IDs per roll och granska effektiv processmiljö. Allowlist och actor map läses inte från secrets.env.",
     badge_text="Endast Oscar",
     badge_tone="oscar"
   ) %}
@@ -15,11 +15,11 @@
     <a class="az-btn-secondary az-btn-sm" href="/oscar">{{ icon('arrow-left', 'xs') }}<span>Tillbaka</span></a>
   {% endcall %}
 
-  {% if (not runtime.mock_mode) and (allow_count == 0 or actor_count == 0) %}
+  {% if (not runtime.mock_mode) and (effective_allow_count == 0 or effective_actor_count == 0) %}
     {{ ui.info_callout(
       'warn',
       'Fail-closed aktiv i live-läge',
-      'TELEGRAM_ALLOWED_CHAT_IDS eller TELEGRAM_ACTOR_MAP är tom i processmiljön. Alla inkommande Telegram-meddelanden nekas tills variablerna sätts i systemd-miljön.'
+      'Inga Telegram User ID är konfigurerade i processmiljön eller här i panelen. Alla inkommande Telegram-meddelanden nekas tills minst ett User ID sparas nedan eller sätts i systemd-miljön.'
     ) }}
   {% endif %}
 
@@ -30,11 +30,107 @@
         {% if allow_in_secrets_file %}<code class="az-code font-mono">TELEGRAM_ALLOWED_CHAT_IDS</code>{% endif %}
         {% if allow_in_secrets_file and actor_in_secrets_file %} och {% endif %}
         {% if actor_in_secrets_file %}<code class="az-code font-mono">TELEGRAM_ACTOR_MAP</code>{% endif %}.
-        De värdena används inte. Sätt dem i processmiljön. Tom lista i live nekar alla.
+        De värdena används inte. Hantera ID:n i formuläret nedan eller i processmiljön. Tom lista i live nekar alla.
       </p>
     {% endcall %}
   {% endif %}
 
+  <!-- 1. Telegram User ID-hantering -->
+  <section class="az-card-oscar space-y-5">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 class="font-display text-base font-semibold text-oscar-300">Behöriga Telegram-användare</h2>
+        <p class="az-muted mt-1">
+          Sparade User IDs lagras säkert i <code class="az-code font-mono">AZOM_DATA_DIR/telegram_access.json</code> (0600) och gäller direkt utan att ändra <code class="az-code font-mono">secrets.env</code>.
+        </p>
+      </div>
+      {% if bot_ready %}
+        {{ ui.status_badge('ok', 'Bot redo') }}
+      {% elif not token_present %}
+        {{ ui.status_badge('error', 'Token saknas') }}
+      {% else %}
+        {{ ui.status_badge('warn', 'Saknar User ID') }}
+      {% endif %}
+    </div>
+
+    <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4 text-xs text-mist-300 space-y-1.5">
+      <p class="font-semibold text-mist-100">Så hittar ni ert numeriska Telegram User ID:</p>
+      <p>
+        Öppna <code class="az-code font-mono">@userinfobot</code> i Telegram och skicka <code class="az-code font-mono">/start</code>.
+        Kopiera siffervärdet för <span class="font-medium text-mist-100">Id</span> (t.ex. <code class="az-code font-mono">123456789</code>).
+        Flera ID:n per roll kan separeras med kommatecken. Lämna fält tomt för att rensa rollens ID:n från panelen.
+      </p>
+    </div>
+
+    <form method="post" action="/oscar/telegram/actors" class="space-y-4">
+      <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/55 p-4 space-y-2.5">
+          <label class="az-label flex flex-wrap items-center justify-between gap-2" for="jonatan-chat-ids">
+            <span class="text-mist-100">Jonatan (&ldquo;Jonte&rdquo;) — Telegram User ID</span>
+            {{ ui.status_badge('info', 'viewer + ops') }}
+          </label>
+          <input
+            id="jonatan-chat-ids"
+            class="az-input font-mono text-xs"
+            type="text"
+            name="jonatan_chat_ids"
+            value="{{ jonatan_ids_str }}"
+            autocomplete="off"
+            inputmode="numeric"
+            placeholder="t.ex. 123456789"
+          />
+          <div class="flex flex-wrap items-center gap-1.5 text-xs text-mist-400">
+            <span>Aktiva effektiva ID:</span>
+            {% if effective_jonatan_ids %}
+              {% for cid in effective_jonatan_ids %}
+                <code class="az-code font-mono text-mist-100">{{ cid }}</code>
+              {% endfor %}
+            {% else %}
+              <span class="text-mist-500">inga</span>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-ink-700/80 bg-ink-950/55 p-4 space-y-2.5">
+          <label class="az-label flex flex-wrap items-center justify-between gap-2" for="oscar-chat-ids">
+            <span class="text-mist-100">Oscar — Telegram User ID</span>
+            {{ ui.status_badge('oscar', 'full_admin') }}
+          </label>
+          <input
+            id="oscar-chat-ids"
+            class="az-input font-mono text-xs"
+            type="text"
+            name="oscar_chat_ids"
+            value="{{ oscar_ids_str }}"
+            autocomplete="off"
+            inputmode="numeric"
+            placeholder="t.ex. 987654321"
+          />
+          <div class="flex flex-wrap items-center gap-1.5 text-xs text-mist-400">
+            <span>Aktiva effektiva ID:</span>
+            {% if effective_oscar_ids %}
+              {% for cid in effective_oscar_ids %}
+                <code class="az-code font-mono text-mist-100">{{ cid }}</code>
+              {% endfor %}
+            {% else %}
+              <span class="text-mist-500">inga</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <p class="text-xs text-mist-400">
+          Processvariabler (<code class="az-code font-mono">TELEGRAM_ACTOR_MAP</code>) har företräde vid konflikt för samma ID.
+        </p>
+        <button class="az-btn-oscar" type="submit" data-busy-label="Sparar...">Spara Telegram-ID</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- 2. Status -->
   <section class="az-card-oscar space-y-5">
     <h2 class="font-display text-base font-semibold text-oscar-300">Status</h2>
 
@@ -51,10 +147,26 @@
       </div>
 
       <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4">
+        <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Effektiv åtkomst (totalt)</dt>
+        <dd class="mt-2 flex flex-wrap items-center gap-2">
+          <span class="font-display text-xl font-semibold text-mist-100 tabular-nums">{{ effective_allow_count }} id · {{ effective_actor_count }} roller</span>
+          {% if (effective_allow_count == 0 or effective_actor_count == 0) and not runtime.mock_mode %}
+            {{ ui.status_badge('warn', 'Nekar alla (fail-closed)') }}
+          {% elif effective_allow_count > 0 and effective_actor_count > 0 %}
+            {{ ui.status_badge('ok', 'Aktiv') }}
+          {% else %}
+            {{ ui.status_badge('neutral', 'Mock-läge') }}
+          {% endif %}
+        </dd>
+      </div>
+
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4">
         <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Allowlist i processen</dt>
         <dd class="mt-2 flex flex-wrap items-center gap-2">
           <span class="font-display text-xl font-semibold text-mist-100 tabular-nums">{{ allow_count }} id</span>
-          {% if allow_count == 0 and not runtime.mock_mode %}
+          {% if allow_count == 0 and effective_allow_count > 0 %}
+            {{ ui.status_badge('info', 'Endast via panel') }}
+          {% elif allow_count == 0 and not runtime.mock_mode %}
             {{ ui.status_badge('warn', 'Nekar alla (fail-closed)') }}
           {% elif allow_count > 0 %}
             {{ ui.status_badge('ok', 'Aktiv') }}
@@ -68,7 +180,9 @@
         <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Actor map i processen</dt>
         <dd class="mt-2 flex flex-wrap items-center gap-2">
           <span class="font-display text-xl font-semibold text-mist-100 tabular-nums">{{ actor_count }} poster</span>
-          {% if actor_count == 0 and not runtime.mock_mode %}
+          {% if actor_count == 0 and effective_actor_count > 0 %}
+            {{ ui.status_badge('info', 'Endast via panel') }}
+          {% elif actor_count == 0 and not runtime.mock_mode %}
             {{ ui.status_badge('warn', 'Ej mappad') }}
           {% elif actor_count > 0 %}
             {{ ui.status_badge('ok', 'Mappad') }}
@@ -76,7 +190,7 @@
         </dd>
       </div>
 
-      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4">
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-4 sm:col-span-2">
         <dt class="text-xs font-semibold uppercase tracking-wider text-mist-400">Senaste probe</dt>
         <dd class="mt-2 space-y-1 text-sm">
           {% if probe %}
@@ -94,7 +208,9 @@
       </div>
     </dl>
 
-    <p class="az-muted">Allowlist och actor map ändras i processmiljön, inte i det här formuläret. Tom lista i live nekar alla.</p>
+    <p class="az-muted">
+      Env-variablerna <code class="az-code font-mono">TELEGRAM_ALLOWED_CHAT_IDS</code> och <code class="az-code font-mono">TELEGRAM_ACTOR_MAP</code> styrs i processmiljön (systemd) och läses aldrig från <code class="az-code font-mono">secrets.env</code>. Tom lista i både panel och processmiljö nekar alla i live-läge.
+    </p>
 
     <div class="flex flex-wrap gap-2">
       <form method="post" action="/oscar/telegram/probe">

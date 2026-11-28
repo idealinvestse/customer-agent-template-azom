@@ -6,7 +6,7 @@ import json
 import math
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -27,9 +27,11 @@ from auth import (  # noqa: E402, F401
     _configure_secret_key,
     _ensure_csrf_token,
     init_auth,
+    register_auth_routes,
 )
 from cases_routes import register_cases_routes  # noqa: E402
 from core_routes import register_core_routes  # noqa: E402
+from google_oauth_routes import register_google_oauth_routes  # noqa: E402
 from health_routes import register_health_routes  # noqa: E402
 from marketing_routes import register_marketing_routes  # noqa: E402
 from oauth_routes import register_oauth_routes  # noqa: E402
@@ -113,7 +115,12 @@ def create_app() -> Flask:
         trusted_proxies = 0
     if trusted_proxies > 0:
         application.wsgi_app = ProxyFix(
-            application.wsgi_app, x_for=trusted_proxies, x_proto=trusted_proxies
+            application.wsgi_app,
+            x_for=trusted_proxies,
+            x_proto=trusted_proxies,
+            x_host=trusted_proxies,
+            x_port=trusted_proxies,
+            x_prefix=trusted_proxies,
         )
     helpers = {
         "case_age": _case_age,
@@ -141,8 +148,10 @@ def create_app() -> Flask:
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=cookie_secure,
+        PERMANENT_SESSION_LIFETIME=timedelta(days=7),
     )
     init_auth(application)
+    register_auth_routes(application)
     register_health_routes(application)
     register_webhook_routes(application)
     register_core_routes(application)
@@ -151,6 +160,7 @@ def create_app() -> Flask:
     register_marketing_routes(application)
     register_wp_routes(application)
     register_oauth_routes(application)
+    register_google_oauth_routes(application)
     register_research_routes(application)
     register_seo_routes(application)
     register_shop_intel_routes(application)

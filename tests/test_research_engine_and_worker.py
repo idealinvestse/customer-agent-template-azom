@@ -862,3 +862,177 @@ def test_all_five_research_tools_rbac_framing_bounds_and_audit(
     # Unknown tool & actor fail closed
     assert execute_research_tool("unknown_tool", {}, actor="oscar")["error_class"] == "UnknownTool"
     assert execute_research_tool("web_search", {"query": "test"}, actor="mallory")["error_class"] == "AccessDenied"
+
+
+def test_engine_concurrent_queries_extract_many_budget_units_and_store_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecom_ops.integrations.search.base import (
+        FetchResult,
+        SearchHit,
+        SearchRequest,
+        SearchResult,
+    )
+    from ecom_ops.research.budget import research_budget_status
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("AZOM_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("AZOM_WEB_SEARCH_ENABLED", "1")
+    monkeypatch.setenv("AZOM_WEB_FETCH_ENABLED", "1")
+    monkeypatch.setenv("AZOM_RESEARCH_ENABLED", "1")
+    clear_research_config_cache()
+
+    tel = Telemetry(path=data_dir / "telemetry.jsonl")
+    store = ResearchStore(path=data_dir / "research_jobs.sqlite3", artifacts_dir=data_dir / "research_artifacts")
+
+    # 1. Verify budget counts multi-provider units while keeping OpenRouter cost_usd == 0.0
+    tel.record(
+        action="web_search_selected",
+        site="azom",
+        units=3,
+        unit_type="api_calls",
+        cost_usd=0.0,
+        actor="oscar",
+        meta={"estimated_search_usd": 0.015, "cost_kind": "estimated_external"},
+    )
+    tel.record(
+        action="web_fetch_page",
+        site="azom",
+        units=2,
+        unit_type="api_calls",
+        cost_usd=0.0,
+        actor="oscar",
+        meta={"estimated_search_usd": 0.005, "cost_kind": "estimated_external"},
+    )
+    bst = research_budget_status(telemetry=tel)
+    assert bst["queries_today"] == 3
+    assert bst["fetches_today"] == 2
+    assert tel.sum_cost_usd() == 0.0
+
+    # 2. Verify concurrent query execution & extract_many delegation in ResearchEngine
+    active_queries = 0
+    max_concurrent_queries = 0
+    q_lock = threading.Lock()
+    extract_batches: list[tuple[list[str], str]] = []
+
+    class _ConcurrentRouter:
+        def search_multi(
+            self,
+            req: SearchRequest,
+            *,
+            max_providers: int = 2,
+            route_ids: Any = None,
+            telemetry: Any = None,
+            per_provider_timeout_s: float | None = None,
+        ) -> SearchResult:
+            nonlocal active_queries, max_concurrent_queries
+            del route_ids, telemetry, per_provider_timeout_s, max_providers
+            with q_lock:
+                active_queries += 1
+                max_concurrent_queries = max(max_concurrent_queries, active_queries)
+            try:
+                time.sleep(0.06)
+                slug = re.sub(r"[^a-z0-9]+", "-", req.query.lower()).strip("-")[:24] or "q"
+                return SearchResult(
+                    ok=True,
+                    route_id="multi:parallel+exa",
+                    provider="parallel+exa",
+                    providers_used=("parallel", "exa"),
+                    hits=(
+                        SearchHit(
+                            url=f"https://baymard.com/blog/{slug}",
+                            title=f"Study {slug}",
+                            snippet="Empirical ecommerce UX research.",
+                            provider="parallel+exa",
+                            score=0.9,
+                        ),
+                    ),
+                    provenance="live_api",
+                    latency_ms=10,
+                    estimated_cost_usd=0.01,
+                )
+            finally:
+                with q_lock:
+                    active_queries -= 1
+
+    class _BatchFetcher:
+        def extract_many(self, urls: list[str], *, strategy: str = "parallel_extract_first", **kwargs: Any) -> list[FetchResult]:
+            del kwargs
+            extract_batches.append((list(urls), strategy))
+            return [
+                FetchResult(
+                    ok=True,
+                    url=u,
+                    final_url=u,
+                    title="Extracted Page",
+                    text="Rich extracted markdown text for synthesis.",
+                    content_type="text/markdown",
+                    status_code=200,
+                    latency_ms=5,
+                )
+                for u in urls
+            ]
+
+    def _fake_chat(messages: list[dict[str, str]], **kwargs: Any) -> tuple[str, float]:
+        del messages
+        prof = kwargs.get("profile_id")
+        if prof == "research_planner":
+            rf_name = ((kwargs.get("response_format") or {}).get("json_schema") or {}).get("name")
+            if rf_name == "research_plan_v1":
+                return (
+                    json.dumps(
+                        {
+                            "queries": ["checkout UX pattern", "thank you page CRO"],
+                            "focus_angles": ["checkout", "confirmation"],
+                        }
+                    ),
+                    0.0,
+                )
+            return json.dumps({"sufficient": True, "gaps": [], "follow_up_queries": []}), 0.0
+        return (
+            json.dumps(
+                {
+                    "summary": "Verifierad UX-analys [S1].",
+                    "findings": [{"claim": "Tydlig orderstatus minskar friktion [S1].", "claim_kind": "best_practice", "citations": ["S1"]}],
+                    "recommendations": ["Visa spårningslänk [S1]."],
+                    "gaps": [],
+                }
+            ),
+            0.0,
+        )
+
+    monkeypatch.setattr(llm, "chat_completion", _fake_chat)
+    job = store.enqueue_job(
+        ResearchSpec(topic="Checkout UX benchmarks", profile_id="conversion_teardown", depth="quick"),
+        actor="oscar",
+    )
+    claimed = store.claim_next("worker-conc", lease_s=60, max_concurrent=2)
+    assert claimed is not None
+
+    eng = ResearchEngine(
+        store=store,
+        search_router=_ConcurrentRouter(),  # type: ignore[arg-type]
+        fetcher=_BatchFetcher(),  # type: ignore[arg-type]
+        telemetry=tel,
+    )
+    done = eng.run_job(job.research_id, worker_id="worker-conc")
+    assert done.status == "completed", done.error_message
+    assert max_concurrent_queries == 2
+    assert extract_batches and extract_batches[0][1] == "parallel_extract_first"
+
+    # 3. Verify update_progress cannot overwrite terminal status while delivery_state updates succeed
+    assert store.update_progress(job.research_id, status="searching") is False
+    assert store.get_job(job.research_id).status == "completed"  # type: ignore[union-attr]
+    assert store.update_progress(job.research_id, delivery_state="delivered") is True
+    assert store.get_job(job.research_id).delivery_state == "delivered"  # type: ignore[union-attr]
+
+    # 4. Verify _scrub_queries validates full pre-clip text so PII past char 250 is blocked
+    seen_q: set[str] = set()
+    padded_pii = ("woocommerce checkout ux patterns " * 9) + "kund@gmail.com"
+    assert len(padded_pii) > 250
+    assert eng._scrub_queries([padded_pii], taint=None, seen=seen_q) == []
+    with pytest.raises(SearchPolicyError):
+        eng._scrub_queries([padded_pii], taint=None, seen=seen_q, strict_on_all_blocked=True)
+

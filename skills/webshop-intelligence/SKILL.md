@@ -91,5 +91,5 @@ Use `wp_shop_intel_*` read-only tools (inside bounded WP/chat tool loops) to ins
 
 **Do not:**
 - Bypass `AZOM_SHOP_INTEL_LIVE_ENABLED`, `AZOM_SHOP_INTEL_KILL`, or `AZOM_USE_MOCK` gates, or place protected keys into `runtime.env`/`secrets.env`.
-- Substitute `SHOP_INTEL_CONTEXT` for per-order truth (`lookup_order` / WooCommerce order tools remain the source of truth for customer orders).
-- Expose or attempt to collect customer PII, order notes, or webhook/application secrets in Shop Intel queries or exports.
+- Substitute `SHOP_INTEL_CONTEXT` for per-order truth (`lookup_order` / WooCommerce order tools remain the source of truth for customer orders), or confuse internal `wp_shop_intel_*` store learning (zero external search) with external public web research (`web_search` / `web_research_start`).
+- Expose or attempt to collect customer PII, order notes, or webhook/application secrets in Shop Intel queries, exports, or outbound `web_search` queries (pass `QueryTaintContext`).

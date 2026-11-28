@@ -364,12 +364,17 @@ class ResearchService:
             profile=profile,
             provenance=provenance,
         )
+        providers_used = (
+            list(result.providers_used)
+            if getattr(result, "providers_used", None)
+            else [p for p in str(result.provider or "").split("+") if p]
+        )
         payload = {
             "ok": True,
             "profile_id": profile.id,
             "combination_mode": profile.combination_mode,
             "fetch_strategy": profile.fetch_strategy,
-            "providers_used": [p for p in str(result.provider or "").split("+") if p],
+            "providers_used": providers_used,
             "evidence_status": str(evidence_status),
             "provenance": provenance,
             "route_id": result.route_id,
@@ -451,6 +456,25 @@ class ResearchService:
                 raise
             except SearchRouteError:
                 fres = None
+
+            if fres is None or not fres.ok:
+                try:
+                    from ecom_ops.integrations.search.providers.exa import ExaSearchRoute
+
+                    e_route = ExaSearchRoute()
+                    if e_route.is_configured() and hasattr(e_route, "extract"):
+                        fres = e_route.extract(
+                            clean_url,
+                            taint=taint,
+                            max_chars=char_limit,
+                            telemetry=self.telemetry,
+                            actor=actor_obj.name,
+                            site="azom",
+                        )
+                except SearchPolicyError:
+                    raise
+                except SearchRouteError:
+                    fres = None
 
         if fres is None or not fres.ok:
             fres = self.fetcher.fetch(

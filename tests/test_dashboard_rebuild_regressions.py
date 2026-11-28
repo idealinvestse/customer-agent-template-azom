@@ -466,8 +466,8 @@ def test_oscar_escalations_secrets_profiles_and_behavior(rebuild_env):
     assert loc.count("?") == 1
     assert "show=open" in loc
 
-    # 2. GET /oscar/secrets renders all 49 EDITABLE_SECRET_KEYS with non-password inputs for URL/host/email
-    assert len(settings_store.EDITABLE_SECRET_KEYS) == 49
+    # 2. GET /oscar/secrets renders all 55 EDITABLE_SECRET_KEYS with non-password inputs for URL/host/email
+    assert len(settings_store.EDITABLE_SECRET_KEYS) == 55
     sec_page = client.get("/oscar/secrets", headers=hdrs)
     assert sec_page.status_code == 200
     sec_html = sec_page.get_data(as_text=True)

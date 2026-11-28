@@ -123,6 +123,12 @@ _SUPPORT_KW_RE = re.compile(
     r"konsumentlag\w*|garanti|reklamation|carplay|dab\+)\b",
     re.I,
 )
+_SEO_VENDOR_KW_RE = re.compile(
+    r"\b(?:l[äa]nkleverant[öo]r\w*|l[äa]nkshop\w*|link\s*vendor\w*|link\s*building\s+marketplace|"
+    r"bazoom|whitepress|linkhouse|prnews\.io|getfluence|seeders|anti[- ]?pbn|"
+    r"l[äa]nkmarknadsplats\w*|digital\s+pr\s+leverant[öo]r\w*)\b",
+    re.I,
+)
 _SEO_KW_RE = re.compile(
     r"\b(?:seo|s[öo]kmotoroptimering|s[öo]kord\w*|inneh[åa]llsluck\w*|"
     r"schema\.org|strukturerad\s+data|json-?ld|hreflang|canonical|"
@@ -277,8 +283,13 @@ def _is_known_profile(name: str) -> bool:
 def _match_profile_kw(text: str) -> str | None:
     if not text:
         return None
+    if _SEO_VENDOR_KW_RE.search(text):
+        return "seo_vendor_vetting"
     if _SEO_KW_RE.search(text):
         return "seo_content_radar"
+    for pid, pat in _EXTRA_PROFILE_RULES[:3]:
+        if pat.search(text):
+            return pid
     if _DESIGN_KW_RE.search(text):
         return "design_inspiration"
     if _TECH_KW_RE.search(text):
@@ -289,7 +300,7 @@ def _match_profile_kw(text: str) -> str | None:
         return "marketing_intel"
     if _MARKET_KW_RE.search(text):
         return "competitor_market"
-    for pid, pat in _EXTRA_PROFILE_RULES:
+    for pid, pat in _EXTRA_PROFILE_RULES[3:]:
         if pat.search(text):
             return pid
     return None

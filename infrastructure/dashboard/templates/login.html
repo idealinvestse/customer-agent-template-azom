@@ -1,0 +1,313 @@
+{% from "_icons.html" import icon %}
+<!DOCTYPE html>
+<html lang="sv" class="h-full">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Logga in – {{ brand_name }} Ops Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}" />
+</head>
+<body class="min-h-full font-sans text-mist-100 antialiased az-login-grid-bg">
+  <div class="relative flex min-h-screen flex-col justify-between px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
+    <!-- Top bar -->
+    <header class="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-ink-850 ring-1 ring-steel-500/40 font-display text-base font-bold text-steel-300 shadow-panel">
+          A
+        </span>
+        <div>
+          <p class="font-display text-sm font-semibold tracking-tight text-mist-100">{{ brand_name }} Ops Control</p>
+          <p class="text-xs text-mist-400">v{{ version }} · {{ host_label }}</p>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        {% if mock_mode %}
+        <span class="az-badge az-badge-warn">MOCK-LÄGE</span>
+        {% else %}
+        <span class="az-badge az-badge-ok">PRODUKTION</span>
+        {% endif %}
+        <span class="az-badge {{ 'az-badge-ok' if is_https else 'az-badge-info' }}">
+          {{ icon('lock', 'xs') }}
+          <span>{{ 'TLS / HTTPS' if is_https else 'Lokal anslutning' }}</span>
+        </span>
+        <span
+          class="az-badge az-badge-neutral"
+          data-login-health-probe="/live"
+          title="Live-kontroll mot dashboard-processen"
+        >
+          {{ icon('activity', 'xs') }}
+          <span data-health-label>Kontrollerar...</span>
+        </span>
+      </div>
+    </header>
+
+    <!-- Main split grid: form card first on mobile so mobile keyboard never covers Sign In -->
+    <main id="main-content" class="mx-auto my-auto w-full max-w-5xl py-6 lg:py-10">
+      <div class="grid items-stretch gap-6 lg:grid-cols-12 lg:gap-8">
+        <!-- Sign-in card -->
+        <section
+          class="order-1 lg:order-2 lg:col-span-7 az-login-card flex flex-col justify-between p-6 sm:p-8"
+          aria-labelledby="login-heading"
+        >
+          <div>
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.14em] text-steel-300">Säker inloggning</p>
+                <h1 id="login-heading" class="mt-1 font-display text-2xl font-semibold tracking-tight text-mist-100 sm:text-[1.75rem]">
+                  Logga in till {{ brand_name }}
+                </h1>
+                <p class="mt-1.5 text-sm text-mist-400">
+                  Hantera kundärenden, WooCommerce, WordPress, SEO och modellrouter i realtid.
+                </p>
+              </div>
+              <span class="hidden sm:inline-flex h-10 w-10 items-center justify-center rounded-xl bg-steel-600/15 text-steel-300 ring-1 ring-steel-500/30">
+                {{ icon('shield', 'md') }}
+              </span>
+            </div>
+
+            {% if error_message %}
+            <div
+              class="mt-5 az-callout az-callout-danger"
+              role="alert"
+              {% if retry_after > 0 %}data-retry-after="{{ retry_after }}"{% endif %}
+            >
+              <span class="mt-0.5 shrink-0">{{ icon('alert-circle', 'sm') }}</span>
+              <div class="min-w-0">
+                <p class="font-semibold">Inloggningen misslyckades</p>
+                <p class="opacity-95" data-retry-message>{{ error_message }}</p>
+              </div>
+            </div>
+            {% elif info_message %}
+            <div class="mt-5 az-callout az-callout-info" role="status">
+              <span class="mt-0.5 shrink-0">{{ icon('info', 'sm') }}</span>
+              <div class="min-w-0">
+                <p>{{ info_message }}</p>
+              </div>
+            </div>
+            {% endif %}
+
+            <!-- Smart quick account selector -->
+            <div class="mt-5">
+              <p class="mb-2 text-xs font-medium text-mist-400">Snabbval konto</p>
+              <div class="grid grid-cols-2 gap-2.5" role="group" aria-label="Välj användarkonto">
+                <button
+                  type="button"
+                  data-login-account="{{ admin_name }}"
+                  aria-pressed="{{ 'true' if (username | lower) == (admin_name | lower) else 'false' }}"
+                  class="az-account-pill {{ 'az-account-pill-oscar-active' if (username | lower) == (admin_name | lower) else '' }}"
+                >
+                  <span class="flex items-center gap-2 min-w-0">
+                    <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-oscar-600/25 text-oscar-300 ring-1 ring-oscar-500/35">
+                      {{ icon('shield', 'xs') }}
+                    </span>
+                    <span class="min-w-0 text-left">
+                      <span class="block truncate text-sm font-semibold text-mist-100">{{ admin_name | capitalize }}</span>
+                      <span class="block truncate text-[0.7rem] text-oscar-300">Full Admin</span>
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  data-login-account="{{ viewer_name }}"
+                  aria-pressed="{{ 'true' if (username | lower) == (viewer_name | lower) else 'false' }}"
+                  class="az-account-pill {{ 'az-account-pill-viewer-active' if (username | lower) == (viewer_name | lower) else '' }}"
+                >
+                  <span class="flex items-center gap-2 min-w-0">
+                    <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-steel-600/25 text-steel-300 ring-1 ring-steel-500/35">
+                      {{ icon('user', 'xs') }}
+                    </span>
+                    <span class="min-w-0 text-left">
+                      <span class="block truncate text-sm font-semibold text-mist-100">{{ viewer_name | capitalize }}</span>
+                      <span class="block truncate text-[0.7rem] text-steel-300">Operatör</span>
+                    </span>
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <form
+              method="post"
+              action="/login"
+              class="mt-5 space-y-4"
+              data-login-form
+              data-busy-label="Loggar in..."
+            >
+              <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+              <input type="hidden" name="next" value="{{ next_url }}" />
+
+              <div>
+                <div class="flex items-baseline justify-between gap-2">
+                  <label for="login-username" class="az-label">Användarnamn</label>
+                  <span id="login-username-hint" class="text-xs text-mist-500">{{ admin_name }} eller {{ viewer_name }}</span>
+                </div>
+                <input
+                  id="login-username"
+                  name="username"
+                  type="text"
+                  value="{{ username }}"
+                  class="az-input py-2.5"
+                  placeholder="t.ex. {{ admin_name }}"
+                  autocomplete="username"
+                  spellcheck="false"
+                  autocorrect="off"
+                  autocapitalize="none"
+                  enterkeyhint="next"
+                  aria-describedby="login-username-hint"
+                  data-error="login-username-error"
+                  required
+                  {% if not username %}autofocus{% endif %}
+                />
+                <p id="login-username-error" class="az-field-error">
+                  <span role="img" aria-label="Fel">!</span> Ange ditt användarnamn ({{ admin_name }} eller {{ viewer_name }}).
+                </p>
+              </div>
+
+              <div>
+                <div class="flex items-baseline justify-between gap-2">
+                  <label for="login-password" class="az-label">Lösenord</label>
+                  <span id="login-capslock-warn" class="hidden items-center gap-1 text-xs font-medium text-warn">
+                    {{ icon('alert-triangle', 'xs') }}
+                    <span>Caps Lock är aktivt</span>
+                  </span>
+                </div>
+                <div class="az-input-wrap relative">
+                  <input
+                    id="login-password"
+                    name="password"
+                    type="password"
+                    class="az-input py-2.5 pr-11"
+                    placeholder="Ange lösenord"
+                    autocomplete="current-password"
+                    enterkeyhint="done"
+                    data-error="login-password-error"
+                    required
+                    {% if username %}autofocus{% endif %}
+                  />
+                  <button
+                    type="button"
+                    class="absolute inset-y-0 right-0 flex items-center px-3 text-mist-400 transition hover:text-mist-100 focus-visible:outline-none focus-visible:text-steel-300"
+                    data-password-toggle="login-password"
+                    aria-pressed="false"
+                    aria-label="Visa lösenord"
+                    title="Visa eller dölj lösenord"
+                  >
+                    <span data-icon-show>{{ icon('eye', 'sm') }}</span>
+                    <span data-icon-hide class="hidden">{{ icon('eye-off', 'sm') }}</span>
+                  </button>
+                </div>
+                <p id="login-password-error" class="az-field-error">
+                  <span role="img" aria-label="Fel">!</span> Ange ditt lösenord för att logga in.
+                </p>
+              </div>
+
+              <!-- Session duration selector -->
+              <fieldset class="space-y-1.5">
+                <legend class="text-xs font-medium text-mist-400">Sessionslängd</legend>
+                <div class="grid grid-cols-3 gap-2">
+                  <label class="az-session-choice">
+                    <input type="radio" name="session_hours" value="8" class="sr-only" {% if session_hours == 8 %}checked{% endif %} />
+                    <span>8 tim</span>
+                  </label>
+                  <label class="az-session-choice">
+                    <input type="radio" name="session_hours" value="24" class="sr-only" {% if session_hours == 24 %}checked{% endif %} />
+                    <span>24 tim</span>
+                  </label>
+                  <label class="az-session-choice">
+                    <input type="radio" name="session_hours" value="168" class="sr-only" {% if session_hours == 168 %}checked{% endif %} />
+                    <span>7 dagar</span>
+                  </label>
+                </div>
+              </fieldset>
+
+              <button
+                type="submit"
+                id="login-submit-btn"
+                class="az-btn-primary w-full py-2.5 text-base shadow-lg shadow-steel-600/20"
+                {% if retry_after > 0 %}disabled{% endif %}
+              >
+                <span>Logga in</span>
+                {{ icon('arrow-right', 'sm') }}
+              </button>
+            </form>
+          </div>
+
+          <details class="mt-6 rounded-xl border border-ink-700/70 bg-ink-900/55 px-4 py-3 text-xs text-mist-400">
+            <summary class="cursor-pointer font-medium text-mist-300 hover:text-mist-100 select-none">
+              Behöver du återställa lösenord eller kontrollera servern?
+            </summary>
+            <div class="mt-2.5 space-y-1.5 leading-relaxed">
+              <p>Kontrollera installationsuppgifter på servern som root/sudo:</p>
+              <p><code class="az-code">sudo cat /root/azom-install-credentials.txt</code></p>
+              <p>Verifiera status &amp; hälsa via CLI:</p>
+              <p><code class="az-code">sudo -u azom /opt/azom-agent/bin/healthcheck.sh --check-public</code></p>
+            </div>
+          </details>
+        </section>
+
+        <!-- Capability & posture panel (second on mobile, left column on desktop) -->
+        <aside class="order-2 lg:order-1 lg:col-span-5 flex flex-col justify-between gap-5 rounded-2xl border border-ink-700/80 bg-ink-900/70 p-6 shadow-panel backdrop-blur-md sm:p-7">
+          <div class="space-y-4">
+            <div class="inline-flex items-center gap-2 rounded-full border border-steel-500/30 bg-steel-600/10 px-3 py-1 text-xs font-medium text-steel-200">
+              <span class="h-2 w-2 rounded-full bg-ok animate-pulse" aria-hidden="true"></span>
+              <span>Nordic Ops Control Room</span>
+            </div>
+
+            <h2 class="font-display text-xl font-semibold leading-snug text-mist-100">
+              All e-handelsdrift, AI-ärenden och sajtövervakning på ett ställe.
+            </h2>
+            <p class="text-sm leading-relaxed text-mist-300">
+              Logga in med ditt personliga konto för att granska ärenden, godkänna kundsvar och övervaka WooCommerce, SEO och modellrouter.
+            </p>
+          </div>
+
+          <div class="space-y-3">
+            <div class="rounded-xl border border-ink-700/80 bg-ink-850/80 p-3.5">
+              <div class="flex items-start gap-3">
+                <span class="mt-0.5 rounded-lg bg-ok/15 p-1.5 text-ok">{{ icon('lock', 'sm') }}</span>
+                <div>
+                  <p class="text-sm font-semibold text-mist-100">Krypterad session &amp; CSRF-skydd</p>
+                  <p class="mt-0.5 text-xs text-mist-400">HttpOnly-cookies, strikt CSP, hastighetsbegränsning och automatisk timeout.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-ink-700/80 bg-ink-850/80 p-3.5">
+              <div class="flex items-start gap-3">
+                <span class="mt-0.5 rounded-lg bg-steel-600/20 p-1.5 text-steel-300">{{ icon('check-circle', 'sm') }}</span>
+                <div>
+                  <p class="text-sm font-semibold text-mist-100">Human-in-the-loop (HITL)</p>
+                  <p class="mt-0.5 text-xs text-mist-400">Kundmail, kampanjändringar och filuppdateringar kräver alltid aktivt godkännande.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="rounded-xl border border-ink-700/80 bg-ink-850/80 p-3.5">
+              <div class="flex items-start gap-3">
+                <span class="mt-0.5 rounded-lg bg-oscar-600/20 p-1.5 text-oscar-300">{{ icon('sliders', 'sm') }}</span>
+                <div>
+                  <p class="text-sm font-semibold text-mist-100">Rollbaserad åtkomst (RBAC)</p>
+                  <p class="mt-0.5 text-xs text-mist-400">Operatörsvy för {{ viewer_name | capitalize }} och full admin-/modellkontroll för {{ admin_name | capitalize }}.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-ink-700/70 pt-4 text-xs text-mist-500">
+            <span>Skyddad bakom {{ 'TLS 1.3 / Caddy' if is_https else 'lokal HTTP' }}</span>
+            <span>API-klienter stöder även Basic Auth</span>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <footer class="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-2 text-xs text-mist-500">
+      <span>{{ brand_name }} Ops Agent v{{ version }}</span>
+      <span>Hetzner Ubuntu 26.04 · Single-Tenant Security Posture</span>
+    </footer>
+  </div>
+
+  <script defer src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

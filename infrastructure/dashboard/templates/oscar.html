@@ -12,6 +12,7 @@
     badge_tone="oscar"
   ) %}
     <a class="az-btn-secondary az-btn-sm" href="/oscar/secrets">{{ icon('key', 'xs') }}<span>Secrets &amp; Probes</span></a>
+    <a class="az-btn-secondary az-btn-sm" href="/oscar/google">{{ icon('globe', 'xs') }}<span>Google GA4 &amp; GSC</span></a>
     <a class="az-btn-secondary az-btn-sm" href="/oscar/behavior">{{ icon('message-square', 'xs') }}<span>Beteende</span></a>
     <a class="az-btn-secondary az-btn-sm" href="/oscar/telegram">{{ icon('send', 'xs') }}<span>Telegram</span></a>
     <a class="az-btn-secondary az-btn-sm" href="/oscar/escalations">{{ icon('alert-triangle', 'xs') }}<span>Eskaleringar</span></a>
@@ -210,11 +211,19 @@
 
   <!-- 2. OAuth & xAI Inloggning -->
   <section id="xai-login" class="az-card-oscar space-y-4">
+    {% set chatgpt = model_routes.get("chatgpt_oauth", {}) %}
+    {% set req_host = (request.host or '').split(':')[0].strip('[]').lower() %}
+    {% set is_remote_host = req_host not in ['', '127.0.0.1', 'localhost', '::1', 'testserver'] %}
+    {% set is_loopback_redirect = chatgpt.get("redirect_is_loopback", false) %}
+    {% set remote_loopback = is_loopback_redirect and is_remote_host %}
     <div class="flex flex-wrap items-center justify-between gap-2">
       <h2 class="font-display text-base font-semibold text-oscar-300">OAuth &amp; xAI Inloggning</h2>
-      {% set chatgpt = model_routes.get("chatgpt_oauth", {}) %}
-      {% if chatgpt.get("configured") %}
+      {% if chatgpt.get("connected") %}
         {{ ui.status_badge('ok', 'ChatGPT ansluten') }}
+      {% elif chatgpt.get("needs_reauth") %}
+        {{ ui.status_badge('warn', 'ChatGPT behöver återanslutas') }}
+      {% elif chatgpt.get("has_pending_auth") %}
+        {{ ui.status_badge('info', 'Väntar på callback-URL') }}
       {% else %}
         {{ ui.status_badge('neutral', 'ChatGPT ej ansluten') }}
       {% endif %}
@@ -242,8 +251,17 @@
           </div>
         </dl>
         <div class="flex flex-wrap gap-2 pt-1">
-          {% if chatgpt.get("configured") %}
-          <a class="az-btn-secondary az-btn-sm" href="/oauth/openai/start">Återanslut ChatGPT</a>
+          {% if chatgpt.get("connected") %}
+          <a
+            class="az-btn-secondary az-btn-sm"
+            href="/oauth/openai/start"
+            {% if remote_loopback %}target="_blank" rel="noopener noreferrer"{% endif %}
+          >Återanslut ChatGPT</a>
+          <a
+            class="az-btn-secondary az-btn-sm"
+            href="/oauth/openai/start?fresh=1"
+            {% if remote_loopback %}target="_blank" rel="noopener noreferrer"{% endif %}
+          >Ny registrering</a>
           <form
             method="post"
             action="/oscar/models/chatgpt/disconnect"
@@ -255,17 +273,35 @@
             <button class="az-btn-danger az-btn-sm" type="submit" data-busy-label="Kopplar från...">Koppla från ChatGPT</button>
           </form>
           {% else %}
-          <a class="az-btn-oscar az-btn-sm" href="/oauth/openai/start">Anslut ChatGPT</a>
+          <a
+            class="az-btn-oscar az-btn-sm"
+            href="/oauth/openai/start"
+            {% if remote_loopback %}target="_blank" rel="noopener noreferrer"{% endif %}
+          >Anslut ChatGPT</a>
+          {% if chatgpt.get("has_saved_session") or chatgpt.get("needs_reauth") %}
+          <a
+            class="az-btn-secondary az-btn-sm"
+            href="/oauth/openai/start?fresh=1"
+            {% if remote_loopback %}target="_blank" rel="noopener noreferrer"{% endif %}
+          >Ny registrering</a>
+          {% endif %}
           {% endif %}
           <a class="az-btn-secondary az-btn-sm" href="/oauth/gmail/start">{{ "Förnya Gmail" if gmail_connected else "Anslut Gmail" }}</a>
         </div>
-        <details class="rounded-lg border border-ink-700/70 bg-ink-900/70 p-3">
+        <details
+          class="rounded-lg border border-ink-700/70 bg-ink-900/70 p-3"
+          {% if remote_loopback or chatgpt.get("has_pending_auth") or not chatgpt.get("connected") %}open{% endif %}
+        >
           <summary class="cursor-pointer text-xs font-medium text-mist-200">Slutför manuell callback (remote VPS / 127.0.0.1)</summary>
           <p class="az-muted mt-2 text-xs">
             Aktiv <code class="az-code font-mono">redirect_uri</code>:
             <code class="az-code font-mono break-all">{{ chatgpt.get("redirect_uri", "") }}</code>.
-            Om OpenAI skickar tillbaka till <code class="az-code font-mono">127.0.0.1</code> när dashboarden körs på en fjärrserver, klistra in hela adressfälts-URL:en nedan inom 10 minuter.
           </p>
+          <ol class="mt-2 list-decimal space-y-1 pl-4 text-xs text-mist-300">
+            <li>Klicka på <strong class="text-mist-100">{{ "Återanslut ChatGPT" if chatgpt.get("connected") else "Anslut ChatGPT" }}</strong> ovan och logga in hos OpenAI.</li>
+            <li>När OpenAI skickar webbläsaren vidare till <code class="az-code font-mono">127.0.0.1:8080</code> visas <em>"Sidan kan inte nås"</em> — det är förväntat på en remote VPS.</li>
+            <li>Kopiera hela URL:en från webbläsarens adressfält (med <code class="az-code font-mono">?code=...&amp;state=...</code>) och klistra in den nedan inom 10 minuter.</li>
+          </ol>
           <form method="post" action="/oauth/openai/complete-manual" class="mt-2.5 flex flex-wrap items-center gap-2">
             <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
             <input

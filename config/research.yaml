@@ -86,7 +86,7 @@ egress:
   denylist_domains: []
   allowlist_domains: []
 
-# 12 goal- & ambition-adaptive search profiles (see skills/research-profiles/SKILL.md)
+# 13 goal- & ambition-adaptive search profiles (see skills/research-profiles/SKILL.md)
 profiles:
   design_inspiration:
     title: "UX & Design Inspiration"
@@ -95,8 +95,8 @@ profiles:
     fanout_by_depth: {quick: 1, standard: 2, deep: 3}
     fetch_strategy: parallel_extract_first
     output_format_default: ux_patterns
-    preferred_providers: [exa, parallel, tavily, brave]
-    market_defaults: [en, sv, nb, da]
+    preferred_providers: [exa, parallel, brave, tavily]
+    market_defaults: ["en", "sv", "nb", "da"]
     freshness_days: 730
     corroboration_mode: inspiration_and_heuristics
     authority_domains:
@@ -114,7 +114,7 @@ profiles:
     fetch_strategy: parallel_extract_first
     output_format_default: checklist
     preferred_providers: [parallel, exa, brave, tavily]
-    market_defaults: [en]
+    market_defaults: ["en"]
     freshness_days: 540
     corroboration_mode: authoritative_primary
     authority_domains:
@@ -131,12 +131,12 @@ profiles:
     fanout_by_depth: {quick: 1, standard: 2, deep: 3}
     round_providers:
       1: [parallel, exa]
-      2: [brave, tavily]
+      2: [brave, parallel]
       3: [parallel, exa, brave]
     fetch_strategy: hybrid
     output_format_default: comparison
     preferred_providers: [parallel, exa, brave, tavily]
-    market_defaults: [SE, NO, DK]
+    market_defaults: ["SE", "NO", "DK"]
     freshness_days: 365
     corroboration_mode: triangulated_market
     authority_domains: []
@@ -148,8 +148,8 @@ profiles:
     fanout_by_depth: {quick: 1, standard: 2, deep: 2}
     fetch_strategy: direct
     output_format_default: brief
-    preferred_providers: [parallel, brave, exa, tavily]
-    market_defaults: [SE, NO, DK]
+    preferred_providers: [brave, parallel, exa, tavily]
+    market_defaults: ["SE", "NO", "DK"]
     freshness_days: 30
     corroboration_mode: strict_factual
     authority_domains:
@@ -172,7 +172,7 @@ profiles:
     fetch_strategy: direct
     output_format_default: brief
     preferred_providers: [exa, parallel, brave, tavily]
-    market_defaults: [SE, NO, DK, en]
+    market_defaults: ["SE", "NO", "DK", "en"]
     freshness_days: 365
     corroboration_mode: triangulated_market
     authority_domains:
@@ -187,12 +187,12 @@ profiles:
     fanout_by_depth: {quick: 1, standard: 2, deep: 3}
     round_providers:
       1: [parallel, exa]
-      2: [tavily, brave]
-      3: [parallel, exa, tavily]
+      2: [brave, parallel]
+      3: [parallel, exa, brave]
     fetch_strategy: hybrid
     output_format_default: brief
-    preferred_providers: [parallel, exa, tavily, brave]
-    market_defaults: [SE, en]
+    preferred_providers: [parallel, exa, brave, tavily]
+    market_defaults: ["SE", "en"]
     freshness_days: 365
     corroboration_mode: triangulated_factual
     authority_domains: []
@@ -204,8 +204,8 @@ profiles:
     fanout_by_depth: {quick: 1, standard: 1, deep: 2}
     fetch_strategy: snippet_only
     output_format_default: brief
-    preferred_providers: [brave, parallel, tavily, exa]
-    market_defaults: [SE, NO, DK, en]
+    preferred_providers: [brave, parallel, exa, tavily]
+    market_defaults: ["SE", "NO", "DK", "en"]
     freshness_days: 14
     corroboration_mode: strict_factual
     authority_domains: []
@@ -219,7 +219,7 @@ profiles:
     fetch_strategy: parallel_extract_first
     output_format_default: spec_sheet
     preferred_providers: [parallel, exa, brave, tavily]
-    market_defaults: [en, SE]
+    market_defaults: ["en", "SE"]
     freshness_days: 730
     corroboration_mode: authoritative_primary
     authority_domains:
@@ -236,8 +236,8 @@ profiles:
     fanout_by_depth: {quick: 1, standard: 2, deep: 3}
     fetch_strategy: direct
     output_format_default: checklist
-    preferred_providers: [exa, brave, tavily, parallel]
-    market_defaults: [SE, NO, DK]
+    preferred_providers: [exa, brave, parallel, tavily]
+    market_defaults: ["SE", "NO", "DK"]
     freshness_days: 365
     corroboration_mode: triangulated_market
     authority_domains:
@@ -247,19 +247,42 @@ profiles:
       - moz.com
     pii_strictness: high
     max_fetch_default: 3
+  seo_vendor_vetting:
+    title: "SEO Länkleverantör & Anti-PBN Granskning"
+    ambition: standard
+    combination_mode: staged
+    fanout_by_depth: {quick: 1, standard: 2, deep: 3}
+    round_providers:
+      1: [parallel, brave]
+      2: [exa, brave]
+      3: [parallel, exa, brave]
+    fetch_strategy: direct
+    output_format_default: comparison
+    preferred_providers: [parallel, brave, exa, tavily]
+    market_defaults: ["SE", "NO", "DK"]
+    freshness_days: 365
+    corroboration_mode: triangulated_market
+    authority_domains:
+      - konsumentverket.se
+      - forbrukertilsynet.no
+      - forbrug.dk
+      - ahrefs.com
+      - semrush.com
+    pii_strictness: high
+    max_fetch_default: 3
   regulatory_compliance:
     title: "Regelverk, Juridik & Compliance"
     ambition: deep
     combination_mode: staged
     fanout_by_depth: {quick: 1, standard: 2, deep: 3}
     round_providers:
-      1: [parallel, brave]
-      2: [tavily, exa]
-      3: [parallel, brave, searxng]
+      1: [brave, parallel]
+      2: [parallel, exa]
+      3: [brave, parallel, exa, searxng]
     fetch_strategy: direct
     output_format_default: risk_brief
-    preferred_providers: [parallel, brave, tavily, exa, searxng]
-    market_defaults: [SE, NO, DK]
+    preferred_providers: [brave, parallel, exa, tavily, searxng]
+    market_defaults: ["SE", "NO", "DK"]
     freshness_days: 180
     corroboration_mode: strict_factual
     authority_domains:
@@ -278,12 +301,12 @@ profiles:
     fanout_by_depth: {quick: 1, standard: 2, deep: 3}
     round_providers:
       1: [exa, parallel]
-      2: [tavily, brave]
-      3: [parallel, exa]
+      2: [brave, exa]
+      3: [parallel, exa, brave]
     fetch_strategy: parallel_extract_first
     output_format_default: ux_patterns
-    preferred_providers: [exa, parallel, tavily, brave]
-    market_defaults: [en, SE, NO, DK]
+    preferred_providers: [exa, parallel, brave, tavily]
+    market_defaults: ["en", "SE", "NO", "DK"]
     freshness_days: 540
     corroboration_mode: inspiration_and_heuristics
     authority_domains:
@@ -302,7 +325,7 @@ profiles:
     fetch_strategy: hybrid
     output_format_default: matrix
     preferred_providers: [parallel, exa, brave, tavily, searxng]
-    market_defaults: [SE, NO, DK, en]
+    market_defaults: ["SE", "NO", "DK", "en"]
     freshness_days: 365
     corroboration_mode: triangulated_factual
     authority_domains: []

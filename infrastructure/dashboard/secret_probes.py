@@ -67,6 +67,9 @@ def _scrub_error(exc: Exception | str) -> str:
         "SMTP_PASSWORD",
         "SSH_PASSWORD",
         "GOOGLE_ADS_DEVELOPER_TOKEN",
+        "GSC_OAUTH_CLIENT_SECRET",
+        "GSC_OAUTH_ACCESS_TOKEN",
+        "GSC_OAUTH_REFRESH_TOKEN",
         "PARALLEL_API_KEY",
         "EXA_API_KEY",
         "BRAVE_SEARCH_API_KEY",
@@ -167,8 +170,13 @@ def probe_telegram() -> ProbeResult:
         return _result("telegram", label, "missing", "TELEGRAM_BOT_TOKEN saknas")
     mock = _is_mock()
     if not mock:
-        allow = (os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS") or "").strip()
-        actor_map = (os.environ.get("TELEGRAM_ACTOR_MAP") or "").strip()
+        from ecom_ops.bot.actors import (
+            effective_telegram_actor_map,
+            effective_telegram_allowlist,
+        )
+
+        allow = effective_telegram_allowlist()
+        actor_map = effective_telegram_actor_map()
         if not allow or not actor_map:
             missing = []
             if not allow:
@@ -179,7 +187,7 @@ def probe_telegram() -> ProbeResult:
                 "telegram",
                 label,
                 "error",
-                "Prod fail-closed: sätt " + " + ".join(missing),
+                "Prod fail-closed: sätt " + " + ".join(missing) + " (eller /oscar/telegram)",
             )
     if mock:
         return _result("telegram", label, "ok", "Token present (mock — skip getMe)")
@@ -479,6 +487,75 @@ def probe_google_ads() -> ProbeResult:
         return _result("google_ads", label, "error", _scrub_error(exc))
 
 
+def probe_gsc() -> ProbeResult:
+    """Isolated Google Search Console probe (mock-first, fail-closed)."""
+    label = "Google Search Console"
+    mock = _is_mock()
+    try:
+        from ecom_ops.integrations.gsc import (
+            _has_gsc_credentials,
+            _isolated_gsc_credentials,
+            gsc_client_from_env,
+            gsc_kill_active,
+            gsc_status,
+        )
+        from ecom_ops.oauth.gsc import gsc_oauth_configured
+        from ecom_ops.runtime_env import env_flag
+
+        if gsc_kill_active():
+            return _result("gsc", label, "skipped", "GSC avstängd via AZOM_GSC_KILL=1")
+        st = gsc_status()
+        prop_url = str(st.get("property_url") or "https://azom.no/")
+        if mock:
+            client = gsc_client_from_env(use_mock=True, site_url=prop_url)
+            res = client.query_search_analytics(
+                site_url=prop_url,
+                market="no",
+                days=7,
+                row_limit=5,
+            )
+            rows = list(res.get("rows") or [])
+            return _result("gsc", label, "ok", f"Mock ok · {len(rows)} rad(er)")
+        if not env_flag("AZOM_GSC_ENABLED"):
+            return _result(
+                "gsc",
+                label,
+                "skipped",
+                "Live GSC kräver AZOM_GSC_ENABLED=1 i processmiljön",
+            )
+        creds = _isolated_gsc_credentials()
+        if not _has_gsc_credentials(creds):
+            if gsc_oauth_configured():
+                return _result(
+                    "gsc",
+                    label,
+                    "missing",
+                    "GSC OAuth-klient konfigurerad men ej ansluten — gå till /oscar/google",
+                )
+            return _result(
+                "gsc",
+                label,
+                "missing",
+                "GSC_OAUTH_CLIENT_ID/SECRET saknas",
+            )
+        client = gsc_client_from_env(use_mock=False, site_url=prop_url)
+        res = client.query_search_analytics(
+            site_url=prop_url,
+            market="no",
+            days=7,
+            row_limit=1,
+        )
+        rows = list(res.get("rows") or [])
+        return _result(
+            "gsc",
+            label,
+            "ok",
+            f"Live GSC ok · property={prop_url} · {len(rows)} rad(er)",
+        )
+    except Exception as exc:
+        return _result("gsc", label, "error", _scrub_error(exc))
+
+
 def probe_merchant() -> ProbeResult:
     label = "Merchant"
     mock = _is_mock()
@@ -588,6 +665,7 @@ PROBES: dict[str, Callable[[], ProbeResult]] = {
     "gmail_oauth": probe_gmail_oauth,
     "ga4": probe_ga4,
     "google_ads": probe_google_ads,
+    "gsc": probe_gsc,
     "merchant": probe_merchant,
     "web_search": probe_web_search,
 }

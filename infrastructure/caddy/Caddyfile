@@ -1,0 +1,16 @@
+# Azom Ops Agent — Caddy reverse proxy with automatic Let's Encrypt HTTPS
+# Target host: dashboard.azom.no -> 127.0.0.1:8080
+# Caddy automatically sets X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host,
+# and preserves incoming Host and webhook signature headers (X-Hub-Signature-256).
+
+dashboard.azom.no {
+	encode zstd gzip
+
+	# Block Prometheus /metrics from public access (scrape 127.0.0.1:8080 directly)
+	@metrics path /metrics /metrics/*
+	respond @metrics "Forbidden" 403
+
+	reverse_proxy 127.0.0.1:8080 {
+		header_up X-Real-IP {remote_host}
+	}
+}

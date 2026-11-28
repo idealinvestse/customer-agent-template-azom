@@ -7,6 +7,7 @@ never introduces circular imports at module load time.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,42 @@ def _extract_serp_gaps_and_angles(
     return competitors[:8], gaps[:6], angles[:5], citations[:8]
 
 
+def _site_taint_context(site_id: str) -> Any:
+    """Build ``QueryTaintContext`` with site-bound secrets if the site is registered."""
+    from ecom_ops.research.firewall import QueryTaintContext
+    from ecom_ops.wp_ops.registry import site_by_id
+    from ecom_ops.wp_ops.tools.scrub import site_bound_secrets
+
+    try:
+        site_obj = site_by_id(site_id)
+    except Exception:
+        site_obj = None
+    if site_obj is None:
+        return None
+    secs = site_bound_secrets(site_obj)
+    return QueryTaintContext(secrets=tuple(secs)) if secs else None
+
+
+def _build_bounded_seo_query(
+    clean_topic: str,
+    extra_kws: list[str],
+    market_label: str,
+    *,
+    fw: Any,
+    taint: Any,
+) -> str:
+    """Validate topic + keywords fail-closed, then build a <=250-char SERP query."""
+    fw.check_text(clean_topic, max_chars=500, taint=taint)
+    for kw in extra_kws:
+        fw.check_text(kw, max_chars=250, taint=taint)
+    kw_part = f" {' '.join(extra_kws[:2])}" if extra_kws else ""
+    suffix = f" {market_label} köpguide SEO"
+    max_topic_len = max(40, 250 - len(kw_part) - len(suffix))
+    bounded_topic = clean_topic[:max_topic_len].rstrip()
+    raw_query = f"{bounded_topic}{kw_part}{suffix}".strip()
+    return fw.check_query(raw_query[:250], taint=taint)
+
+
 def gather_seo_serp_context(
     site_id: str,
     *,
@@ -157,6 +194,8 @@ def gather_seo_serp_context(
         OutboundQueryFirewall,
         SearchPolicyError,
         get_research_service,
+        is_mock_mode,
+        research_enabled,
     )
 
     mkt = normalize_market(market)
@@ -166,13 +205,14 @@ def gather_seo_serp_context(
         for k in (focus_keywords or [])
         if str(k or "").strip()
     ]
-    kw_part = f" {' '.join(extra_kws[:2])}" if extra_kws else ""
     market_label = {"no": "Norge", "se": "Sverige", "dk": "Danmark"}[mkt]
-    raw_query = f"{clean_topic}{kw_part} {market_label} köpguide SEO".strip()
 
     fw = OutboundQueryFirewall()
+    taint = _site_taint_context(site_id)
     # Fail-closed on PII, secrets, internal IDs/hosts — NEVER swallow SearchPolicyError
-    clean_query = fw.check_query(raw_query)
+    clean_query = _build_bounded_seo_query(
+        clean_topic, extra_kws, market_label, fw=fw, taint=taint
+    )
 
     svc = get_research_service(data_dir=data_dir)
     try:
@@ -183,6 +223,7 @@ def gather_seo_serp_context(
             locale=_MARKET_LOCALE[mkt],
             country=mkt.upper(),
             max_results=5,
+            taint=taint,
         )
     except SearchPolicyError:
         raise
@@ -224,8 +265,13 @@ def gather_seo_serp_context(
                 markets=[mkt.upper()],
                 locale=_MARKET_LOCALE[mkt],
                 country=mkt.upper(),
+                taint=taint,
                 start_worker=False,
             )
+            if not is_mock_mode() and research_enabled():
+                from ecom_ops.research.worker import ensure_research_worker_started
+
+                ensure_research_worker_started(data_dir=data_dir)
             research_job_id = str(getattr(job, "research_id", "") or "") or None
         except SearchPolicyError:
             raise
@@ -415,8 +461,32 @@ def run_autonomous_seo_pipeline(
     if not clean_topic:
         clean_topic = gsc_keywords[0] if gsc_keywords else _MARKET_DEFAULT_TOPIC[mkt]
 
-    # 2. SERP Research Context (seo_content_radar — PII-free via OutboundQueryFirewall)
-    if include_web_research:
+    # 2 & 5 (independent network steps): run SERP Research + Vetted Vendor Search concurrently
+    if include_web_research and include_vendor_vetting:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            serp_fut = pool.submit(
+                gather_seo_serp_context,
+                site.id,
+                topic=clean_topic,
+                market=mkt,
+                actor=actor_obj.name,
+                focus_keywords=gsc_keywords[:2],
+                run_deep_research=start_deep_research,
+                data_dir=service.data_dir,
+            )
+            vendor_fut = pool.submit(
+                vet_link_vendors_via_web,
+                mkt,
+                actor=actor_obj.name,
+                budget_sek=budget,
+                link_count=count,
+                goal="organic_growth",
+                include_web_research=True,
+                data_dir=service.data_dir,
+            )
+            serp_ctx = serp_fut.result()
+            vendor_sel = vendor_fut.result()
+    elif include_web_research:
         serp_ctx = gather_seo_serp_context(
             site.id,
             topic=clean_topic,
@@ -426,6 +496,7 @@ def run_autonomous_seo_pipeline(
             run_deep_research=start_deep_research,
             data_dir=service.data_dir,
         )
+        vendor_sel = None
     else:
         serp_ctx = {
             "ok": True,
@@ -444,6 +515,7 @@ def run_autonomous_seo_pipeline(
             "research_job_id": None,
             "note": "Web SERP research avstängd via include_web_research=False.",
         }
+        vendor_sel = None
 
     # 3. Automated Strategy (seos-*) enriched with audit + GSC + SERP context
     focus_topics = list(dict.fromkeys([clean_topic, *gsc_keywords[:3]]))[:5]
@@ -474,8 +546,8 @@ def run_autonomous_seo_pipeline(
     )
     campaign = camp_res["campaign"]
 
-    # 5. Vetted Nordic Link-Shop Selection (seo_vendor_vetting)
-    if include_vendor_vetting:
+    # 5. Vetted Nordic Link-Shop Selection (seo_vendor_vetting) if not already fetched concurrently
+    if include_vendor_vetting and vendor_sel is None:
         vendor_sel = vet_link_vendors_via_web(
             mkt,
             actor=actor_obj.name,
@@ -485,7 +557,7 @@ def run_autonomous_seo_pipeline(
             include_web_research=include_web_research,
             data_dir=service.data_dir,
         )
-    else:
+    elif vendor_sel is None:
         vendor_sel = {
             "ok": True,
             "blocked": False,

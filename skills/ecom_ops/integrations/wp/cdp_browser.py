@@ -414,18 +414,30 @@ class HeadlessBrowserSession:
         self.cdp_port = pick_loopback_port()
         env = build_php_child_env()
         self.user_data_dir = Path(tempfile.mkdtemp(prefix=self.profile_prefix))
+        linux_flags: tuple[str, ...] = ()
+        popen_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            xdg_config = self.user_data_dir / ".config"
+            xdg_cache = self.user_data_dir / ".cache"
+            xdg_config.mkdir(parents=True, exist_ok=True)
+            xdg_cache.mkdir(parents=True, exist_ok=True)
+            env["HOME"] = str(self.user_data_dir)
+            env["XDG_CONFIG_HOME"] = str(xdg_config)
+            env["XDG_CACHE_HOME"] = str(xdg_cache)
+            linux_flags = tuple(
+                flag for flag in ("--no-sandbox", "--disable-dev-shm-usage") if flag not in self.extra_flags
+            )
+            popen_kwargs["start_new_session"] = True
         command = [
             self.binary,
             *_BASE_CHROME_FLAGS,
+            *linux_flags,
             *self.extra_flags,
             "--remote-debugging-address=127.0.0.1",
             f"--remote-debugging-port={self.cdp_port}",
             f"--user-data-dir={self.user_data_dir}",
             "about:blank",
         ]
-        popen_kwargs: dict[str, Any] = {}
-        if os.name != "nt":
-            popen_kwargs["start_new_session"] = True
         try:
             self.proc = subprocess.Popen(
                 command,

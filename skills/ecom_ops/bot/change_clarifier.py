@@ -114,11 +114,38 @@ CLARIFY_PROTOCOL_GUIDE = (
 )
 
 
+_MOJIBAKE_MARKERS: tuple[str, ...] = (
+    "Ã¤",
+    "Ã¥",
+    "Ã¶",
+    "Ã„",
+    "Ã…",
+    "Ã–",
+    "Ã©",
+    "Ã¼",
+    "Ã¸",
+    "Ã¦",
+    "Â·",
+    "Â ",
+)
+
+
+def _repair_mojibake(text: str) -> str:
+    """Repair double-encoded UTF-8 (UTF-8 decoded as Latin-1) when safe."""
+    if not text or not any(marker in text for marker in _MOJIBAKE_MARKERS):
+        return text
+    try:
+        return text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
 def _scrub_text(value: Any, *, max_len: int, single_line: bool = False) -> str:
     """Scrub tool-call tags, secret tokens, and control chars, then cap length."""
     raw = str(value or "")
     if not raw:
         return ""
+    raw = _repair_mojibake(raw)
     cleaned = _TOOL_CALL_BLOCK_RE.sub("", raw)
     cleaned = _TOOL_CALL_TAG_RE.sub("", cleaned)
     cleaned = _CLARIFY_BLOCK_RE.sub("", cleaned)

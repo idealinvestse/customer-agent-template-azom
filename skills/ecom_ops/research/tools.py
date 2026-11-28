@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from collections.abc import Callable
 from pathlib import Path
@@ -14,6 +15,7 @@ from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_
 from ecom_ops.research import get_research_service
 from ecom_ops.research.firewall import QueryTaintContext
 from ecom_ops.research.models import RESEARCH_ID_RE, SearchPolicyError
+from ecom_ops.research.profiles import recommend_profile
 from ecom_ops.research.sanitizer import frame_untrusted_web_data, sanitize_untrusted_text
 from ecom_ops.research.store import authorize_research_access, authorize_target_ref
 
@@ -34,8 +36,9 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "web_search": {
         "name": "web_search",
         "description": (
-            "Run a bounded synchronous public HTTPS web search (never include PII, order IDs, "
-            "or secrets). Returns nonce-framed sanitized hits and evidence status."
+            "Run a fast bounded public HTTPS search for quick facts, carrier/docs status, or "
+            "URL discovery (never include PII, order IDs, or secrets). Supports profile='auto' "
+            "or a named SearchProfile; returns nonce-framed hits and evidence status."
         ),
         "parameters": {
             "type": "object",
@@ -43,7 +46,7 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "required": ["query"],
             "properties": {
                 "query": {"type": "string", "minLength": 1, "maxLength": 250},
-                "profile": {"type": "string", "default": "deep_general"},
+                "profile": {"type": "string", "default": "auto"},
                 "locale": {"type": ["string", "null"]},
                 "freshness_days": {"type": ["integer", "null"], "minimum": 1, "maximum": 3650},
                 "max_results": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
@@ -57,7 +60,8 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "web_fetch_extract": {
         "name": "web_fetch_extract",
         "description": (
-            "Fetch and extract clean text from one public HTTPS URL via the DNS-pinned SSRF guard."
+            "Deeply inspect ONE specific public HTTPS URL via Parallel Extract / Exa / DNS-pinned "
+            "SSRF guard (use after web_search or on an explicit URL; pass focus_question when targeted)."
         ),
         "parameters": {
             "type": "object",
@@ -65,7 +69,7 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "required": ["url"],
             "properties": {
                 "url": {"type": "string", "minLength": 1, "maxLength": 2048},
-                "profile": {"type": "string", "default": "deep_general"},
+                "profile": {"type": "string", "default": "auto"},
                 "focus_question": {"type": ["string", "null"], "maxLength": 250},
                 "max_chars": {"type": "integer", "minimum": 200, "maximum": 12000, "default": 5000},
             },
@@ -74,7 +78,8 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "web_research_start": {
         "name": "web_research_start",
         "description": (
-            "Enqueue an asynchronous multi-round Deep Research job (returns res-<12hex> immediately)."
+            "Enqueue a non-blocking async multi-source Deep Research job for comparisons, market "
+            "audits, or multi-page synthesis (returns res-<12hex> immediately; do NOT poll status in a loop)."
         ),
         "parameters": {
             "type": "object",
@@ -82,10 +87,10 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "required": ["topic"],
             "properties": {
                 "topic": {"type": "string", "minLength": 1, "maxLength": 500},
-                "profile": {"type": "string", "default": "deep_general"},
+                "profile": {"type": "string", "default": "auto"},
                 "depth": {
                     "type": "string",
-                    "enum": ["quick", "standard", "deep"],
+                    "enum": ["auto", "quick", "standard", "deep"],
                     "default": "standard",
                 },
                 "target_ref": {"type": ["string", "null"]},
@@ -96,7 +101,7 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     "web_research_status": {
         "name": "web_research_status",
-        "description": "Check progress and evidence status for a res-<12hex> research job.",
+        "description": "Check progress and evidence status for an existing res-<12hex> job when asked.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -109,7 +114,7 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "web_research_get": {
         "name": "web_research_get",
         "description": (
-            "Read a scrubbed, nonce-framed section of a completed or partial research brief."
+            "Read a scrubbed, nonce-framed section of a completed or partial res-<12hex> brief."
         ),
         "parameters": {
             "type": "object",
@@ -138,10 +143,9 @@ RESEARCH_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
 
 WEB_RESEARCH_TOOL_GUIDE = (
     "Webb & research (publik HTTPS; aldrig kund-PII/hemligheter):\n"
-    "- web_search(query, profile?, locale?, freshness_days?, max_results?, domain_hints?)\n"
-    "- web_fetch_extract(url, profile?, focus_question?, max_chars?)\n"
-    "- web_research_start(topic, profile?, depth?, target_ref?, market?, focus?)\n"
-    "- web_research_status(research_id) / web_research_get(research_id, section?)"
+    "- Samma svar (synk): web_search(query, profile='auto'|..., max_results?) + web_fetch_extract(url, focus_question?)\n"
+    "- Bakgrundsbrief (endast asynk): web_research_start(topic, target_ref='wp_site:<site_id>', depth?) -> res-*; polla ej\n"
+    "- Jobb: web_research_status(research_id) / web_research_get(research_id, section?)"
 )
 
 
@@ -264,6 +268,33 @@ def _format_brief_section(brief: dict[str, Any], section: str) -> str:
     return str(brief.get("summary") or "")
 
 
+def _resolve_tool_profile(
+    raw_profile: Any,
+    topic_or_query: str,
+    *,
+    default_ambition: str | None = None,
+) -> str:
+    prof = str(raw_profile or "").strip().lower()
+    if prof and prof != "auto":
+        return prof
+    return recommend_profile(topic_or_query, ambition=default_ambition).id
+
+
+def _derive_locale_country_from_markets(markets: list[str]) -> tuple[str | None, str | None]:
+    if not markets:
+        return None, None
+    first = markets[0].strip().upper()
+    if first == "SE":
+        return "sv", "SE"
+    if first == "NO":
+        return "nb", "NO"
+    if first == "DK":
+        return "da", "DK"
+    if first == "EN":
+        return "en", None
+    return None, (first if len(first) == 2 and first.isalpha() else None)
+
+
 def execute_research_tool(
     name: str,
     args: dict[str, Any] | None,
@@ -292,7 +323,11 @@ def execute_research_tool(
         if tool_name == "web_search":
             require_permission(actor_obj, Permission.WEB_SEARCH)
             query = str(arguments.get("query") or "").strip()
-            profile = str(arguments.get("profile") or "deep_general").strip()
+            profile = _resolve_tool_profile(
+                arguments.get("profile"),
+                query,
+                default_ambition="quick",
+            )
             locale = arguments.get("locale")
             freshness_days = arguments.get("freshness_days")
             max_results = int(arguments.get("max_results") or 5)
@@ -351,16 +386,34 @@ def execute_research_tool(
         if tool_name == "web_fetch_extract":
             require_permission(actor_obj, Permission.WEB_SEARCH)
             url = str(arguments.get("url") or "").strip()
-            profile = str(arguments.get("profile") or "deep_general").strip()
             focus_question = arguments.get("focus_question")
+            raw_prof = str(arguments.get("profile") or "").strip()
+            if not raw_prof or raw_prof.lower() == "auto":
+                profile = (
+                    recommend_profile(str(focus_question)).id
+                    if focus_question
+                    else "deep_general"
+                )
+            else:
+                profile = raw_prof
             max_chars = max(200, min(12_000, int(arguments.get("max_chars") or 5000)))
-            res = service.fetch_extract(
-                url,
-                actor=actor_obj.name,
-                profile_id=profile,
-                max_chars=max_chars,
-                taint=taint,
-            )
+            fetch_kwargs: dict[str, Any] = {
+                "actor": actor_obj.name,
+                "profile_id": profile,
+                "max_chars": max_chars,
+                "taint": taint,
+            }
+            if focus_question:
+                try:
+                    sig = inspect.signature(service.fetch_extract)
+                    if "objective" in sig.parameters or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD
+                        for p in sig.parameters.values()
+                    ):
+                        fetch_kwargs["objective"] = str(focus_question).strip()
+                except (TypeError, ValueError):
+                    pass
+            res = service.fetch_extract(url, **fetch_kwargs)
             if not res.get("ok"):
                 return _error_result(
                     str(res.get("error_class") or "SearchUnavailableError"),
@@ -404,8 +457,23 @@ def execute_research_tool(
         if tool_name == "web_research_start":
             require_permission(actor_obj, Permission.RESEARCH_RUN)
             topic = str(arguments.get("topic") or "").strip()
-            profile = str(arguments.get("profile") or "deep_general").strip()
-            depth = str(arguments.get("depth") or "standard").strip().lower()
+            raw_depth = str(arguments.get("depth") or "standard").strip().lower()
+            depth_auto = raw_depth in {"", "auto"}
+            profile = _resolve_tool_profile(
+                arguments.get("profile"),
+                topic,
+                default_ambition=None if depth_auto else raw_depth,
+            )
+            if depth_auto:
+                from ecom_ops.research.profiles import get_profile
+
+                try:
+                    prof_amb = get_profile(profile).ambition
+                    depth = prof_amb if prof_amb in {"quick", "standard", "deep"} else "standard"
+                except KeyError:
+                    depth = "standard"
+            else:
+                depth = raw_depth
             target_ref = arguments.get("target_ref")
             authorize_target_ref(actor_obj.name, str(target_ref) if target_ref else None)
 
@@ -415,6 +483,7 @@ def execute_research_tool(
                 markets = [m.strip() for m in raw_market.split(",") if m.strip()]
             elif isinstance(raw_market, (list, tuple)):
                 markets = [str(m).strip() for m in raw_market if str(m).strip()]
+            derived_locale, derived_country = _derive_locale_country_from_markets(markets)
 
             raw_focus = arguments.get("focus")
             focus_domains: list[str] = []
@@ -440,6 +509,8 @@ def execute_research_tool(
                 depth=depth,
                 target_ref=str(target_ref).strip() if target_ref else None,
                 markets=markets,
+                locale=derived_locale,
+                country=derived_country,
                 focus_domains=focus_domains,
                 queries_seed=queries_seed,
                 channel=channel,

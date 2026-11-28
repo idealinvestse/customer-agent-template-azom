@@ -822,7 +822,10 @@ def cmd_search(ctx: CommandContext) -> str:
     """Quick read-only web search command (dispatched by BotHandler)."""
     arg = ctx.args.strip()
     if not arg or arg.lower() in {"help", "?"}:
-        return "Användning: /search <sökfråga> (t.ex. /search postnord driftstörning)"
+        return (
+            "Användning: /search <sökfråga> [--market SE|NO|DK] [--profile <id>] "
+            "(t.ex. /search postnord driftstörning)"
+        )
     return f"__SEARCH__:{arg}"
 
 

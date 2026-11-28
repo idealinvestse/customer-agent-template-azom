@@ -2,8 +2,8 @@
 # =============================================================================
 # Azom Ops Agent — backup /var/lib/azom (cases.db + telemetry + oauth + escalations)
 #
-# Creates timestamped online SQLite backups of cases.db and the Telegram job
-# ledger plus an agent-state tar without runtime databases or installed libraries.
+# Creates timestamped online SQLite backups of all runtime SQLite databases
+# plus an agent-state tar without runtime databases or installed libraries.
 # Optionally rsyncs the resulting backup directory to an off-box destination.
 #
 # Usage (as root or the azom user):
@@ -48,7 +48,16 @@ mkdir -p "$STAMP_DIR"
 
 backup_sqlite() {
   local source="$1" target="$2"
-  python3 - "$source" "$target" <<'PY'
+  if command -v sqlite3 >/dev/null 2>&1 && [[ "$target" != *"'"* ]]; then
+    if sqlite3 "$source" ".timeout 10000" ".backup '${target}'"; then
+      return 0
+    fi
+  fi
+  local py_bin="python3"
+  if ! command -v python3 >/dev/null 2>&1 && [[ -x "/opt/azom-agent/.venv/bin/python" ]]; then
+    py_bin="/opt/azom-agent/.venv/bin/python"
+  fi
+  "$py_bin" - "$source" "$target" <<'PY'
 import sqlite3
 import sys
 
@@ -63,7 +72,7 @@ PY
 }
 
 # SQLite's online backup API keeps each live database consistent under WAL writes.
-for database in cases telegram_jobs research_jobs messenger_jobs messenger_proposals wp_change_ledger; do
+for database in cases telegram_jobs research_jobs messenger_jobs messenger_proposals wp_change_ledger seo_studio shop_intel; do
   case "$database" in
     cases)
       SOURCE_DB="${DATA_DIR}/cases.db"
@@ -88,6 +97,14 @@ for database in cases telegram_jobs research_jobs messenger_jobs messenger_propo
     wp_change_ledger)
       SOURCE_DB="${DATA_DIR}/wp_change_ledger.sqlite3"
       TARGET_DB="${STAMP_DIR}/wp_change_ledger.sqlite3"
+      ;;
+    seo_studio)
+      SOURCE_DB="${DATA_DIR}/seo_studio.sqlite3"
+      TARGET_DB="${STAMP_DIR}/seo_studio.sqlite3"
+      ;;
+    shop_intel)
+      SOURCE_DB="${DATA_DIR}/shop_intel.sqlite3"
+      TARGET_DB="${STAMP_DIR}/shop_intel.sqlite3"
       ;;
   esac
   if [[ -f "$SOURCE_DB" ]]; then
@@ -146,6 +163,12 @@ tar -czf "$TARBALL" \
   --exclude="*/wp_change_ledger.sqlite3" \
   --exclude="*/wp_change_ledger.sqlite3-wal" \
   --exclude="*/wp_change_ledger.sqlite3-shm" \
+  --exclude="*/seo_studio.sqlite3" \
+  --exclude="*/seo_studio.sqlite3-wal" \
+  --exclude="*/seo_studio.sqlite3-shm" \
+  --exclude="*/shop_intel.sqlite3" \
+  --exclude="*/shop_intel.sqlite3-wal" \
+  --exclude="*/shop_intel.sqlite3-shm" \
   --exclude="*/web_search_cache.sqlite3*" \
   --exclude="*/model_oauth" \
   --exclude="*/model_oauth/*" \
@@ -178,6 +201,8 @@ find "$BACKUP_DIR" -maxdepth 1 -type d -name '20*' -mtime +${KEEP} -exec rm -rf 
   echo "messenger_jobs_db_bytes=$(stat -c%s "${STAMP_DIR}/messenger_jobs.sqlite3" 2>/dev/null || echo 0)"
   echo "messenger_proposals_db_bytes=$(stat -c%s "${STAMP_DIR}/messenger_proposals.sqlite3" 2>/dev/null || echo 0)"
   echo "wp_change_ledger_db_bytes=$(stat -c%s "${STAMP_DIR}/wp_change_ledger.sqlite3" 2>/dev/null || echo 0)"
+  echo "seo_studio_db_bytes=$(stat -c%s "${STAMP_DIR}/seo_studio.sqlite3" 2>/dev/null || echo 0)"
+  echo "shop_intel_db_bytes=$(stat -c%s "${STAMP_DIR}/shop_intel.sqlite3" 2>/dev/null || echo 0)"
   echo "tarball_bytes=$(stat -c%s "$TARBALL" 2>/dev/null || echo 0)"
   echo "dest=${DEST:-local}"
 } > "${STAMP_DIR}/manifest.txt"

@@ -20,14 +20,14 @@ Every profile in `skills/ecom_ops/research/profiles.py` (merged with `config/res
 1. **`ambition` (`quick` | `standard` | `deep`):** Signal for depth tier (`45s / 1 round`, `150s / 2 rounds`, `300s / 3 rounds`) and query/fetch budget.
 2. **`combination_mode` (`failover` | `ensemble` | `staged`):**
    - `failover`: Calls the highest-priority healthy route (`SearchRouter.search()`); fails over automatically via circuit breakers.
-   - `ensemble`: Fans out across `fanout_by_depth[depth]` distinct live providers (`SearchRouter.search_multi()`), fuses hits, deduplicates canonical URLs, and keeps the richest excerpt/content.
-   - `staged`: Rotates provider combinations round-by-round via `round_providers` (`providers_for_round(profile, round_num)`) so round 1 uses semantic/concise engines (`parallel`, `exa`), round 2 uses index/deep engines (`brave`, `tavily`), and round 3 triangulates remaining gaps (including opt-in `searxng` where configured).
+   - `ensemble`: Fans out **concurrently** across `fanout_by_depth[depth]` active live providers (`SearchRouter.search_multi()` with bounded `ThreadPoolExecutor`), fuses hits via Reciprocal Rank Fusion (RRF), deduplicates canonical URLs, attaches corroboration (`corroborated_by` / `provider_count`), and keeps the richest excerpt/content.
+   - `staged`: Rotates provider combinations round-by-round via `round_providers` (`providers_for_round(profile, round_num)`) so round 1 uses primary semantic/authoritative or Nordic engines (`parallel`, `exa`, `brave`), round 2 expands coverage (`brave`, `exa`, `tavily`), and round 3 triangulates remaining gaps (including opt-in `searxng` where configured).
 3. **`fetch_strategy` (`snippet_only` | `direct` | `parallel_extract_first` | `hybrid`):**
    - `snippet_only`: Zero full-page fetches (`max_fetch_default: 0`) for ultra-fast status/news checks.
-   - `direct`: DNS-pinned HTTPS fetch + `_AllowlistHTMLTextParser` (`SafePublicHttpClient.fetch()`).
-   - `parallel_extract_first`: Tries `ParallelSearchRoute.extract()` (`/v1/extract`) first when configured in live mode, falling back cleanly to `SafePublicHttpClient.fetch()`.
-   - `hybrid`: Uses `ParallelSearchRoute.extract()` on the top 2 highest-scoring URLs and `SafePublicHttpClient.fetch()` for the remaining candidates.
-4. **Skill blueprint metadata:** `goal`, `when_to_use`, `query_templates`, `deliverable_sections`, `output_format_default`, and `recommended_tools`.
+   - `direct`: Concurrent DNS-pinned HTTPS fetch + `_AllowlistHTMLTextParser` (`SafePublicHttpClient.fetch_many()` with per-domain politeness throttling).
+   - `parallel_extract_first`: Concurrent `SafePublicHttpClient.extract_many()` trying `ParallelSearchRoute.extract_many()` (`/v1/extract`) -> `ExaSearchRoute.extract_many()` (`/contents`) -> `SafePublicHttpClient.fetch()` fallback.
+   - `hybrid`: Uses `ParallelSearchRoute.extract_many()` / `ExaSearchRoute.extract_many()` on the top highest-scoring URLs and `SafePublicHttpClient.fetch_many()` for the remaining candidates.
+4. **Skill blueprint metadata:** `goal`, `when_to_use`, `query_templates`, `deliverable_sections`, `output_format_default`, and `recommended_tools` (`profile="auto"` resolves automatically via `recommend_profile()` in `execute_research_tool` and Dashboard `/research`).
 
 ## The 13 built-in search profiles
 

@@ -312,12 +312,15 @@ PLAYBOOKS: dict[str, dict[str, Any]] = {
             "work/page_draft.json med syntetisk exempeldata i sajtens riktiga header/footer-skal."
         ),
         "steps": [
+            "Vid behov av extern designinspiration i samma svar: kör web_search och hämta 1–2 topp-URL:er med web_fetch_extract (inte bara snippets och aldrig asynk web_research_start).",
             "Hämta befintliga guider och syntetisk order-/produktdata via wp_list_pages och wp_build_sample_data (noll kund-PII).",
-            "Öppna en wr-*-arbetsyta med wp_open_review_workspace och spara sidutkastet via wp_workspace_page_draft.",
+            "Öppna en wr-*-arbetsyta med wp_open_review_workspace(site_id=..., kind='theme', summary=...) (lämna slug tom för aktivt tema — använd aldrig kind='page' och lägg inte sidsluggen i slug) och spara sidutkastet via wp_workspace_page_draft med riktiga produktkort (<img src=\"...\">, namn, antal, pris) från line_items i wp_build_sample_data när image_url finns.",
             "Rendera fristående förhandsvisning genom att anropa wp_preview_page(plan_id=...) och utelämna path (eller använd publik shell_path som '/').",
             "Presentera skärmbilder och interaktiv sandbox-länk innan några temafiler föreslås för staging.",
         ],
         "tools": [
+            "web_search",
+            "web_fetch_extract",
             "wp_list_pages",
             "wp_build_sample_data",
             "wp_open_review_workspace",

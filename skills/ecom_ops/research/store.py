@@ -36,6 +36,18 @@ MAX_STEERS_PER_JOB = 3
 _ACTIVE_STATUSES = ("planning", "searching", "fetching", "evaluating", "synthesizing", "running")
 _TERMINAL_STATUSES = frozenset({"completed", "partial", "cancelled", "failed"})
 _REPLACE_RETRY_DELAYS = (0.02, 0.04, 0.06, 0.08)
+_PATH_LOCKS_GUARD = threading.Lock()
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _lock_for_db_path(path: Path) -> threading.RLock:
+    key = str(path.resolve())
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PATH_LOCKS[key] = lock
+        return lock
 
 _TARGET_WP_RE = re.compile(r"^wp:[a-z0-9][a-z0-9_-]{0,63}:wr-[0-9a-f]{12}$")
 _TARGET_WP_SITE_RE = re.compile(r"^wp_site:[a-z0-9][a-z0-9_-]{0,63}$")
@@ -276,17 +288,20 @@ class SearchCache:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
-        try:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout=5000")
-            yield conn
-        finally:
-            conn.close()
+        lock = _lock_for_db_path(self.path)
+        with lock:
+            conn = sqlite3.connect(self.path, timeout=15.0, isolation_level=None)
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout=15000")
+                yield conn
+            finally:
+                conn.close()
 
     def _init_db(self) -> None:
         with self._connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS search_cache (
@@ -465,18 +480,21 @@ class ResearchStore:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
-        try:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("PRAGMA foreign_keys=ON")
-            yield conn
-        finally:
-            conn.close()
+        lock = _lock_for_db_path(self.path)
+        with lock:
+            conn = sqlite3.connect(self.path, timeout=15.0, isolation_level=None)
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout=15000")
+                conn.execute("PRAGMA foreign_keys=ON")
+                yield conn
+            finally:
+                conn.close()
 
     def _init_db(self) -> None:
         with self._connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS research_jobs (
@@ -917,10 +935,15 @@ class ResearchStore:
         estimated_search_usd: float | None = None,
         delivery_state: str | None = None,
         status_message_id: str | None = None,
+        worker_id: str | None = None,
     ) -> bool:
-        """Update job phase/counters cleanly."""
+        """Update job phase/counters cleanly without overwriting terminal status."""
         assignments: list[str] = ["updated_at=?"]
         params: list[Any] = [_now()]
+        is_exec_progress = any(
+            v is not None
+            for v in (status, rounds_completed, queries_used, fetches_used, llm_calls_used, estimated_search_usd)
+        )
         if status is not None:
             assignments.append("status=?")
             params.append(str(status))
@@ -946,11 +969,20 @@ class ResearchStore:
             assignments.append("status_message_id=?")
             params.append(str(status_message_id))
 
+        where_clauses = ["id=?"]
         params.append(job_id)
+        if is_exec_progress:
+            term_marks = ",".join("?" for _ in _TERMINAL_STATUSES)
+            where_clauses.append(f"status NOT IN ({term_marks})")
+            params.extend(sorted(_TERMINAL_STATUSES))
+            if worker_id is not None:
+                where_clauses.append("lease_owner=?")
+                params.append(str(worker_id))
+
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
-                f"UPDATE research_jobs SET {', '.join(assignments)} WHERE id=?",
+                f"UPDATE research_jobs SET {', '.join(assignments)} WHERE {' AND '.join(where_clauses)}",
                 params,
             )
             ok = cur.rowcount == 1

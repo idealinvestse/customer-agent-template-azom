@@ -493,9 +493,18 @@ def register_oscar_routes(app: Flask) -> None:
     def oscar_telegram():
         import os
 
+        from ecom_ops.bot.actors import (
+            effective_telegram_actor_map,
+            effective_telegram_allowlist,
+            load_telegram_access_store,
+        )
+
         apply_env_overlays()
         allow_raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
         actor_raw = os.environ.get("TELEGRAM_ACTOR_MAP", "")
+        access_store = load_telegram_access_store()
+        eff_allow = effective_telegram_allowlist()
+        eff_map = effective_telegram_actor_map()
         last = _load_probe_last()
         probe = None
         for row in (last or {}).get("results") or []:
@@ -509,17 +518,78 @@ def register_oscar_routes(app: Flask) -> None:
         def _count(raw: str) -> int:
             return len([part for part in str(raw).replace(";", ",").split(",") if part.strip()])
 
+        token_present = bool(os.environ.get("TELEGRAM_BOT_TOKEN", "").strip())
+        effective_jonatan_ids = sorted(
+            [cid for cid, actor in eff_map.items() if actor == "jonatan"]
+        )
+        effective_oscar_ids = sorted(
+            [cid for cid, actor in eff_map.items() if actor == "oscar"]
+        )
+        effective_allow_count = len(eff_allow)
+        effective_actor_count = len(eff_map)
+        bot_ready = (
+            token_present
+            and effective_allow_count > 0
+            and effective_actor_count > 0
+        )
+
         return render_template(
             "oscar_telegram.html",
             **_dashboard_context(
-                token_present=bool(os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()),
+                token_present=token_present,
                 allow_count=_count(allow_raw),
                 actor_count=_count(actor_raw),
                 allow_in_secrets_file=secrets_file_has_key("TELEGRAM_ALLOWED_CHAT_IDS"),
                 actor_in_secrets_file=secrets_file_has_key("TELEGRAM_ACTOR_MAP"),
+                jonatan_ids_str=", ".join(access_store.get("jonatan", [])),
+                oscar_ids_str=", ".join(access_store.get("oscar", [])),
+                effective_jonatan_ids=effective_jonatan_ids,
+                effective_oscar_ids=effective_oscar_ids,
+                effective_allow_count=effective_allow_count,
+                effective_actor_count=effective_actor_count,
+                bot_ready=bot_ready,
                 probe=probe,
             ),
         )
+
+    @app.route("/oscar/telegram/actors", methods=["POST"])
+    @_oscar_required
+    def oscar_telegram_actors():
+        from ecom_ops.audit import log_action
+        from ecom_ops.bot.actors import save_telegram_access_store
+
+        jonatan_raw = request.form.get("jonatan_chat_ids", "")
+        oscar_raw = request.form.get("oscar_chat_ids", "")
+        try:
+            saved = save_telegram_access_store(
+                {"jonatan": jonatan_raw, "oscar": oscar_raw},
+                updated_by=g.actor["name"],
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            _flash(msg, "error")
+            return redirect(url_for("oscar_telegram") + f"?{_flash_q(err=msg)}")
+
+        log_action(
+            actor=g.actor["name"],
+            action="telegram_access_save",
+            target="telegram_access.json",
+            details={
+                "jonatan_count": len(saved.get("jonatan", [])),
+                "oscar_count": len(saved.get("oscar", [])),
+                "total_count": sum(len(v) for v in saved.values()),
+            },
+        )
+        if saved:
+            msg = (
+                f"Telegram User ID sparade "
+                f"(Jonatan: {len(saved.get('jonatan', []))}, "
+                f"Oscar: {len(saved.get('oscar', []))})"
+            )
+        else:
+            msg = "Telegram User ID rensade från panelen"
+        _flash(msg, "ok")
+        return redirect(url_for("oscar_telegram") + f"?{_flash_q(msg)}")
 
     @app.route("/oscar/telegram/probe", methods=["POST"])
     @_oscar_required

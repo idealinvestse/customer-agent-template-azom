@@ -671,3 +671,56 @@ def test_cli_seo_vendors_and_autopilot_json_and_table(tmp_path, monkeypatch, cap
     ap_tbl = capsys.readouterr().out
     assert "STAGE" in ap_tbl and "ARTIFACT_ID" in ap_tbl
     assert "seos-" in ap_tbl and "seoc-" in ap_tbl and "seol-" in ap_tbl
+
+
+def test_seo_hub_live_mode_skips_heavy_probes_until_digest(tmp_path, monkeypatch):
+    """GET /seo in live mode must not block on WP entity crawl, parity, or plugin inventory when GSC is disconnected."""
+    if str(ROOT / "skills") not in sys.path:
+        sys.path.insert(0, str(ROOT / "skills"))
+    if str(ROOT / "infrastructure" / "dashboard") not in sys.path:
+        sys.path.insert(0, str(ROOT / "infrastructure" / "dashboard"))
+
+    import base64
+
+    from app import create_app
+    from ecom_ops.rbac import clear_rbac_cache
+    from ecom_ops.seo.service import SeoStudioService
+
+    monkeypatch.setenv("AZOM_USE_MOCK", "0")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "live_seo"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("DASHBOARD_SECRET_KEY", "test-live-seo-secret")
+    monkeypatch.setenv("DASHBOARD_OSCAR_PASSWORD", "test-oscar-pw")
+    clear_rbac_cache()
+
+    calls = {"entities": 0, "parity": 0, "plugins": 0}
+
+    def _boom_entities(*_args, **_kwargs):
+        calls["entities"] += 1
+        raise AssertionError("_load_entities_and_media should not run when GSC is disconnected")
+
+    def _boom_parity(*_args, **_kwargs):
+        calls["parity"] += 1
+        raise AssertionError("run_nordic_parity should not run on plain GET /seo in live mode")
+
+    monkeypatch.setattr(SeoStudioService, "_load_entities_and_media", _boom_entities)
+    monkeypatch.setattr(SeoStudioService, "run_nordic_parity", _boom_parity)
+
+    from ecom_ops.wp_ops.plugin_service import PluginOpsService
+
+    def _boom_plugins(*_args, **_kwargs):
+        calls["plugins"] += 1
+        raise AssertionError("plugin_inventory should not run on plain GET /seo in live mode")
+
+    monkeypatch.setattr(PluginOpsService, "plugin_inventory", _boom_plugins)
+
+    app = create_app()
+    app.config["TESTING"] = True
+    token = base64.b64encode(b"oscar:test-oscar-pw").decode("ascii")
+    headers = {"Authorization": f"Basic {token}"}
+    with app.test_client() as c:
+        resp = c.get("/seo", headers=headers)
+        assert resp.status_code == 200
+        assert "SEO Studio" in resp.get_data(as_text=True)
+
+    assert calls == {"entities": 0, "parity": 0, "plugins": 0}

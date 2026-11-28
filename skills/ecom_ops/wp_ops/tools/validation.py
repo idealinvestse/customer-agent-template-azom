@@ -55,31 +55,34 @@ def utf8_window(encoded: bytes, offset: int, limit: int) -> tuple[str, int | Non
     return text, next_offset
 
 
+_CODE_FENCE_RE = re.compile(r"^```(?:[A-Za-z0-9_-]+)?\s*(.*?)\s*```$", re.S)
+
+
 def parse_tool_call(content: str) -> tuple[str, dict[str, Any]] | None:
-    """Parse a single ``<tool_call>{...}</tool_call>`` JSON directive from model output."""
+    """Parse the first valid ``<tool_call>{...}</tool_call>`` JSON directive from model output."""
     text = content or ""
-    open_match = re.search(r"<tool_call>", text, re.I)
-    if not open_match:
-        return None
-    rest = text[open_match.end() :]
-    brace_match = re.match(r"\s*\{", rest)
-    if not brace_match:
-        return None
-    json_start = brace_match.end() - 1
-    try:
-        payload, end_idx = json.JSONDecoder().raw_decode(rest, idx=json_start)
-    except json.JSONDecodeError:
-        return None
-    tail = rest[end_idx:]
-    close_match = re.search(r"</tool_call>", tail, re.I)
-    if not close_match or re.search(r"<tool_call>", tail[: close_match.start()], re.I):
-        return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("name"), str):
-        return None
-    arguments = payload.get("arguments", {})
-    if not isinstance(arguments, dict):
-        return None
-    return payload["name"], arguments
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"(?is)<tool_call>(.*?)</tool_call>", text):
+        inner = match.group(1)
+        if re.search(r"<tool_call>", inner, re.I):
+            inner = inner[inner.lower().rfind("<tool_call>") + len("<tool_call>") :]
+        block = inner.strip()
+        fence_match = _CODE_FENCE_RE.fullmatch(block)
+        if fence_match:
+            block = fence_match.group(1).strip()
+        if not block.startswith("{"):
+            continue
+        try:
+            payload, _ = decoder.raw_decode(block, idx=0)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict) or not isinstance(payload.get("name"), str):
+            continue
+        arguments = payload.get("arguments", {})
+        if not isinstance(arguments, dict):
+            continue
+        return payload["name"], arguments
+    return None
 
 
 def error_payload(error_class: str, *, site_id: str | None = None) -> dict[str, Any]:

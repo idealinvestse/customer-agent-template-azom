@@ -8,13 +8,17 @@ import ssl
 import threading
 import time
 import urllib.parse
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, wait
 from html.parser import HTMLParser
+from typing import Any
 
 from ecom_ops.integrations import _http_guard
 from ecom_ops.integrations.search.base import FetchResult
 from ecom_ops.integrations.search.errors import (
     SearchConfigError,
     SearchPolicyError,
+    SearchRouteError,
 )
 from ecom_ops.integrations.search.providers import parse_retry_after_seconds
 from ecom_ops.research.budget import can_run_fetch
@@ -325,6 +329,7 @@ class SafePublicHttpClient:
                 status_code=200,
                 latency_ms=1,
                 truncated=truncated,
+                provider="mock",
             )
 
         # 3. Live gates & daily/monthly budget check
@@ -488,7 +493,401 @@ class SafePublicHttpClient:
             status_code=status,
             latency_ms=latency_ms,
             truncated=truncated,
+            provider="http",
         )
+
+    def _validate_batch_urls(
+        self,
+        urls: Sequence[str],
+        *,
+        taint: QueryTaintContext | None,
+        tel: Telemetry,
+        site: str,
+        actor: str | None,
+        case_id: str | None,
+    ) -> tuple[list[str | None], dict[int, FetchResult], list[str]]:
+        fw = OutboundQueryFirewall()
+        cleaned_slots: list[str | None] = []
+        blocked_results: dict[int, FetchResult] = {}
+        unique_valid: list[str] = []
+        seen_valid: set[str] = set()
+
+        for idx, raw_u in enumerate(urls):
+            raw_str = str(raw_u or "")
+            try:
+                cu = fw.check_url(raw_str, taint=taint)
+            except SearchPolicyError as exc:
+                code = str(exc).split(":", 1)[-1].strip()
+                tel.record(
+                    action="web_fetch_policy_blocked",
+                    site=site,
+                    cost_usd=0.0,
+                    case_id=case_id,
+                    actor=actor,
+                    meta={"error_class": "SearchPolicyError", "error_code": code},
+                )
+                cleaned_slots.append(None)
+                blocked_results[idx] = FetchResult(
+                    ok=False,
+                    url=raw_str,
+                    final_url=raw_str,
+                    title="",
+                    text="",
+                    content_type="",
+                    status_code=0,
+                    latency_ms=0,
+                    error_class="SearchPolicyError",
+                    error_code=code,
+                    provider="http",
+                )
+                continue
+            cleaned_slots.append(cu)
+            if cu not in seen_valid:
+                seen_valid.add(cu)
+                unique_valid.append(cu)
+
+        return cleaned_slots, blocked_results, unique_valid
+
+    def fetch_many(
+        self,
+        urls: Sequence[str],
+        *,
+        taint: QueryTaintContext | None = None,
+        telemetry: Telemetry | None = None,
+        max_extracted_chars: int | None = None,
+        max_workers: int = 4,
+        timeout_s: float | None = None,
+        actor: str | None = None,
+        site: str = "azom",
+        case_id: str | None = None,
+    ) -> list[FetchResult]:
+        """Concurrently fetch multiple public HTTPS URLs with per-domain politeness throttling."""
+        raw_urls = [str(u or "") for u in urls]
+        if not raw_urls:
+            return []
+        cfg = load_research_config()
+        tel = telemetry or default_telemetry
+        cleaned_slots, blocked_results, unique_valid = self._validate_batch_urls(
+            raw_urls,
+            taint=taint,
+            tel=tel,
+            site=site,
+            actor=actor,
+            case_id=case_id,
+        )
+        if not unique_valid:
+            return [blocked_results[i] for i in range(len(raw_urls))]
+
+        by_url: dict[str, FetchResult] = {}
+        if is_mock_mode():
+            for cu in unique_valid:
+                by_url[cu] = self.fetch(
+                    cu,
+                    taint=taint,
+                    telemetry=tel,
+                    max_extracted_chars=max_extracted_chars,
+                    actor=actor,
+                    site=site,
+                    case_id=case_id,
+                )
+        else:
+            if kill_switch_active("fetch"):
+                raise SearchConfigError("Web fetch disabled by kill switch", code="web_fetch_kill_switch")
+            if not web_fetch_enabled():
+                raise SearchConfigError(
+                    "Live web fetch is disabled (requires AZOM_USE_MOCK=0 and AZOM_WEB_FETCH_ENABLED=1)",
+                    code="web_fetch_disabled",
+                )
+            budget_ok, budget_reason = can_run_fetch(telemetry=tel, config=cfg)
+            if not budget_ok:
+                tel.record(
+                    action="web_fetch_budget_skip",
+                    site=site,
+                    cost_usd=0.0,
+                    case_id=case_id,
+                    actor=actor,
+                    meta={"error_code": budget_reason},
+                )
+                raise SearchConfigError(f"Fetch budget exhausted ({budget_reason})", code=budget_reason)
+
+            workers = max(1, min(int(max_workers or 4), len(unique_valid), 8))
+            if workers == 1 and timeout_s is None:
+                for cu in unique_valid:
+                    by_url[cu] = self.fetch(
+                        cu,
+                        taint=taint,
+                        telemetry=tel,
+                        max_extracted_chars=max_extracted_chars,
+                        actor=actor,
+                        site=site,
+                        case_id=case_id,
+                    )
+            else:
+                pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="azom-fetch")
+                timed_out = False
+                try:
+                    fut_to_url = {
+                        pool.submit(
+                            self.fetch,
+                            cu,
+                            taint=taint,
+                            telemetry=tel,
+                            max_extracted_chars=max_extracted_chars,
+                            actor=actor,
+                            site=site,
+                            case_id=case_id,
+                        ): cu
+                        for cu in unique_valid
+                    }
+                    if timeout_s is not None:
+                        done, not_done = wait(fut_to_url.keys(), timeout=max(0.05, float(timeout_s)))
+                    else:
+                        done, not_done = wait(fut_to_url.keys())
+                    for fut in not_done:
+                        timed_out = True
+                        cu = fut_to_url[fut]
+                        fut.cancel()
+                        by_url[cu] = FetchResult(
+                            ok=False,
+                            url=cu,
+                            final_url=cu,
+                            title="",
+                            text="",
+                            content_type="",
+                            status_code=0,
+                            latency_ms=int(max(0.0, float(timeout_s or 0.0)) * 1000),
+                            error_class="SearchUnavailableError",
+                            error_code="fetch_timeout",
+                            provider="http",
+                        )
+                    for fut in done:
+                        cu = fut_to_url[fut]
+                        try:
+                            by_url[cu] = fut.result()
+                        except SearchPolicyError as exc:
+                            by_url[cu] = FetchResult(
+                                ok=False,
+                                url=cu,
+                                final_url=cu,
+                                title="",
+                                text="",
+                                content_type="",
+                                status_code=0,
+                                latency_ms=0,
+                                error_class="SearchPolicyError",
+                                error_code=str(exc).split(":", 1)[-1].strip(),
+                                provider="http",
+                            )
+                        except SearchRouteError as exc:
+                            by_url[cu] = FetchResult(
+                                ok=False,
+                                url=cu,
+                                final_url=cu,
+                                title="",
+                                text="",
+                                content_type="",
+                                status_code=int(getattr(exc, "http_status", None) or 0),
+                                latency_ms=0,
+                                error_class=type(exc).__name__,
+                                error_code=getattr(exc, "code", None) or "fetch_error",
+                                provider="http",
+                            )
+                finally:
+                    pool.shutdown(wait=not timed_out, cancel_futures=timed_out)
+
+        out: list[FetchResult] = []
+        for idx, cu in enumerate(cleaned_slots):
+            out.append(blocked_results[idx] if cu is None else by_url[cu])
+        return out
+
+    def extract_many(
+        self,
+        urls: Sequence[str],
+        *,
+        strategy: str = "parallel_extract_first",
+        objective: str | None = None,
+        taint: QueryTaintContext | None = None,
+        telemetry: Telemetry | None = None,
+        max_extracted_chars: int | None = None,
+        max_workers: int = 4,
+        timeout_s: float | None = None,
+        actor: str | None = None,
+        site: str = "azom",
+        case_id: str | None = None,
+        parallel_route: Any | None = None,
+        exa_route: Any | None = None,
+    ) -> list[FetchResult]:
+        """Extract URLs concurrently using ``Parallel Extract -> Exa Contents -> SafePublicHttpClient``."""
+        norm_strategy = str(strategy or "parallel_extract_first").strip().lower()
+        if norm_strategy == "snippet_only":
+            return []
+        raw_urls = [str(u or "") for u in urls]
+        if not raw_urls:
+            return []
+
+        cfg = load_research_config()
+        tel = telemetry or default_telemetry
+        char_limit = int(
+            max_extracted_chars
+            if max_extracted_chars is not None
+            else cfg.egress.max_extracted_chars
+        )
+
+        if is_mock_mode() or norm_strategy == "direct":
+            return self.fetch_many(
+                raw_urls,
+                taint=taint,
+                telemetry=tel,
+                max_extracted_chars=char_limit,
+                max_workers=max_workers,
+                timeout_s=timeout_s,
+                actor=actor,
+                site=site,
+                case_id=case_id,
+            )
+
+        if kill_switch_active("fetch"):
+            raise SearchConfigError("Web fetch disabled by kill switch", code="web_fetch_kill_switch")
+        if not web_fetch_enabled():
+            raise SearchConfigError(
+                "Live web fetch is disabled (requires AZOM_USE_MOCK=0 and AZOM_WEB_FETCH_ENABLED=1)",
+                code="web_fetch_disabled",
+            )
+        budget_ok, budget_reason = can_run_fetch(telemetry=tel, config=cfg)
+        if not budget_ok:
+            tel.record(
+                action="web_fetch_budget_skip",
+                site=site,
+                cost_usd=0.0,
+                case_id=case_id,
+                actor=actor,
+                meta={"error_code": budget_reason},
+            )
+            raise SearchConfigError(f"Fetch budget exhausted ({budget_reason})", code=budget_reason)
+
+        cleaned_slots, blocked_results, unique_valid = self._validate_batch_urls(
+            raw_urls,
+            taint=taint,
+            tel=tel,
+            site=site,
+            actor=actor,
+            case_id=case_id,
+        )
+        if not unique_valid:
+            return [blocked_results[i] for i in range(len(raw_urls))]
+
+        def _run_provider_chain(target_urls: list[str], *, use_parallel: bool, use_exa: bool) -> dict[str, FetchResult]:
+            resolved: dict[str, FetchResult] = {}
+            remaining = list(target_urls)
+
+            if use_parallel and remaining:
+                p_route = parallel_route
+                if p_route is None:
+                    from ecom_ops.integrations.search.providers.parallel import ParallelSearchRoute
+
+                    p_route = ParallelSearchRoute()
+                if p_route.is_configured():
+                    try:
+                        p_results = p_route.extract_many(
+                            remaining,
+                            taint=taint,
+                            objective=objective,
+                            max_chars=char_limit,
+                            telemetry=tel,
+                            actor=actor,
+                            site=site,
+                            case_id=case_id,
+                        )
+                        next_rem: list[str] = []
+                        for u, fres in zip(remaining, p_results, strict=False):
+                            if fres.ok and fres.text:
+                                resolved[u] = fres
+                            else:
+                                next_rem.append(u)
+                        remaining = next_rem
+                    except SearchRouteError:
+                        pass
+
+            if use_exa and remaining:
+                e_route = exa_route
+                if e_route is None:
+                    from ecom_ops.integrations.search.providers.exa import ExaSearchRoute
+
+                    e_route = ExaSearchRoute()
+                if e_route.is_configured():
+                    try:
+                        e_results = e_route.extract_many(
+                            remaining,
+                            taint=taint,
+                            objective=objective,
+                            max_chars=char_limit,
+                            telemetry=tel,
+                            actor=actor,
+                            site=site,
+                            case_id=case_id,
+                        )
+                        next_rem = []
+                        for u, fres in zip(remaining, e_results, strict=False):
+                            if fres.ok and fres.text:
+                                resolved[u] = fres
+                            else:
+                                next_rem.append(u)
+                        remaining = next_rem
+                    except SearchRouteError:
+                        pass
+
+            if remaining:
+                http_results = self.fetch_many(
+                    remaining,
+                    taint=taint,
+                    telemetry=tel,
+                    max_extracted_chars=char_limit,
+                    max_workers=max_workers,
+                    timeout_s=timeout_s,
+                    actor=actor,
+                    site=site,
+                    case_id=case_id,
+                )
+                for u, fres in zip(remaining, http_results, strict=False):
+                    resolved[u] = fres
+
+            return resolved
+
+        by_url: dict[str, FetchResult] = {}
+        if norm_strategy == "hybrid" and len(unique_valid) > 2:
+            head_urls = unique_valid[:2]
+            tail_urls = unique_valid[2:]
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="azom-hybrid-extract") as pool:
+                head_fut = pool.submit(
+                    _run_provider_chain,
+                    head_urls,
+                    use_parallel=True,
+                    use_exa=True,
+                )
+                tail_fut = pool.submit(
+                    self.fetch_many,
+                    tail_urls,
+                    taint=taint,
+                    telemetry=tel,
+                    max_extracted_chars=char_limit,
+                    max_workers=max_workers,
+                    timeout_s=timeout_s,
+                    actor=actor,
+                    site=site,
+                    case_id=case_id,
+                )
+                by_url.update(head_fut.result())
+                for u, fres in zip(tail_urls, tail_fut.result(), strict=False):
+                    by_url[u] = fres
+        elif norm_strategy == "exa_first":
+            by_url.update(_run_provider_chain(unique_valid, use_parallel=False, use_exa=True))
+        else:
+            by_url.update(_run_provider_chain(unique_valid, use_parallel=True, use_exa=True))
+
+        out: list[FetchResult] = []
+        for idx, cu in enumerate(cleaned_slots):
+            out.append(blocked_results[idx] if cu is None else by_url[cu])
+        return out
 
 
 __all__ = [

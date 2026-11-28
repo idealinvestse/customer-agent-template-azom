@@ -581,13 +581,31 @@ def _safe_service_call(svc: Any, method_name: str, *args: Any, default: Any = No
         return default
 
 
-def _load_drift_digest(site_id: str, actor: str, *, days: int = 7) -> dict[str, Any]:
+def _load_drift_digest(
+    site_id: str,
+    actor: str,
+    *,
+    days: int = 7,
+    gsc_result: dict[str, Any] | None = None,
+    parity_result: dict[str, Any] | None = None,
+    include_live_probes: bool = True,
+) -> dict[str, Any]:
     try:
         from ecom_ops.seo.digest import build_seo_plugin_drift_digest
 
-        res = build_seo_plugin_drift_digest(
-            site_id, actor=actor, days=days, data_dir=_data_dir()
-        )
+        kwargs: dict[str, Any] = {
+            "actor": actor,
+            "days": days,
+            "data_dir": _data_dir(),
+        }
+        sig = inspect.signature(build_seo_plugin_drift_digest)
+        if "gsc_result" in sig.parameters and gsc_result is not None:
+            kwargs["gsc_result"] = gsc_result
+        if "parity_result" in sig.parameters and parity_result is not None:
+            kwargs["parity_result"] = parity_result
+        if "include_live_probes" in sig.parameters:
+            kwargs["include_live_probes"] = include_live_probes
+        res = build_seo_plugin_drift_digest(site_id, **kwargs)
         return dict(res) if isinstance(res, dict) else {}
     except Exception:
         return {}
@@ -817,11 +835,31 @@ def _render_seo_hub(
     except ValueError:
         digest_days = 7
     is_registered_site = selected_site in {s["id"] for s in sites}
-    digest_data = (
-        _load_drift_digest(selected_site, actor_name, days=digest_days)
-        if is_registered_site
-        else {}
-    )
+    if is_registered_site:
+        if digest_focus or _is_mock():
+            digest_data = _load_drift_digest(
+                selected_site,
+                actor_name,
+                days=digest_days,
+                gsc_result=gsc_data,
+                parity_result=parity_data or None,
+                include_live_probes=True,
+            )
+            if digest_data and not _is_mock():
+                _save_seo_panel_cache(selected_site, "digest", digest_data)
+        else:
+            digest_data = _load_seo_panel_cache(selected_site, "digest")
+            if not digest_data:
+                digest_data = _load_drift_digest(
+                    selected_site,
+                    actor_name,
+                    days=digest_days,
+                    gsc_result=gsc_data,
+                    parity_result=parity_data or None,
+                    include_live_probes=False,
+                )
+    else:
+        digest_data = {}
     recent_seo_changes = (
         _load_recent_seo_changes(selected_site, limit=8) if is_registered_site else []
     )

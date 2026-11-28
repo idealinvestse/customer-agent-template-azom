@@ -6,7 +6,9 @@ import hashlib
 import os
 import time
 import urllib.parse
+from collections import defaultdict
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import replace
 from typing import Any
 
@@ -544,8 +546,9 @@ class SearchRouter:
         max_providers: int = 2,
         route_ids: Sequence[str] | None = None,
         telemetry: Telemetry | None = None,
+        per_provider_timeout_s: float | None = None,
     ) -> SearchResult:
-        """Fuse deduplicated hits across up to ``max_providers`` live routes (mock uses offline fixture)."""
+        """Concurrently fan out across up to ``max_providers`` active routes and fuse via RRF."""
         tel = telemetry or default_telemetry
         cfg = load_research_config()
         q_hash = _query_hash(request.query)
@@ -579,7 +582,7 @@ class SearchRouter:
                 allowlist=allowlist,
                 exclude_domains=clean_request.exclude_domains,
             )
-            res = replace(raw_res, hits=filtered_hits)
+            res = replace(raw_res, hits=filtered_hits, providers_used=(raw_res.provider,))
             tel.record(
                 action="web_search_selected",
                 site=clean_request.site,
@@ -615,101 +618,180 @@ class SearchRouter:
             candidate_ids = base_order
 
         target_k = max(1, min(5, int(max_providers)))
-        succeeded_routes: list[str] = []
-        fused_hits: list[SearchHit] = []
-        seen_urls: dict[str, int] = {}
-        total_cost = 0.0
-        total_latency = 0
+        timeout_budget = (
+            float(per_provider_timeout_s)
+            if per_provider_timeout_s is not None
+            else float(cfg.egress.connect_timeout_s or 5) + float(cfg.egress.fetch_timeout_s or 10) + 2.0
+        )
+        timeout_budget = max(0.05, timeout_budget)
+
         errors: list[str] = []
         skipped_transient: list[str] = []
         auth_blocked: list[str] = []
+        active_candidates: list[str] = []
         configured_count = 0
-        attempts = 0
 
-        def _try_route(rid: str, *, bypass_breaker: bool = False) -> bool:
-            nonlocal attempts, configured_count, total_cost, total_latency
+        for rid in candidate_ids:
             route = self._routes.get(rid)
             if route is None or rid == "mock":
-                return False
+                continue
             if not self._is_route_enabled(rid, cfg):
                 errors.append(f"{rid}: disabled")
-                return False
+                continue
             if not route.is_configured():
                 errors.append(f"{rid}: not_configured")
-                return False
-            if not bypass_breaker:
-                configured_count += 1
-            allowed, br_state, rem_s = circuit_breaker.allow_attempt(rid, bypass=bypass_breaker)
+                continue
+            configured_count += 1
+            allowed, br_state, rem_s = circuit_breaker.allow_attempt(rid, bypass=False)
             if not allowed:
                 errors.append(f"{rid}: circuit_{br_state}")
+                tel.record(
+                    action="web_search_circuit_skipped",
+                    site=clean_request.site,
+                    cost_usd=0.0,
+                    case_id=clean_request.case_id,
+                    actor=clean_request.actor,
+                    meta={
+                        "route_id": rid,
+                        "profile_id": clean_request.profile_id,
+                        "query_hash": q_hash,
+                        "breaker_state": br_state,
+                        "cooldown_remaining_s": round(rem_s, 1),
+                    },
+                )
                 if br_state == "open":
                     skipped_transient.append(rid)
                 elif br_state == "open_auth":
                     auth_blocked.append(rid)
-                return False
+                continue
+            active_candidates.append(rid)
 
-            attempts += 1
-            try:
-                raw_res = route.search(clean_request)
-            except SearchPolicyError:
-                raise
-            except (
-                SearchAuthError,
-                SearchRateLimitError,
-                SearchUnavailableError,
-                SearchConfigError,
-            ) as exc:
-                circuit_breaker.record_failure(rid, exc)
-                errors.append(f"{rid}: {type(exc).__name__}")
-                return False
+        started = time.monotonic()
+        succeeded_by_rid: dict[str, SearchResult] = {}
+        attempts = 0
+        bypass_fallback_only = False
+        if not active_candidates and skipped_transient:
+            active_candidates = [skipped_transient[0]]
+            bypass_fallback_only = True
 
-            circuit_breaker.record_success(rid)
-            succeeded_routes.append(rid)
-            total_cost += float(raw_res.estimated_cost_usd or 0.0)
-            total_latency += int(raw_res.latency_ms or 0)
-            filtered = _filter_hits(
-                raw_res.hits,
-                denylist=denylist,
-                allowlist=allowlist,
-                exclude_domains=clean_request.exclude_domains,
+        def _run_wave(wave_rids: list[str]) -> None:
+            nonlocal attempts
+            attempts += len(wave_rids)
+            pool = ThreadPoolExecutor(
+                max_workers=max(1, min(len(wave_rids), 4)),
+                thread_name_prefix="azom-search",
             )
-            for hit in filtered:
-                key = self._canonical_hit_key(hit)
-                existing_idx = seen_urls.get(key)
-                if existing_idx is None:
-                    seen_urls[key] = len(fused_hits)
-                    fused_hits.append(hit)
-                else:
-                    prev = fused_hits[existing_idx]
-                    prev_richness = len(prev.content or "") + len(prev.snippet or "")
-                    cur_richness = len(hit.content or "") + len(hit.snippet or "")
-                    if cur_richness > prev_richness or hit.score > prev.score:
-                        fused_hits[existing_idx] = SearchHit(
-                            url=prev.url,
-                            title=hit.title or prev.title,
-                            snippet=hit.snippet if len(hit.snippet) >= len(prev.snippet) else prev.snippet,
-                            published_at=hit.published_at or prev.published_at,
-                            provider=f"{prev.provider}+{hit.provider}" if hit.provider not in prev.provider else prev.provider,
-                            score=max(prev.score, hit.score),
-                            author=hit.author or prev.author,
-                            raw_excerpts=hit.raw_excerpts or prev.raw_excerpts,
-                            content=(hit.content if len(hit.content or "") >= len(prev.content or "") else prev.content),
-                        )
-            return True
+            timed_out = False
+            try:
+                future_to_rid = {
+                    pool.submit(self._routes[rid].search, clean_request): rid
+                    for rid in wave_rids
+                }
+                done, not_done = wait(future_to_rid.keys(), timeout=timeout_budget)
+                for fut in not_done:
+                    timed_out = True
+                    rid = future_to_rid[fut]
+                    fut.cancel()
+                    timeout_exc = SearchUnavailableError(
+                        f"{rid}: provider timeout ({timeout_budget:.1f}s)",
+                        code="provider_timeout",
+                    )
+                    circuit_breaker.record_failure(rid, timeout_exc)
+                    tel.record(
+                        action="web_search_error",
+                        site=clean_request.site,
+                        cost_usd=0.0,
+                        case_id=clean_request.case_id,
+                        actor=clean_request.actor,
+                        meta={
+                            "route_id": rid,
+                            "profile_id": clean_request.profile_id,
+                            "query_hash": q_hash,
+                            "error_class": "SearchUnavailableError",
+                            "error_code": "provider_timeout",
+                        },
+                    )
+                    errors.append(f"{rid}: timeout")
 
-        for rid in candidate_ids:
-            if len(succeeded_routes) >= target_k:
-                break
-            if succeeded_routes:
+                policy_exc: SearchPolicyError | None = None
+                for fut in done:
+                    rid = future_to_rid[fut]
+                    try:
+                        raw_res = fut.result()
+                    except SearchPolicyError as exc:
+                        tel.record(
+                            action="web_search_policy_blocked",
+                            site=clean_request.site,
+                            cost_usd=0.0,
+                            case_id=clean_request.case_id,
+                            actor=clean_request.actor,
+                            meta={
+                                "route_id": rid,
+                                "profile_id": clean_request.profile_id,
+                                "query_hash": q_hash,
+                                "error_class": "SearchPolicyError",
+                                "error_code": _policy_code(exc),
+                            },
+                        )
+                        if policy_exc is None:
+                            policy_exc = exc
+                        continue
+                    except (
+                        SearchAuthError,
+                        SearchRateLimitError,
+                        SearchUnavailableError,
+                        SearchConfigError,
+                    ) as exc:
+                        is_rl = isinstance(exc, SearchRateLimitError)
+                        tel.record(
+                            action="web_search_rate_limited" if is_rl else "web_search_error",
+                            site=clean_request.site,
+                            cost_usd=0.0,
+                            case_id=clean_request.case_id,
+                            actor=clean_request.actor,
+                            meta={
+                                "route_id": rid,
+                                "profile_id": clean_request.profile_id,
+                                "query_hash": q_hash,
+                                "error_class": type(exc).__name__,
+                                "error_code": getattr(exc, "code", "") or "",
+                                "http_status": getattr(exc, "http_status", None),
+                            },
+                        )
+                        circuit_breaker.record_failure(rid, exc)
+                        errors.append(f"{rid}: {type(exc).__name__}")
+                        continue
+
+                    circuit_breaker.record_success(rid)
+                    filtered = _filter_hits(
+                        raw_res.hits,
+                        denylist=denylist,
+                        allowlist=allowlist,
+                        exclude_domains=clean_request.exclude_domains,
+                    )
+                    succeeded_by_rid[rid] = replace(raw_res, hits=filtered)
+
+                if policy_exc is not None:
+                    raise policy_exc
+            finally:
+                pool.shutdown(wait=not timed_out, cancel_futures=timed_out)
+
+        cursor = 0
+        while len(succeeded_by_rid) < target_k and cursor < len(active_candidates):
+            if succeeded_by_rid:
                 b_ok, _ = can_run_search(telemetry=tel, config=cfg)
                 if not b_ok:
                     break
-            _try_route(rid)
+            needed = target_k - len(succeeded_by_rid)
+            wave = active_candidates[cursor : cursor + needed]
+            cursor += len(wave)
+            if not wave:
+                break
+            _run_wave(wave)
+            if bypass_fallback_only:
+                break
 
-        if attempts == 0 and skipped_transient and not succeeded_routes:
-            _try_route(skipped_transient[0], bypass_breaker=True)
-
-        if not succeeded_routes:
+        if not succeeded_by_rid:
             if configured_count == 0:
                 raise SearchConfigError(
                     "No configured live search route available: " + "; ".join(errors),
@@ -730,8 +812,95 @@ class SearchRouter:
                 code="all_routes_failed",
             )
 
+        order_index = {rid: idx for idx, rid in enumerate(candidate_ids)}
+        succeeded_routes = sorted(succeeded_by_rid.keys(), key=lambda r: order_index.get(r, 999))
+        total_cost = sum(float(succeeded_by_rid[r].estimated_cost_usd or 0.0) for r in succeeded_routes)
+        wall_ms = int((time.monotonic() - started) * 1000)
+        max_route_ms = max(int(succeeded_by_rid[r].latency_ms or 0) for r in succeeded_routes)
+        total_latency = max(wall_ms, max_route_ms)
+
+        # Reciprocal Rank Fusion (RRF, k=60) + canonical URL deduplication + corroboration metadata
+        rrf_k = 60.0
+        rrf_scores: dict[str, float] = defaultdict(float)
+        corroborators: dict[str, list[str]] = defaultdict(list)
+        merged_hits: dict[str, SearchHit] = {}
+        first_seen_order: dict[str, int] = {}
+
+        for rid in succeeded_routes:
+            res = succeeded_by_rid[rid]
+            seen_in_provider: set[str] = set()
+            for rank, hit in enumerate(res.hits, start=1):
+                key = self._canonical_hit_key(hit)
+                prov_name = str(hit.provider or rid).strip() or rid
+                if key not in first_seen_order:
+                    first_seen_order[key] = len(first_seen_order)
+                if key not in seen_in_provider:
+                    seen_in_provider.add(key)
+                    rrf_scores[key] += 1.0 / (rrf_k + rank)
+                    if prov_name not in corroborators[key]:
+                        corroborators[key].append(prov_name)
+
+                prev = merged_hits.get(key)
+                if prev is None:
+                    merged_hits[key] = hit
+                else:
+                    prev_richness = len(prev.content or "") + len(prev.snippet or "")
+                    cur_richness = len(hit.content or "") + len(hit.snippet or "")
+                    prefer_cur = cur_richness > prev_richness or hit.score > prev.score
+                    merged_hits[key] = SearchHit(
+                        url=prev.url,
+                        title=(hit.title or prev.title) if prefer_cur else (prev.title or hit.title),
+                        snippet=hit.snippet if len(hit.snippet) >= len(prev.snippet) else prev.snippet,
+                        published_at=hit.published_at or prev.published_at,
+                        provider=prev.provider,
+                        score=max(float(prev.score or 0.0), float(hit.score or 0.0)),
+                        author=hit.author or prev.author,
+                        raw_excerpts=hit.raw_excerpts if len(hit.raw_excerpts) >= len(prev.raw_excerpts) else prev.raw_excerpts,
+                        content=(
+                            hit.content
+                            if len(hit.content or "") >= len(prev.content or "")
+                            else prev.content
+                        ),
+                    )
+
+        max_possible_rrf = max(1, len(succeeded_routes)) / (rrf_k + 1.0)
+        fused_hits: list[SearchHit] = []
+        for key, base_hit in merged_hits.items():
+            corr = tuple(corroborators[key])
+            raw_rrf = round(rrf_scores[key], 6)
+            rrf_norm = min(1.0, raw_rrf / max_possible_rrf) if max_possible_rrf > 0 else 0.0
+            native_score = max(0.0, min(1.0, float(base_hit.score or 0.0)))
+            fused_score = round(max(0.05, min(1.0, 0.55 * rrf_norm + 0.45 * native_score)), 4)
+            fused_hits.append(
+                SearchHit(
+                    url=base_hit.url,
+                    title=base_hit.title,
+                    snippet=base_hit.snippet,
+                    published_at=base_hit.published_at,
+                    provider="+".join(corr),
+                    score=fused_score,
+                    author=base_hit.author,
+                    raw_excerpts=base_hit.raw_excerpts,
+                    content=base_hit.content,
+                    corroborated_by=corr,
+                    provider_count=len(corr),
+                    rrf_score=raw_rrf,
+                )
+            )
+
         max_fused = max(int(clean_request.max_results), int(clean_request.max_results) * target_k)
-        fused_sorted = sorted(fused_hits, key=lambda h: float(h.score or 0.0), reverse=True)[:max_fused]
+        fused_sorted = sorted(
+            fused_hits,
+            key=lambda h: (
+                float(h.rrf_score or 0.0),
+                int(h.provider_count or 1),
+                float(h.score or 0.0),
+                -first_seen_order.get(self._canonical_hit_key(h), 9999),
+            ),
+            reverse=True,
+        )[:max_fused]
+
+        corroborated_hits = sum(1 for h in fused_sorted if h.provider_count >= 2)
         joined_provider = "+".join(succeeded_routes)
         route_label = succeeded_routes[0] if len(succeeded_routes) == 1 else f"multi:{joined_provider}"
         tel.record(
@@ -751,6 +920,9 @@ class SearchRouter:
                 "providers_used": succeeded_routes,
                 "route_id": route_label,
                 "hits_count": len(fused_sorted),
+                "corroborated_hits": corroborated_hits,
+                "rrf_k": int(rrf_k),
+                "concurrent": True,
                 "latency_ms": total_latency,
                 "cached": False,
             },
@@ -759,6 +931,7 @@ class SearchRouter:
             ok=True,
             route_id=route_label,
             provider=joined_provider,
+            providers_used=tuple(succeeded_routes),
             hits=tuple(fused_sorted),
             provenance="live_api",
             latency_ms=total_latency,

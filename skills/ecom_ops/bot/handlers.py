@@ -137,7 +137,7 @@ from ecom_ops.integrations.search.errors import SearchConfigError, SearchRouteEr
 from ecom_ops.llm import chat_completion, openrouter_cap_usd
 from ecom_ops.model_router import get_model_router
 from ecom_ops.rbac import AccessDenied, Actor, Permission, require_permission, resolve_actor
-from ecom_ops.research import get_research_service
+from ecom_ops.research import get_research_service, recommend_profile
 from ecom_ops.research.clarifier import (
     build_research_spec,
     is_research_clarify_category,
@@ -145,6 +145,7 @@ from ecom_ops.research.clarifier import (
 )
 from ecom_ops.research.config import is_mock_mode as _research_is_mock_mode
 from ecom_ops.research.config import research_enabled as _research_enabled
+from ecom_ops.research.firewall import QueryTaintContext
 from ecom_ops.research.models import RESEARCH_ID_RE, SearchPolicyError
 from ecom_ops.research.sanitizer import frame_untrusted_web_data, sanitize_untrusted_text
 from ecom_ops.research.tools import _format_search_hits_text
@@ -3166,6 +3167,12 @@ class BotHandler:
                 "competitor",
                 "market",
                 "bransch",
+                "seo",
+                "sökord",
+                "länkpaket",
+                "länkleverantör",
+                "bazoom",
+                "whitepress",
             )
         ):
             return "research_market"
@@ -3227,6 +3234,18 @@ class BotHandler:
             rows.append([ActionButton(label="Öppna i dashboard", url=url)])
         return ActionMarkup(rows=rows)
 
+    def _session_research_taint(self, chat_id: str | int) -> QueryTaintContext | None:
+        state = self.store.get(chat_id) or {}
+        session = dict(state.get("session") or {})
+        order_id = str(session.get("last_order_id") or "").strip()
+        case_id8 = str(session.get("last_case_id8") or "").strip()
+        if not order_id and not case_id8:
+            return None
+        return QueryTaintContext(
+            order_ids=(order_id,) if order_id else (),
+            case_ids=(case_id8,) if case_id8 else (),
+        )
+
     def _enqueue_research_spec(
         self,
         chat_id: str | int,
@@ -3237,6 +3256,7 @@ class BotHandler:
     ) -> BotReply:
         service = get_research_service()
         prov = "mock" if service.is_mock() else "live"
+        taint = self._session_research_taint(chat_id)
         try:
             job = service.start_research(
                 spec.topic,
@@ -3252,6 +3272,7 @@ class BotHandler:
                 queries_seed=spec.queries_seed,
                 channel=self.channel,
                 peer_id=str(chat_id),
+                taint=taint,
                 start_worker=False,
             )
             if not _research_is_mock_mode() and _research_enabled():
@@ -3717,13 +3738,62 @@ class BotHandler:
         except AccessDenied:
             return BotReply(text="Åtkomst nekad: /search kräver behörighet web_search.")
 
-        clean_query = " ".join((query or "").split())
+        raw_query = " ".join((query or "").split())
+        if not raw_query:
+            return BotReply(
+                text="Användning: /search <sökfråga> [--market SE|NO|DK] [--profile <id>] (t.ex. /search PostNord driftstörning)"
+            )
+
+        tokens = raw_query.split()
+        query_tokens: list[str] = []
+        explicit_profile: str | None = None
+        explicit_market: str | None = None
+        idx = 0
+        while idx < len(tokens):
+            tok = tokens[idx]
+            low_tok = tok.lower()
+            if low_tok.startswith("--profile="):
+                explicit_profile = tok.split("=", 1)[1].strip().lower() or None
+                idx += 1
+            elif low_tok == "--profile" and idx + 1 < len(tokens):
+                explicit_profile = tokens[idx + 1].strip().lower() or None
+                idx += 2
+            elif low_tok.startswith("--market="):
+                explicit_market = tok.split("=", 1)[1].strip().upper() or None
+                idx += 1
+            elif low_tok == "--market" and idx + 1 < len(tokens):
+                explicit_market = tokens[idx + 1].strip().upper() or None
+                idx += 2
+            else:
+                query_tokens.append(tok)
+                idx += 1
+
+        clean_query = " ".join(query_tokens).strip()
         if not clean_query:
-            return BotReply(text="Användning: /search <sökfråga> (t.ex. /search PostNord driftstörning)")
+            return BotReply(
+                text="Användning: /search <sökfråga> [--market SE|NO|DK] [--profile <id>] (t.ex. /search PostNord driftstörning)"
+            )
+
+        resolved_profile = (
+            explicit_profile
+            if explicit_profile and explicit_profile != "auto"
+            else recommend_profile(clean_query, ambition="quick").id
+        )
+        state = self.store.get(chat_id) or {}
+        session = dict(state.get("session") or {})
+        mkt = explicit_market or str(session.get("last_market") or "").strip().upper() or None
+        search_locale = "en" if mkt == "EN" else (mkt if mkt in {"SE", "NO", "DK"} else None)
+        taint = self._session_research_taint(chat_id)
 
         service = get_research_service()
         try:
-            res = service.quick_search(clean_query, actor=actor_obj.name)
+            res = service.quick_search(
+                clean_query,
+                actor=actor_obj.name,
+                profile_id=resolved_profile,
+                locale=search_locale,
+                taint=taint,
+            )
         except AccessDenied:
             return BotReply(text="Åtkomst nekad: /search kräver behörighet web_search.")
         except SearchPolicyError as exc:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -303,7 +304,9 @@ class MarketingService:
         if len(raw_term) < 3:
             return evidence
         try:
-            clean_term = OutboundQueryFirewall().check_query(f"{raw_term[:180]} search intent")
+            fw = OutboundQueryFirewall()
+            fw.check_text(raw_term, max_chars=1000)
+            clean_term = fw.check_query(f"{raw_term[:180]} search intent")
             res = get_research_service().quick_search(
                 clean_term,
                 actor=actor,
@@ -364,7 +367,7 @@ class MarketingService:
                 for r in open_rows
             }
             waste = self.ads.waste_report()
-            created = []
+            pending_terms: list[tuple[tuple[str, str, str, str], dict[str, Any], bool]] = []
             skipped = 0
             annotated = 0
             for term in waste[:20]:
@@ -377,12 +380,40 @@ class MarketingService:
                 if key in open_keys:
                     skipped += 1
                     continue
-                evidence: dict[str, Any] = dict(term)
-                if annotate_research and annotated < 5:
-                    evidence = self._annotate_waste_term_with_research(
-                        term, actor=actor_obj.name
-                    )
+                open_keys.add(key)
+                should_annotate = bool(annotate_research and annotated < 5)
+                if should_annotate:
                     annotated += 1
+                pending_terms.append((key, dict(term), should_annotate))
+
+            annotated_map: dict[int, dict[str, Any]] = {}
+            to_annotate = [
+                (idx, term) for idx, (_key, term, flag) in enumerate(pending_terms) if flag
+            ]
+            if len(to_annotate) > 1:
+                with ThreadPoolExecutor(max_workers=min(3, len(to_annotate))) as pool:
+                    futures = [
+                        (
+                            idx,
+                            pool.submit(
+                                self._annotate_waste_term_with_research,
+                                term,
+                                actor=actor_obj.name,
+                            ),
+                        )
+                        for idx, term in to_annotate
+                    ]
+                    for idx, fut in futures:
+                        annotated_map[idx] = fut.result()
+            elif to_annotate:
+                idx, term = to_annotate[0]
+                annotated_map[idx] = self._annotate_waste_term_with_research(
+                    term, actor=actor_obj.name
+                )
+
+            created = []
+            for idx, (_key, term, _flag) in enumerate(pending_terms):
+                evidence = annotated_map.get(idx, dict(term))
                 item = self.suggests.add(
                     kind="negative",
                     title=f"Negativ: {term.get('search_term')}",
@@ -394,7 +425,6 @@ class MarketingService:
                         "campaign_id": term.get("campaign_id"),
                     },
                 )
-                open_keys.add(key)
                 created.append(item.to_dict())
             pacing = self.ads.pacing()
             cfg = load_marketing_config()

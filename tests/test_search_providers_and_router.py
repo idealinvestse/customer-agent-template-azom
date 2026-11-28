@@ -1069,3 +1069,363 @@ def test_probe_web_search_and_settings_store(
     saved = settings_store.save_secrets({"PARALLEL_API_KEY": "par-saved-123"})
     assert saved == ["PARALLEL_API_KEY"]
     assert "PARALLEL_API_KEY=par-saved-123" in (tmp_path / "data" / "secrets.env").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# 7. Nordic Brave mapping, Parallel/Exa extract_many, concurrent RRF & fallback
+# ---------------------------------------------------------------------------
+
+
+def test_brave_nordic_language_and_country_normalization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enable_live_search(monkeypatch, tmp_path)
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAsecretNordic123")
+
+    def _handler(url: str, **kwargs: Any):
+        del kwargs
+        return (
+            200,
+            {"content-type": "application/json"},
+            json.dumps({"web": {"results": []}}).encode("utf-8"),
+            url,
+        )
+
+    calls = _install_pinned_stub(monkeypatch, _handler)
+    brave = BraveSearchRoute()
+
+    # Norwegian ("no", "nb-NO", "nn") MUST map to search_lang=nb (Brave rejects "no" with 422)
+    for raw_lang in ("no", "nb-NO", "nn"):
+        brave.search(SearchRequest(query="bilradio", country="NO", language=raw_lang))
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1]["url"]).query)
+        assert qs["country"] == ["NO"]
+        assert qs["search_lang"] == ["nb"]
+
+    # Country alias ("uk" -> "GB") and language codes mistakenly passed as SE/DK/en
+    brave.search(SearchRequest(query="leverans", country="uk", language="se"))
+    qs_se = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1]["url"]).query)
+    assert qs_se["country"] == ["GB"]
+    assert qs_se["search_lang"] == ["sv"]
+
+    brave.search(SearchRequest(query="fragt", country="dk", language="dk"))
+    qs_dk = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1]["url"]).query)
+    assert qs_dk["country"] == ["DK"]
+    assert qs_dk["search_lang"] == ["da"]
+
+    brave.search(SearchRequest(query="docs", country="en", language="en-US"))
+    qs_en = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[-1]["url"]).query)
+    assert "country" not in qs_en
+    assert qs_en["search_lang"] == ["en"]
+    hdrs = {k.lower(): v for k, v in calls[-1]["headers"].items()}
+    assert hdrs["cache-control"] == "no-cache"
+
+
+def test_parallel_distinct_objective_and_batch_extract_many(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enable_live_search(monkeypatch, tmp_path)
+    monkeypatch.setenv("PARALLEL_API_KEY", "par-secret-batch")
+
+    def _handler(url: str, **kwargs: Any):
+        body = json.loads(kwargs["body"].decode("utf-8"))
+        if url.endswith("/v1/search"):
+            assert body["objective"] != body["search_queries"][0]
+            return (
+                200,
+                {"content-type": "application/json"},
+                json.dumps({"results": [{"url": "https://baymard.com/a", "title": "A", "excerpts": ["ok"]}]}).encode("utf-8"),
+                url,
+            )
+        assert url.endswith("/v1/extract")
+        assert body["urls"] == ["https://baymard.com/a", "https://nngroup.com/b"]
+        payload = {
+            "results": [
+                {
+                    "url": "https://baymard.com/a",
+                    "title": "Baymard <tool_call>x</tool_call>",
+                    "full_content": "Extracted markdown <clarify>y</clarify>",
+                }
+            ],
+            "errors": [{"url": "https://nngroup.com/b", "error": "blocked"}],
+        }
+        return 200, {"content-type": "application/json"}, json.dumps(payload).encode("utf-8"), url
+
+    calls = _install_pinned_stub(monkeypatch, _handler)
+    route = ParallelSearchRoute()
+
+    # Identical objective/query is rewritten so Parallel /v1/search never receives duplicate text
+    sres = route.search(SearchRequest(query="woocommerce hpos", objective="woocommerce hpos"))
+    assert sres.ok is True and len(sres.hits) == 1
+
+    # PII/taint beyond index 240 in objective must STILL be blocked before slicing
+    long_tainted_obj = ("woocommerce checkout ux best practices " * 8) + "anna@example.se"
+    assert len(long_tainted_obj) > 250
+    with pytest.raises(SearchPolicyError):
+        route.extract("https://baymard.com/a", objective=long_tainted_obj)
+
+    # Batch extract_many absorbs per-URL SearchPolicyError without leaking blocked URLs
+    fres = route.extract_many(
+        ["https://baymard.com/a?utm_source=x", "http://127.0.0.1:8080/admin", "https://nngroup.com/b"]
+    )
+    assert len(fres) == 3
+    assert fres[0].ok is True and fres[0].provider == "parallel"
+    assert "<tool_call" not in fres[0].title.lower()
+    assert "<clarify" not in fres[0].text.lower()
+    assert fres[1].ok is False and fres[1].error_class == "SearchPolicyError"
+    assert fres[2].ok is False and fres[2].error_code == "provider_extract_error"
+    assert len([c for c in calls if c["url"].endswith("/v1/extract")]) == 1
+
+
+def test_exa_contents_extract_and_extract_many(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enable_live_search(monkeypatch, tmp_path)
+    monkeypatch.setenv("EXA_API_KEY", "exa-secret-contents")
+
+    route = ExaSearchRoute()
+    assert route.capabilities.supports_extract is True
+
+    def _handler(url: str, **kwargs: Any):
+        assert url == "https://api.exa.ai/contents"
+        hdrs = {k.lower(): v for k, v in kwargs["headers"].items()}
+        assert hdrs["x-api-key"] == "exa-secret-contents"
+        body = json.loads(kwargs["body"].decode("utf-8"))
+        assert body["urls"] == ["https://baymard.com/a", "https://cxl.com/b"]
+        payload = {
+            "results": [
+                {
+                    "id": "https://baymard.com/a",
+                    "url": "https://baymard.com/a",
+                    "title": "Baymard UX",
+                    "text": "Clean Exa full text <tool_call>bad</tool_call>",
+                    "highlights": ["Highlight"],
+                }
+            ],
+            "statuses": [
+                {"id": "https://baymard.com/a", "status": "success"},
+                {"id": "https://cxl.com/b", "status": "error", "error": "CRAWL_NOT_FOUND"},
+            ],
+        }
+        return 200, {"content-type": "application/json"}, json.dumps(payload).encode("utf-8"), url
+
+    _install_pinned_stub(monkeypatch, _handler)
+    results = route.extract_many(["https://baymard.com/a", "https://cxl.com/b"], objective="UX guide")
+    assert len(results) == 2
+    assert results[0].ok is True and results[0].provider == "exa"
+    assert "<tool_call" not in results[0].text.lower()
+    assert results[1].ok is False and results[1].error_code == "CRAWL_NOT_FOUND"
+
+
+def test_search_router_search_multi_concurrent_rrf_corroboration_and_timeout_skip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import threading
+
+    _enable_live_search(monkeypatch, tmp_path)
+    monkeypatch.setenv("PARALLEL_API_KEY", "par-k")
+    monkeypatch.setenv("EXA_API_KEY", "exa-k")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-k")
+    clear_research_config_cache()
+    reset_search_router()
+
+    from ecom_ops.integrations.search.base import SearchResult
+
+    tel = Telemetry(path=tmp_path / "data" / "telemetry.jsonl")
+    router = SearchRouter()
+
+    # Open parallel breaker upfront -> active fan-out budget (max_providers=2) skips parallel and picks exa + brave
+    circuit_breaker.record_failure("parallel", SearchUnavailableError("down", code="503"))
+    circuit_breaker.record_failure("parallel", SearchUnavailableError("down", code="503"))
+
+    barrier = threading.Barrier(2, timeout=2.0)
+
+    class _ConcurrentRoute:
+        def __init__(self, rid: str, hits: tuple[SearchHit, ...], *, slow_s: float = 0.0) -> None:
+            self.route_id = rid
+            self._hits = hits
+            self._slow_s = slow_s
+
+        def is_configured(self) -> bool:
+            return True
+
+        def status(self) -> dict[str, Any]:
+            return {"route_id": self.route_id, "configured": True}
+
+        def search(self, _req: SearchRequest) -> SearchResult:
+            if self._slow_s > 0:
+                time.sleep(self._slow_s)
+            else:
+                # Proves exa and brave execute concurrently (would deadlock if serial)
+                barrier.wait()
+            return SearchResult(
+                ok=True,
+                route_id=self.route_id,
+                provider=self.route_id,
+                hits=self._hits,
+                provenance="live_api",
+                latency_ms=10,
+                estimated_cost_usd=0.005,
+            )
+
+    exa_hits = (
+        SearchHit(url="https://only-exa.org/top", title="Exa Top", snippet="Exa only", provider="exa", score=0.95),
+        SearchHit(
+            url="https://shared.org/guide?utm_source=exa",
+            title="Shared Guide",
+            snippet="Short",
+            provider="exa",
+            score=0.80,
+        ),
+    )
+    brave_hits = (
+        SearchHit(
+            url="https://shared.org/guide/?fbclid=1",
+            title="Shared Guide Brave",
+            snippet="Much richer shared snippet from Brave",
+            provider="brave",
+            score=0.85,
+        ),
+        SearchHit(url="https://only-brave.org/two", title="Brave Two", snippet="Brave only", provider="brave", score=0.70),
+    )
+    router._routes["exa"] = _ConcurrentRoute("exa", exa_hits)
+    router._routes["brave"] = _ConcurrentRoute("brave", brave_hits)
+
+    res = router.search_multi(
+        SearchRequest(query="carplay guide", max_results=5),
+        max_providers=2,
+        route_ids=("parallel", "exa", "brave"),
+        telemetry=tel,
+    )
+    assert res.ok is True
+    assert res.providers_used == ("exa", "brave")
+    assert res.route_id == "multi:exa+brave"
+    # Corroborated hit ranks #1 via RRF across both providers
+    top = res.hits[0]
+    assert "shared.org/guide" in top.url
+    assert top.corroborated_by == ("exa", "brave")
+    assert top.provider_count == 2
+    assert top.rrf_score > res.hits[1].rrf_score
+
+    # Per-provider timeout budget drops stalled route without hanging while returning fast route
+    router._routes["exa"] = _ConcurrentRoute("exa", exa_hits, slow_s=0.6)
+    router._routes["brave"] = _ConcurrentRoute("brave", brave_hits, slow_s=0.0)
+    # Replace barrier wait with non-blocking fast route for timeout test
+    router._routes["brave"]._slow_s = 0.001
+
+    class _FastBrave(_ConcurrentRoute):
+        def search(self, _req: SearchRequest) -> SearchResult:
+            return SearchResult(
+                ok=True,
+                route_id="brave",
+                provider="brave",
+                hits=brave_hits,
+                provenance="live_api",
+                latency_ms=5,
+                estimated_cost_usd=0.005,
+            )
+
+    router._routes["brave"] = _FastBrave("brave", brave_hits)
+    t0 = time.monotonic()
+    res_to = router.search_multi(
+        SearchRequest(query="timeout check", max_results=4),
+        max_providers=2,
+        route_ids=("exa", "brave"),
+        telemetry=tel,
+        per_provider_timeout_s=0.1,
+    )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.45
+    assert res_to.providers_used == ("brave",)
+
+
+def test_fetcher_concurrent_fetch_many_and_three_tier_extract_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import threading
+
+    _enable_live_search(monkeypatch, tmp_path)
+    monkeypatch.setenv("PARALLEL_API_KEY", "par-k")
+    monkeypatch.setenv("EXA_API_KEY", "exa-k")
+    clear_research_config_cache()
+    reset_search_router()
+
+    client = SafePublicHttpClient()
+    tel = Telemetry(path=tmp_path / "data" / "telemetry.jsonl")
+
+    # 1. fetch_many runs distinct domains concurrently (barrier proves simultaneous execution)
+    domain_barrier = threading.Barrier(2, timeout=2.0)
+
+    def _pinned_html(url: str, **kwargs: Any):
+        del kwargs
+        domain_barrier.wait()
+        return (
+            200,
+            {"content-type": "text/html; charset=utf-8"},
+            f"<html><head><title>{url}</title></head><body><p>Body for {url}</p></body></html>".encode(),
+            url,
+        )
+
+    _install_pinned_stub(monkeypatch, _pinned_html)
+    batch = client.fetch_many(
+        ["https://alpha.org/page1", "https://beta.org/page2", "http://127.0.0.1:8080/bad"],
+        telemetry=tel,
+        max_workers=2,
+    )
+    assert len(batch) == 3
+    assert batch[0].ok is True and batch[0].provider == "http"
+    assert batch[1].ok is True and batch[1].provider == "http"
+    assert batch[2].ok is False and batch[2].error_class == "SearchPolicyError"
+
+    # 2. extract_many fallback chain: Parallel Extract -> Exa Contents -> SafePublicHttpClient
+    def _chain_pinned(url: str, **kwargs: Any):
+        body = json.loads(kwargs["body"].decode("utf-8")) if kwargs.get("body") else {}
+        if url == "https://api.parallel.ai/v1/extract":
+            # Only u1 succeeds in Parallel; u2 & u3 fall through to Exa
+            assert len(body["urls"]) == 3
+            return (
+                200,
+                {"content-type": "application/json"},
+                json.dumps(
+                    {
+                        "results": [
+                            {"url": "https://u1.org/p", "title": "U1", "full_content": "From Parallel"}
+                        ]
+                    }
+                ).encode("utf-8"),
+                url,
+            )
+        if url == "https://api.exa.ai/contents":
+            # Only u2 succeeds in Exa; u3 falls through to SafePublicHttpClient
+            assert body["urls"] == ["https://u2.org/p", "https://u3.org/p"]
+            return (
+                200,
+                {"content-type": "application/json"},
+                json.dumps(
+                    {
+                        "results": [
+                            {"url": "https://u2.org/p", "title": "U2", "text": "From Exa"}
+                        ]
+                    }
+                ).encode("utf-8"),
+                url,
+            )
+        # SafePublicHttpClient handles u3
+        assert url == "https://u3.org/p"
+        return (
+            200,
+            {"content-type": "text/html"},
+            b"<html><head><title>U3</title></head><body><p>From HTTP</p></body></html>",
+            url,
+        )
+
+    _install_pinned_stub(monkeypatch, _chain_pinned)
+    ext = client.extract_many(
+        ["https://u1.org/p", "https://u2.org/p", "https://u3.org/p"],
+        strategy="parallel_extract_first",
+        telemetry=tel,
+    )
+    assert [r.provider for r in ext] == ["parallel", "exa", "http"]
+    assert ext[0].text == "From Parallel"
+    assert ext[1].text == "From Exa"
+    assert "From HTTP" in ext[2].text
+

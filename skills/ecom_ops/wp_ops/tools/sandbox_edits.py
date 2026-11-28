@@ -341,14 +341,22 @@ def handle_workspace_page_draft(
     slug = raw_slug.strip().strip("/").lower()
 
     if not isinstance(raw_title, str) or not raw_title.strip() or len(raw_title.strip()) > 200 or "\x00" in raw_title:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        err = error_payload("InvalidToolArguments")
+        err["hint"] = "Ange en icke-tom sidtitel i title (max 200 tecken)."
+        return ToolOutput(err, site_id)
     title = " ".join(raw_title.split()).strip()
 
     if not isinstance(raw_type, str) or raw_type not in PAGE_DRAFT_TYPES:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        allowed_types = sorted(PAGE_DRAFT_TYPES)
+        err = error_payload("InvalidToolArguments")
+        err["allowed_page_types"] = allowed_types
+        err["hint"] = f"Ogiltig page_type. Använd en av: {', '.join(allowed_types)}."
+        return ToolOutput(err, site_id)
 
     if not isinstance(raw_body, str) or not raw_body.strip() or "\x00" in raw_body:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        err = error_payload("InvalidToolArguments")
+        err["hint"] = "Ange icke-tom HTML i body_html."
+        return ToolOutput(err, site_id)
     if len(raw_body.encode("utf-8")) > PAGE_DRAFT_MAX_HTML_BYTES:
         err = error_payload("FileTooLarge")
         err["hint"] = "body_html får vara högst 48 KiB."
@@ -361,7 +369,9 @@ def handle_workspace_page_draft(
     page_css = ""
     if raw_css is not None:
         if not isinstance(raw_css, str) or "\x00" in raw_css:
-            return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+            err = error_payload("InvalidToolArguments")
+            err["hint"] = "page_css måste vara en giltig CSS-sträng utan null-tecken."
+            return ToolOutput(err, site_id)
         if len(raw_css.encode("utf-8")) > PAGE_DRAFT_MAX_CSS_BYTES:
             err = error_payload("FileTooLarge")
             err["hint"] = "page_css får vara högst 24 KiB."
@@ -388,7 +398,9 @@ def handle_workspace_page_draft(
     clean_focus: str | None = None
     if raw_focus is not None:
         if not isinstance(raw_focus, str):
-            return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+            err = error_payload("InvalidToolArguments")
+            err["hint"] = "focus_selector måste vara en textsträng (CSS-selektor)."
+            return ToolOutput(err, site_id)
         if raw_focus.strip():
             try:
                 _, clean_focus, _, _ = validate_focus_options(focus_selector=raw_focus)
@@ -398,7 +410,9 @@ def handle_workspace_page_draft(
     synthetic_ctx: dict[str, Any] = {}
     if raw_ctx is not None:
         if not isinstance(raw_ctx, dict):
-            return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+            err = error_payload("InvalidToolArguments")
+            err["hint"] = "synthetic_context måste vara ett JSON-objekt (dict)."
+            return ToolOutput(err, site_id)
         if tools._contains_real_pii(raw_ctx):
             err = error_payload("RealPiiRefused")
             err["hint"] = (

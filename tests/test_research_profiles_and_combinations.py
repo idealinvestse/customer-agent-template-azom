@@ -449,3 +449,84 @@ def test_clarifier_cli_and_dashboard_expose_12_profiles(
         "metasearch_triangulation",
     ):
         assert pid in html
+
+
+def test_yaml_and_builtin_13_profiles_sync_and_provider_ordering() -> None:
+    import yaml
+
+    from ecom_ops.research.evaluator import evaluate_search_hits
+
+    raw_yaml = yaml.safe_load((REPO_ROOT / "config" / "research.yaml").read_text(encoding="utf-8"))
+    assert raw_yaml["enabled"] is False
+    yaml_profiles = raw_yaml["profiles"]
+    assert len(yaml_profiles) == 13
+    assert "seo_vendor_vetting" in yaml_profiles
+
+    primary_trio = {"parallel", "exa", "brave"}
+    fallback_pair = {"tavily", "searxng"}
+
+    for prof in list_profiles():
+        assert prof.id in yaml_profiles
+        # Ensure YAML "NO" is never parsed as boolean False
+        assert all(isinstance(m, str) and m for m in prof.market_defaults)
+        if prof.id in {"competitor_market", "support_fact_check", "seo_content_radar", "seo_vendor_vetting", "regulatory_compliance"}:
+            assert "NO" in prof.market_defaults
+
+        # Tavily & SearXNG must remain strictly after Parallel, Exa, and Brave
+        seen_fallback = False
+        for p in prof.preferred_providers:
+            if p in fallback_pair:
+                seen_fallback = True
+            elif p in primary_trio:
+                assert not seen_fallback, f"{prof.id}: {p} appears after fallback in {prof.preferred_providers}"
+
+        for rnum, rprovs in prof.round_providers.items():
+            seen_fb_round = False
+            for p in rprovs:
+                if p in fallback_pair:
+                    seen_fb_round = True
+                elif p in primary_trio:
+                    assert not seen_fb_round, f"{prof.id} round {rnum}: {p} appears after fallback in {rprovs}"
+
+    # Verify cross-provider corroboration + RRF scoring boost in evaluate_search_hits
+    from ecom_ops.integrations.search.base import SearchHit
+
+    prof = get_profile("competitor_market")
+    sources, _status, _conflicts = evaluate_search_hits(
+        [
+            SearchHit(
+                url="https://example.se/corroborated",
+                title="CarPlay Market Study SE",
+                snippet="Detailed Nordic CarPlay market analysis and pricing.",
+                provider="parallel",
+                score=0.8,
+            ),
+            SearchHit(
+                url="https://example.se/corroborated?utm_source=exa",
+                title="CarPlay Market Study SE",
+                snippet="Detailed Nordic CarPlay market analysis and pricing.",
+                provider="exa",
+                score=0.82,
+            ),
+            SearchHit(
+                url="https://example.se/single-source",
+                title="CarPlay Market Study SE",
+                snippet="Detailed Nordic CarPlay market analysis and pricing.",
+                provider="brave",
+                score=0.82,
+            ),
+        ],
+        query="CarPlay Market Study SE",
+        profile=prof,
+        provenance="live",
+    )
+    by_dom = {s.canonical_url: s for s in sources}
+    corr = by_dom["https://example.se/corroborated"]
+    single = by_dom["https://example.se/single-source"]
+    assert corr.provider == "parallel+exa"
+    assert corr.corroborated_by == ("parallel", "exa")
+    assert corr.provider_count == 2
+    assert corr.rrf_score > 0.0
+    assert 0.0 <= corr.score <= 1.0
+    assert corr.score > single.score
+

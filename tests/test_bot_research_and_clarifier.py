@@ -897,3 +897,112 @@ def test_approval_snapshot_immune_to_research_session_keys_and_attachments_stric
     assert safe_workspace_attachments([str(wp_png), str(res_md), str(res_png)], data_dir=bot_env) == (
         str(wp_png.resolve()),
     )
+
+
+def test_toolchain_auto_profile_anti_polling_and_taint_propagation(
+    bot_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ecom_ops.research.tools import WEB_RESEARCH_TOOL_GUIDE, execute_research_tool
+
+    assert len(WEB_RESEARCH_TOOL_GUIDE) <= 500
+
+    # 1. Clarifier maps SEO vendor-vetting keywords to seo_vendor_vetting ahead of seo_content_radar
+    vendor_spec = build_research_spec("granska länkleverantör Bazoom och WhitePress i Norge", [], [])
+    assert vendor_spec.profile_id == "seo_vendor_vetting"
+    assert vendor_spec.country == "NO"
+    assert vendor_spec.locale == "nb"
+
+    # 2. execute_research_tool supports profile="auto", depth="auto", and market->locale/country
+    s_auto = execute_research_tool(
+        "web_search",
+        {"query": "WooCommerce HPOS block hooks", "profile": "auto"},
+        actor="jonatan",
+    )
+    assert s_auto["ok"] is True
+    assert s_auto["profile_id"] == "technical_docs"
+
+    r_auto = execute_research_tool(
+        "web_research_start",
+        {
+            "topic": "CRO tacksida konverteringsanalys",
+            "profile": "auto",
+            "depth": "auto",
+            "market": "NO",
+        },
+        actor="jonatan",
+    )
+    assert r_auto["ok"] is True
+    assert r_auto["profile_id"] == "conversion_teardown"
+    assert r_auto["depth"] == "deep"
+    job = get_research_service(bot_env).store.get_job(r_auto["research_id"], actor="jonatan")
+    assert job is not None and job.spec is not None
+    assert job.spec.country == "NO"
+    assert job.spec.locale == "nb"
+
+    # 3. chat_agent non-WP loop prevents same-turn status polling after web_research_start
+    #    and propagates sticky_case_id8 into QueryTaintContext
+    calls: list[list[dict[str, Any]]] = []
+    started_rid = "res-00000000cafe"
+    seen_tools: list[str] = []
+    seen_taints: list[Any] = []
+
+    def _fake_exec(name: str, args: dict[str, Any] | None, **kwargs: Any) -> dict[str, Any]:
+        seen_tools.append(name)
+        seen_taints.append(kwargs.get("taint"))
+        if name == "web_research_start":
+            return {
+                "ok": True,
+                "tool": "web_research_start",
+                "research_id": started_rid,
+                "status": "queued",
+                "profile_id": "competitor_market",
+                "depth": "standard",
+                "provenance": "mock",
+            }
+        raise AssertionError(f"Unexpected tool call after start: {name}")
+
+    def _fake_chat_anti_poll(messages: list[dict[str, Any]], **kwargs: Any) -> tuple[str, float]:
+        del kwargs
+        calls.append(messages)
+        if len(calls) == 1:
+            return (
+                '<tool_call>{"name":"web_research_start","arguments":{"topic":"Nordisk CarPlay marknad","profile":"auto"}}</tool_call>',
+                0.0,
+            )
+        if len(calls) == 2:
+            return (
+                f'<tool_call>{{"name":"web_research_status","arguments":{{"research_id":"{started_rid}"}}}}</tool_call>',
+                0.0,
+            )
+        return f"Startade asynkron research {started_rid}.", 0.0
+
+    with monkeypatch.context() as mp:
+        mp.setattr("ecom_ops.research.tools.execute_research_tool", _fake_exec)
+        mp.setattr(chat_agent, "chat_completion", _fake_chat_anti_poll)
+        res_chat = run_chat(
+            "gör research om nordisk CarPlay marknad",
+            actor="jonatan",
+            sticky_case_id8="caseabcd",
+        )
+    assert started_rid in res_chat.text
+    assert seen_tools == ["web_research_start"]
+    assert seen_taints[0] is not None
+    assert "caseabcd" in seen_taints[0].case_ids
+
+    # 4. /search auto-selects profile and enforces session order/case taint
+    tg_store = ConversationStore(bot_env / "tg_search_taint.json")
+    tg_store.append_turn_atomic(
+        300,
+        session_updates={"last_order_id": "998877", "last_market": "NO"},
+    )
+    tg_bot = BotHandler(store=tg_store, channel="telegram")
+    blocked = tg_bot.handle(300, "/search PostNord order 998877")
+    assert "blockerade" in blocked.text.lower() or "säkerhetspolicy" in blocked.text.lower()
+
+    monkeypatch.setattr(
+        handlers,
+        "chat_completion",
+        lambda messages, **kwargs: ("Snabbsökning klar [S1].", 0.0),
+    )
+    ok_search = tg_bot.handle(300, "/search WooCommerce HPOS hooks --market SE")
+    assert "Snabbsökning klar [S1]." in ok_search.text

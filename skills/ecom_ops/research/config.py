@@ -7,6 +7,7 @@ or ``subprocess`` imports.
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from ecom_ops.runtime_env import env_flag
 
 _MOCK_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
+_CACHE_LOCK = threading.RLock()
 _CACHE_KEY: tuple[str, int | None] | None = None
 _CACHE_CONFIG: ResearchConfig | None = None
 
@@ -318,29 +320,31 @@ def load_research_config() -> ResearchConfig:
     except OSError:
         mtime_ns = None
     key = (str(path), mtime_ns)
-    if _CACHE_KEY == key and _CACHE_CONFIG is not None:
-        return _CACHE_CONFIG
+    with _CACHE_LOCK:
+        if _CACHE_KEY == key and _CACHE_CONFIG is not None:
+            return _CACHE_CONFIG
 
-    raw: dict[str, Any] = _builtin_raw_config()
-    if mtime_ns is not None:
-        try:
-            loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            if isinstance(loaded, dict):
-                raw = loaded
-        except Exception:
-            raw = _builtin_raw_config()
+        raw: dict[str, Any] = _builtin_raw_config()
+        if mtime_ns is not None:
+            try:
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except Exception:
+                raw = _builtin_raw_config()
 
-    cfg = _build_research_config(raw)
-    _CACHE_KEY = key
-    _CACHE_CONFIG = cfg
-    return cfg
+        cfg = _build_research_config(raw)
+        _CACHE_KEY = key
+        _CACHE_CONFIG = cfg
+        return cfg
 
 
 def clear_research_config_cache() -> None:
     """Clear the cached ``ResearchConfig`` (intended for tests)."""
     global _CACHE_KEY, _CACHE_CONFIG
-    _CACHE_KEY = None
-    _CACHE_CONFIG = None
+    with _CACHE_LOCK:
+        _CACHE_KEY = None
+        _CACHE_CONFIG = None
 
 
 def is_mock_mode() -> bool:

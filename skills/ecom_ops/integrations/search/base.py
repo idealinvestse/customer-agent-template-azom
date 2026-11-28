@@ -78,6 +78,9 @@ class SearchHit:
     author: str | None = None
     raw_excerpts: tuple[str, ...] = ()
     content: str | None = None
+    corroborated_by: tuple[str, ...] = ()
+    provider_count: int = 1
+    rrf_score: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.raw_excerpts, tuple):
@@ -86,10 +89,27 @@ class SearchHit:
                 "raw_excerpts",
                 tuple(str(x) for x in (self.raw_excerpts or ()) if x),
             )
+        if not isinstance(self.corroborated_by, tuple):
+            object.__setattr__(
+                self,
+                "corroborated_by",
+                tuple(
+                    str(x).strip()
+                    for x in (self.corroborated_by or ())
+                    if str(x or "").strip()
+                ),
+            )
+        if not self.corroborated_by and self.provider:
+            parts = tuple(p.strip() for p in str(self.provider).split("+") if p.strip())
+            if parts:
+                object.__setattr__(self, "corroborated_by", parts)
+        count = max(int(self.provider_count or 1), len(self.corroborated_by) or 1)
+        object.__setattr__(self, "provider_count", count)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["raw_excerpts"] = list(self.raw_excerpts)
+        data["corroborated_by"] = list(self.corroborated_by)
         return data
 
 
@@ -107,16 +127,32 @@ class SearchResult:
     error_class: str | None = None
     error_code: str | None = None
     estimated_cost_usd: float = 0.0
+    providers_used: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.hits, tuple):
             object.__setattr__(self, "hits", tuple(self.hits or ()))
+        if not isinstance(self.providers_used, tuple):
+            object.__setattr__(
+                self,
+                "providers_used",
+                tuple(
+                    str(p).strip()
+                    for p in (self.providers_used or ())
+                    if str(p or "").strip()
+                ),
+            )
+        if not self.providers_used and self.provider:
+            parts = tuple(p.strip() for p in str(self.provider).split("+") if p.strip())
+            if parts:
+                object.__setattr__(self, "providers_used", parts)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
             "route_id": self.route_id,
             "provider": self.provider,
+            "providers_used": list(self.providers_used),
             "hits": [h.to_dict() for h in self.hits],
             "provenance": self.provenance,
             "latency_ms": self.latency_ms,
@@ -142,6 +178,7 @@ class FetchResult:
     truncated: bool = False
     error_class: str | None = None
     error_code: str | None = None
+    provider: str = "http"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

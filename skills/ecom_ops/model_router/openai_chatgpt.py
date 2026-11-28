@@ -55,6 +55,7 @@ _UNKNOWN_MODEL_ERROR_CODES = frozenset(
     {"model_not_found", "invalid_model", "unsupported_model"}
 )
 _SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 DYNAMIC_CLIENT_ID = "dynamic_agent_client"
 DEFAULT_SCOPE = (
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
@@ -380,6 +381,18 @@ def _extract_response_error_meta(response: requests.Response) -> tuple[str, str]
     return _safe_error_code(body.get("code")), ""
 
 
+def is_loopback_redirect_uri(uri: str) -> bool:
+    """Return True when ``uri`` targets a local loopback hostname."""
+    text = (uri or "").strip()
+    if not text:
+        return False
+    try:
+        host = (urlparse(text).hostname or "").strip().lower()
+    except ValueError:
+        return False
+    return host in _LOOPBACK_HOSTS
+
+
 def extract_authorization_code(callback_url: str) -> str:
     """Pull an OAuth code from a callback URL. Do not log the URL."""
     match = re.search(r"[?&]code=([^&#]+)", callback_url or "")
@@ -451,7 +464,9 @@ class OpenAIChatGPTOAuthRoute:
             "expires_at": 0.0,
             "expires_at_iso": "",
             "redirect_uri": redirect_uri,
+            "redirect_is_loopback": is_loopback_redirect_uri(redirect_uri),
             "has_pending_auth": has_pending,
+            "has_saved_session": False,
             "model": _env("OPENAI_MODEL") or DEFAULT_OPENAI_MODEL,
             "cost_kind": "subscription",
             "plan_usage": False,
@@ -476,23 +491,32 @@ class OpenAIChatGPTOAuthRoute:
         base["id_token_verified"] = False
         base["expires_at_iso"] = _format_expires_iso(session.expires_at)
         base["redirect_uri"] = redirect_uri
+        base["redirect_is_loopback"] = is_loopback_redirect_uri(redirect_uri)
         base["has_pending_auth"] = has_pending
+        base["has_saved_session"] = True
         return base
 
-    def _authorize_client_id(self) -> tuple[str, bool]:
+    def _authorize_client_id(self, *, force_fresh: bool = False) -> tuple[str, bool]:
         """Return the authorize client id and whether this is first registration.
 
         ``dynamic_agent_client`` is only the registration entrypoint. A saved
-        issued client id is reused and must not be replaced by the sentinel.
+        issued client id is reused and must not be replaced by the sentinel,
+        unless ``force_fresh`` explicitly requests a fresh registration.
         """
-        existing = self.store.load()
-        saved = (existing.client_id if existing else "").strip()
-        if saved and saved != DYNAMIC_CLIENT_ID:
-            return saved, False
+        if not force_fresh:
+            existing = self.store.load()
+            saved = (existing.client_id if existing else "").strip()
+            if saved and saved != DYNAMIC_CLIENT_ID:
+                return saved, False
         configured = _siwc("OPENAI_SIWC_CLIENT_ID")
         return configured, configured == DYNAMIC_CLIENT_ID
 
-    def start_authorization(self, *, redirect_uri: str | None = None) -> tuple[str, str]:
+    def start_authorization(
+        self,
+        *,
+        redirect_uri: str | None = None,
+        force_fresh_registration: bool = False,
+    ) -> tuple[str, str]:
         """Return ``(authorize_url, state)``. State is stored until exchange."""
         if not self.siwc_endpoints_ready():
             raise ModelConfigError("ChatGPT OAuth configuration is incomplete")
@@ -509,7 +533,9 @@ class OpenAIChatGPTOAuthRoute:
             .rstrip(b"=")
             .decode("ascii")
         )
-        client_id, initial_registration = self._authorize_client_id()
+        client_id, initial_registration = self._authorize_client_id(
+            force_fresh=force_fresh_registration
+        )
         host_id = _siwc("OPENAI_SIWC_HOST_ID", create_host_id=True)
         scope = _scope()
         self._state_store().save(
@@ -544,10 +570,25 @@ class OpenAIChatGPTOAuthRoute:
         return f"{_siwc('OPENAI_SIWC_AUTHORIZATION_URL')}?{urlencode(params)}", state
 
     def exchange_callback_url(self, callback_url: str) -> ModelSession:
-        """Complete PKCE exchange from a full pasted callback URL (remote VPS loopback)."""
-        raw = (callback_url or "").strip()
-        parsed = urlparse(raw)
-        params = parse_qs(parsed.query, keep_blank_values=False)
+        """Complete PKCE exchange from a pasted callback URL or query string."""
+        raw = (callback_url or "").strip().strip("\"'<>").strip()
+        if not raw:
+            raise ModelAuthError(
+                "ChatGPT OAuth callback missing code or state",
+                code="missing_callback_params",
+            )
+        if raw.startswith("?"):
+            query_str = raw[1:].split("#", 1)[0]
+        elif (
+            "://" not in raw
+            and "?" not in raw
+            and not raw.startswith("/")
+            and any(token in raw for token in ("code=", "error=", "state="))
+        ):
+            query_str = raw.split("#", 1)[0]
+        else:
+            query_str = urlparse(raw).query
+        params = parse_qs(query_str, keep_blank_values=False)
         err_vals = params.get("error") or []
         if err_vals:
             safe_err = _safe_error_code(err_vals[0]) or "oauth_error"
@@ -583,7 +624,7 @@ class OpenAIChatGPTOAuthRoute:
             raise ModelAuthError("Invalid or expired ChatGPT OAuth state")
         if not pending.code_verifier or time.time() >= pending.expires_at:
             state_store.clear()
-            raise ModelAuthError("ChatGPT OAuth state expired")
+            raise ModelAuthError("ChatGPT OAuth state expired", code="state_expired")
 
         callback_client = (issued_client_id or "").strip()
         requested = pending.client_id.strip()
@@ -631,7 +672,13 @@ class OpenAIChatGPTOAuthRoute:
                 )
                 if not session.access_token or not session.refresh_token:
                     raise ModelAuthError("ChatGPT OAuth response missing required tokens")
-                self.store.save(session)
+                try:
+                    self.store.save(session)
+                except OSError as exc:
+                    raise ModelAuthError(
+                        "ChatGPT OAuth session could not be saved",
+                        code="persist_failed",
+                    ) from exc
         except TimeoutError as exc:
             raise ModelUnavailableError(
                 "ChatGPT OAuth session lock timed out",
@@ -729,8 +776,12 @@ class OpenAIChatGPTOAuthRoute:
                 body = response.json()
             except ValueError:
                 body = None
-            if isinstance(body, dict) and body.get("error") == "invalid_grant":
-                code = "invalid_grant"
+            if isinstance(body, dict):
+                err = body.get("error")
+                if isinstance(err, dict):
+                    code = _safe_error_code(err.get("code") or err.get("type"))
+                else:
+                    code = _safe_error_code(err)
             raise ModelAuthError(
                 f"ChatGPT OAuth token request rejected ({response.status_code})",
                 code=code,

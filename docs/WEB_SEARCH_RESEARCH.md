@@ -13,7 +13,7 @@
 | **Research Job / Brief ID (`res-<12hex>`)** | Canonical identifier (`^res-[0-9a-f]{12}$`) across CLI, bots, WordPress plans (`research_ids`), Dashboard `/research`, SQLite, and artifacts. |
 | **Clarification ID (`cl-<12hex>`)** | Single-use scoping proposal token (`clarify:pick\|go\|other\|cancel:{cid}`) used by `<clarify>` pre-research scoping dialogs (max 3 rounds). |
 | **Target Reference (`target_ref`)** | Structured optional link (`case:<uuid>`, `wp:<site_id>:<wr-plan_id>`, `wp_site:<site_id>`, `product:<woo_id>`, `marketing:<kind>`, `chat:<channel>:<peer_id>`). Stored **only** in `research_jobs.sqlite3` (never on disk artifacts) so GDPR unlinking is atomic. |
-| **SearchRouter** | Multi-provider router in `skills/ecom_ops/integrations/search/router.py` enforcing fail-closed live gates, `OutboundQueryFirewall`, per-route circuit breakers, and failover. |
+| **`SearchRouter`** | Multi-provider router in `skills/ecom_ops/integrations/search/router.py` enforcing fail-closed live gates, `OutboundQueryFirewall`, per-route circuit breakers, failover, and concurrent RRF `search_multi()`. |
 | **OutboundQueryFirewall** | Fail-closed scrubber/blocker (`skills/ecom_ops/research/firewall.py`) blocking PII, secrets, internal IDs, and private/internal hosts before any outbound query or URL fetch. |
 | **EvidenceStatus** | Corroboration rating on results/briefs: `grounded`, `inspiration_only`, `partial`, `conflicting`, `insufficient`, `provider_unavailable`, `mock`. |
 | **Provenance** | Source origin label: `mock` / `mock_fixture` (offline deterministic fixtures), `live` / `live_api`, or `cache`. |
@@ -68,15 +68,15 @@ skills/ecom_ops/
 │       ├── base.py                          # SearchCapabilities, SearchRequest, SearchHit, SearchResult, FetchResult
 │       ├── errors.py                        # SearchRouteError (Config | Auth | RateLimit | Unavailable | Policy)
 │       ├── circuit_breaker.py               # Cross-process JSON breaker (search_router_health.json + file_lock)
-│       ├── router.py                        # SearchRouter: fail-closed live gate, priority, breaker, cache, test_route()
-│       ├── fetcher.py                       # SafePublicHttpClient + pure-Python allowlist HTML->markdown/text extractor
+│       ├── router.py                        # SearchRouter: fail-closed live gate, concurrent RRF search_multi(), breaker, cache, test_route()
+│       ├── fetcher.py                       # SafePublicHttpClient: fetch(), concurrent fetch_many(), extract_many() fallback chain
 │       └── providers/
 │           ├── mock.py                      # MockSearchRoute (AZOM_USE_MOCK=1 only; profile-keyed fixtures)
-│           ├── parallel.py                  # ParallelSearchRoute (POST /v1/search & /v1/extract, x-api-key)
-│           ├── exa.py                       # ExaSearchRoute (POST /search, x-api-key)
+│           ├── parallel.py                  # ParallelSearchRoute (POST /v1/search & /v1/extract + extract_many, x-api-key)
+│           ├── exa.py                       # ExaSearchRoute (POST /search & /contents extract, x-api-key)
 │           ├── brave.py                     # BraveSearchRoute (GET /res/v1/web/search, X-Subscription-Token)
-│           ├── tavily.py                    # TavilySearchRoute (POST /search, Authorization: Bearer)
-│           └── searxng.py                   # SearxngSearchRoute (opt-in HTTPS or non-dashboard loopback)
+│           ├── tavily.py                    # TavilySearchRoute (POST /search, Authorization: Bearer — optional fallback)
+│           └── searxng.py                   # SearxngSearchRoute (opt-in HTTPS or non-dashboard loopback — optional fallback)
 │
 ├── research/
 │   ├── __init__.py                          # ResearchService, get_research_service()
@@ -105,14 +105,14 @@ skills/ecom_ops/
 
 ## 2. Providers & mock configuration
 
-Live route priority defaults to `parallel,exa,brave,tavily,searxng` (overridable via `AZOM_SEARCH_ROUTE_ORDER`, or per-profile `preferred_providers` in `config/research.yaml`). All providers pass API keys strictly in HTTP headers (never query params or JSON body) and never log raw HTTP error bodies.
+Live route priority uses **Parallel.ai, Exa, and Brave** as primary engines (`parallel,exa,brave`), with `tavily` and opt-in `searxng` strictly after them as optional fallbacks (overridable via `AZOM_SEARCH_ROUTE_ORDER`, or per-profile `preferred_providers` in `config/research.yaml`). `SearchRouter.search_multi()` fans out **concurrently** via a bounded `ThreadPoolExecutor`, skips unconfigured/circuit-open routes upfront, fuses results with Reciprocal Rank Fusion (RRF), deduplicates canonical URLs, and records `corroborated_by` / `provider_count`. `SafePublicHttpClient.extract_many()` and `fetch_many()` run concurrently with per-domain politeness throttling using the `Parallel Extract -> Exa Contents -> SafePublicHttpClient` fallback chain. All providers pass API keys strictly in HTTP headers (never query params or JSON body) and never log raw HTTP error bodies.
 
 | Provider (`route_id`) | Endpoint & method | Auth header (env var) | Capabilities & notes |
 |-----------------------|-------------------|-----------------------|----------------------|
-| **`parallel`** | `POST https://api.parallel.ai/v1/search` and `/v1/extract` | `x-api-key` (`PARALLEL_API_KEY`) | Sends `objective`, `search_queries` (1–5 concise queries `<= 200` chars), `mode` (`mode_quick: fast`, `mode_deep: basic`), and `advanced_settings` (`max_results`, `source_policy.include_domains` / `exclude_domains` / `after_date`). Supports extract & deep mode. |
-| **`exa`** | `POST https://api.exa.ai/search` | `x-api-key` (`EXA_API_KEY`) | Sends `query`, `type` (`search_type_quick: auto`, `search_type_deep: deep`), `numResults`, `contents` (`highlights`, optional `text`), `includeDomains`/`excludeDomains`, `startPublishedDate`. |
-| **`brave`** | `GET https://api.search.brave.com/res/v1/web/search` | `X-Subscription-Token` (`BRAVE_SEARCH_API_KEY`) | Supports Nordic `country` (`SE`/`NO`/`DK`), `search_lang`, `freshness` (`pd`/`pw`/`pm`/`py`), and `extra_snippets=true`. |
-| **`tavily`** | `POST https://api.tavily.com/search` | `Authorization: Bearer` (`TAVILY_API_KEY`) | Sends `query`, `search_depth` (`search_depth_quick: basic`, `search_depth_deep: advanced`), `max_results`, `include_raw_content`, `include_domains`/`exclude_domains`, `time_range`. |
+| **`parallel`** | `POST https://api.parallel.ai/v1/search` and `/v1/extract` | `x-api-key` (`PARALLEL_API_KEY`) | Primary objective-driven multi-query (`objective`, 1–5 `search_queries <= 200` chars, `mode`: `fast`/`basic`), `source_policy` filters, plus batched `/v1/extract` (`extract_many`). |
+| **`exa`** | `POST https://api.exa.ai/search` and `/contents` | `x-api-key` (`EXA_API_KEY`) | Primary semantic/neural discovery (`type`: `auto`/`deep`, `numResults`, `contents.highlights`, `includeDomains`/`excludeDomains`, `startPublishedDate`) + `/contents` extraction. |
+| **`brave`** | `GET https://api.search.brave.com/res/v1/web/search` | `X-Subscription-Token` (`BRAVE_SEARCH_API_KEY`) | Primary fresh Nordic SERP & news (`country`: `SE`/`NO`/`DK`, mapped `search_lang`, `freshness`: `pd`/`pw`/`pm`/`py`, `extra_snippets=true`). |
+| **`tavily`** (fallback) | `POST https://api.tavily.com/search` | `Authorization: Bearer` (`TAVILY_API_KEY`) | Optional fallback (`search_depth`: `basic`/`advanced`, `max_results`, `include_raw_content`, `include_domains`/`exclude_domains`, `time_range`). |
 | **`searxng`** (opt-in) | `GET <SEARXNG_BASE_URL>/search?format=json` | Optional `Authorization: Bearer` (`SEARXNG_API_KEY`) | Disabled by default (`providers.searxng.enabled: false` in `config/research.yaml`). Requires process-env `SEARXNG_BASE_URL` pointing to public HTTPS or explicit loopback `http://127.0.0.1:<port>` / `http://[::1]:<port>` (`max_redirects=0`, port must not collide with `DASHBOARD_PORT` or `AZOM_DASHBOARD_PUBLIC_URL`). |
 | **`mock`** (`MockSearchRoute`) | Offline only (no network) | None | Active **only** when `AZOM_USE_MOCK=1` (or unset/truthy). Serves deterministic profile-keyed fixtures (`provenance="mock_fixture"`, `estimated_cost_usd=0.0`). Raises `SearchConfigError` (`mock_disabled`) if invoked in live mode. |
 
@@ -169,9 +169,10 @@ Defined in `skills/ecom_ops/research/profiles.py`, documented as skill playbooks
 
 ## 5. Autonomy, `<clarify>` scoping & async worker pool
 
-- **Autonomous chat tools (`skills/ecom_ops/research/tools.py`):** `web_search`, `web_fetch_extract`, `web_research_start`, `web_research_status`, `web_research_get` are available inside `chat_agent.py`'s bounded non-WP read loop (`_run_non_wp_read_loop`, max `3` calls, max `2` fetches, `25s` timeout) when web search is available (`AZOM_USE_MOCK=1` or `AZOM_WEB_SEARCH_ENABLED=1`), as well as inside the WordPress file/workspace loop (`3` searches, `2` fetches, `18s` web sub-budget; see [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) and [`WP_SKILL_GUARDRAILS.md`](WP_SKILL_GUARDRAILS.md)).
+- **Autonomous chat tools (`skills/ecom_ops/research/tools.py`):** `web_search`, `web_fetch_extract`, `web_research_start`, `web_research_status`, `web_research_get` are available inside `chat_agent.py`'s bounded non-WP read loop (`_run_non_wp_read_loop`, max `3` calls, max `2` fetches, `25s` timeout) when web search is available (`AZOM_USE_MOCK=1` or `AZOM_WEB_SEARCH_ENABLED=1`), as well as inside the WordPress file/workspace loop (`3` searches, `2` fetches, `18s` web sub-budget; see [`WORDPRESS_OPS.md`](WORDPRESS_OPS.md) and [`WP_SKILL_GUARDRAILS.md`](WP_SKILL_GUARDRAILS.md)). `web_search`, `web_fetch_extract`, and `web_research_start` default `profile="auto"` (`recommend_profile()`), `web_research_start` derives `country`/`locale` from `market` and supports `depth="auto"`, and `_run_non_wp_read_loop` blocks same-turn polling of `web_research_status` right after `web_research_start`.
+- **Concurrent surface bridges:** `seo/research_bridge.py` (`run_autonomous_seo_pipeline`) executes `gather_seo_serp_context` (`seo_content_radar`) and `vet_link_vendors_via_web` (`seo_vendor_vetting`) concurrently via `ThreadPoolExecutor` with `QueryTaintContext` site-secret protection; `actions/marketing.py` (`build_waste_suggests(..., annotate_research=True)`) annotates up to 5 waste terms concurrently; `actions/product_desc.py` (`--research`) uses `product_spec_deep`; `/search` auto-selects profiles via `recommend_profile(query, ambition="quick")` and enforces active session `last_order_id`/`last_case_id8` taint.
 - **`<clarify>` scoping dialog (`skills/ecom_ops/research/clarifier.py`):**
-  - Broad/ambiguous research asks (e.g., `/research` without scoping flags or vague `"konkurrentanalys"` / `"marknadsanalys"` / `"gör en research"`) trigger a pre-research `<clarify>` dialog using one of four research categories (`research_design`, `research_market`, `research_tech`, `research_general`), mapped to `cl-<12hex>` proposals (`clarify:pick|go|other|cancel:{cid}`, max 3 rounds, Messenger Quick Replies up to 13 chips).
+  - Broad/ambiguous research asks (e.g., `/research` without scoping flags or vague `"konkurrentanalys"` / `"marknadsanalys"` / `"gör en research"`) trigger a pre-research `<clarify>` dialog using one of four research categories (`research_design`, `research_market`, `research_tech`, `research_general`), mapped to `cl-<12hex>` proposals (`clarify:pick|go|other|cancel:{cid}`, max 3 rounds, Messenger Quick Replies up to 13 chips). Includes `seo_vendor_vetting` keyword routing ahead of `seo_content_radar`.
   - Narrow quick lookups (`"snabbsök"`, `"kolla om postnord"`, explicit URLs, `/search ...`, or `/research` with `--depth`/`--market`/`--profile`) skip `<clarify>` and run directly.
   - `clarify:*` callbacks remain pure scope-lock (`kind="callback"`) and never bypass HITL approvals.
 - **Async worker pool (`skills/ecom_ops/research/worker.py`):**
@@ -234,7 +235,7 @@ python -m ecom_ops --mock product-desc --product-id 42 --language sv --research
 | `POST /research/jobs` | `RESEARCH_RUN` | Enqueue async Deep Research job; `profile_id=auto` and `depth=auto` resolve via `recommend_profile()` / profile `ambition`, optional `target_ref`, starts lazy worker when live. |
 | `POST /research/config/keys` | `_oscar_required` (`full_admin`) | Oscar-only API-key quick setup (`PARALLEL_API_KEY`, `EXA_API_KEY`, `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, `SEARXNG_API_KEY`). Writes non-empty fields to `AZOM_DATA_DIR/secrets.env` (`0600`) without overwriting blank fields or echoing values in HTML, redirects, or `audit.jsonl`, then resets `SearchRouter`. |
 | `POST /research/config/settings` | `_oscar_required` (`full_admin`) | Oscar-only non-secret settings: saves `AZOM_SEARCH_ROUTE_ORDER` (blank resets to automatic), `AZOM_RESEARCH_DEFAULT_COUNTRY`, and `AZOM_RESEARCH_DEFAULT_LANG` to `AZOM_DATA_DIR/runtime.env`; updates `budgets` and `cache.enabled` in `config/research.yaml`; clears research config cache and resets `SearchRouter`. Never writes `PROTECTED_OVERLAY_KEYS` (`AZOM_WEB_SEARCH_ENABLED`, `AZOM_WEB_FETCH_ENABLED`, `AZOM_RESEARCH_ENABLED`, `AZOM_WEB_SEARCH_KILL`, `AZOM_RESEARCH_KILL`, `SEARXNG_BASE_URL`, etc.). |
-| `POST /research/config/test` | `_oscar_required` (`full_admin`) | Oscar-only isolated route probe (`route_id=all` or `parallel|exa|brave|tavily|searxng`) calling `SearchRouter.test_route()` and redirecting to `/research#research-setup` with a non-secret status flash. |
+| `POST /research/config/test` | `_oscar_required` (`full_admin`) | Oscar-only isolated route probe (`route_id=all` or `parallel|exa|brave|tavily|searxng`) probing routes concurrently via `SearchRouter.test_route()` and redirecting to `/research#research-setup` with a non-secret status flash. |
 | `GET /research/<res_id>` | `WEB_SEARCH` + `authorize_research_access("view")` | Detail view: `profile_meta` (`title`, `combination_mode`, `fetch_strategy`), `"Ny liknande i Hub"` link (`/research?profile=<profile_id>`), brief, `[S#]` citations, claim classification, events, steers. |
 | `GET /research/<res_id>/status` | `WEB_SEARCH` + `authorize_research_access("view")` | JSON polling endpoint (`since_seq`, progress, status, evidence_status). |
 | `POST /research/<res_id>/steer` | `RESEARCH_RUN` + `authorize_research_access("steer")` | Queue a steering note for an active job. |

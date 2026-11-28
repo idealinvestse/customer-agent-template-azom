@@ -7,6 +7,7 @@ Strictly isolated from OpenRouter's ``$100`` ``cost_usd`` budget by reading
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,6 +16,15 @@ from ecom_ops.telemetry import Telemetry, default_telemetry
 
 _SEARCH_COUNTED_ACTIONS = frozenset({"web_search_selected", "web_search"})
 _FETCH_COUNTED_ACTIONS = frozenset({"web_fetch_page", "web_fetch"})
+_BUDGET_LOCK = threading.RLock()
+
+
+def _event_units(ev: dict[str, Any]) -> int:
+    try:
+        val = float(ev.get("units") or 1.0)
+    except (TypeError, ValueError):
+        val = 1.0
+    return max(1, int(round(val)))
 
 
 def _iter_events_since(telemetry: Telemetry, since_iso: str) -> list[dict[str, Any]]:
@@ -23,21 +33,22 @@ def _iter_events_since(telemetry: Telemetry, since_iso: str) -> list[dict[str, A
         return []
     events: list[dict[str, Any]] = []
     try:
-        with path.open(encoding="utf-8") as fh:
-            for line in fh:
-                raw = line.strip()
-                if not raw:
-                    continue
-                try:
-                    ev = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(ev, dict):
-                    continue
-                ts = str(ev.get("created_at") or "")
-                if ts and ts < since_iso:
-                    continue
-                events.append(ev)
+        with _BUDGET_LOCK:
+            with path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    raw = line.strip()
+                    if not raw:
+                        continue
+                    try:
+                        ev = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(ev, dict):
+                        continue
+                    ts = str(ev.get("created_at") or "")
+                    if ts and ts < since_iso:
+                        continue
+                    events.append(ev)
     except OSError:
         return []
     return events
@@ -75,10 +86,11 @@ def research_budget_status(
             pass
 
         if not ts or ts >= day_start:
+            units = _event_units(ev)
             if not is_cached and action in _SEARCH_COUNTED_ACTIONS:
-                queries_today += 1
+                queries_today += units
             elif not is_cached and action in _FETCH_COUNTED_ACTIONS:
-                fetches_today += 1
+                fetches_today += units
 
     max_q = cfg.budgets.max_queries_per_day
     max_f = cfg.budgets.max_fetches_per_day

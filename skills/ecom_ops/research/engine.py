@@ -20,11 +20,14 @@ Security & budget invariants:
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
+import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -218,6 +221,33 @@ def _clip_query(text: str) -> str:
     if len(cleaned) > MAX_QUERY_CHARS:
         cleaned = cleaned[:MAX_QUERY_CHARS].rsplit(" ", 1)[0].strip() or cleaned[:MAX_QUERY_CHARS]
     return cleaned
+
+
+def _call_search_multi(
+    search_router: Any,
+    req: SearchRequest,
+    *,
+    max_providers: int,
+    route_ids: tuple[str, ...],
+    telemetry: Telemetry,
+    per_provider_timeout_s: float | None,
+) -> Any:
+    fn = search_router.search_multi
+    kwargs: dict[str, Any] = {
+        "max_providers": max_providers,
+        "route_ids": route_ids,
+        "telemetry": telemetry,
+    }
+    if per_provider_timeout_s is not None:
+        try:
+            sig = inspect.signature(fn)
+            if "per_provider_timeout_s" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            ):
+                kwargs["per_provider_timeout_s"] = per_provider_timeout_s
+        except (TypeError, ValueError):
+            pass
+    return fn(req, **kwargs)
 
 
 def _resolve_tier_limits(spec: ResearchSpec, tier: DepthTierConfig) -> dict[str, int]:
@@ -470,10 +500,15 @@ class ResearchEngine:
         accepted: list[str] = []
         last_policy_err: SearchPolicyError | None = None
         for raw_q in candidates:
-            clipped = _clip_query(str(raw_q or ""))
-            if not clipped:
+            raw_single = " ".join(str(raw_q or "").split())
+            if not raw_single:
                 continue
             try:
+                # Validate full pre-clip text so PII/secrets/taint past char 250 cannot bypass firewall.
+                self.firewall.check_text(raw_single, max_chars=1000, taint=taint)
+                clipped = _clip_query(raw_single)
+                if not clipped:
+                    continue
                 safe_q = self.firewall.check_query(clipped, taint=taint)
             except SearchPolicyError as exc:
                 last_policy_err = exc
@@ -961,6 +996,7 @@ class ResearchEngine:
                     fetches_used=fetches_used,
                     llm_calls_used=llm_calls_used,
                     estimated_search_usd=estimated_search_usd,
+                    worker_id=worker_id,
                 )
             if record_db:
                 self.store.append_event(
@@ -1118,24 +1154,75 @@ class ResearchEngine:
                 pending_queries = pending_queries[batch_cap:]
 
                 round_provider_errors = 0
-                for q in round_queries:
-                    if _is_cancelled():
-                        return _finalize_cancelled()
-                    if (time.monotonic() - started_at) >= limits["max_wall_s"]:
+                round_routes = providers_for_round(profile, round_num)
+                if profile.combination_mode in {"ensemble", "staged"}:
+                    base_fanout = max(
+                        1,
+                        min(5, int(profile.fanout_by_depth.get(spec.depth, 1))),
+                    )
+                else:
+                    base_fanout = 1
+                use_multi = (
+                    not mock_mode
+                    and (base_fanout > 1 or profile.combination_mode == "staged")
+                    and hasattr(self.search_router, "search_multi")
+                )
+
+                # Reserve per-query slots atomically before concurrent execution
+                query_tasks: list[tuple[str, int]] = []
+                reserved_q = queries_used
+                daily_q_remaining: int | None = None
+                if not mock_mode:
+                    rb = research_budget_status(telemetry=self.telemetry, config=cfg)
+                    if not rb["search_allowed"]:
                         stopped_partial = True
-                        stop_error_code = "wall_timeout"
-                        break
-                    if not mock_mode:
-                        rb = research_budget_status(telemetry=self.telemetry, config=cfg)
-                        if not rb["search_allowed"]:
+                        stop_error_code = "research_budget_exhausted"
+                        extra_gaps.append(str(rb["message"]))
+                    else:
+                        daily_q_remaining = max(0, int(rb["max_queries_per_day"]) - int(rb["queries_today"]))
+
+                if not (stopped_partial and stop_error_code == "research_budget_exhausted"):
+                    for q in round_queries:
+                        if _is_cancelled():
+                            return _finalize_cancelled()
+                        if (time.monotonic() - started_at) >= limits["max_wall_s"]:
+                            stopped_partial = True
+                            stop_error_code = "wall_timeout"
+                            break
+                        rem_job_q = limits["max_queries"] - reserved_q
+                        if rem_job_q <= 0:
+                            break
+                        if daily_q_remaining is not None and daily_q_remaining <= 0:
                             stopped_partial = True
                             stop_error_code = "research_budget_exhausted"
-                            extra_gaps.append(str(rb["message"]))
+                            extra_gaps.append("Daglig sökkvot uppnådd under sökrundan.")
                             break
+                        q_fanout = min(base_fanout, rem_job_q) if use_multi else 1
+                        if daily_q_remaining is not None:
+                            q_fanout = min(q_fanout, daily_q_remaining)
+                            daily_q_remaining -= q_fanout
+                        reserved_q += q_fanout
+                        query_tasks.append((q, max(1, q_fanout)))
 
+                topic_objective = sanitize_untrusted_text(spec.topic, max_chars=240) or None
+                search_lock = threading.Lock()
+
+                def _run_single_query(
+                    q_text: str,
+                    q_fanout: int,
+                    *,
+                    _objective: str | None = topic_objective,
+                    _use_multi: bool = use_multi,
+                    _round_routes: tuple[str, ...] = round_routes,
+                ) -> tuple[list[SearchHit], int, float]:
+                    if _is_cancelled():
+                        return [], 0, 0.0
+                    rem_wall = limits["max_wall_s"] - (time.monotonic() - started_at)
+                    if rem_wall <= 0:
+                        raise TimeoutError("wall_timeout")
                     req = SearchRequest(
-                        query=q,
-                        objective=sanitize_untrusted_text(spec.topic, max_chars=240) or None,
+                        query=q_text,
+                        objective=_objective,
                         profile_id=profile.id,
                         country=country,
                         language=language,
@@ -1149,45 +1236,96 @@ class ResearchEngine:
                         actor=job.actor,
                         site="azom",
                     )
-                    round_routes = providers_for_round(profile, round_num)
-                    if profile.combination_mode in {"ensemble", "staged"}:
-                        eff_fanout = max(
-                            1,
-                            min(5, int(profile.fanout_by_depth.get(spec.depth, 1))),
+                    if _use_multi:
+                        per_prov_timeout = max(2.0, min(20.0, rem_wall * 0.65))
+                        res = _call_search_multi(
+                            self.search_router,
+                            req,
+                            max_providers=q_fanout,
+                            route_ids=_round_routes,
+                            telemetry=self.telemetry,
+                            per_provider_timeout_s=per_prov_timeout,
                         )
-                    else:
-                        eff_fanout = 1
-                    rem_budget_q = max(1, limits["max_queries"] - queries_used)
-                    eff_fanout = min(eff_fanout, rem_budget_q)
+                        prov_count = max(
+                            1,
+                            len(
+                                getattr(res, "providers_used", None)
+                                or [p for p in str(res.provider or "").split("+") if p]
+                            ),
+                        )
+                        return list(res.hits), prov_count, float(res.estimated_cost_usd or 0.0)
+                    res = self.search_router.search(req, telemetry=self.telemetry)
+                    return list(res.hits), 1, float(res.estimated_cost_usd or 0.0)
 
+                if len(query_tasks) == 1:
+                    q_text, q_fanout = query_tasks[0]
                     try:
-                        if (
-                            not mock_mode
-                            and (eff_fanout > 1 or profile.combination_mode == "staged")
-                            and hasattr(self.search_router, "search_multi")
-                        ):
-                            res = self.search_router.search_multi(
-                                req,
-                                max_providers=eff_fanout,
-                                route_ids=round_routes,
-                                telemetry=self.telemetry,
-                            )
-                            provider_count = max(
-                                1,
-                                len([p for p in str(res.provider or "").split("+") if p]),
-                            )
-                            queries_used += provider_count
-                        else:
-                            res = self.search_router.search(req, telemetry=self.telemetry)
-                            queries_used += 1
-                        estimated_search_usd += float(res.estimated_cost_usd or 0.0)
-                        all_hits.extend(res.hits)
+                        q_hits, q_used, q_cost = _run_single_query(q_text, q_fanout)
+                        queries_used += q_used
+                        estimated_search_usd += q_cost
+                        all_hits.extend(q_hits)
+                    except TimeoutError:
+                        stopped_partial = True
+                        stop_error_code = "wall_timeout"
                     except SearchPolicyError:
                         raise
                     except SearchRouteError as exc:
                         round_provider_errors += 1
                         stop_error_code = getattr(exc, "code", None) or type(exc).__name__
                         extra_gaps.append(f"Sökväg otillgänglig ({type(exc).__name__}).")
+                elif len(query_tasks) > 1:
+                    aborted = False
+                    pool = ThreadPoolExecutor(
+                        max_workers=min(4, len(query_tasks)),
+                        thread_name_prefix="res-search",
+                    )
+                    try:
+                        pending_futs = {
+                            pool.submit(_run_single_query, q_text, q_fanout): q_text
+                            for q_text, q_fanout in query_tasks
+                        }
+                        while pending_futs:
+                            if _is_cancelled():
+                                aborted = True
+                                for f in pending_futs:
+                                    f.cancel()
+                                return _finalize_cancelled()
+                            rem_wall = limits["max_wall_s"] - (time.monotonic() - started_at)
+                            if rem_wall <= 0:
+                                aborted = True
+                                stopped_partial = True
+                                stop_error_code = "wall_timeout"
+                                for f in pending_futs:
+                                    f.cancel()
+                                break
+                            done, _ = wait(
+                                pending_futs.keys(),
+                                timeout=min(0.5, rem_wall),
+                                return_when=FIRST_COMPLETED,
+                            )
+                            for fut in done:
+                                pending_futs.pop(fut, None)
+                                try:
+                                    q_hits, q_used, q_cost = fut.result()
+                                    with search_lock:
+                                        queries_used += q_used
+                                        estimated_search_usd += q_cost
+                                        all_hits.extend(q_hits)
+                                except TimeoutError:
+                                    stopped_partial = True
+                                    stop_error_code = "wall_timeout"
+                                except SearchPolicyError:
+                                    aborted = True
+                                    for f in pending_futs:
+                                        f.cancel()
+                                    raise
+                                except SearchRouteError as exc:
+                                    with search_lock:
+                                        round_provider_errors += 1
+                                        stop_error_code = getattr(exc, "code", None) or type(exc).__name__
+                                        extra_gaps.append(f"Sökväg otillgänglig ({type(exc).__name__}).")
+                    finally:
+                        pool.shutdown(wait=not aborted, cancel_futures=aborted)
 
                 if round_provider_errors and not all_hits:
                     evidence_status = EvidenceStatus.PROVIDER_UNAVAILABLE
@@ -1202,7 +1340,7 @@ class ResearchEngine:
                     provenance=provenance,
                 )
 
-                # --- Fetch stage ---
+                # --- Fetch stage (concurrent) ---
                 if _is_cancelled():
                     return _finalize_cancelled()
 
@@ -1214,73 +1352,210 @@ class ResearchEngine:
                     and (time.monotonic() - started_at) < limits["max_wall_s"]
                 ):
                     fetch_allowed = True
+                    daily_f_remaining: int | None = None
                     if not mock_mode:
-                        fetch_allowed = bool(research_budget_status(telemetry=self.telemetry, config=cfg)["fetch_allowed"])
+                        rb_fetch = research_budget_status(telemetry=self.telemetry, config=cfg)
+                        fetch_allowed = bool(rb_fetch["fetch_allowed"])
+                        if fetch_allowed:
+                            daily_f_remaining = max(0, int(rb_fetch["max_fetches_per_day"]) - int(rb_fetch["fetches_today"]))
                     if fetch_allowed:
                         _emit("fetching", round_num, f"Hämtar toppkällor (runda {round_num})", status="fetching")
                         k_left = min(profile.max_fetch_default, limits["max_fetches"] - fetches_used)
+                        if daily_f_remaining is not None:
+                            k_left = min(k_left, daily_f_remaining)
                         candidates_to_fetch = [
                             s for s in evaluated_sources
                             if (s.canonical_url or s.url) not in fetched_urls
                         ][:k_left]
-                        parallel_extractor = None
-                        if (
-                            not mock_mode
-                            and profile.fetch_strategy in {"parallel_extract_first", "hybrid"}
-                        ):
-                            try:
-                                from ecom_ops.integrations.search.providers.parallel import (
-                                    ParallelSearchRoute,
-                                )
+                        target_urls: list[str] = []
+                        for src in candidates_to_fetch:
+                            t_url = src.canonical_url or src.url
+                            if t_url and t_url not in fetched_urls:
+                                fetched_urls.add(t_url)
+                                target_urls.append(t_url)
 
-                                candidate_px = ParallelSearchRoute()
-                                if candidate_px.is_configured():
-                                    parallel_extractor = candidate_px
-                            except Exception:
-                                parallel_extractor = None
-
-                        for idx_cand, src in enumerate(candidates_to_fetch):
-                            if _is_cancelled():
-                                return _finalize_cancelled()
-                            if (time.monotonic() - started_at) >= limits["max_wall_s"]:
-                                stopped_partial = True
-                                break
-                            target_url = src.canonical_url or src.url
-                            fetched_urls.add(target_url)
-                            use_parallel = parallel_extractor is not None and (
-                                profile.fetch_strategy == "parallel_extract_first"
-                                or (profile.fetch_strategy == "hybrid" and idx_cand < 2)
+                        if target_urls:
+                            rem_wall_f = max(1.0, limits["max_wall_s"] - (time.monotonic() - started_at))
+                            use_batch_extract = hasattr(self.fetcher, "extract_many")
+                            use_batch_fetch = (
+                                (mock_mode or profile.fetch_strategy == "direct")
+                                and hasattr(self.fetcher, "fetch_many")
                             )
-                            try:
-                                fres = None
-                                if use_parallel:
-                                    try:
-                                        fres = parallel_extractor.extract(
-                                            target_url,
-                                            taint=taint,
-                                            telemetry=self.telemetry,
-                                            max_chars=cfg.egress.max_extracted_chars,
-                                            actor=job.actor,
-                                            site="azom",
-                                        )
-                                    except SearchRouteError:
-                                        fres = None
-                                if fres is None or not fres.ok:
-                                    fres = self.fetcher.fetch(
-                                        target_url,
+
+                            def _record_fetch_results(f_results: Sequence[Any], orig_urls: Sequence[str]) -> None:
+                                nonlocal fetches_used
+                                for idx_r, fres in enumerate(f_results):
+                                    if getattr(fres, "error_class", None) == "SearchPolicyError":
+                                        continue
+                                    fetches_used += 1
+                                    if getattr(fres, "ok", False) and getattr(fres, "text", ""):
+                                        pair = (str(getattr(fres, "title", "") or ""), str(getattr(fres, "text", "") or ""))
+                                        if idx_r < len(orig_urls):
+                                            fetched_content[orig_urls[idx_r]] = pair
+                                        if getattr(fres, "url", ""):
+                                            fetched_content[str(fres.url)] = pair
+                                        if getattr(fres, "final_url", ""):
+                                            fetched_content[str(fres.final_url)] = pair
+
+                            batch_done = False
+                            if use_batch_extract:
+                                try:
+                                    ext_res = self.fetcher.extract_many(
+                                        target_urls,
+                                        strategy=profile.fetch_strategy,
+                                        objective=topic_objective,
                                         taint=taint,
                                         telemetry=self.telemetry,
                                         max_extracted_chars=cfg.egress.max_extracted_chars,
+                                        max_workers=min(4, len(target_urls)),
+                                        timeout_s=rem_wall_f,
                                         actor=job.actor,
                                         site="azom",
                                     )
-                                fetches_used += 1
-                                if fres.ok and fres.text:
-                                    fetched_content[target_url] = (fres.title, fres.text)
-                            except SearchPolicyError:
-                                continue
-                            except SearchRouteError:
-                                break
+                                    _record_fetch_results(ext_res, target_urls)
+                                    batch_done = True
+                                except SearchPolicyError:
+                                    batch_done = False
+                                except SearchRouteError:
+                                    batch_done = True
+                            elif use_batch_fetch:
+                                try:
+                                    dir_res = self.fetcher.fetch_many(
+                                        target_urls,
+                                        taint=taint,
+                                        telemetry=self.telemetry,
+                                        max_extracted_chars=cfg.egress.max_extracted_chars,
+                                        max_workers=min(4, len(target_urls)),
+                                        timeout_s=rem_wall_f,
+                                        actor=job.actor,
+                                        site="azom",
+                                    )
+                                    _record_fetch_results(dir_res, target_urls)
+                                    batch_done = True
+                                except SearchPolicyError:
+                                    batch_done = False
+                                except SearchRouteError:
+                                    batch_done = True
+
+                            if not batch_done:
+                                parallel_extractor = None
+                                exa_extractor = None
+                                if not mock_mode and profile.fetch_strategy in {"parallel_extract_first", "hybrid"}:
+                                    try:
+                                        from ecom_ops.integrations.search.providers.parallel import (
+                                            ParallelSearchRoute,
+                                        )
+
+                                        candidate_px = ParallelSearchRoute()
+                                        if candidate_px.is_configured():
+                                            parallel_extractor = candidate_px
+                                    except Exception:
+                                        parallel_extractor = None
+                                    try:
+                                        from ecom_ops.integrations.search.providers.exa import (
+                                            ExaSearchRoute,
+                                        )
+
+                                        candidate_ex = ExaSearchRoute()
+                                        if candidate_ex.is_configured() and hasattr(candidate_ex, "extract"):
+                                            exa_extractor = candidate_ex
+                                    except Exception:
+                                        exa_extractor = None
+
+                                def _fetch_one(
+                                    idx_cand: int,
+                                    t_url: str,
+                                    *,
+                                    _px: Any = parallel_extractor,
+                                    _ex: Any = exa_extractor,
+                                    _objective: str | None = topic_objective,
+                                ) -> tuple[str, Any]:
+                                    if _is_cancelled() or (time.monotonic() - started_at) >= limits["max_wall_s"]:
+                                        return t_url, None
+                                    use_extract = profile.fetch_strategy == "parallel_extract_first" or (
+                                        profile.fetch_strategy == "hybrid" and idx_cand < 2
+                                    )
+                                    fres = None
+                                    if use_extract and _px is not None:
+                                        try:
+                                            fres = _px.extract(
+                                                t_url,
+                                                taint=taint,
+                                                objective=_objective,
+                                                telemetry=self.telemetry,
+                                                max_chars=cfg.egress.max_extracted_chars,
+                                                actor=job.actor,
+                                                site="azom",
+                                            )
+                                        except SearchRouteError:
+                                            fres = None
+                                    if (fres is None or not fres.ok) and use_extract and _ex is not None:
+                                        try:
+                                            fres = _ex.extract(
+                                                t_url,
+                                                taint=taint,
+                                                telemetry=self.telemetry,
+                                                max_chars=cfg.egress.max_extracted_chars,
+                                                actor=job.actor,
+                                                site="azom",
+                                            )
+                                        except SearchRouteError:
+                                            fres = None
+                                    if fres is None or not fres.ok:
+                                        fres = self.fetcher.fetch(
+                                            t_url,
+                                            taint=taint,
+                                            telemetry=self.telemetry,
+                                            max_extracted_chars=cfg.egress.max_extracted_chars,
+                                            actor=job.actor,
+                                            site="azom",
+                                        )
+                                    return t_url, fres
+
+                                fetch_aborted = False
+                                fpool = ThreadPoolExecutor(
+                                    max_workers=min(4, len(target_urls)),
+                                    thread_name_prefix="res-fetch",
+                                )
+                                try:
+                                    futs = {
+                                        fpool.submit(_fetch_one, idx_c, u): u
+                                        for idx_c, u in enumerate(target_urls)
+                                    }
+                                    while futs:
+                                        if _is_cancelled():
+                                            fetch_aborted = True
+                                            for f in futs:
+                                                f.cancel()
+                                            return _finalize_cancelled()
+                                        rem_w = limits["max_wall_s"] - (time.monotonic() - started_at)
+                                        if rem_w <= 0:
+                                            fetch_aborted = True
+                                            stopped_partial = True
+                                            for f in futs:
+                                                f.cancel()
+                                            break
+                                        done, _ = wait(
+                                            futs.keys(),
+                                            timeout=min(0.5, rem_w),
+                                            return_when=FIRST_COMPLETED,
+                                        )
+                                        for fut in done:
+                                            t_url = futs.pop(fut)
+                                            try:
+                                                _, fres = fut.result()
+                                                if fres is not None:
+                                                    if getattr(fres, "error_class", None) == "SearchPolicyError":
+                                                        continue
+                                                    fetches_used += 1
+                                                    if fres.ok and fres.text:
+                                                        fetched_content[t_url] = (fres.title, fres.text)
+                                            except SearchPolicyError:
+                                                continue
+                                            except SearchRouteError:
+                                                continue
+                                finally:
+                                    fpool.shutdown(wait=not fetch_aborted, cancel_futures=fetch_aborted)
 
                 # Merge fetched full text back into hits before re-evaluation
                 enriched_hits: list[SearchHit] = []
@@ -1295,6 +1570,15 @@ class ResearchEngine:
                                 break
                     if matched_fc is not None:
                         ftitle, ftext = matched_fc
+                        extra_kw = (
+                            {
+                                "corroborated_by": h.corroborated_by,
+                                "provider_count": h.provider_count,
+                                "rrf_score": h.rrf_score,
+                            }
+                            if hasattr(h, "corroborated_by")
+                            else {}
+                        )
                         enriched_hits.append(
                             SearchHit(
                                 url=h.url,
@@ -1306,6 +1590,7 @@ class ResearchEngine:
                                 author=h.author,
                                 raw_excerpts=h.raw_excerpts,
                                 content=ftext if len(ftext) > len(h.content or "") else h.content,
+                                **extra_kw,
                             )
                         )
                     else:
@@ -1327,6 +1612,7 @@ class ResearchEngine:
                     fetches_used=fetches_used,
                     llm_calls_used=llm_calls_used,
                     estimated_search_usd=estimated_search_usd,
+                    worker_id=worker_id,
                 )
 
                 new_steers = self.store.consume_steers(job_id)

@@ -140,10 +140,14 @@ class EvaluatedSource:
     freshness_score: float = 0.0
     signal_density: float = 0.0
     score: float = 0.0
+    corroborated_by: tuple[str, ...] = ()
+    provider_count: int = 1
+    rrf_score: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["source_type"] = str(self.source_type)
+        data["corroborated_by"] = list(self.corroborated_by)
         return data
 
     @classmethod
@@ -153,6 +157,20 @@ class EvaluatedSource:
             source_type = SourceType(st_raw)
         except ValueError:
             source_type = SourceType.UNKNOWN
+        corr_raw = raw.get("corroborated_by") or ()
+        corroborated_by = (
+            tuple(str(p).strip().lower() for p in corr_raw if str(p or "").strip())
+            if isinstance(corr_raw, (list, tuple))
+            else ()
+        )
+        if not corroborated_by and raw.get("provider"):
+            corroborated_by = tuple(
+                p.strip().lower() for p in str(raw.get("provider") or "").split("+") if p.strip()
+            )
+        provider_count = max(
+            1,
+            int(raw.get("provider_count") or (len(corroborated_by) if corroborated_by else 1)),
+        )
         return cls(
             source_id=str(raw.get("source_id") or ""),
             url=str(raw.get("url") or ""),
@@ -172,6 +190,9 @@ class EvaluatedSource:
             freshness_score=float(raw.get("freshness_score") or 0.0),
             signal_density=float(raw.get("signal_density") or 0.0),
             score=float(raw.get("score") or 0.0),
+            corroborated_by=corroborated_by,
+            provider_count=provider_count,
+            rrf_score=float(raw.get("rrf_score") or 0.0),
         )
 
 

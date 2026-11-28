@@ -102,3 +102,56 @@ def test_init_env_and_dry_run_launch(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "[DRY-RUN] dashboard:" in out
     assert "[DRY-RUN] telegram-bot:" in out
+
+
+def test_launcher_systemcheck_healthcheck_and_systemd_modes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AZOM_CONFIG_DIR", str(ROOT / "config"))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tg-secret-launcher-111")
+
+    rc_sys = launcher.main(["--systemcheck", "--mode", "mock", "--no-port-check", "--json"])
+    assert rc_sys == 0
+    sys_out = capsys.readouterr().out
+    assert "tg-secret-launcher-111" not in sys_out
+    assert json.loads(sys_out)["kind"] == "systemcheck"
+
+    rc_both = launcher.main(
+        ["--systemcheck", "--health", "--mode", "mock", "--no-http", "--no-port-check", "--json"]
+    )
+    assert rc_both == 0
+    both_json = json.loads(capsys.readouterr().out)
+    assert both_json["systemcheck"]["kind"] == "systemcheck"
+    assert both_json["healthcheck"]["kind"] == "healthcheck"
+
+    rc_sd = launcher.main(["--systemd", "--target", "all", "--service-action", "status", "--dry-run"])
+    assert rc_sd == 0
+    sd_out = capsys.readouterr().out
+    assert "[DRY-RUN] systemctl status azom-dashboard.service azom-bot.service" in sd_out
+    assert "azom-shop-intel.timer" in sd_out
+
+    rc_logs = launcher.main(["--systemd", "--target", "dashboard", "--service-action", "logs", "--dry-run"])
+    assert rc_logs == 0
+    logs_out = capsys.readouterr().out
+    assert "[DRY-RUN] journalctl -u azom-dashboard.service -n 50 --no-pager" in logs_out
+
+    # On non-Linux (or missing systemctl), live --systemd without --dry-run returns 1 cleanly
+    monkeypatch.setattr(launcher.platform, "system", lambda: "Windows")
+    assert launcher.main(["--systemd", "--service-action", "status"]) == 1
+    capsys.readouterr()
+
+
+def test_launcher_autodetects_var_lib_azom_from_opt(monkeypatch):
+    monkeypatch.delenv("AZOM_DATA_DIR", raising=False)
+    monkeypatch.delenv("AZOM_CONFIG_DIR", raising=False)
+    orig_is_dir = Path.is_dir
+
+    def _fake_is_dir(self: Path) -> bool:
+        if str(self) in {"/var/lib/azom", "\\var\\lib\\azom"}:
+            return True
+        return orig_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", _fake_is_dir)
+    cfg_dir, data_dir = launcher._resolved_dirs(Path("/opt/azom-agent"))
+    assert str(cfg_dir).replace("\\", "/") == "/opt/azom-agent/config"
+    assert str(data_dir).replace("\\", "/") == "/var/lib/azom"

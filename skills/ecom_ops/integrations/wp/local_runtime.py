@@ -44,7 +44,7 @@ from ecom_ops.wp_ops.review_workspace import SLUG, ReviewError
 
 _STARTUP_TIMEOUT_S = 15.0
 _PLUGIN_MAIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.php$")
-_PHP_SYS_VERSION_RE = re.compile(r"PHP (8\.[234]\.\d+)")
+_PHP_SYS_VERSION_RE = re.compile(r"PHP (8\.[2-9]\.\d+)")
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 _FACADE_MODULE = "ecom_ops.integrations.wp_local_runtime"
 _PINNED_PHP_EXTENSIONS = ("pdo_sqlite", "sqlite3", "mbstring", "fileinfo")

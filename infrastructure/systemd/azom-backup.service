@@ -7,11 +7,14 @@ After=network-online.target
 Type=oneshot
 User=azom
 Group=azom
+WorkingDirectory=/opt/azom-agent
 Environment=AZOM_DATA_DIR=/var/lib/azom
 Environment=AZOM_BACKUP_DIR=/var/lib/azom/backups
+EnvironmentFile=-/opt/azom-agent/.env
 # Set AZOM_BACKUP_DEST in /opt/azom-agent/.env or override file to enable off-box rsync
-ExecStart=/opt/azom-agent/.venv/bin/bash /opt/azom-agent/bin/backup-azom-data.sh
-WorkingDirectory=/opt/azom-agent
-ProtectSystem=full
-ProtectHome=true
+ExecStart=/bin/bash /opt/azom-agent/bin/backup-azom-data.sh
 NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/azom /var/log/azom /opt/azom-agent/.azom-data

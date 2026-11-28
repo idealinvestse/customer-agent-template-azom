@@ -1,10 +1,13 @@
-"""Azom preflight checker and cross-platform system launcher.
+"""Azom preflight checker, systemcheck/healthcheck runner, and cross-platform launcher.
 
 Usage:
-    python -m ecom_ops.launcher              # Interactive menu (TTY) or preflight check
-    python -m ecom_ops.launcher --check      # Run system & OAuth preflight checks
-    python -m ecom_ops.launcher --init-env   # Create data dirs and .env from .env.example
-    python -m ecom_ops.launcher --target all # Launch dashboard (+ Telegram bot if configured)
+    python -m ecom_ops.launcher                   # Interactive menu (TTY) or preflight check
+    python -m ecom_ops.launcher --check           # Run fast preflight checks
+    python -m ecom_ops.launcher --systemcheck     # Run deep system & live-readiness check
+    python -m ecom_ops.launcher --health          # Run runtime healthcheck (HTTP/systemd/runtime)
+    python -m ecom_ops.launcher --init-env        # Create data dirs and .env from .env.example
+    python -m ecom_ops.launcher --target all      # Launch dashboard (+ Telegram bot if configured)
+    python -m ecom_ops.launcher --systemd --service-action status
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ import argparse
 import importlib.util
 import json
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -25,6 +29,16 @@ from typing import Any
 
 from ecom_ops import __version__
 from ecom_ops.budget import budget_status
+from ecom_ops.healthcheck import (
+    AZOM_TIMERS,
+    CheckReport,
+    resolve_runtime_dirs,
+    run_healthcheck,
+    run_systemcheck,
+)
+from ecom_ops.healthcheck import (
+    format_report as format_health_report,
+)
 from ecom_ops.model_router import circuit_breaker, get_model_router, reset_model_router
 from ecom_ops.runtime_env import _parse_env_file, bootstrap_runtime, env_flag
 
@@ -113,21 +127,20 @@ def _resolve_python(root: Path, python_exe: str | None = None) -> str:
     return sys.executable
 
 
-def _apply_dotenv_defaults(root: Path) -> None:
+def _apply_dotenv_defaults(root: Path, *, skip_keys: set[str] | None = None) -> None:
     env_file = root / ".env"
     if not env_file.is_file():
         return
+    blocked = skip_keys or set()
     for k, v in _parse_env_file(env_file).items():
+        if k in blocked:
+            continue
         if not (os.environ.get(k) or "").strip() and v:
             os.environ[k] = v
 
 
 def _resolved_dirs(root: Path) -> tuple[Path, Path]:
-    cfg_raw = (os.environ.get("AZOM_CONFIG_DIR") or "").strip()
-    data_raw = (os.environ.get("AZOM_DATA_DIR") or "").strip()
-    cfg_dir = Path(cfg_raw) if cfg_raw else root / "config"
-    data_dir = Path(data_raw) if data_raw else root / ".azom-data"
-    return cfg_dir, data_dir
+    return resolve_runtime_dirs(root)
 
 
 def _dir_writable(path: Path) -> tuple[bool, str]:
@@ -179,9 +192,11 @@ def run_preflight(
 ) -> PreflightReport:
     """Inspect environment, files, model OAuth/routes, dashboard, and channels."""
     repo_root = (root or default_repo_root()).resolve()
-    os.environ.setdefault("AZOM_CONFIG_DIR", str(repo_root / "config"))
-    os.environ.setdefault("AZOM_DATA_DIR", str(repo_root / ".azom-data"))
-    _apply_dotenv_defaults(repo_root)
+    skip_env = {"AZOM_USE_MOCK"} if mode in {"mock", "live"} else set()
+    _apply_dotenv_defaults(repo_root, skip_keys=skip_env)
+    cfg_dir, data_dir = _resolved_dirs(repo_root)
+    os.environ.setdefault("AZOM_CONFIG_DIR", str(cfg_dir))
+    os.environ.setdefault("AZOM_DATA_DIR", str(data_dir))
     bootstrap_runtime()
 
     if mode == "mock":
@@ -191,7 +206,6 @@ def run_preflight(
 
     is_mock = env_flag("AZOM_USE_MOCK", default=True) if mode == "auto" else (mode == "mock")
     mode_label = "mock" if is_mock else "live"
-    cfg_dir, data_dir = _resolved_dirs(repo_root)
 
     checks: list[CheckItem] = []
     steps: list[str] = []
@@ -497,7 +511,9 @@ def run_preflight(
     )
 
 
-def format_report(report: PreflightReport) -> str:
+def format_report(report: PreflightReport | CheckReport) -> str:
+    if isinstance(report, CheckReport):
+        return format_health_report(report)
     lines = [
         f"AzomOps v{report.version} — Systemkontroll ({report.mode})",
         f"Rot: {report.root}",
@@ -568,8 +584,9 @@ def _child_env(root: Path, *, mode: str) -> dict[str, str]:
     skills = str(root / "skills")
     existing_pp = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{skills}{os.pathsep}{existing_pp}" if existing_pp else skills
-    env.setdefault("AZOM_CONFIG_DIR", str(root / "config"))
-    env.setdefault("AZOM_DATA_DIR", str(root / ".azom-data"))
+    cfg_dir, data_dir = _resolved_dirs(root)
+    env.setdefault("AZOM_CONFIG_DIR", str(cfg_dir))
+    env.setdefault("AZOM_DATA_DIR", str(data_dir))
     if mode == "mock":
         env["AZOM_USE_MOCK"] = "1"
     elif mode == "live":
@@ -592,6 +609,60 @@ def run_mock_smoke(root: Path | None = None) -> int:
         if proc.returncode != 0:
             return proc.returncode
     return 0
+
+
+def _systemd_units_for_target(target: str, *, action: str) -> list[str]:
+    if target == "dashboard":
+        return ["azom-dashboard.service"]
+    if target == "bot":
+        return ["azom-bot.service"]
+    units = ["azom-dashboard.service"]
+    if _has_env("TELEGRAM_BOT_TOKEN"):
+        units.append("azom-bot.service")
+    if action == "status":
+        units.extend(AZOM_TIMERS)
+    return units
+
+
+def build_systemd_commands(
+    target: str = "all",
+    *,
+    action: str = "status",
+    lines: int = 50,
+) -> list[list[str]]:
+    units = _systemd_units_for_target(target, action=action)
+    if action == "logs":
+        cmd = ["journalctl"]
+        for unit in units:
+            cmd.extend(["-u", unit])
+        cmd.extend(["-n", str(max(10, int(lines))), "--no-pager"])
+        return [cmd]
+    if action == "status":
+        return [["systemctl", "status", *units, "--no-pager"]]
+    return [["systemctl", action, *units]]
+
+
+def manage_systemd(
+    *,
+    target: str = "all",
+    action: str = "status",
+    dry_run: bool = False,
+) -> int:
+    """Inspect or manage Azom systemd services/timers on Linux."""
+    cmds = build_systemd_commands(target=target, action=action)
+    if dry_run:
+        for cmd in cmds:
+            print(f"[DRY-RUN] {' '.join(cmd)}")
+        return 0
+    if platform.system().lower() != "linux" or not shutil.which("systemctl"):
+        print("systemd (systemctl) är endast tillgängligt på Linux.", file=sys.stderr)
+        return 1
+    rc = 0
+    for cmd in cmds:
+        proc = subprocess.run(cmd, check=False)
+        if proc.returncode != 0:
+            rc = proc.returncode
+    return rc
 
 
 def launch_targets(
@@ -640,6 +711,7 @@ def launch_targets(
 
 
 def _interactive_menu(root: Path, report: PreflightReport, *, mode: str) -> int:
+    is_linux_sysd = platform.system().lower() == "linux" and bool(shutil.which("systemctl"))
     while True:
         print("")
         print("Välj åtgärd:")
@@ -648,10 +720,14 @@ def _interactive_menu(root: Path, report: PreflightReport, *, mode: str) -> int:
         print("  3) Starta endast Telegram-bot")
         print("  4) Initiera .env och datakataloger")
         print("  5) Kör snabb mock-smoke")
-        print("  6) Kör om systemkontroll")
+        print("  6) Kör om preflight-kontroll")
+        print("  7) Kör djup systemkontroll (systemcheck)")
+        print("  8) Kör hälsokontroll (healthcheck)")
+        if is_linux_sysd:
+            print("  9) Visa systemd-tjänststatus (Linux)")
         print("  0) Avsluta")
         try:
-            choice = input("Val [0-6]: ").strip()
+            choice = input("Val [0-9]: ").strip()
         except EOFError:
             return 0 if not report.blockers else 1
         if choice == "0":
@@ -676,19 +752,56 @@ def _interactive_menu(root: Path, report: PreflightReport, *, mode: str) -> int:
             report = run_preflight(root, mode=mode)
             print(format_report(report))
             continue
+        if choice == "7":
+            sys_rep = run_systemcheck(root, mode=mode)
+            print(format_report(sys_rep))
+            continue
+        if choice == "8":
+            h_rep = run_healthcheck(root, mode=mode)
+            print(format_report(h_rep))
+            continue
+        if choice == "9" and is_linux_sysd:
+            manage_systemd(target="all", action="status", dry_run=False)
+            continue
         print("Ogiltigt val.")
+
+
+def _combined_exit_code(*codes: int) -> int:
+    if any(c == 1 for c in codes):
+        return 1
+    if any(c == 2 for c in codes):
+        return 2
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m ecom_ops.launcher",
-        description="AzomOps preflight-kontroll och launcher (Dashboard + Telegram-bot).",
+        description="AzomOps preflight, systemcheck, healthcheck och launcher (Dashboard + Telegram-bot).",
     )
-    parser.add_argument("--check", action="store_true", help="Kör systemkontroll och avsluta")
-    parser.add_argument("--json", action="store_true", help="Skriv preflight-rapport som JSON")
+    parser.add_argument("--check", action="store_true", help="Kör preflight/systemkontroll och avsluta")
+    parser.add_argument("--systemcheck", action="store_true", help="Kör djup systemkontroll (OS, resurser, DB, säkerhet, nätverk)")
+    parser.add_argument("--health", action="store_true", help="Kör hälsokontroll (HTTP /live /health /ready, systemd, runtime)")
+    parser.add_argument("--domain", default=None, help="Domännamn för DNS/TLS-kontroll")
+    parser.add_argument("--expected-ip", default=None, dest="expected_ip", help="Förväntad IPv4-adress för --domain")
+    parser.add_argument("--check-network", action="store_true", dest="check_network", help="Kör opt-in DNS/TLS/port-kontroll (ej i mock)")
+    parser.add_argument("--check-public", action="store_true", dest="check_public", help="Kör opt-in publik HTTPS & /metrics-kontroll (ej i mock)")
+    parser.add_argument("--public-url", default=None, dest="public_url", help="Publik HTTPS-URL för --health --check-public")
+    parser.add_argument("--local-url", default=None, dest="local_url", help="Lokal dashboard-URL för --health")
+    parser.add_argument("--no-http", action="store_true", dest="no_http", help="Hoppa över lokal HTTP-probe i --health")
+    parser.add_argument("--strict", action="store_true", help="Returnera exitkod 2 vid varningar")
+    parser.add_argument("--json", action="store_true", help="Skriv rapport som JSON")
     parser.add_argument("--init-env", action="store_true", help="Skapa data/logs-mappar och .env från .env.example")
     parser.add_argument("--mode", choices=("auto", "mock", "live"), default="auto", help="Tvinga mock eller live")
     parser.add_argument("--target", choices=("all", "dashboard", "bot"), help="Vilken tjänst som ska startas")
+    parser.add_argument("--systemd", action="store_true", help="Hantera Linux systemd-tjänster i stället för förgrundsprocesser")
+    parser.add_argument(
+        "--service-action",
+        choices=("status", "start", "stop", "restart", "logs"),
+        default="status",
+        dest="service_action",
+        help="Systemd-åtgärd när --systemd används (default: status)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Visa startkommandon utan att starta processer")
     parser.add_argument("--smoke", action="store_true", help="Kör lokal mock-smoke")
     parser.add_argument("--allow-incomplete", action="store_true", help="Starta trots preflight-blockerare")
@@ -707,6 +820,67 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.smoke:
         return run_mock_smoke(root)
+
+    if args.systemd:
+        return manage_systemd(
+            target=args.target or "all",
+            action=args.service_action,
+            dry_run=args.dry_run,
+        )
+
+    want_systemcheck = bool(
+        args.systemcheck
+        or (
+            args.check
+            and (args.domain or args.expected_ip or args.check_network or args.strict)
+        )
+    )
+    want_healthcheck = bool(args.health)
+
+    if want_systemcheck or want_healthcheck:
+        reports: list[CheckReport] = []
+        if want_systemcheck:
+            reports.append(
+                run_systemcheck(
+                    root,
+                    mode=args.mode,
+                    domain=args.domain,
+                    expected_ip=args.expected_ip,
+                    check_network=bool(args.check_network),
+                    check_ports=not args.no_port_check,
+                    strict=bool(args.strict),
+                )
+            )
+        if want_healthcheck:
+            reports.append(
+                run_healthcheck(
+                    root,
+                    mode=args.mode,
+                    local_url=args.local_url,
+                    public_url=args.public_url,
+                    no_http=bool(args.no_http),
+                    check_public=bool(args.check_public),
+                    strict=bool(args.strict),
+                )
+            )
+        codes = [r.exit_code(strict=bool(args.strict)) for r in reports]
+        exit_rc = _combined_exit_code(*codes)
+        if args.json:
+            if len(reports) == 1:
+                print(json.dumps(reports[0].to_dict(), ensure_ascii=False, indent=2))
+            else:
+                payload = {
+                    "ok": exit_rc == 0,
+                    "status": "fail" if exit_rc == 1 else ("warn" if exit_rc == 2 else "ok"),
+                    "systemcheck": reports[0].to_dict(),
+                    "healthcheck": reports[1].to_dict(),
+                }
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print("\n\n".join(format_report(r) for r in reports))
+        if args.target and exit_rc != 1:
+            return launch_targets(root, target=args.target, mode=args.mode, dry_run=args.dry_run)
+        return exit_rc
 
     report = run_preflight(root, mode=args.mode, check_ports=not args.no_port_check)
     if args.json:

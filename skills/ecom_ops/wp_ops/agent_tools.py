@@ -498,16 +498,34 @@ class WpAgentTools:
             return ToolOutput(_error("InvalidToolRequest"))
         schema = spec.schema
 
-        def _invalid_args() -> ToolOutput:
+        allowed_keys = set(schema.get("properties", {}))
+
+        def _invalid_args(
+            *,
+            unexpected: list[str] | None = None,
+            missing: list[str] | None = None,
+            hint: str | None = None,
+        ) -> ToolOutput:
             err = _error("InvalidToolArguments")
-            err["allowed_arguments"] = sorted(schema.get("properties", {}).keys())
+            err["allowed_arguments"] = sorted(allowed_keys)
             if schema.get("required"):
                 err["required_arguments"] = list(schema.get("required", []))
+            hints: list[str] = []
+            if unexpected:
+                err["unexpected_arguments"] = unexpected
+                hints.append(f"Okända argument: {', '.join(unexpected)}.")
+            if missing:
+                err["missing_arguments"] = missing
+                hints.append(f"Saknade obligatoriska argument: {', '.join(missing)}.")
+            if hint:
+                hints.append(hint)
+            if hints:
+                err["hint"] = " ".join(hints)
             return ToolOutput(err)
 
-        allowed_keys = set(schema.get("properties", {}))
-        if set(arguments) - allowed_keys:
-            return _invalid_args()
+        unexpected = sorted(set(arguments) - allowed_keys)
+        if unexpected:
+            return _invalid_args(unexpected=unexpected)
         required_keys = set(schema.get("required", []))
         cleaned_args = {
             key: value
@@ -516,15 +534,15 @@ class WpAgentTools:
         }
         missing = [key for key in schema.get("required", []) if key not in cleaned_args]
         if missing:
-            return _invalid_args()
+            return _invalid_args(missing=missing)
         if "plan_id" in cleaned_args:
             plan_id = cleaned_args.get("plan_id")
             expected_plan = _FILE_PLAN if spec.plan_kind == "fe" else _REVIEW_PLAN
             if not isinstance(plan_id, str):
-                return _invalid_args()
+                return _invalid_args(hint="plan_id måste vara en textsträng.")
             cleaned_pid = plan_id.strip().strip("`")
             if not expected_plan.fullmatch(cleaned_pid):
-                return _invalid_args()
+                return _invalid_args(hint="Ogiltigt plan_id-format.")
             cleaned_args["plan_id"] = cleaned_pid
 
         if not spec.requires_site:

@@ -3,3 +3,4 @@ PyYAML>=6.0
 requests>=2.31
 Flask>=3.0
 waitress>=3.0
+paramiko>=3.2,<5

@@ -19,8 +19,13 @@
 
   <!-- Status & Kill-switch strip -->
   <section class="az-card">
-    <h2 class="az-section-title">Driftläge &amp; säkerhetsspärrar</h2>
-    <div class="flex flex-wrap items-center gap-2">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="az-section-title mb-0">Driftläge &amp; säkerhetsspärrar</h2>
+      {% if is_oscar %}
+      <a class="az-btn-oscar az-btn-sm" href="/oscar/google">Hantera Google OAuth (GA4 &amp; GSC)</a>
+      {% endif %}
+    </div>
+    <div class="mt-2 flex flex-wrap items-center gap-2">
       {% if runtime and runtime.mock_mode %}
         {{ ui.status_badge('warn', 'Mock-läge aktivt', show_icon=True) }}
       {% else %}
@@ -340,9 +345,12 @@
         {% else %}Ej konfigurerad i secrets.env{% endif %}
       </p>
     </div>
-    <a class="az-btn-oscar az-btn-sm" href="/oauth/google/start">
-      {{ 'Återanslut Google marketing' if google_oauth_connected else 'Anslut Google marketing' }}
-    </a>
+    <div class="flex flex-wrap items-center gap-2">
+      <a class="az-btn-oscar az-btn-sm" href="/oauth/google/start">
+        {{ 'Återanslut Google marketing' if google_oauth_connected else 'Anslut Google marketing' }}
+      </a>
+      <a class="az-btn-secondary az-btn-sm" href="/oscar/google">Google OAuth-hubb</a>
+    </div>
   </section>
   {% endif %}
 </div>

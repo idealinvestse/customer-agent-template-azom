@@ -49,6 +49,21 @@ def scrub_query_for_provider(
     return OutboundQueryFirewall().check_query(query, taint=taint)
 
 
+def scrub_objective_for_provider(
+    objective: str,
+    *,
+    taint: QueryTaintContext | None = None,
+    max_out_chars: int = 240,
+) -> str:
+    """Validate the full objective text before clipping so secrets/PII beyond 240 chars cannot bypass."""
+    fw = OutboundQueryFirewall()
+    validated = fw.check_text(objective, max_chars=1000, taint=taint)
+    limit = max(1, min(250, int(max_out_chars)))
+    if len(validated) > limit:
+        validated = validated[:limit].rsplit(" ", 1)[0].strip() or validated[:limit]
+    return fw.check_query(validated, taint=taint)
+
+
 def parse_retry_after_seconds(headers: Mapping[str, str] | None) -> float | None:
     """Parse a numeric or HTTP-date ``Retry-After`` header in seconds, or return None."""
     if not headers:
@@ -169,5 +184,6 @@ __all__ = [
     "parse_retry_after_seconds",
     "pinned_json_request",
     "require_api_key",
+    "scrub_objective_for_provider",
     "scrub_query_for_provider",
 ]

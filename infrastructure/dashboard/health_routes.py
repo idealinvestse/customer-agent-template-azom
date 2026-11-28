@@ -10,11 +10,14 @@ from flask import Flask, jsonify
 def register_health_routes(app: Flask) -> None:
     @app.route("/health")
     def health():
+        from ecom_ops import __version__
         from ecom_ops.bot.actors import channel_posture
         from ecom_ops.ops_status import health_extras, readiness_from_last_poll
+        from ecom_ops.runtime_env import env_flag
 
         readiness = readiness_from_last_poll()
         extras = health_extras()
+        is_mock = env_flag("AZOM_USE_MOCK", default=True)
         page_token = bool((os.environ.get("MESSENGER_PAGE_ACCESS_TOKEN") or "").strip())
         posture = channel_posture("messenger")
         messenger = {
@@ -27,13 +30,14 @@ def register_health_routes(app: Flask) -> None:
             "allowlist_set": bool(posture.get("allowlist_set")),
             "actor_map_set": bool(posture.get("actor_map_set")),
             "fail_closed": bool(posture.get("fail_closed")),
-            "mutations_enabled": page_token
-            or (os.environ.get("AZOM_USE_MOCK", "").lower() in {"1", "true", "yes"}),
+            "mutations_enabled": page_token or is_mock,
         }
         return jsonify(
             {
                 "ok": True,
                 "service": "azom-dashboard",
+                "version": __version__,
+                "mode": "mock" if is_mock else "live",
                 "liveness": True,
                 "readiness": readiness,
                 "messenger": messenger,

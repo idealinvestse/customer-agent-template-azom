@@ -554,22 +554,51 @@ def handle_open_review_workspace(tools: Any, ctx: ToolContext, arguments: dict[s
     summary = arguments.get("summary", "")
     variant_group = arguments.get("variant_group", "")
     base_plan_id = arguments.get("base_plan_id", "")
+    def _invalid_open_args(hint: str) -> ToolOutput:
+        err = error_payload("InvalidToolArguments")
+        err["allowed_kinds"] = ["theme", "plugin", "mu_plugin"]
+        err["hint"] = hint
+        return ToolOutput(err, site_id)
+
     if not isinstance(site_id, str) or not SITE_ID_RE.fullmatch(site_id):
         return tools._site_required_error(ctx.actor)
-    if kind not in {"theme", "plugin", "mu_plugin"} or not isinstance(slug, str) or not isinstance(summary, str):
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
-    if not isinstance(variant_group, str) or not isinstance(base_plan_id, str):
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+    if kind not in {"theme", "plugin", "mu_plugin"}:
+        return _invalid_open_args(
+            "Ogiltig kind. Använd kind='theme' (även för ny sida / page_draft; "
+            "lämna slug tom för aktivt tema), 'plugin' eller 'mu_plugin'."
+        )
+    if not isinstance(slug, str):
+        return _invalid_open_args(
+            "Ogiltig slug. Lämna slug tom ('') för aktivt tema/page_draft eller "
+            "ange en giltig tema-/plugin-slug (a-z, 0-9, -, _)."
+        )
+    if not isinstance(summary, str):
+        return _invalid_open_args("Ogiltig summary. Ange en textsträng på max 200 tecken.")
+    if not isinstance(variant_group, str):
+        return _invalid_open_args(
+            "Ogiltig variant_group. Ange en sträng (a-z, 0-9, -, _, max 48 tecken) eller lämna tom."
+        )
+    if not isinstance(base_plan_id, str):
+        return _invalid_open_args(
+            "Ogiltig base_plan_id. Ange ett giltigt wr-*-plan-ID (wr- + 12 hextecken) eller lämna tom."
+        )
     clean_vg = variant_group.strip().lower()
     clean_base = base_plan_id.strip().strip("`")
     if clean_vg and VARIANT_GROUP_RE.fullmatch(clean_vg) is None:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        return _invalid_open_args(
+            "Ogiltig variant_group. Ange a-z, 0-9, - eller _ (börjar med a-z/0-9, max 48 tecken) eller lämna tom."
+        )
     if clean_base and REVIEW_PLAN_RE.fullmatch(clean_base) is None:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        return _invalid_open_args(
+            "Ogiltig base_plan_id. Ange ett giltigt wr-*-plan-ID (wr- + 12 hextecken) eller lämna tom."
+        )
     if slug and SLUG_RE.fullmatch(slug) is None:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        return _invalid_open_args(
+            "Ogiltig slug. Lämna slug tom ('') för aktivt tema/page_draft eller "
+            "ange en giltig tema-/plugin-slug (a-z, 0-9, -, _)."
+        )
     if len(summary) > 200:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        return _invalid_open_args("summary får vara max 200 tecken.")
     ops = tools._review_plans()
     if clean_base:
         return _fork_workspace_impl(
@@ -619,7 +648,15 @@ def handle_open_review_workspace(tools: Any, ctx: ToolContext, arguments: dict[s
                             f"wp_search_component(site_id='{site_id}', kind='theme', slug='{parent_slug}', query=...) "
                             f"utan plan_id och kopiera in filen med wp_workspace_copy_from_parent(plan_id='{opened_pid}', path=...) före patch."
                         )
-    return tools._file_result(WpOpsResult(opened.ok, opened.message, data), site_id)
+    out = tools._file_result(WpOpsResult(opened.ok, opened.message, data), site_id)
+    if not out.data.get("ok") and kind == "theme" and slug and "hint" not in out.data:
+        enriched = dict(out.data)
+        enriched["hint"] = (
+            "Om du skapar en ny sida (page_draft), lämna slug tom ('') med kind='theme' "
+            "så används sajtens aktiva tema. Ange inte sidsluggen i slug."
+        )
+        return ToolOutput(enriched, out.site_id)
+    return out
 
 
 @register_tool(

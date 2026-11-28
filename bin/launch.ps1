@@ -2,6 +2,28 @@
 $ErrorActionPreference = "Stop"
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+$EnvFile = Join-Path $Root ".env"
+if (Test-Path $EnvFile) {
+    foreach ($rawLine in Get-Content -Path $EnvFile -Encoding UTF8) {
+        $line = $rawLine.Trim()
+        if (-not $line -or $line.StartsWith("#")) { continue }
+        if ($line.StartsWith("export ")) { $line = $line.Substring(7).Trim() }
+        $idx = $line.IndexOf("=")
+        if ($idx -lt 1) { continue }
+        $key = $line.Substring(0, $idx).Trim()
+        if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { continue }
+        $val = $line.Substring($idx + 1).Trim()
+        if (($val.StartsWith('"') -and $val.EndsWith('"')) -or ($val.StartsWith("'") -and $val.EndsWith("'"))) {
+            if ($val.Length -ge 2) { $val = $val.Substring(1, $val.Length - 2) }
+        }
+        $existing = [Environment]::GetEnvironmentVariable($key, "Process")
+        if ([string]::IsNullOrWhiteSpace($existing)) {
+            [Environment]::SetEnvironmentVariable($key, $val, "Process")
+        }
+    }
+}
+
 $Skills = Join-Path $Root "skills"
 if ($env:PYTHONPATH) {
     $env:PYTHONPATH = "$Skills;$env:PYTHONPATH"

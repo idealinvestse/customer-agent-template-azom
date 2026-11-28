@@ -24,6 +24,121 @@ _API_ORIGIN = "https://api.search.brave.com"
 _SEARCH_PATH = "/res/v1/web/search"
 _ESTIMATED_COST_USD = 0.005
 
+_BRAVE_SEARCH_LANGS: frozenset[str] = frozenset(
+    {
+        "ar",
+        "eu",
+        "bn",
+        "bg",
+        "ca",
+        "zh-hans",
+        "zh-hant",
+        "hr",
+        "cs",
+        "da",
+        "nl",
+        "en",
+        "en-gb",
+        "et",
+        "fi",
+        "fr",
+        "gl",
+        "de",
+        "el",
+        "gu",
+        "he",
+        "hi",
+        "hu",
+        "is",
+        "it",
+        "jp",
+        "kn",
+        "ko",
+        "lv",
+        "lt",
+        "ms",
+        "ml",
+        "mr",
+        "nb",
+        "pl",
+        "pt-br",
+        "pt-pt",
+        "pa",
+        "ro",
+        "ru",
+        "sr",
+        "sk",
+        "sl",
+        "es",
+        "sv",
+        "ta",
+        "te",
+        "th",
+        "tr",
+        "uk",
+        "vi",
+    }
+)
+_BRAVE_LANG_ALIASES: dict[str, str] = {
+    "no": "nb",
+    "nb": "nb",
+    "nn": "nb",
+    "nob": "nb",
+    "nno": "nb",
+    "nor": "nb",
+    "sv": "sv",
+    "se": "sv",
+    "swe": "sv",
+    "da": "da",
+    "dk": "da",
+    "dan": "da",
+    "en": "en",
+    "eng": "en",
+    "en-gb": "en-gb",
+    "zh": "zh-hans",
+    "zh-cn": "zh-hans",
+    "zh-hans": "zh-hans",
+    "zh-tw": "zh-hant",
+    "zh-hant": "zh-hant",
+    "pt": "pt-pt",
+    "pt-pt": "pt-pt",
+    "pt-br": "pt-br",
+    "ja": "jp",
+    "jp": "jp",
+}
+_BRAVE_COUNTRY_ALIASES: dict[str, str] = {
+    "UK": "GB",
+}
+_NON_COUNTRY_LANGUAGE_TOKENS: frozenset[str] = frozenset({"EN", "SV", "NB", "NN", "DA"})
+
+
+def _normalize_brave_country(raw_country: str | None) -> str | None:
+    raw = str(raw_country or "").strip().upper()
+    if not raw:
+        return None
+    if raw == "ALL":
+        return "ALL"
+    mapped = _BRAVE_COUNTRY_ALIASES.get(raw, raw)
+    if mapped in _NON_COUNTRY_LANGUAGE_TOKENS:
+        return None
+    if len(mapped) == 2 and mapped.isalpha():
+        return mapped
+    return None
+
+
+def _normalize_brave_search_lang(raw_language: str | None) -> str | None:
+    raw = str(raw_language or "").strip().lower().replace("_", "-")
+    if not raw:
+        return None
+    if raw in _BRAVE_LANG_ALIASES:
+        cand = _BRAVE_LANG_ALIASES[raw]
+        return cand if cand in _BRAVE_SEARCH_LANGS else None
+    if raw in _BRAVE_SEARCH_LANGS:
+        return raw
+    base = raw.split("-", 1)[0]
+    cand = _BRAVE_LANG_ALIASES.get(base, base)
+    return cand if cand in _BRAVE_SEARCH_LANGS else None
+
 
 def _brave_freshness(freshness_days: int | None) -> str | None:
     if freshness_days is None:
@@ -70,14 +185,12 @@ class BraveSearchRoute:
             "count": str(min(20, int(request.max_results))),
             "extra_snippets": "true",
         }
-        if request.country:
-            country = str(request.country).strip().upper()
-            if len(country) == 2 and country.isalpha():
-                params["country"] = country
-        if request.language:
-            lang = str(request.language).strip().lower().split("-")[0]
-            if lang and lang.isalpha() and len(lang) <= 3:
-                params["search_lang"] = lang
+        country = _normalize_brave_country(request.country)
+        if country:
+            params["country"] = country
+        search_lang = _normalize_brave_search_lang(request.language)
+        if search_lang:
+            params["search_lang"] = search_lang
         freshness = _brave_freshness(request.freshness_days)
         if freshness:
             params["freshness"] = freshness
@@ -89,7 +202,10 @@ class BraveSearchRoute:
             self.route_id,
             url,
             method="GET",
-            headers={"X-Subscription-Token": api_key},
+            headers={
+                "X-Subscription-Token": api_key,
+                "Cache-Control": "no-cache",
+            },
             allowed_auth_origins=(_API_ORIGIN,),
         )
         latency_ms = int((time.monotonic() - started) * 1000)

@@ -703,6 +703,22 @@ def _determine_evidence_status(
     return EvidenceStatus.PARTIAL
 
 
+def _hit_providers(hit: SearchHit | dict[str, Any]) -> list[str]:
+    seen: list[str] = []
+    raw_prov = str(_hit_attr(hit, "provider", "") or "")
+    for part in raw_prov.split("+"):
+        p = part.strip().lower()
+        if p and p not in seen:
+            seen.append(p)
+    corr = _hit_attr(hit, "corroborated_by", None) or ()
+    if isinstance(corr, (list, tuple, set)):
+        for item in corr:
+            p = str(item or "").strip().lower()
+            if p and p not in seen:
+                seen.append(p)
+    return seen
+
+
 def evaluate_search_hits(
     hits: Sequence[SearchHit | dict[str, Any]],
     *,
@@ -710,10 +726,11 @@ def evaluate_search_hits(
     profile: SearchProfile,
     provenance: str = "live",
 ) -> tuple[list[EvaluatedSource], EvidenceStatus, list[ConflictNote]]:
-    """Sanitize, deduplicate, score, and evaluate search hits into grounded sources."""
+    """Sanitize, deduplicate, score (with RRF corroboration), and evaluate search hits."""
     now = datetime.now(UTC)
     now_iso = now.isoformat()
     deduped: dict[str, dict[str, Any]] = {}
+    provider_ranks: dict[str, int] = {}
 
     for hit in hits:
         raw_url = str(_hit_attr(hit, "url", "") or "").strip()
@@ -736,8 +753,19 @@ def evaluate_search_hits(
         published_at = _hit_attr(hit, "published_at", None)
         if published_at is not None:
             published_at = sanitize_untrusted_text(str(published_at), max_chars=64) or None
-        provider = str(_hit_attr(hit, "provider", "") or "").strip().lower()
+        hit_provs = _hit_providers(hit)
         provider_score = _hit_attr(hit, "score", 0.0)
+        try:
+            pre_rrf = float(_hit_attr(hit, "rrf_score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pre_rrf = 0.0
+
+        rrf_contrib = 0.0
+        for p in hit_provs or [""]:
+            rank = provider_ranks.get(p, 0) + 1
+            provider_ranks[p] = rank
+            rrf_contrib += 1.0 / (60.0 + rank)
+        effective_rrf = max(pre_rrf, rrf_contrib)
 
         existing = deduped.get(canon)
         if existing is not None:
@@ -749,6 +777,15 @@ def evaluate_search_hits(
                 existing["title"] = title
             if not existing["published_at"] and published_at:
                 existing["published_at"] = published_at
+            new_prov_added = False
+            for p in hit_provs:
+                if p not in existing["providers"]:
+                    existing["providers"].append(p)
+                    new_prov_added = True
+            if new_prov_added:
+                existing["rrf_sum"] = max(existing["rrf_sum"] + rrf_contrib, pre_rrf)
+            elif pre_rrf > existing["rrf_sum"]:
+                existing["rrf_sum"] = pre_rrf
             try:
                 if float(provider_score or 0.0) > float(existing["provider_score"] or 0.0):
                     existing["provider_score"] = provider_score
@@ -764,7 +801,8 @@ def evaluate_search_hits(
             "snippet": snippet,
             "extracted_text": extracted_text,
             "published_at": published_at,
-            "provider": provider,
+            "providers": list(hit_provs),
+            "rrf_sum": effective_rrf,
             "provider_score": provider_score,
         }
 
@@ -781,13 +819,20 @@ def evaluate_search_hits(
         auth, trust_tier = _score_authority(item["domain"], source_type, profile)
         fresh = _score_freshness(item["published_at"], profile, now)
         sig = _score_signal_density(item["title"], item["snippet"], item["extracted_text"])
-        overall = _weighted_score(
+        base_overall = _weighted_score(
             relevance=rel,
             authority=auth,
             freshness=fresh,
             signal_density=sig,
             weights=profile.weights,
         )
+        prov_count = len(item["providers"])
+        corr_bonus = (
+            min(0.12, 0.04 * (prov_count - 1) + min(0.04, float(item["rrf_sum"]) * 1.2))
+            if prov_count >= 2
+            else 0.0
+        )
+        overall = round(max(0.0, min(1.0, base_overall + corr_bonus)), 4)
         evaluated.append(
             EvaluatedSource(
                 source_id="",
@@ -801,13 +846,16 @@ def evaluate_search_hits(
                 trust_tier=trust_tier,
                 published_at=item["published_at"],
                 accessed_at=now_iso,
-                provider=item["provider"],
+                provider="+".join(item["providers"]),
                 provenance=provenance,
                 relevance_score=rel,
                 authority_score=auth,
                 freshness_score=fresh,
                 signal_density=sig,
                 score=overall,
+                corroborated_by=tuple(item["providers"]),
+                provider_count=max(1, prov_count),
+                rrf_score=round(float(item["rrf_sum"]), 6),
             )
         )
 

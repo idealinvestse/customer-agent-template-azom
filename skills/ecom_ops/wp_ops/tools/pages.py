@@ -432,30 +432,41 @@ def handle_build_sample_data(tools: Any, ctx: ToolContext, arguments: dict[str, 
         return denied_out
     assert site_obj is not None
 
+    def _invalid_sample_args(hint: str, *, include_scenarios: bool = False) -> ToolOutput:
+        err = error_payload("InvalidToolArguments")
+        if include_scenarios:
+            err["allowed_scenarios"] = sorted(SAMPLE_SCENARIOS)
+        err["hint"] = hint
+        return ToolOutput(err, site_id)
+
     scenario = str(arguments.get("scenario") or "thankyou").strip().lower()
     if scenario not in SAMPLE_SCENARIOS:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        allowed_list = ", ".join(sorted(SAMPLE_SCENARIOS))
+        return _invalid_sample_args(
+            f"Ogiltigt scenario. Använd ett av: {allowed_list}.",
+            include_scenarios=True,
+        )
     raw_count = arguments.get("product_count", 2)
     if type(raw_count) is not int or raw_count < 1 or raw_count > 4:
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        return _invalid_sample_args("Ogiltig product_count. Ange ett heltal mellan 1 och 4.")
     raw_pids = arguments.get("product_ids")
     product_ids: list[int] = []
     if raw_pids is not None:
         if not isinstance(raw_pids, list) or len(raw_pids) > 4:
-            return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+            return _invalid_sample_args("Ogiltig product_ids. Ange en lista med högst 4 positiva produkt-ID:n.")
         for item in raw_pids:
             pid = parse_product_id(item)
             if pid is None:
-                return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+                return _invalid_sample_args("Ogiltigt produkt-ID i product_ids. Ange positiva heltal (1–12 siffror).")
             if pid not in product_ids:
                 product_ids.append(pid)
     raw_guide_search = arguments.get("guide_search", "")
     if raw_guide_search is not None and (not isinstance(raw_guide_search, str) or len(raw_guide_search) > 60):
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        return _invalid_sample_args("Ogiltig guide_search. Ange en söksträng på max 60 tecken.")
     guide_search = (raw_guide_search or "").strip()
     raw_currency = arguments.get("currency", "")
     if raw_currency is not None and (not isinstance(raw_currency, str) or len(raw_currency) > 8):
-        return ToolOutput(error_payload("InvalidToolArguments"), site_id)
+        return _invalid_sample_args("Ogiltig currency. Ange en valutakod på max 8 tecken (t.ex. SEK, NOK, DKK).")
 
     products: list[dict[str, Any]] = []
     live_calls = False
@@ -467,30 +478,56 @@ def handle_build_sample_data(tools: Any, ctx: ToolContext, arguments: dict[str, 
                 if res.data.get("live_calls"):
                     live_calls = True
     if len(products) < raw_count:
-        listed = tools._list_products(site_id, {"limit": max(6, raw_count * 2)}, actor=ctx.actor)
+        fetch_limit = max(12, raw_count * 4) if not product_ids else max(6, raw_count * 2)
+        listed = tools._list_products(site_id, {"limit": fetch_limit}, actor=ctx.actor)
         if listed.data.get("live_calls"):
             live_calls = True
         seen_keys = {(p.get("id"), p.get("slug")) for p in products}
+        raw_candidates: list[dict[str, Any]] = []
         for row in listed.data.get("products") or []:
-            if len(products) >= raw_count:
-                break
             if not isinstance(row, dict):
                 continue
             key = (row.get("id"), row.get("slug"))
             if key in seen_keys:
                 continue
             seen_keys.add(key)
-            if not row.get("image_url") or not row.get("price"):
+            raw_candidates.append(row)
+
+        if not product_ids:
+            custom_re = re.compile(r"(?i)kundebestilling|custom\s+order|spesiell")
+            regular = [r for r in raw_candidates if not custom_re.search(str(r.get("name") or ""))]
+            pool = regular if regular else raw_candidates
+        else:
+            pool = raw_candidates
+
+        def _product_rank(row: dict[str, Any]) -> tuple[bool, bool, bool]:
+            has_img = bool(str(row.get("image_url") or "").strip())
+            has_price = bool(str(row.get("price") or "").strip())
+            return (has_img and has_price, has_img, has_price)
+
+        pool.sort(key=_product_rank, reverse=True)
+        enriched: list[dict[str, Any]] = []
+        detail_lookups = 0
+        max_lookups = max(raw_count * 3, 6)
+        for row in pool:
+            if (not row.get("image_url") or not row.get("price")) and detail_lookups < max_lookups:
                 lookup_arg: dict[str, Any] = {}
                 if row.get("id"):
                     lookup_arg["product_id"] = row["id"]
                 elif row.get("path"):
                     lookup_arg["path"] = row["path"]
                 if lookup_arg:
+                    detail_lookups += 1
                     det = tools._get_product(site_id, lookup_arg, actor=ctx.actor)
                     if det.data.get("ok") is True and isinstance(det.data.get("product"), dict):
                         row = det.data["product"]
-            products.append(row)
+            enriched.append(row)
+            if len([r for r in enriched if _product_rank(r)[0]]) >= (raw_count - len(products)):
+                break
+
+        enriched.sort(key=_product_rank, reverse=True)
+        needed = raw_count - len(products)
+        products.extend(enriched[:needed])
 
     guides: list[dict[str, Any]] = []
     search_terms = [guide_search] if guide_search else ["guide", "setup", "hjelp", "hjälp", "faq"]

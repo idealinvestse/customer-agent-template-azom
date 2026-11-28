@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -88,7 +89,7 @@ _PROVIDER_CARD_META: tuple[dict[str, str], ...] = (
         "id": "tavily",
         "label": "Tavily",
         "env_key": "TAVILY_API_KEY",
-        "role_hint": "Djupwebb & strukturerat sidinnehåll",
+        "role_hint": "Djupwebb & strukturerat sidinnehåll (valfri fallback)",
     },
     {
         "id": "searxng",
@@ -616,16 +617,32 @@ def research_config_test():
 
     router = get_search_router()
     targets = list(LIVE_ROUTE_IDS) if route_id == "all" else [route_id]
+    results_by_id: dict[str, dict[str, Any]] = {}
+
+    def _probe_one(rid: str) -> dict[str, Any]:
+        try:
+            return dict(router.test_route(rid))
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "error",
+                "error_class": type(exc).__name__,
+            }
+
+    if len(targets) > 1:
+        with ThreadPoolExecutor(max_workers=min(5, len(targets))) as pool:
+            futs = [(rid, pool.submit(_probe_one, rid)) for rid in targets]
+            for rid, fut in futs:
+                results_by_id[rid] = fut.result()
+    else:
+        for rid in targets:
+            results_by_id[rid] = _probe_one(rid)
+
     parts: list[str] = []
     has_error = False
     has_missing = False
     for rid in targets:
-        try:
-            res = router.test_route(rid)
-        except Exception as exc:
-            has_error = True
-            parts.append(f"{rid}: error ({type(exc).__name__})")
-            continue
+        res = results_by_id.get(rid) or {"ok": False, "status": "error"}
         ok = bool(res.get("ok"))
         status = str(res.get("status") or ("ok" if ok else "error")).strip().lower()
         raw_code = str(res.get("error_code") or res.get("error_class") or "").strip()
@@ -667,7 +684,8 @@ def research_search():
     raw_profile = (request.form.get("profile_id") or request.form.get("profile") or "auto").strip()
     auto_selected = raw_profile.lower() in {"", "auto"}
     selected_profile = "auto" if auto_selected else raw_profile
-    locale = (request.form.get("locale") or "").strip() or None
+    raw_locale = (request.form.get("locale") or "").strip()
+    locale = ("en" if raw_locale.upper() == "EN" else raw_locale) or None
 
     if not query:
         err_msg = "Ange en sökfråga."
@@ -795,7 +813,8 @@ def research_jobs_create():
             depth = raw_depth
 
     market = (request.form.get("market") or "").strip().upper()
-    locale = (request.form.get("locale") or "").strip() or None
+    raw_locale = (request.form.get("locale") or "").strip()
+    locale = ("en" if raw_locale.upper() == "EN" else raw_locale) or None
     target_ref = (request.form.get("target_ref") or "").strip() or None
     next_url = _safe_next_url(request.form.get("next_url") or request.form.get("next"))
 
@@ -813,7 +832,9 @@ def research_jobs_create():
     is_wp = bool(target_ref and target_ref.startswith(("wp:", "wp_site:")))
     visibility = "team" if (target_ref and not is_wp) else "private"
     markets = [market] if market else None
-    country = market if len(market) == 2 else None
+    country = market if (len(market) == 2 and market != "EN") else None
+    if market == "EN" and not locale:
+        locale = "en"
     taint = _case_taint_for_target(target_ref)
 
     try:

@@ -17,6 +17,7 @@ import os
 import secrets
 import socket
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -118,23 +119,30 @@ class ResearchWorkerPool:
         self._wakeup.set()
         with self._lock:
             threads = list(self._threads)
+        deadline = time.monotonic() + max(0.0, float(timeout))
         for t in threads:
-            t.join(timeout=timeout)
+            remaining = max(0.01, deadline - time.monotonic())
+            t.join(timeout=remaining)
         with self._lock:
             self._threads = [t for t in self._threads if t.is_alive()]
 
     def _run_claimed_job(self, job: ResearchJob, thread_worker_id: str) -> ResearchJob:
         hb_stop = threading.Event()
+        effective_hb = min(self.heartbeat_interval_s, max(0.05, self.lease_s / 3.0))
 
         def _heartbeat_loop() -> None:
-            while not hb_stop.wait(timeout=self.heartbeat_interval_s):
+            while not hb_stop.wait(timeout=effective_hb):
                 if self._stop.is_set():
                     break
                 try:
                     if not self.store.heartbeat(job.research_id, thread_worker_id, lease_s=self.lease_s):
                         break
-                except Exception:
-                    break
+                except Exception as exc:
+                    log.warning(
+                        "Research lease heartbeat error (%s): %s",
+                        job.research_id,
+                        type(exc).__name__,
+                    )
 
         hb_thread = threading.Thread(
             target=_heartbeat_loop,
@@ -180,15 +188,16 @@ class ResearchWorkerPool:
         """Synchronously claim and run up to ``max_jobs`` queued jobs (for tests/CLI)."""
         processed = 0
         max_conc = load_research_config().budgets.max_concurrent_jobs
+        sync_worker_id = f"{self.worker_id}-sync-{threading.get_ident()}"
         for _ in range(max(1, int(max_jobs))):
             job = self.store.claim_next(
-                self.worker_id,
+                sync_worker_id,
                 lease_s=self.lease_s,
                 max_concurrent=max_conc,
             )
             if job is None:
                 break
-            self._run_claimed_job(job, self.worker_id)
+            self._run_claimed_job(job, sync_worker_id)
             processed += 1
         return processed
 
@@ -209,7 +218,12 @@ def get_research_worker_pool(
                 path=base / "research_jobs.sqlite3",
                 artifacts_dir=base / "research_artifacts",
             )
-            pool = ResearchWorkerPool(store=resolved_store, on_job_complete=on_job_complete)
+            max_conc = max(1, min(4, int(load_research_config().budgets.max_concurrent_jobs)))
+            pool = ResearchWorkerPool(
+                store=resolved_store,
+                max_workers=max_conc,
+                on_job_complete=on_job_complete,
+            )
             _POOLS[key] = pool
         elif on_job_complete is not None and pool.on_job_complete is None:
             pool.on_job_complete = on_job_complete

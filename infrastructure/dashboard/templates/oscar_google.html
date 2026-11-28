@@ -1,0 +1,475 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% from "_icons.html" import icon %}
+{% block title %}Oscar · Google OAuth (GA4 &amp; GSC) – Azom{% endblock %}
+{% block page_subtitle %}Google Analytics 4, Google Ads &amp; Search Console{% endblock %}
+{% block content %}
+<div class="space-y-6" data-oscar-google-hub="true">
+  {% call ui.page_header(
+    "Oscar · Google OAuth-hubb (GA4 & GSC)",
+    "Guidad anslutning för Google Marketing (GA4 + Ads) och strikt isolerad Google Search Console (endast läsning).",
+    badge_text="Endast Oscar",
+    badge_tone="oscar"
+  ) %}
+    <a class="az-btn-secondary az-btn-sm" href="/marketing">{{ icon('trending-up', 'xs') }}<span>Marknadsföring</span></a>
+    <a class="az-btn-secondary az-btn-sm" href="/seo">{{ icon('globe', 'xs') }}<span>SEO Studio</span></a>
+    <a class="az-btn-secondary az-btn-sm" href="/oscar/secrets">{{ icon('key', 'xs') }}<span>Secrets</span></a>
+    <a class="az-btn-secondary az-btn-sm" href="/oscar">{{ icon('arrow-left', 'xs') }}<span>Tillbaka</span></a>
+  {% endcall %}
+
+  {{ ui.info_callout(
+    'info',
+    'Strikt credential-isolering',
+    'Google Search Console använder egna GSC_OAUTH_* / AZOM_GSC_* nycklar, scope webmasters.readonly och lagras separat i AZOM_DATA_DIR/oauth/gsc.json — den delar aldrig tokens med Gmail eller Google Marketing (GA4/Ads).'
+  ) }}
+
+  <div class="grid gap-6 lg:grid-cols-2">
+    <!-- Card 1: GA4 & Google Ads -->
+    <section class="az-card-oscar space-y-5" data-google-card="ga4">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="font-display text-base font-semibold text-oscar-300">1. Google Analytics 4 &amp; Google Ads</h2>
+          <p class="az-muted mt-1 text-xs">Rapportering i Marketing Ledger (<code class="az-code font-mono">analytics.readonly</code> + <code class="az-code font-mono">adwords</code>). Sparas i <code class="az-code font-mono">google_marketing.json</code>.</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          {% if ga4_connected %}
+            {{ ui.status_badge('ok', 'OAuth ansluten', show_icon=True) }}
+          {% elif ga4_configured %}
+            {{ ui.status_badge('warn', 'Klient konfigurerad') }}
+          {% else %}
+            {{ ui.status_badge('neutral', 'Ej konfigurerad') }}
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Redirect URI copy strip -->
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-xs font-semibold uppercase tracking-wider text-mist-400">Authorized Redirect URI (GA4/Ads)</span>
+          <button type="button" class="az-btn-secondary az-btn-sm" data-copy-target="#ga4-redirect-uri">
+            {{ icon('copy', 'xs') }}
+            <span data-copy-label>Kopiera URI</span>
+          </button>
+        </div>
+        <code id="ga4-redirect-uri" class="block break-all rounded-md border border-ink-700 bg-ink-900 px-2.5 py-1.5 font-mono text-xs text-mist-100">{{ ga4_redirect_uri }}</code>
+      </div>
+
+      <!-- Status summary -->
+      <dl class="grid grid-cols-2 gap-3 text-xs">
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/50 p-3">
+          <dt class="text-mist-400">OAuth-klient</dt>
+          <dd class="mt-1 font-medium text-mist-100">
+            {% if ga4_client_id_present and ga4_client_secret_present %}Konfigurerad{% else %}Saknar ID/Secret{% endif %}
+          </dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/50 p-3">
+          <dt class="text-mist-400">Refresh-token</dt>
+          <dd class="mt-1 font-medium text-mist-100">{{ 'Lagrad' if ga4_has_refresh else ('Endast access' if ga4_connected else 'Ingen') }}</dd>
+        </div>
+      </dl>
+
+      {% if ga4_probe %}
+      <div class="rounded-lg border border-ink-700/80 bg-ink-950/70 p-3 text-xs space-y-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-semibold text-mist-300">Senaste GA4-probe:</span>
+          {{ ui.status_badge(ga4_probe.status, ga4_probe.status) }}
+          <span class="text-mist-200">{{ ga4_probe.message }}</span>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Actions row -->
+      <div class="flex flex-wrap items-center gap-2">
+        <a class="az-btn-oscar az-btn-sm" href="/oauth/google/start?next=oscar_google">
+          {{ icon('external-link', 'xs') }}
+          <span>{{ 'Återanslut GA4/Ads OAuth' if ga4_connected else 'Anslut GA4/Ads OAuth' }}</span>
+        </a>
+        <form method="post" action="/oscar/google/ga4/test" class="inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Testar...">
+            {{ icon('refresh', 'xs') }}
+            <span>Testa GA4</span>
+          </button>
+        </form>
+        {% if ga4_connected %}
+        <form
+          method="post"
+          action="/oauth/google/disconnect"
+          class="inline"
+          data-confirm="Koppla från lagrade GA4/Ads OAuth-tokens? Rapportering faller tillbaka tills du ansluter igen."
+          data-confirm-title="Koppla från Google Marketing OAuth"
+          data-confirm-ok="Koppla från"
+          data-confirm-danger="1"
+        >
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button type="submit" class="az-btn-danger az-btn-sm" data-busy-label="Kopplar från...">Koppla från</button>
+        </form>
+        {% endif %}
+      </div>
+
+      <!-- Credentials & Properties Form -->
+      <form method="post" action="/oscar/google/ga4/config" class="space-y-3 border-t border-ink-700/80 pt-4">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <h3 class="text-sm font-semibold text-mist-100">GA4 &amp; Ads-uppgifter (<code class="az-code font-mono">secrets.env</code>)</h3>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="ga4-client-id">GOOGLE_OAUTH_CLIENT_ID</label>
+            <input
+              id="ga4-client-id"
+              name="GOOGLE_OAUTH_CLIENT_ID"
+              type="text"
+              autocomplete="off"
+              class="az-input font-mono text-xs"
+              placeholder="{% if ga4_client_id_present %}Konfigurerad (tomt = oförändrat){% else %}...apps.googleusercontent.com{% endif %}"
+            />
+          </div>
+          <div>
+            <label class="az-label" for="ga4-client-secret">GOOGLE_OAUTH_CLIENT_SECRET</label>
+            <div class="flex items-center gap-2" data-secret-field>
+              <input
+                id="ga4-client-secret"
+                name="GOOGLE_OAUTH_CLIENT_SECRET"
+                type="password"
+                autocomplete="new-password"
+                class="az-input font-mono text-xs"
+                placeholder="{% if ga4_client_secret_present %}Konfigurerad (tomt = oförändrat){% else %}GOCSPX-...{% endif %}"
+              />
+              <button type="button" class="az-btn-secondary shrink-0 px-2.5 py-2" data-toggle-secret="ga4-client-secret" aria-pressed="false" aria-label="Visa GOOGLE_OAUTH_CLIENT_SECRET">
+                <span data-eye-open>{{ icon('eye', 'sm') }}</span>
+                <span data-eye-off class="hidden">{{ icon('eye-off', 'sm') }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label class="az-label" for="ga4-redirect-override">GOOGLE_OAUTH_REDIRECT_URI (valfri override)</label>
+          <input
+            id="ga4-redirect-override"
+            name="GOOGLE_OAUTH_REDIRECT_URI"
+            type="url"
+            autocomplete="off"
+            class="az-input font-mono text-xs"
+            value="{{ ga4_redirect_override }}"
+            placeholder="{{ ga4_redirect_uri }}"
+          />
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="ga4-property-ids">AZOM_GA4_PROPERTY_IDS</label>
+            <input
+              id="ga4-property-ids"
+              name="AZOM_GA4_PROPERTY_IDS"
+              type="text"
+              autocomplete="off"
+              class="az-input font-mono text-xs"
+              value="{{ ga4_property_ids }}"
+              placeholder="123456789, 987654321"
+            />
+          </div>
+          <div>
+            <label class="az-label" for="gads-customer-ids">AZOM_GADS_CUSTOMER_IDS</label>
+            <input
+              id="gads-customer-ids"
+              name="AZOM_GADS_CUSTOMER_IDS"
+              type="text"
+              autocomplete="off"
+              class="az-input font-mono text-xs"
+              value="{{ gads_customer_ids }}"
+              placeholder="1234567890"
+            />
+          </div>
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="gads-login-cid">GOOGLE_ADS_LOGIN_CUSTOMER_ID</label>
+            <input
+              id="gads-login-cid"
+              name="GOOGLE_ADS_LOGIN_CUSTOMER_ID"
+              type="text"
+              autocomplete="off"
+              class="az-input font-mono text-xs"
+              value="{{ gads_login_customer_id }}"
+              placeholder="Valfritt MCC-konto (siffror)"
+            />
+          </div>
+          <div>
+            <label class="az-label" for="gads-dev-token">GOOGLE_ADS_DEVELOPER_TOKEN</label>
+            <div class="flex items-center gap-2" data-secret-field>
+              <input
+                id="gads-dev-token"
+                name="GOOGLE_ADS_DEVELOPER_TOKEN"
+                type="password"
+                autocomplete="new-password"
+                class="az-input font-mono text-xs"
+                placeholder="{% if ga4_dev_token_present %}Konfigurerad (tomt = oförändrat){% else %}Developer token för Ads{% endif %}"
+              />
+              <button type="button" class="az-btn-secondary shrink-0 px-2.5 py-2" data-toggle-secret="gads-dev-token" aria-pressed="false" aria-label="Visa GOOGLE_ADS_DEVELOPER_TOKEN">
+                <span data-eye-open>{{ icon('eye', 'sm') }}</span>
+                <span data-eye-off class="hidden">{{ icon('eye-off', 'sm') }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pt-1">
+          <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Sparar...">Spara GA4/Ads-inställningar</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Card 2: Isolated Google Search Console -->
+    <section class="az-card-oscar space-y-5" data-google-card="gsc">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="font-display text-base font-semibold text-oscar-300">2. Google Search Console (Isolerad)</h2>
+          <p class="az-muted mt-1 text-xs">Endast läsning (<code class="az-code font-mono">webmasters.readonly</code>, <code class="az-code font-mono">include_granted_scopes=false</code>). Sparas i <code class="az-code font-mono">gsc.json</code>.</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-1.5">
+          {% if gsc_kill %}
+            {{ ui.status_badge('error', 'Kill-switch aktiv') }}
+          {% elif gsc_connected %}
+            {{ ui.status_badge('ok', 'OAuth ansluten', show_icon=True) }}
+          {% elif gsc_configured %}
+            {{ ui.status_badge('warn', 'Klient konfigurerad') }}
+          {% else %}
+            {{ ui.status_badge('neutral', 'Ej konfigurerad') }}
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Redirect URI copy strip -->
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-xs font-semibold uppercase tracking-wider text-mist-400">Authorized Redirect URI (GSC)</span>
+          <button type="button" class="az-btn-secondary az-btn-sm" data-copy-target="#gsc-redirect-uri">
+            {{ icon('copy', 'xs') }}
+            <span data-copy-label>Kopiera URI</span>
+          </button>
+        </div>
+        <code id="gsc-redirect-uri" class="block break-all rounded-md border border-ink-700 bg-ink-900 px-2.5 py-1.5 font-mono text-xs text-mist-100">{{ gsc_redirect_uri }}</code>
+      </div>
+
+      <!-- Status & server-env gate summary -->
+      <dl class="grid grid-cols-2 gap-3 text-xs">
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/50 p-3">
+          <dt class="text-mist-400">Isolerad OAuth-klient</dt>
+          <dd class="mt-1 font-medium text-mist-100">
+            {% if gsc_client_id_present and gsc_client_secret_present %}Konfigurerad{% else %}Saknar ID/Secret{% endif %}
+          </dd>
+        </div>
+        <div class="rounded-lg border border-ink-700/70 bg-ink-950/50 p-3">
+          <dt class="text-mist-400">Process-gate (<code class="az-code font-mono">AZOM_GSC_ENABLED</code>)</dt>
+          <dd class="mt-1 flex flex-wrap items-center gap-1.5">
+            {% if gsc_kill %}
+              {{ ui.status_badge('error', 'Spärrad (KILL)') }}
+            {% elif gsc_enabled %}
+              {{ ui.status_badge('ok', 'Aktiv (1)') }}
+            {% else %}
+              {{ ui.status_badge('warn', 'Av (fail-closed)') }}
+            {% endif %}
+          </dd>
+        </div>
+      </dl>
+
+      {% if gsc_probe %}
+      <div class="rounded-lg border border-ink-700/80 bg-ink-950/70 p-3 text-xs space-y-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="font-semibold text-mist-300">Senaste GSC-probe:</span>
+          {{ ui.status_badge(gsc_probe.status, gsc_probe.status) }}
+          <span class="text-mist-200">{{ gsc_probe.message }}</span>
+        </div>
+      </div>
+      {% endif %}
+
+      <!-- Actions row -->
+      <div class="flex flex-wrap items-center gap-2">
+        <a class="az-btn-oscar az-btn-sm" href="/oauth/gsc/start">
+          {{ icon('external-link', 'xs') }}
+          <span>{{ 'Återanslut GSC OAuth' if gsc_connected else 'Anslut GSC OAuth' }}</span>
+        </a>
+        <form method="post" action="/oscar/google/gsc/test" class="inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button type="submit" class="az-btn-secondary az-btn-sm" data-busy-label="Testar...">
+            {{ icon('refresh', 'xs') }}
+            <span>Testa GSC</span>
+          </button>
+        </form>
+        {% if gsc_connected %}
+        <form
+          method="post"
+          action="/oauth/gsc/disconnect"
+          class="inline"
+          data-confirm="Koppla från lagrade GSC OAuth-tokens? SEO Studio faller tillbaka tills du ansluter igen."
+          data-confirm-title="Koppla från GSC OAuth"
+          data-confirm-ok="Koppla från"
+          data-confirm-danger="1"
+        >
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+          <button type="submit" class="az-btn-danger az-btn-sm" data-busy-label="Kopplar från...">Koppla från</button>
+        </form>
+        {% endif %}
+      </div>
+
+      {% if gsc_verified_properties %}
+      <div class="rounded-xl border border-ink-700/80 bg-ink-950/60 p-3.5 space-y-2" data-gsc-verified-properties="true">
+        <p class="text-xs font-semibold text-mist-200">Verifierade GSC-properties från kontot</p>
+        <ul class="space-y-1.5 text-xs">
+          {% for prop in gsc_verified_properties %}
+          <li class="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-ink-700/70 bg-ink-900/70 px-2.5 py-1.5">
+            <div class="min-w-0">
+              <code id="gsc-prop-sug-{{ loop.index }}" class="font-mono text-mist-100 break-all">{{ prop.site_url }}</code>
+              {% if prop.permission_level %}
+              <span class="ml-1 text-mist-400">({{ prop.permission_level }})</span>
+              {% endif %}
+            </div>
+            <button type="button" class="az-btn-secondary az-btn-sm" data-copy-target="#gsc-prop-sug-{{ loop.index }}">
+              {{ icon('copy', 'xs') }}
+              <span data-copy-label>Kopiera</span>
+            </button>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      <!-- GSC Credentials & Properties Form -->
+      <form method="post" action="/oscar/google/gsc/config" class="space-y-3 border-t border-ink-700/80 pt-4">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}" />
+        <h3 class="text-sm font-semibold text-mist-100">GSC-uppgifter &amp; Nordiska properties (<code class="az-code font-mono">secrets.env</code>)</h3>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="az-label" for="gsc-client-id">GSC_OAUTH_CLIENT_ID</label>
+            <input
+              id="gsc-client-id"
+              name="GSC_OAUTH_CLIENT_ID"
+              type="text"
+              autocomplete="off"
+              class="az-input font-mono text-xs"
+              placeholder="{% if gsc_client_id_present %}Konfigurerad (tomt = oförändrat){% else %}Separat OAuth Client ID för GSC{% endif %}"
+            />
+          </div>
+          <div>
+            <label class="az-label" for="gsc-client-secret">GSC_OAUTH_CLIENT_SECRET</label>
+            <div class="flex items-center gap-2" data-secret-field>
+              <input
+                id="gsc-client-secret"
+                name="GSC_OAUTH_CLIENT_SECRET"
+                type="password"
+                autocomplete="new-password"
+                class="az-input font-mono text-xs"
+                placeholder="{% if gsc_client_secret_present %}Konfigurerad (tomt = oförändrat){% else %}GOCSPX-...{% endif %}"
+              />
+              <button type="button" class="az-btn-secondary shrink-0 px-2.5 py-2" data-toggle-secret="gsc-client-secret" aria-pressed="false" aria-label="Visa GSC_OAUTH_CLIENT_SECRET">
+                <span data-eye-open>{{ icon('eye', 'sm') }}</span>
+                <span data-eye-off class="hidden">{{ icon('eye-off', 'sm') }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label class="az-label" for="gsc-redirect-override">GSC_OAUTH_REDIRECT_URI (valfri override)</label>
+          <input
+            id="gsc-redirect-override"
+            name="GSC_OAUTH_REDIRECT_URI"
+            type="url"
+            autocomplete="off"
+            class="az-input font-mono text-xs"
+            value="{{ gsc_redirect_override }}"
+            placeholder="{{ gsc_redirect_uri }}"
+          />
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label class="az-label" for="gsc-prop-no">AZOM_GSC_PROPERTY_URL_NO</label>
+            <input
+              id="gsc-prop-no"
+              name="AZOM_GSC_PROPERTY_URL_NO"
+              type="text"
+              autocomplete="off"
+              class="az-input font-mono text-xs"
+              value="{{ gsc_property_no }}"
+              placeholder="sc-domain:azom.no"
+            />
+          </div>
+          <div>
+            <label class="az-label" for="gsc-prop-se">AZOM_GSC_PROPERTY_URL_SE</label>
+            <input
+              id="gsc-prop-se"
+              name="AZOM_GSC_PROPERTY_URL_SE"
+              type="text"
+              autocomplete="off"
+              class="az-input font-mono text-xs"
+              value="{{ gsc_property_se }}"
+              placeholder="https://azom.se/"
+            />
+          </div>
+          <div>
+            <label class="az-label" for="gsc-prop-dk">AZOM_GSC_PROPERTY_URL_DK</label>
+            <input
+              id="gsc-prop-dk"
+              name="AZOM_GSC_PROPERTY_URL_DK"
+              type="text"
+              autocomplete="off"
+              class="az-input font-mono text-xs"
+              value="{{ gsc_property_dk }}"
+              placeholder="https://azom.dk/"
+            />
+          </div>
+        </div>
+
+        <div class="pt-1">
+          <button type="submit" class="az-btn-primary az-btn-sm" data-busy-label="Sparar...">Spara GSC-inställningar</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <!-- Collapsible Google Cloud Console Setup Guide -->
+  <section class="az-card">
+    <details class="space-y-3" data-google-setup-guide="true">
+      <summary class="cursor-pointer font-display text-sm font-semibold text-mist-100">
+        Steg-för-steg-guide: Google Cloud Console (GA4, Ads &amp; Search Console)
+      </summary>
+      <div class="space-y-3 border-t border-ink-700/80 pt-3 text-xs text-mist-300 leading-relaxed">
+        <ol class="list-disc space-y-2 pl-5">
+          <li>
+            Öppna <strong class="text-mist-100">Google Cloud Console → APIs &amp; Services → Library</strong> och aktivera:
+            <code class="az-code font-mono">Google Analytics Data API</code>,
+            <code class="az-code font-mono">Google Ads API</code> och
+            <code class="az-code font-mono">Google Search Console API</code>.
+          </li>
+          <li>
+            Konfigurera <strong class="text-mist-100">OAuth consent screen</strong> (lägg till Oscars Google-konto som Test User om appen är i Testing-läge, eller publicera internt/externt).
+          </li>
+          <li>
+            Skapa <strong class="text-mist-100">två separata OAuth 2.0 Client IDs (Web application)</strong> för strikt isolering:
+            <ul class="mt-1 list-disc space-y-1 pl-5">
+              <li>
+                <strong class="text-mist-100">Klient A (GA4 &amp; Ads):</strong> Lägg till Redirect URI
+                <code class="az-code font-mono break-all">{{ ga4_redirect_uri }}</code> och klistra in <code class="az-code font-mono">GOOGLE_OAUTH_CLIENT_ID/SECRET</code> i kort 1.
+              </li>
+              <li>
+                <strong class="text-mist-100">Klient B (GSC — endast läsning):</strong> Lägg till Redirect URI
+                <code class="az-code font-mono break-all">{{ gsc_redirect_uri }}</code> och klistra in <code class="az-code font-mono">GSC_OAUTH_CLIENT_ID/SECRET</code> i kort 2.
+              </li>
+            </ul>
+          </li>
+          <li>
+            Klicka <strong class="text-mist-100">Anslut OAuth</strong> på respektive kort. Klicka därefter <strong class="text-mist-100">Testa GSC</strong> för att hämta verifierade Search Console-properties att kopiera till NO/SE/DK.
+          </li>
+          <li>
+            För live-läsningar i Search Console på servern krävs att <code class="az-code font-mono">AZOM_USE_MOCK=0</code> och <code class="az-code font-mono">AZOM_GSC_ENABLED=1</code> är satta i systemd/processmiljön (<code class="az-code font-mono">/opt/azom-agent/.env</code>) — dessa flaggor kan av säkerhetsskäl inte slås på via dashboarden.
+          </li>
+        </ol>
+      </div>
+    </details>
+  </section>
+</div>
+{% endblock %}

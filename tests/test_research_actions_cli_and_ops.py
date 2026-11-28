@@ -14,6 +14,7 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import requests
@@ -487,7 +488,16 @@ def test_product_desc_refuses_research_and_publish_and_enriches_sku_attrs(
     assert "<<<END_UNTRUSTED_RESEARCH_BRIEF nonce=" in passed_ctx
     assert len(passed_ctx.encode("utf-8")) <= 4096
 
-    # run_research=True with publish=False is allowed as draft
+    # run_research=True with publish=False is allowed as draft and uses product_spec_deep
+    captured_profiles: list[str] = []
+    orig_quick = res_svc.quick_search
+
+    def _spy_quick(query: str, **kwargs: Any) -> dict[str, Any]:
+        captured_profiles.append(str(kwargs.get("profile_id") or ""))
+        return orig_quick(query, **kwargs)
+
+    monkeypatch.setattr(res_svc, "quick_search", _spy_quick)
+
     draft_live = svc.generate(
         product_id="501",
         language="sv",
@@ -498,7 +508,28 @@ def test_product_desc_refuses_research_and_publish_and_enriches_sku_attrs(
     )
     assert draft_live.ok is True
     assert draft_live.published is False
+    assert captured_profiles == ["product_spec_deep"]
     assert "<<<UNTRUSTED_WEB_DATA nonce=" in (captured[1].get("research_context") or "")
+
+    # PII in product name fails closed via ProductDescResult, and >240 char PII fails in _load_research_context
+    bad_prod = svc.generate(
+        product_id=None,
+        name="CarPlay Unit anna.svensson@example.se",
+        language="sv",
+        publish=False,
+        run_research=True,
+        actor="agent",
+        allow_llm=True,
+    )
+    assert bad_prod.ok is False
+    assert "OutboundQueryBlocked" in bad_prod.message
+
+    with pytest.raises(SearchPolicyError, match="OutboundQueryBlocked"):
+        svc._load_research_context(
+            actor_name="agent",
+            product_name=("CarPlay Multimedia Unit " * 12) + "anna.svensson@example.se",
+            run_research=True,
+        )
 
 
 # ── 4. Marketing: Waste Annotation, Research Topic & Truth Hierarchy ────────
@@ -541,6 +572,15 @@ def test_marketing_waste_annotation_research_topic_and_mutate_guards(
     mp_q = svc.queue_mp_event({"name": "purchase", "params": {}}, actor="jonatan")
     assert mp_q.ok is True
     assert svc.approve_and_mutate(mp_q.data["id"], actor="oscar").ok is False
+
+    # PII beyond 180 chars in waste search_term must still be blocked by OutboundQueryFirewall
+    long_pii_term = {
+        "search_term": ("carplay wireless adapter " * 9) + "anna.svensson@example.se",
+        "campaign_id": "cmp-99",
+    }
+    annotated_pii = svc._annotate_waste_term_with_research(long_pii_term, actor="jonatan")
+    assert annotated_pii["research"]["status"] == "skipped"
+    assert annotated_pii["research"]["reason"] == "SearchPolicyError"
 
     # research_topic enforces MARKETING_READ + RESEARCH_RUN and preserves truth_note
     topic_res = svc.research_topic(
@@ -900,3 +940,56 @@ def test_backup_script_research_inclusions_exclusions_and_syntax():
             check=False,
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_seo_research_bridge_long_topic_bound_and_concurrent_autopilot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from ecom_ops.integrations.wp.bridge_client import InMemoryWpBridgeTransport, WpBridgeClient
+    from ecom_ops.seo.research_bridge import gather_seo_serp_context
+    from ecom_ops.seo.service import SeoStudioService
+
+    monkeypatch.setenv("AZOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("AZOM_USE_MOCK", "1")
+
+    long_clean_topic = ("Trådlös Apple CarPlay adapter Volvo XC60 " * 8).strip()
+    assert len(long_clean_topic) > 250
+    ctx = gather_seo_serp_context(
+        "mock-shop",
+        topic=long_clean_topic,
+        market="no",
+        actor="jonatan",
+        data_dir=tmp_path,
+    )
+    assert ctx["ok"] is True
+    assert len(ctx["query"]) <= 250
+
+    with pytest.raises(SearchPolicyError, match="OutboundQueryBlocked"):
+        gather_seo_serp_context(
+            "mock-shop",
+            topic=f"{long_clean_topic} anna.svensson@example.se",
+            market="no",
+            actor="jonatan",
+            data_dir=tmp_path,
+        )
+
+    transport = InMemoryWpBridgeTransport(
+        site_id="mock-shop", base_url="https://mock-shop.example.test"
+    )
+    bridge = WpBridgeClient(site_id="mock-shop", transport=transport)
+    seo_svc = SeoStudioService(data_dir=tmp_path, bridge_client_factory=lambda _s: bridge)
+    res = seo_svc.run_seo_autopilot(
+        "mock-shop",
+        topic="Trådlös CarPlay Volvo",
+        market="no",
+        budget_sek=18000.0,
+        link_count=6,
+        include_web_research=True,
+        include_vendor_vetting=True,
+        actor="jonatan",
+    )
+    assert res["ok"] is True
+    assert res["executed"] is False
+    assert res["external_order_placed"] is False
+    assert res["serp_research"]["degraded"] is False
+    assert res["vendor_selection"]["web_vetting_used"] is True

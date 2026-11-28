@@ -301,9 +301,39 @@
   }
 
   /* Modern user-interaction validation (never flags untouched required fields on load) */
-  :is(input, textarea, select):not([type="checkbox"]):not([type="radio"]):not([type="range"]):user-invalid {
+  :is(input, textarea, select):not([type="checkbox"]):not([type="radio"]):not([type="range"]):is(:user-invalid, .user-invalid-fallback) {
     border-color: var(--color-danger);
     box-shadow: 0 0 0 2px rgba(225, 29, 72, 0.25);
+  }
+
+  /* Custom autofill styling preserving dark contrast, non-color ring, and focus indicator */
+  input:is(:autofill, :-webkit-autofill),
+  textarea:is(:autofill, :-webkit-autofill),
+  select:is(:autofill, :-webkit-autofill) {
+    box-shadow:
+      inset 0 0 0 2px #5b9ecf,
+      inset 0 0 0 100vmax #0e141f;
+    border-color: #5b9ecf;
+    -webkit-text-fill-color: #e8eef6;
+    caret-color: #e8eef6;
+  }
+
+  input:is(:autofill, :-webkit-autofill):focus-visible {
+    outline: 2px solid var(--color-steel-300);
+    outline-offset: 2px;
+  }
+
+  /* Accessible screen-reader-only helper */
+  .visually-hidden:where(:not(:focus-within, :active)) {
+    position: absolute !important;
+    clip-path: inset(50%) !important;
+    overflow: hidden !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    white-space: nowrap !important;
   }
 
   /* Accessible focus indicators */
@@ -560,6 +590,59 @@
   /* Keyboard shortcut hint */
   .az-kbd {
     @apply inline-flex items-center rounded border border-ink-600 bg-ink-950 px-1.5 py-0.5 font-mono text-[0.7rem] text-mist-300;
+  }
+
+  /* Login & post-interaction validation helpers */
+  .az-login-grid-bg {
+    background-image:
+      radial-gradient(950px 520px at 14% -8%, rgba(61, 139, 253, 0.18), transparent 58%),
+      radial-gradient(850px 480px at 88% 8%, rgba(124, 92, 191, 0.14), transparent 55%),
+      radial-gradient(700px 420px at 50% 100%, rgba(20, 184, 166, 0.08), transparent 60%),
+      linear-gradient(165deg, #090d14 0%, #0e141f 48%, #090d14 100%);
+  }
+
+  .az-login-card {
+    @apply rounded-2xl border border-ink-600/80 bg-ink-850/95 shadow-2xl backdrop-blur-md;
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
+      0 24px 60px -20px rgba(0, 0, 0, 0.72);
+  }
+
+  .az-field-error {
+    display: none;
+    margin-top: 0.375rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-danger-text);
+  }
+
+  :is(input, textarea, select):is(:user-invalid, .user-invalid-fallback) ~ .az-field-error,
+  .az-input-wrap:has(:is(:user-invalid, .user-invalid-fallback)) ~ .az-field-error {
+    display: block;
+  }
+
+  .az-account-pill {
+    @apply flex items-center rounded-xl border border-ink-700 bg-ink-900/75 px-3 py-2.5 text-left
+           transition duration-200 ease-soft hover:border-mist-500/60 hover:bg-ink-800/85
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-steel-400;
+  }
+  .az-account-pill-oscar-active {
+    @apply border-oscar-500/70 bg-oscar-600/15 ring-1 ring-oscar-500/40;
+  }
+  .az-account-pill-viewer-active {
+    @apply border-steel-500/70 bg-steel-600/15 ring-1 ring-steel-500/40;
+  }
+
+  .az-session-choice {
+    @apply flex cursor-pointer items-center justify-center rounded-lg border border-ink-700 bg-ink-900/75 px-3 py-2 text-xs font-medium text-mist-300
+           transition duration-150 hover:border-mist-500/60 hover:text-mist-100;
+  }
+  .az-session-choice:has(input:checked) {
+    @apply border-steel-500/70 bg-steel-600/20 text-steel-100 ring-1 ring-steel-500/40;
+  }
+  .az-session-choice:has(input:focus-visible) {
+    outline: 2px solid var(--color-steel-400);
+    outline-offset: 2px;
   }
 }
 

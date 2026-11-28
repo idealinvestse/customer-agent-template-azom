@@ -3,20 +3,37 @@
 # Azom Ops Agent — fully automatic install for Ubuntu 26.x (and 24.04 LTS)
 #
 # One-shot: installs OS deps, clones/copies the project, venv, systemd units,
-# firewall, logrotate, runs smoke tests, and starts services.
+# optional Caddy/Nginx HTTPS reverse proxy, firewall, logrotate, smoke tests,
+# and starts services.
 #
 # Usage (as root on a fresh VPS):
 #   curl -fsSL https://raw.githubusercontent.com/idealinvestse/customer-agent-template-azom/main/bin/install-ubuntu26.sh | sudo bash
 #
 # Or from a cloned repo:
 #   sudo bash bin/install-ubuntu26.sh
+#   sudo bash bin/install-ubuntu26.sh --domain dashboard.azom.no --proxy caddy --no-docker
 #   sudo bash bin/install-ubuntu26.sh --repo https://github.com/idealinvestse/customer-agent-template-azom.git
 #   sudo bash bin/install-ubuntu26.sh --mock --no-start   # CI / dry install
 #
+# Options:
+#   --domain <fqdn>             Public dashboard FQDN (e.g. dashboard.azom.no)
+#   --proxy <caddy|nginx|none>  Reverse proxy (default: caddy with --domain, else none)
+#   --repo <url>                Git repository URL
+#   --branch <name>             Git branch (default: main)
+#   --app-dir <path>            Install directory (default: /opt/azom-agent)
+#   --user <name>               Service user (default: azom)
+#   --ssh-port <port>           SSH port for UFW (default: 22)
+#   --mock                      Install in mock mode (AZOM_USE_MOCK=1)
+#   --no-docker                 Skip Docker Engine installation
+#   --no-ufw                    Skip UFW configuration
+#   --no-start                  Do not enable/start systemd services
+#   --no-smoke                  Skip smoke tests
+#
 # Environment overrides:
 #   AZOM_USER, AZOM_APP_DIR, AZOM_REPO_URL, AZOM_REPO_BRANCH, AZOM_SSH_PORT
-#   AZOM_USE_MOCK, DASHBOARD_PASSWORD, DASHBOARD_OSCAR_PASSWORD
-#   TELEGRAM_BOT_TOKEN, SKIP_DOCKER=1, SKIP_UFW=1
+#   AZOM_USE_MOCK, AZOM_DOMAIN, AZOM_PROXY, DASHBOARD_PASSWORD,
+#   DASHBOARD_OSCAR_PASSWORD, DASHBOARD_SECRET_KEY, TELEGRAM_BOT_TOKEN,
+#   SKIP_DOCKER=1, SKIP_UFW=1
 # =============================================================================
 set -euo pipefail
 
@@ -31,6 +48,8 @@ REPO_URL="${AZOM_REPO_URL:-https://github.com/idealinvestse/customer-agent-templ
 REPO_BRANCH="${AZOM_REPO_BRANCH:-main}"
 SSH_PORT="${AZOM_SSH_PORT:-22}"
 USE_MOCK="${AZOM_USE_MOCK:-0}"
+DOMAIN="${AZOM_DOMAIN:-}"
+PROXY_MODE="${AZOM_PROXY:-}"
 SKIP_DOCKER="${SKIP_DOCKER:-0}"
 SKIP_UFW="${SKIP_UFW:-0}"
 START_SERVICES=1
@@ -43,7 +62,7 @@ die()  { echo -e "\033[1;31mERROR:\033[0m $*" >&2; exit 1; }
 ok()   { echo -e "\033[1;32mOK\033[0m  $*"; }
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \?//'
+  sed -n '2,42p' "$0" | sed 's/^# \?//'
   exit 0
 }
 
@@ -52,11 +71,13 @@ usage() {
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo) REPO_URL="$2"; shift 2 ;;
-    --branch) REPO_BRANCH="$2"; shift 2 ;;
-    --app-dir) APP_DIR="$2"; shift 2 ;;
-    --user) APP_USER="$2"; shift 2 ;;
-    --ssh-port) SSH_PORT="$2"; shift 2 ;;
+    --domain) DOMAIN="${2:-}"; shift 2 ;;
+    --proxy) PROXY_MODE="${2:-}"; shift 2 ;;
+    --repo) REPO_URL="${2:-}"; shift 2 ;;
+    --branch) REPO_BRANCH="${2:-}"; shift 2 ;;
+    --app-dir) APP_DIR="${2:-}"; shift 2 ;;
+    --user) APP_USER="${2:-}"; shift 2 ;;
+    --ssh-port) SSH_PORT="${2:-}"; shift 2 ;;
     --mock) USE_MOCK=1; shift ;;
     --no-docker) INSTALL_DOCKER=0; SKIP_DOCKER=1; shift ;;
     --no-ufw) SKIP_UFW=1; shift ;;
@@ -66,6 +87,35 @@ while [[ $# -gt 0 ]]; do
     *) die "Unknown arg: $1 (try --help)" ;;
   esac
 done
+
+# Normalize and validate domain + proxy mode
+DOMAIN="${DOMAIN#https://}"
+DOMAIN="${DOMAIN#http://}"
+DOMAIN="${DOMAIN%%/*}"
+DOMAIN="$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')"
+
+if [[ -n "$DOMAIN" ]]; then
+  if ! [[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+    die "Invalid --domain FQDN: ${DOMAIN}"
+  fi
+fi
+
+if [[ -z "$PROXY_MODE" ]]; then
+  if [[ -n "$DOMAIN" ]]; then
+    PROXY_MODE="caddy"
+  else
+    PROXY_MODE="none"
+  fi
+fi
+
+case "$PROXY_MODE" in
+  caddy|nginx|none) ;;
+  *) die "Invalid --proxy mode '${PROXY_MODE}' (expected caddy, nginx, or none)" ;;
+esac
+
+if [[ "$PROXY_MODE" != "none" && -z "$DOMAIN" ]]; then
+  die "--proxy ${PROXY_MODE} requires --domain <fqdn>"
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight
@@ -116,7 +166,14 @@ apt-get install -y -qq \
   python3 python3-pip python3-venv python3-dev python3-full \
   build-essential openssh-client \
   ufw fail2ban unattended-upgrades \
-  jq logrotate openssl acl
+  jq logrotate openssl acl \
+  sqlite3 libffi-dev libssl-dev
+
+if apt-cache show dnsutils >/dev/null 2>&1; then
+  apt-get install -y -qq dnsutils || true
+elif apt-cache show bind9-dnsutils >/dev/null 2>&1; then
+  apt-get install -y -qq bind9-dnsutils || true
+fi
 
 # Ensure python3 is available
 command -v python3 >/dev/null || die "python3 not installed"
@@ -136,10 +193,12 @@ if [[ "$INSTALL_DOCKER" == "1" && "$SKIP_DOCKER" != "1" ]]; then
       chmod a+r /etc/apt/keyrings/docker.gpg
     fi
     ARCH="$(dpkg --print-architecture)"
-    # Prefer VERSION_CODENAME; fall back for pre-release / unknown
     DOCKER_CODENAME="$OS_CODENAME"
     if [[ -z "$DOCKER_CODENAME" || "$DOCKER_CODENAME" == "unknown" ]]; then
-      DOCKER_CODENAME="noble"  # Ubuntu 24.04 codename — works for many 26 pre-releases
+      DOCKER_CODENAME="noble"
+    elif ! curl -fsIL "https://download.docker.com/linux/ubuntu/dists/${DOCKER_CODENAME}/Release" >/dev/null 2>&1; then
+      warn "Docker repo has no Release for codename=${DOCKER_CODENAME}; falling back to noble"
+      DOCKER_CODENAME="noble"
     fi
     echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${DOCKER_CODENAME} stable" \
       > /etc/apt/sources.list.d/docker.list
@@ -147,7 +206,7 @@ if [[ "$INSTALL_DOCKER" == "1" && "$SKIP_DOCKER" != "1" ]]; then
       warn "Docker apt repo failed for codename=${DOCKER_CODENAME}; retrying with noble"
       echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
         > /etc/apt/sources.list.d/docker.list
-      apt-get update -qq
+      apt-get update -qq || true
     }
     apt-get install -y -qq docker-ce docker-ce-cli containerd.io \
       docker-buildx-plugin docker-compose-plugin || {
@@ -176,7 +235,7 @@ if command -v docker >/dev/null 2>&1; then
 fi
 
 mkdir -p "$APP_DIR" "$DATA_DIR" "$LOG_DIR" \
-  "${DATA_DIR}/oauth" "${APP_DIR}/logs" "${APP_DIR}/.azom-data"
+  "${DATA_DIR}/oauth" "${DATA_DIR}/model_oauth" "${APP_DIR}/logs" "${APP_DIR}/.azom-data"
 chown -R "${APP_USER}:${APP_USER}" "$APP_DIR" "$DATA_DIR" "$LOG_DIR"
 chmod 750 "$DATA_DIR" "$LOG_DIR"
 
@@ -227,8 +286,6 @@ elif [[ -n "$REPO_URL" ]]; then
     sudo -u "$APP_USER" git clone --branch "$REPO_BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
 
     # --- Supply-chain: verify commit signature or pin (P6.4) ---
-    # If AZOM_REPO_COMMIT_SHA is set, verify the cloned HEAD matches.
-    # If AZOM_REPO_VERIFY_GPG=1, attempt GPG signature verification.
     PINNED_SHA="${AZOM_REPO_COMMIT_SHA:-}"
     if [[ -n "$PINNED_SHA" ]]; then
       log "Verifying commit pin: ${PINNED_SHA}"
@@ -288,6 +345,10 @@ gen_password() {
   openssl rand -base64 24 | tr -d '/+=' | head -c 24
 }
 
+gen_secret_key() {
+  openssl rand -hex 32
+}
+
 if [[ ! -f "$ENV_FILE" ]]; then
   if [[ -f "$EXAMPLE" ]]; then
     cp "$EXAMPLE" "$ENV_FILE"
@@ -296,7 +357,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
   fi
 fi
 
-# Safe key=value write (avoids sed delimiter issues with secrets)
+# Safe key=value write (uses ENVIRON to avoid awk/sed escape issues with secrets)
 set_env() {
   local key="$1" val="$2" force="${3:-0}"
   local tmp
@@ -305,16 +366,22 @@ set_env() {
     local cur
     cur="$(grep -E "^${key}=" "$ENV_FILE" | head -1 | cut -d= -f2-)"
     if [[ "$force" == "1" || -z "$cur" || "$key" == AZOM_* || "$key" == DASHBOARD_HOST || "$key" == DASHBOARD_PORT ]]; then
-      awk -v k="$key" -v v="$val" '
-        BEGIN { FS=OFS="=" }
-        $1==k { print k "=" v; next }
-        { print }
+      AZOM_ENV_KEY="$key" AZOM_ENV_VAL="$val" awk '
+        BEGIN { k = ENVIRON["AZOM_ENV_KEY"]; v = ENVIRON["AZOM_ENV_VAL"] }
+        {
+          idx = index($0, "=")
+          if (idx > 0 && substr($0, 1, idx - 1) == k) {
+            print k "=" v
+            next
+          }
+          print $0
+        }
       ' "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
     else
       rm -f "$tmp"
     fi
   else
-    echo "${key}=${val}" >> "$ENV_FILE"
+    printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
     rm -f "$tmp"
   fi
 }
@@ -326,9 +393,16 @@ set_env DASHBOARD_HOST "127.0.0.1"
 set_env DASHBOARD_PORT "8080"
 set_env DASHBOARD_USER "jonatan"
 
-# Auto-generate dashboard passwords if empty (written once)
+if [[ -n "$DOMAIN" ]]; then
+  set_env AZOM_DASHBOARD_PUBLIC_URL "https://${DOMAIN}" 1
+  set_env TRUSTED_PROXY_COUNT "1" 1
+  set_env MAIL_OAUTH_REDIRECT_URI "https://${DOMAIN}/oauth/gmail/callback" 0
+  set_env GOOGLE_OAUTH_REDIRECT_URI "https://${DOMAIN}/oauth/google/callback" 0
+fi
+
+# Auto-generate dashboard passwords and session secret if empty (written once)
 ensure_secret() {
-  local key="$1"
+  local key="$1" kind="${2:-password}"
   local cur
   cur="$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)"
   if [[ -z "$cur" ]]; then
@@ -338,7 +412,11 @@ ensure_secret() {
       echo "$external"
     else
       local gen
-      gen="$(gen_password)"
+      if [[ "$kind" == "hex" ]]; then
+        gen="$(gen_secret_key)"
+      else
+        gen="$(gen_password)"
+      fi
       set_env "$key" "$gen" 1
       echo "$gen"
     fi
@@ -347,14 +425,19 @@ ensure_secret() {
   fi
 }
 
-DASH_PW="$(ensure_secret DASHBOARD_PASSWORD)"
-OSCAR_PW="$(ensure_secret DASHBOARD_OSCAR_PASSWORD)"
+DASH_PW="$(ensure_secret DASHBOARD_PASSWORD password)"
+OSCAR_PW="$(ensure_secret DASHBOARD_OSCAR_PASSWORD password)"
+ensure_secret DASHBOARD_SECRET_KEY hex >/dev/null
 
-# Optional secrets from installer environment (overwrite when provided)
-for KEY in TELEGRAM_BOT_TOKEN WOO_CONSUMER_KEY WOO_CONSUMER_SECRET \
+# Optional secrets/settings from installer environment (overwrite when provided)
+for KEY in TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_CHAT_IDS TELEGRAM_ACTOR_MAP \
+           WOO_CONSUMER_KEY WOO_CONSUMER_SECRET WOO_WEBHOOK_SECRET \
            OPENROUTER_API_KEY MAIL_PASSWORD SMTP_PASSWORD \
            MAIL_USERNAME MAIL_FROM WOO_BASE_URL \
            MESSENGER_PAGE_ACCESS_TOKEN MESSENGER_APP_SECRET MESSENGER_VERIFY_TOKEN \
+           MESSENGER_ALLOWED_PSIDS MESSENGER_ACTOR_MAP \
+           METRICS_SCRAPE_TOKEN TRUSTED_PROXY_COUNT \
+           MAIL_OAUTH_REDIRECT_URI GOOGLE_OAUTH_REDIRECT_URI \
            AZOM_DASHBOARD_PUBLIC_URL; do
   if [[ -n "${!KEY:-}" ]]; then
     set_env "$KEY" "${!KEY}" 1
@@ -365,13 +448,24 @@ chown "${APP_USER}:${APP_USER}" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 ok ".env ready at ${ENV_FILE}"
 
-# Save generated credentials for operator (root only)
+# Save generated credentials and non-secret URLs for operator (root only)
+PUBLIC_BASE_URL="http://127.0.0.1:8080"
+if [[ -n "$DOMAIN" ]]; then
+  PUBLIC_BASE_URL="https://${DOMAIN}"
+fi
+
 CREDS_FILE="/root/azom-install-credentials.txt"
 {
   echo "# Generated by install-ubuntu26.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "# Restrict: chmod 600 $CREDS_FILE"
   echo "APP_DIR=${APP_DIR}"
-  echo "DASHBOARD_URL=http://127.0.0.1:8080"
+  echo "DASHBOARD_URL=${PUBLIC_BASE_URL}"
+  echo "LOCAL_DASHBOARD_URL=http://127.0.0.1:8080"
+  echo "MESSENGER_WEBHOOK_URL=${PUBLIC_BASE_URL}/webhooks/messenger"
+  echo "WOO_WEBHOOK_URL=${PUBLIC_BASE_URL}/webhooks/woo"
+  echo "GMAIL_OAUTH_CALLBACK_URL=${PUBLIC_BASE_URL}/oauth/gmail/callback"
+  echo "GOOGLE_OAUTH_CALLBACK_URL=${PUBLIC_BASE_URL}/oauth/google/callback"
+  echo "OPENAI_SIWC_CALLBACK_URL=${PUBLIC_BASE_URL}/oauth/openai/callback"
   echo "DASHBOARD_USER=jonatan"
   echo "DASHBOARD_PASSWORD=${DASH_PW}"
   echo "DASHBOARD_OSCAR_USER=oscar"
@@ -394,12 +488,13 @@ for unit in azom-dashboard.service azom-bot.service \
             azom-daily-brief.service azom-daily-brief.timer \
             azom-cases-poll.service azom-cases-poll.timer \
             azom-backup.service azom-backup.timer \
-            azom-retention-purge.service azom-retention-purge.timer; do
+            azom-retention-purge.service azom-retention-purge.timer \
+            azom-shop-intel.service azom-shop-intel.timer; do
   [[ -f "${UNIT_SRC}/${unit}" ]] || die "Missing unit ${unit}"
   cp "${UNIT_SRC}/${unit}" /etc/systemd/system/
 done
 
-# Rewrite paths / user for non-defaults
+# Rewrite paths / user for non-defaults and apply --mock flag to unit defaults
 for f in /etc/systemd/system/azom-*.service /etc/systemd/system/azom-*.timer; do
   [[ -f "$f" ]] || continue
   sed -i "s|/opt/azom-agent|${APP_DIR}|g" "$f"
@@ -407,6 +502,7 @@ for f in /etc/systemd/system/azom-*.service /etc/systemd/system/azom-*.timer; do
   sed -i "s|/var/log/azom|${LOG_DIR}|g" "$f"
   sed -i "s|User=azom|User=${APP_USER}|g" "$f"
   sed -i "s|Group=azom|Group=${APP_USER}|g" "$f"
+  sed -i "s|Environment=AZOM_USE_MOCK=0|Environment=AZOM_USE_MOCK=${USE_MOCK}|g" "$f"
 done
 
 # Ensure bin scripts executable in units
@@ -414,6 +510,55 @@ chmod +x "${APP_DIR}/bin/"*.sh
 
 systemctl daemon-reload
 ok "systemd units installed"
+
+# ---------------------------------------------------------------------------
+# 7b) Reverse proxy (optional: caddy | nginx | none)
+# ---------------------------------------------------------------------------
+install_caddy() {
+  if command -v caddy >/dev/null 2>&1; then
+    return 0
+  fi
+  if apt-cache show caddy >/dev/null 2>&1; then
+    apt-get install -y -qq caddy && return 0
+  fi
+  log "Installing Caddy from official stable apt repository"
+  apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+    > /etc/apt/sources.list.d/caddy-stable.list
+  chmod a+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update -qq
+  apt-get install -y -qq caddy
+}
+
+if [[ "$PROXY_MODE" == "caddy" ]]; then
+  log "Configuring Caddy HTTPS reverse proxy for ${DOMAIN}"
+  install_caddy
+  mkdir -p /etc/caddy
+  CADDY_TMPL="${APP_DIR}/infrastructure/caddy/Caddyfile"
+  [[ -f "$CADDY_TMPL" ]] || die "Missing ${CADDY_TMPL}"
+  sed "s|dashboard\.azom\.no|${DOMAIN}|g" "$CADDY_TMPL" > /etc/caddy/Caddyfile
+  chmod 644 /etc/caddy/Caddyfile
+  caddy validate --config /etc/caddy/Caddyfile
+  ok "Caddyfile validated for ${DOMAIN}"
+elif [[ "$PROXY_MODE" == "nginx" ]]; then
+  log "Configuring Nginx reverse proxy for ${DOMAIN}"
+  apt-get install -y -qq nginx
+  NGINX_TMPL="${APP_DIR}/infrastructure/nginx/dashboard.azom.no.conf"
+  [[ -f "$NGINX_TMPL" ]] || die "Missing ${NGINX_TMPL}"
+  sed "s|dashboard\.azom\.no|${DOMAIN}|g" "$NGINX_TMPL" > "/etc/nginx/sites-available/${DOMAIN}.conf"
+  ln -sf "/etc/nginx/sites-available/${DOMAIN}.conf" "/etc/nginx/sites-enabled/${DOMAIN}.conf"
+  rm -f /etc/nginx/sites-enabled/default
+  if [[ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
+    nginx -t
+    ok "Nginx config validated for ${DOMAIN}"
+  else
+    warn "TLS cert not found at /etc/letsencrypt/live/${DOMAIN}/fullchain.pem — issue via certbot before starting nginx"
+  fi
+else
+  log "Skipping reverse proxy (--proxy none)"
+fi
 
 # ---------------------------------------------------------------------------
 # 8) Firewall
@@ -424,9 +569,17 @@ if [[ "$SKIP_UFW" != "1" ]]; then
   ufw default deny incoming
   ufw default allow outgoing
   ufw allow "${SSH_PORT}/tcp" comment 'SSH'
-  # Do not open 8080 publicly — reverse proxy or SSH tunnel
+  if [[ "$PROXY_MODE" != "none" || -n "$DOMAIN" ]]; then
+    ufw allow 80/tcp comment 'HTTP (ACME / HTTPS redirect)'
+    ufw allow 443/tcp comment 'HTTPS'
+  fi
+  # Never open 8080 publicly — reverse proxy or SSH tunnel only
   ufw --force enable
-  ok "UFW enabled (SSH :${SSH_PORT} only)"
+  if [[ "$PROXY_MODE" != "none" || -n "$DOMAIN" ]]; then
+    ok "UFW enabled (SSH :${SSH_PORT}, 80/tcp, 443/tcp; 8080 closed)"
+  else
+    ok "UFW enabled (SSH :${SSH_PORT} only; 8080 closed)"
+  fi
 else
   log "Skipping UFW"
 fi
@@ -481,11 +634,27 @@ if [[ "$START_SERVICES" == "1" ]]; then
   systemctl enable azom-cases-poll.timer
   systemctl enable azom-backup.timer
   systemctl enable azom-retention-purge.timer
+  systemctl enable azom-shop-intel.timer
   systemctl restart azom-dashboard.service
   systemctl restart azom-daily-brief.timer
   systemctl restart azom-cases-poll.timer
   systemctl restart azom-backup.timer
   systemctl restart azom-retention-purge.timer
+  systemctl restart azom-shop-intel.timer
+
+  if [[ "$PROXY_MODE" == "caddy" ]]; then
+    systemctl enable caddy.service
+    systemctl restart caddy.service
+    ok "Caddy started for https://${DOMAIN}"
+  elif [[ "$PROXY_MODE" == "nginx" ]]; then
+    if [[ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
+      systemctl enable nginx.service
+      systemctl restart nginx.service
+      ok "Nginx started for https://${DOMAIN}"
+    else
+      warn "Nginx not started — missing TLS certificate for ${DOMAIN}"
+    fi
+  fi
 
   # Bot only if token present
   BOT_TOKEN="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"
@@ -516,8 +685,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 12) Post-install systemcheck & healthcheck (if present)
+# ---------------------------------------------------------------------------
+if [[ -x "${APP_DIR}/bin/systemcheck.sh" ]]; then
+  log "Running post-install systemcheck"
+  SYS_ARGS=()
+  if [[ -n "$DOMAIN" ]]; then
+    SYS_ARGS+=(--domain "$DOMAIN")
+  fi
+  if ! "${APP_DIR}/bin/systemcheck.sh" "${SYS_ARGS[@]}"; then
+    if [[ "$START_SERVICES" == "0" ]]; then
+      warn "systemcheck reported findings (non-fatal under --no-start)"
+    else
+      warn "systemcheck reported pending items (e.g. unfilled live secrets in ${ENV_FILE})"
+    fi
+  fi
+fi
+
+if [[ -x "${APP_DIR}/bin/healthcheck.sh" ]]; then
+  log "Running post-install healthcheck"
+  HEALTH_ARGS=()
+  if [[ "$START_SERVICES" == "0" ]]; then
+    HEALTH_ARGS+=(--no-http)
+  elif [[ -n "$DOMAIN" && "$PROXY_MODE" != "none" ]]; then
+    HEALTH_ARGS+=(--check-public)
+  fi
+  if ! "${APP_DIR}/bin/healthcheck.sh" "${HEALTH_ARGS[@]}"; then
+    if [[ "$START_SERVICES" == "0" ]]; then
+      warn "healthcheck reported findings (non-fatal under --no-start)"
+    else
+      warn "healthcheck reported warnings (check services or DNS/TLS propagation)"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
+DISPLAY_HOST="${DOMAIN:-<host>}"
 echo ""
 echo "============================================================================="
 echo "  Azom Ops Agent install complete"
@@ -527,17 +732,27 @@ echo "  App dir:      ${APP_DIR}"
 echo "  Data dir:     ${DATA_DIR}"
 echo "  User:         ${APP_USER}"
 echo "  Mock mode:    ${USE_MOCK}"
-echo "  Dashboard:    http://127.0.0.1:8080  (user: jonatan)"
+echo "  Proxy mode:   ${PROXY_MODE}"
+if [[ -n "$DOMAIN" ]]; then
+  echo "  Dashboard:    https://${DOMAIN}  (local: http://127.0.0.1:8080, user: jonatan)"
+else
+  echo "  Dashboard:    http://127.0.0.1:8080  (user: jonatan)"
+fi
 echo "  Credentials:  ${CREDS_FILE}"
+echo ""
+echo "  Webhook & OAuth callback URLs:"
+echo "    Meta Messenger webhook:    https://${DISPLAY_HOST}/webhooks/messenger"
+echo "    WooCommerce webhook:       https://${DISPLAY_HOST}/webhooks/woo"
+echo "    Gmail OAuth callback:      https://${DISPLAY_HOST}/oauth/gmail/callback"
+echo "    Google Marketing callback: https://${DISPLAY_HOST}/oauth/google/callback"
+echo "    ChatGPT SIWC callback:     https://${DISPLAY_HOST}/oauth/openai/callback"
 echo ""
 echo "  Next:"
 echo "    1. Review secrets:  nano ${ENV_FILE}"
-echo "    2. Put nginx/Caddy in front for public HTTPS (do not open :8080 in UFW)"
-echo "       Meta Messenger webhook: POST https://<host>/webhooks/messenger"
-echo "    3. Set MESSENGER_* + AZOM_DASHBOARD_PUBLIC_URL in ${ENV_FILE}"
-echo "    4. Status:          systemctl status azom-dashboard"
-echo "    5. Logs:            journalctl -u azom-dashboard -f"
-echo "    6. CLI:             sudo -u ${APP_USER} ${APP_DIR}/.venv/bin/python -m ecom_ops --help"
+echo "    2. Set MESSENGER_* / TELEGRAM_* / WOO_* / MAIL_* in ${ENV_FILE}"
+echo "    3. Status:          systemctl status azom-dashboard"
+echo "    4. Logs:            journalctl -u azom-dashboard -f"
+echo "    5. CLI:             sudo -u ${APP_USER} ${APP_DIR}/.venv/bin/python -m ecom_ops --help"
 echo ""
 echo "  Re-run this script anytime — it is idempotent."
 echo "============================================================================="

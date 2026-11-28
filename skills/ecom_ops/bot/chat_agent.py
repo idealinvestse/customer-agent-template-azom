@@ -76,12 +76,12 @@ from ecom_ops.model_router.errors import ModelRouteError, ModelUnavailableError
 from ecom_ops.order_context import format_order_context_block
 from ecom_ops.rbac import resolve_actor
 from ecom_ops.research import config as _research_config
+from ecom_ops.research import tools as _research_tools
 from ecom_ops.research.firewall import QueryTaintContext
 from ecom_ops.research.sanitizer import frame_untrusted_web_data
 from ecom_ops.research.tools import (
     RESEARCH_TOOL_NAMES,
     WEB_RESEARCH_TOOL_GUIDE,
-    execute_research_tool,
 )
 from ecom_ops.security import validate_order_id
 from ecom_ops.shop_intel import SHOP_INTEL_INTENT_RE, build_tailored_context
@@ -1371,7 +1371,7 @@ def _fulfill_model_tool_call(
     args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
     name = str(payload.get("name") or "").strip()
     if name in RESEARCH_TOOL_NAMES:
-        res = execute_research_tool(
+        res = _research_tools.execute_research_tool(
             name,
             args,
             actor=actor,
@@ -2618,6 +2618,15 @@ def _run_non_wp_read_loop(
             continue
 
         elapsed = time.monotonic() - started_at
+        if tool_name == "web_research_status" and started_research_id:
+            req_args = tool_payload.get("arguments") if isinstance(tool_payload, dict) else {}
+            req_rid = str((req_args or {}).get("research_id") or "").strip().lower()
+            if not req_rid or req_rid == started_research_id.lower():
+                return _synthesize_final(
+                    f"Asynkron research {started_research_id} är redan köad i bakgrunden. "
+                    "Polla inte status i samma vända — presentera research-ID och nästa steg för användaren utan <tool_call>."
+                )
+
         is_fetch = tool_name == "web_fetch_extract"
         budget_hit = (fetch_calls >= max_fetches) if is_fetch else (web_calls >= max_web_calls)
         if elapsed >= max_seconds or budget_hit:
@@ -3554,9 +3563,14 @@ def run_chat(
             if wp_res_id:
                 last_research_id = str(wp_res_id).strip().lower()
         elif "<tool_call>" in (content or "").lower():
+            taint_order = str(pref.sticky_order_id or sticky_order_id or "").strip()
+            taint_case = str(pref.sticky_case_id8 or sticky_case_id8 or "").strip()
             taint_ctx = (
-                QueryTaintContext(order_ids=(str(pref.sticky_order_id or sticky_order_id),))
-                if (pref.sticky_order_id or sticky_order_id)
+                QueryTaintContext(
+                    order_ids=(taint_order,) if taint_order else (),
+                    case_ids=(taint_case,) if taint_case else (),
+                )
+                if (taint_order or taint_case)
                 else None
             )
 

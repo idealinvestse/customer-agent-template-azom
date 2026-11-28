@@ -737,6 +737,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable JSON output",
     )
 
+    p_syscheck = sub.add_parser(
+        "systemcheck",
+        help="Run deep system, config, DB, safety, and optional network/systemd checks",
+    )
+    p_syscheck.add_argument("--mode", choices=("auto", "mock", "live"), default="auto")
+    p_syscheck.add_argument("--mock", action="store_true", default=argparse.SUPPRESS)
+    p_syscheck.add_argument("--domain", default=None)
+    p_syscheck.add_argument("--expected-ip", default=None, dest="expected_ip")
+    p_syscheck.add_argument("--check-network", action="store_true", dest="check_network")
+    p_syscheck.add_argument("--no-port-check", action="store_true", dest="no_port_check")
+    p_syscheck.add_argument("--strict", action="store_true")
+    p_syscheck.add_argument("--json", action="store_true", dest="as_json")
+
+    p_hlthcheck = sub.add_parser(
+        "healthcheck",
+        help="Run runtime healthcheck (local HTTP /live /health /ready, optional public HTTPS, systemd, runtime snapshot)",
+    )
+    p_hlthcheck.add_argument("--mode", choices=("auto", "mock", "live"), default="auto")
+    p_hlthcheck.add_argument("--mock", action="store_true", default=argparse.SUPPRESS)
+    p_hlthcheck.add_argument("--local-url", default=None, dest="local_url")
+    p_hlthcheck.add_argument("--public-url", default=None, dest="public_url")
+    p_hlthcheck.add_argument("--no-http", action="store_true", dest="no_http")
+    p_hlthcheck.add_argument("--check-public", action="store_true", dest="check_public")
+    p_hlthcheck.add_argument("--timeout", type=float, default=4.0)
+    p_hlthcheck.add_argument("--strict", action="store_true")
+    p_hlthcheck.add_argument("--json", action="store_true", dest="as_json")
+
     p_search = sub.add_parser("search", help="Run bounded synchronous web search")
     p_search.add_argument("--query", required=True)
     p_search.add_argument("--profile", default="deep_general")
@@ -2043,6 +2070,43 @@ def _run_cli_command(
             return 0 if res.get("ok") else 1
         parser.error(f"Unknown ops command: {cmd}")
         return 2
+
+    if args.command == "systemcheck":
+        from ecom_ops.healthcheck import format_report, run_systemcheck
+
+        eff_mode = "mock" if (_mock_mode() and args.mode == "auto") else args.mode
+        report = run_systemcheck(
+            mode=eff_mode,
+            domain=args.domain,
+            expected_ip=args.expected_ip,
+            check_network=bool(args.check_network),
+            check_ports=not bool(args.no_port_check),
+            strict=bool(args.strict),
+        )
+        if args.as_json:
+            print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(format_report(report))
+        return report.exit_code(strict=bool(args.strict))
+
+    if args.command == "healthcheck":
+        from ecom_ops.healthcheck import format_report, run_healthcheck
+
+        eff_mode = "mock" if (_mock_mode() and args.mode == "auto") else args.mode
+        report = run_healthcheck(
+            mode=eff_mode,
+            local_url=args.local_url,
+            public_url=args.public_url,
+            no_http=bool(args.no_http),
+            check_public=bool(args.check_public),
+            strict=bool(args.strict),
+            timeout_sec=float(args.timeout),
+        )
+        if args.as_json:
+            print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(format_report(report))
+        return report.exit_code(strict=bool(args.strict))
 
     if args.command == "search":
         from ecom_ops.integrations.search.errors import SearchRouteError

@@ -189,18 +189,75 @@ def _resolve_public_host_fn(
     return host_resolves_public
 
 
+_STATIC_ASSET_EXTS: frozenset[str] = frozenset(
+    {
+        ".css",
+        ".js",
+        ".mjs",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".svg",
+        ".ico",
+        ".map",
+    }
+)
+_CHECKOUT_CART_PATH_TOKENS: frozenset[str] = frozenset(
+    {
+        "/cart",
+        "/checkout",
+        "/my-account",
+        "/handlekurv",
+        "/kasse",
+        "/min-konto",
+        "/varukorg",
+        "/kassa",
+        "/kassan",
+        "/mitt-konto",
+        "/betalning",
+        "/kurv",
+    }
+)
+
+
+def _is_wp_static_asset(parsed: urllib.parse.ParseResult) -> bool:
+    """Return True if *parsed* points to a read-only static asset under ``/wp-content/`` or ``/wp-includes/``."""
+    raw_path = (parsed.path or "").lower()
+    decoded_path = unquote_iteratively(parsed.path or "").lower()
+    for p in (raw_path, decoded_path):
+        if ".." in p or "\\" in p:
+            return False
+        if not (p.startswith("/wp-content/") or p.startswith("/wp-includes/")):
+            return False
+    dot_idx = decoded_path.rfind(".")
+    slash_idx = decoded_path.rfind("/")
+    if dot_idx <= slash_idx:
+        return False
+    return decoded_path[dot_idx:] in _STATIC_ASSET_EXTS
+
+
 def blocked_site_path_reason(
     parsed: urllib.parse.ParseResult,
     *,
     allow_wp_json: bool = False,
+    allow_static_assets: bool = False,
 ) -> str | None:
     path_and_query = parsed.path or "/"
     if parsed.query:
         path_and_query = f"{path_and_query}?{parsed.query}"
     decoded_pq = unquote_iteratively(path_and_query)
+    is_static = allow_static_assets and _is_wp_static_asset(parsed)
     for candidate in (path_and_query.lower(), decoded_pq.lower()):
         for blocked in BLOCKED_WP_PATHS:
             if allow_wp_json and blocked == "/wp-json":
+                continue
+            if is_static and blocked in _CHECKOUT_CART_PATH_TOKENS:
                 continue
             if blocked in candidate:
                 return f"site_path_blocked:{blocked.strip('/')}"
@@ -231,7 +288,7 @@ def classify_request(method: str, url: str, *, site_host: str) -> tuple[bool, st
 
     site_hosts = allowed_site_hosts(site_host)
     if host in site_hosts:
-        blocked_reason = blocked_site_path_reason(parsed)
+        blocked_reason = blocked_site_path_reason(parsed, allow_static_assets=True)
         if blocked_reason:
             return False, blocked_reason
         return True, "site_asset"

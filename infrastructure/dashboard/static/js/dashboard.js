@@ -1654,6 +1654,276 @@
     }
   }
 
+  function initLoginPage() {
+    var form = document.querySelector('[data-login-form]');
+    if (!form) return;
+
+    var userInput = document.getElementById('login-username');
+    var passInput = document.getElementById('login-password');
+    var capsWarn = document.getElementById('login-capslock-warn');
+    var accountPills = Array.prototype.slice.call(document.querySelectorAll('[data-login-account]'));
+
+    // 1. Account quick-select pills
+    function syncAccountPills(activeUser) {
+      var val = (activeUser || '').trim().toLowerCase();
+      accountPills.forEach(function (btn) {
+        var target = (btn.getAttribute('data-login-account') || '').trim().toLowerCase();
+        var active = Boolean(val && target === val);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        var isAdmin = target === 'oscar';
+        btn.classList.toggle('az-account-pill-oscar-active', active && isAdmin);
+        btn.classList.toggle('az-account-pill-viewer-active', active && !isAdmin);
+      });
+    }
+
+    accountPills.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var chosen = btn.getAttribute('data-login-account') || '';
+        if (userInput) {
+          userInput.value = chosen;
+          userInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        syncAccountPills(chosen);
+        if (passInput) passInput.focus();
+      });
+    });
+
+    if (userInput) {
+      syncAccountPills(userInput.value);
+      userInput.addEventListener('input', function () {
+        syncAccountPills(userInput.value);
+      });
+    }
+
+    // 2. Show/Hide password toggle
+    document.querySelectorAll('[data-password-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var targetId = btn.getAttribute('data-password-toggle') || '';
+        var field = targetId ? document.getElementById(targetId) : null;
+        if (!field) return;
+        var nextShow = field.type === 'password';
+        field.type = nextShow ? 'text' : 'password';
+        btn.setAttribute('aria-pressed', nextShow ? 'true' : 'false');
+        btn.setAttribute('aria-label', nextShow ? 'Dölj lösenord' : 'Visa lösenord');
+        var showIcon = btn.querySelector('[data-icon-show]');
+        var hideIcon = btn.querySelector('[data-icon-hide]');
+        if (showIcon) showIcon.classList.toggle('hidden', nextShow);
+        if (hideIcon) hideIcon.classList.toggle('hidden', !nextShow);
+        field.focus();
+      });
+    });
+
+    // 3. Caps Lock warning
+    if (passInput && capsWarn) {
+      var updateCaps = function (e) {
+        if (typeof e.getModifierState !== 'function') return;
+        var on = e.getModifierState('CapsLock');
+        capsWarn.classList.toggle('hidden', !on);
+        capsWarn.classList.toggle('inline-flex', on);
+      };
+      passInput.addEventListener('keydown', updateCaps);
+      passInput.addEventListener('keyup', updateCaps);
+      passInput.addEventListener('blur', function () {
+        capsWarn.classList.add('hidden');
+        capsWarn.classList.remove('inline-flex');
+      });
+    }
+
+    // 4. Accessible :user-invalid + ARIA sync with polite live region
+    var supportsUserInvalid = false;
+    try {
+      supportsUserInvalid = Boolean(window.CSS && CSS.supports && CSS.supports('selector(:user-invalid)'));
+    } catch (_err) {
+      supportsUserInvalid = false;
+    }
+
+    var announcer = document.createElement('div');
+    announcer.setAttribute('aria-live', 'polite');
+    announcer.className = 'visually-hidden';
+    document.body.appendChild(announcer);
+    var announceTimer = null;
+    var announcedField = null;
+    var dirtyState = new WeakMap();
+    var flagged = new WeakSet();
+    var announced = new WeakSet();
+
+    function linkError(el, shown) {
+      var errorId = el.getAttribute('data-error');
+      if (!errorId) return;
+      var ids = (el.getAttribute('aria-describedby') || '')
+        .split(/\s+/)
+        .filter(function (id) { return id && id !== errorId; });
+      if (shown) ids.push(errorId);
+      if (ids.length) el.setAttribute('aria-describedby', ids.join(' '));
+      else el.removeAttribute('aria-describedby');
+    }
+
+    function spokenText(node) {
+      var copy = node.cloneNode(true);
+      copy.querySelectorAll('[aria-hidden="true"]').forEach(function (n) { n.remove(); });
+      copy.querySelectorAll('[role="img"][aria-label]').forEach(function (n) {
+        n.replaceWith(document.createTextNode((n.getAttribute('aria-label') || '') + ': '));
+      });
+      return (copy.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function announceError(el) {
+      var errorId = el.getAttribute('data-error');
+      var errNode = errorId ? document.getElementById(errorId) : null;
+      if (!errNode) return;
+      var lbl = el.labels && el.labels[0] ? spokenText(el.labels[0]) + ': ' : '';
+      clearTimeout(announceTimer);
+      announcer.textContent = '';
+      announcedField = el;
+      announceTimer = setTimeout(function () {
+        announcer.textContent = lbl + spokenText(errNode);
+      }, 500);
+    }
+
+    function syncAria(el, announce) {
+      if (!el || !el.matches || !el.matches('input, select, textarea')) return;
+      var invalid = supportsUserInvalid
+        ? el.matches(':user-invalid')
+        : el.classList.contains('user-invalid-fallback');
+      if (invalid) {
+        if (announce && !announced.has(el)) {
+          announceError(el);
+          announced.add(el);
+        }
+        el.setAttribute('aria-invalid', 'true');
+        linkError(el, true);
+        flagged.add(el);
+      } else if (flagged.has(el) || el.getAttribute('aria-invalid') !== 'true') {
+        el.setAttribute('aria-invalid', 'false');
+        linkError(el, false);
+        flagged.delete(el);
+        announced.delete(el);
+        if (announcedField === el) {
+          clearTimeout(announceTimer);
+          announcer.textContent = '';
+        }
+      }
+    }
+
+    form.querySelectorAll('input, select, textarea').forEach(function (el) {
+      if (el.type === 'hidden' || el.type === 'radio') return;
+      syncAria(el, false);
+    });
+
+    if (!supportsUserInvalid) {
+      var updateFallback = function (input, announce) {
+        if (!input.checkValidity) return;
+        var valid = input.validity.valid;
+        input.classList.toggle('user-invalid-fallback', !valid);
+        input.classList.toggle('user-valid-fallback', valid);
+        syncAria(input, announce);
+      };
+      form.addEventListener('blur', function (e) {
+        var el = e.target;
+        if (!el.checkValidity || el.type === 'hidden') return;
+        var st = dirtyState.get(el) || { interacted: false, blurred: false };
+        st.blurred = true;
+        dirtyState.set(el, st);
+        if (st.interacted) updateFallback(el, true);
+      }, true);
+      form.addEventListener('input', function (e) {
+        var el = e.target;
+        if (!el.checkValidity || el.type === 'hidden') return;
+        var st = dirtyState.get(el) || { interacted: false, blurred: false };
+        st.interacted = true;
+        dirtyState.set(el, st);
+        if (st.blurred) updateFallback(el, false);
+      });
+      form.addEventListener('invalid', function (e) {
+        var el = e.target;
+        dirtyState.set(el, { interacted: true, blurred: true });
+        announced.add(el);
+        updateFallback(el, false);
+      }, true);
+    } else {
+      form.addEventListener('blur', function (e) { syncAria(e.target, true); }, true);
+      form.addEventListener('input', function (e) {
+        if (e.target && e.target.hasAttribute && e.target.hasAttribute('aria-invalid')) {
+          syncAria(e.target, false);
+        }
+      });
+      form.addEventListener('change', function (e) { syncAria(e.target, true); }, true);
+      form.addEventListener('invalid', function (e) {
+        announced.add(e.target);
+        syncAria(e.target, false);
+      }, true);
+    }
+
+    // 5. Rate-limit countdown timer (when 429 active)
+    var retryBanner = document.querySelector('[data-retry-after]');
+    if (retryBanner) {
+      var rem = parseInt(retryBanner.getAttribute('data-retry-after') || '0', 10);
+      var msgNode = retryBanner.querySelector('[data-retry-message]');
+      var submitBtn = document.getElementById('login-submit-btn');
+      if (rem > 0) {
+        var timer = setInterval(function () {
+          rem -= 1;
+          if (rem <= 0) {
+            clearInterval(timer);
+            if (msgNode) msgNode.textContent = 'Spärren har släppt. Du kan försöka logga in igen.';
+            if (submitBtn) submitBtn.disabled = false;
+            return;
+          }
+          if (msgNode) {
+            msgNode.textContent = 'För många misslyckade inloggningsförsök. Vänta ' + rem + ' s och försök igen.';
+          }
+        }, 1000);
+      }
+    }
+
+    // 6. Live /live ping badge
+    var probeBadge = document.querySelector('[data-login-health-probe]');
+    if (probeBadge && window.fetch) {
+      var probeUrl = probeBadge.getAttribute('data-login-health-probe') || '/live';
+      var lblNode = probeBadge.querySelector('[data-health-label]');
+      var t0 = window.performance && performance.now ? performance.now() : Date.now();
+      fetch(probeUrl, { credentials: 'same-origin' })
+        .then(function (r) {
+          var t1 = window.performance && performance.now ? performance.now() : Date.now();
+          var ms = Math.max(1, Math.round(t1 - t0));
+          if (r.ok) {
+            probeBadge.classList.remove('az-badge-neutral', 'az-badge-warn');
+            probeBadge.classList.add('az-badge-ok');
+            if (lblNode) lblNode.textContent = 'Online · ' + ms + ' ms';
+          } else {
+            probeBadge.classList.remove('az-badge-neutral');
+            probeBadge.classList.add('az-badge-warn');
+            if (lblNode) lblNode.textContent = 'HTTP ' + r.status;
+          }
+        })
+        .catch(function () {
+          probeBadge.classList.remove('az-badge-neutral');
+          probeBadge.classList.add('az-badge-warn');
+          if (lblNode) lblNode.textContent = 'Offline';
+        });
+    }
+  }
+
+  function initLogoutButtons() {
+    document.querySelectorAll('[data-logout-action]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var action = btn.getAttribute('data-logout-action') || '/logout';
+        var csrf = btn.getAttribute('data-logout-csrf') || '';
+        var f = document.createElement('form');
+        f.method = 'post';
+        f.action = action;
+        f.className = 'hidden';
+        var tok = document.createElement('input');
+        tok.type = 'hidden';
+        tok.name = '_csrf';
+        tok.value = csrf;
+        f.appendChild(tok);
+        document.body.appendChild(f);
+        f.submit();
+      });
+    });
+  }
+
   function boot() {
     initDrawer();
     initDialogLightDismiss();
@@ -1663,6 +1933,8 @@
     initVanillaXaiPolling();
     initResearchHub();
     initSeoStudio();
+    initLoginPage();
+    initLogoutButtons();
   }
 
   if (document.readyState === 'loading') {

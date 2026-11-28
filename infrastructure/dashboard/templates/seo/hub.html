@@ -83,7 +83,13 @@
   {% endif %}
 
   <!-- GSC transparency notice -->
-  {{ ui.info_callout('info', 'Datakällor & GSC-notis', gsc_note) }}
+  {% call ui.info_callout('info', 'Datakällor & GSC-notis', gsc_note) %}
+    {% if is_oscar %}
+    <div class="mt-2">
+      <a class="az-btn-oscar az-btn-sm" href="/oscar/google">Hantera GSC OAuth (Oscar)</a>
+    </div>
+    {% endif %}
+  {% endcall %}
 
   <!-- Audit Trend Delta Strip -->
   {% set diff = audit_diff | default({}) %}

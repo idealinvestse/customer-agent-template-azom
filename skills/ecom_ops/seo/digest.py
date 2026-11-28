@@ -7,6 +7,7 @@ from typing import Any
 
 from ecom_ops.seo.policy import require_seo_read
 from ecom_ops.seo.service import SeoStudioService
+from ecom_ops.wp_ops.config import is_mock_mode
 
 
 def build_seo_plugin_drift_digest(
@@ -17,6 +18,9 @@ def build_seo_plugin_drift_digest(
     data_dir: Path | None = None,
     seo_service: SeoStudioService | None = None,
     plugin_service: Any | None = None,
+    gsc_result: dict[str, Any] | None = None,
+    parity_result: dict[str, Any] | None = None,
+    include_live_probes: bool = True,
 ) -> dict[str, Any]:
     """Combine SEO audit trend diff, GSC quick wins, Nordic parity, orphan/cannibalization counts,
     and WordPress plugin update drift into structured JSON + concise Swedish Messenger/Telegram markdown.
@@ -56,7 +60,11 @@ def build_seo_plugin_drift_digest(
     }
 
     # 2. GSC quick wins
-    gsc_res = svc.get_gsc_quick_wins(clean_site, days=max(days_int, 28), actor=actor)
+    gsc_res = (
+        gsc_result
+        if isinstance(gsc_result, dict)
+        else svc.get_gsc_quick_wins(clean_site, days=max(days_int, 28), actor=actor)
+    )
     gsc_sum = dict(gsc_res.get("summary") or {})
     top_strike = [
         {
@@ -77,8 +85,15 @@ def build_seo_plugin_drift_digest(
         "top_strike_distance": top_strike,
     }
 
+    run_live = bool(include_live_probes or is_mock_mode())
+
     # 3. Nordic SE/NO/DK parity
-    parity_res = svc.run_nordic_parity(clean_site, actor=actor)
+    if isinstance(parity_result, dict) and parity_result:
+        parity_res = parity_result
+    elif run_live:
+        parity_res = svc.run_nordic_parity(clean_site, actor=actor)
+    else:
+        parity_res = {"markets": [], "summary": {}}
     parity_sum = dict(parity_res.get("summary") or {})
     parity_summary = {
         "markets": list(parity_res.get("markets") or []),
@@ -97,56 +112,57 @@ def build_seo_plugin_drift_digest(
         "updates_available": 0,
         "critical_updates": 0,
         "pending_plugins": [],
-        "error": "",
+        "error": "" if run_live else "Klicka på Veckodigest för live-kontroll",
     }
-    try:
-        psvc = plugin_service
-        if psvc is None:
-            from ecom_ops.wp_ops.plugin_service import PluginOpsService
+    if run_live or plugin_service is not None:
+        try:
+            psvc = plugin_service
+            if psvc is None:
+                from ecom_ops.wp_ops.plugin_service import PluginOpsService
 
-            psvc = PluginOpsService(data_dir=data_dir)
-        inv = psvc.plugin_inventory(clean_site, actor=actor, include_updates=True)
-        inv_ok = bool(getattr(inv, "ok", False) if not isinstance(inv, dict) else inv.get("ok"))
-        inv_data = (
-            dict(getattr(inv, "data", {}) or {})
-            if not isinstance(inv, dict)
-            else dict(inv.get("data") or inv)
-        )
-        if inv_ok:
-            ps = dict(inv_data.get("summary") or {})
-            pending_list = [
-                {
-                    "slug": str(p.get("slug") or ""),
-                    "version": str(p.get("version") or ""),
-                    "new_version": str(p.get("new_version") or ""),
-                    "is_critical": bool(p.get("is_critical")),
-                    "risk_class": str(p.get("risk_class") or ""),
-                }
-                for p in (inv_data.get("plugins") or [])
-                if isinstance(p, dict) and p.get("update_available")
-            ]
-            plugin_summary = {
-                "available": True,
-                "total_plugins": int(ps.get("total", len(inv_data.get("plugins") or []))),
-                "updates_available": int(ps.get("updates_available", len(pending_list))),
-                "critical_updates": int(
-                    ps.get(
-                        "critical_updates",
-                        sum(1 for p in pending_list if p.get("is_critical")),
-                    )
-                ),
-                "pending_plugins": pending_list[:10],
-                "error": "",
-            }
-        else:
-            err_msg = (
-                str(getattr(inv, "message", "") or getattr(inv, "error_class", ""))
+                psvc = PluginOpsService(data_dir=data_dir)
+            inv = psvc.plugin_inventory(clean_site, actor=actor, include_updates=True)
+            inv_ok = bool(getattr(inv, "ok", False) if not isinstance(inv, dict) else inv.get("ok"))
+            inv_data = (
+                dict(getattr(inv, "data", {}) or {})
                 if not isinstance(inv, dict)
-                else str(inv.get("message") or inv.get("error_class") or "")
+                else dict(inv.get("data") or inv)
             )
-            plugin_summary["error"] = err_msg[:160]
-    except Exception as exc:
-        plugin_summary["error"] = str(exc)[:160]
+            if inv_ok:
+                ps = dict(inv_data.get("summary") or {})
+                pending_list = [
+                    {
+                        "slug": str(p.get("slug") or ""),
+                        "version": str(p.get("version") or ""),
+                        "new_version": str(p.get("new_version") or ""),
+                        "is_critical": bool(p.get("is_critical")),
+                        "risk_class": str(p.get("risk_class") or ""),
+                    }
+                    for p in (inv_data.get("plugins") or [])
+                    if isinstance(p, dict) and p.get("update_available")
+                ]
+                plugin_summary = {
+                    "available": True,
+                    "total_plugins": int(ps.get("total", len(inv_data.get("plugins") or []))),
+                    "updates_available": int(ps.get("updates_available", len(pending_list))),
+                    "critical_updates": int(
+                        ps.get(
+                            "critical_updates",
+                            sum(1 for p in pending_list if p.get("is_critical")),
+                        )
+                    ),
+                    "pending_plugins": pending_list[:10],
+                    "error": "",
+                }
+            else:
+                err_msg = (
+                    str(getattr(inv, "message", "") or getattr(inv, "error_class", ""))
+                    if not isinstance(inv, dict)
+                    else str(inv.get("message") or inv.get("error_class") or "")
+                )
+                plugin_summary["error"] = err_msg[:160]
+        except Exception as exc:
+            plugin_summary["error"] = str(exc)[:160]
 
     # 5. Direct dashboard links
     dashboard_links = {

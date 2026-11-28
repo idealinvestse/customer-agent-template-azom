@@ -668,6 +668,45 @@ def _execute_file_tool_step(
     return output, elapsed
 
 
+_MAX_MALFORMED_TOOL_RETRIES = 2
+_MALFORMED_TOOL_REPAIR_PROMPT = (
+    'Ditt <tool_call> hade ogiltig JSON eller saknade </tool_call>. '
+    'Svara med exakt ett giltigt <tool_call>{"name": "...", "arguments": {...}}</tool_call>.'
+)
+
+
+def _retry_malformed_tool_call(
+    *,
+    messages: list[dict[str, str]],
+    next_content: str,
+    completer: Completer,
+    builder: LoopResultBuilder,
+    malformed_retries: int,
+    max_calls: int,
+    max_seconds: float,
+) -> tuple[bool, str, int]:
+    """Attempt one bounded repair turn for a malformed ``<tool_call>``.
+
+    Returns ``(should_continue, updated_content, updated_retries)``.
+    """
+    if (
+        malformed_retries >= _MAX_MALFORMED_TOOL_RETRIES
+        or builder.budget.calls >= max_calls
+        or builder.budget.tool_seconds > max_seconds
+    ):
+        return False, next_content, malformed_retries
+    messages.append({"role": "assistant", "content": next_content[:16000]})
+    messages.append({"role": "user", "content": _MALFORMED_TOOL_REPAIR_PROMPT})
+    try:
+        repaired_content, cost = completer(messages)
+        builder.budget.add_cost(cost)
+    except Exception:
+        return False, next_content, malformed_retries + 1
+    if repaired_content == next_content:
+        return False, repaired_content, malformed_retries + 1
+    return True, repaired_content, malformed_retries + 1
+
+
 def run_bounded_wp_tool_loop(
     initial_content: str,
     messages: list[dict[str, str]],
@@ -700,6 +739,7 @@ def run_bounded_wp_tool_loop(
         include_file_fields=False,
     )
     next_content = content
+    malformed_retries = 0
 
     while "<tool_call>" in next_content.lower():
         steered, next_content, steer_err = _apply_steers(
@@ -719,6 +759,17 @@ def run_bounded_wp_tool_loop(
 
         parsed = parse_tool_call(next_content)
         if parsed is None:
+            retried, next_content, malformed_retries = _retry_malformed_tool_call(
+                messages=messages,
+                next_content=next_content,
+                completer=complete,
+                builder=builder,
+                malformed_retries=malformed_retries,
+                max_calls=policy.max_calls,
+                max_seconds=policy.max_seconds,
+            )
+            if retried:
+                continue
             return builder.build(
                 True,
                 "Det verktygsanropet kunde inte valideras. Inget WordPress-verktyg kördes.",
@@ -878,6 +929,7 @@ def run_bounded_file_tool_loop(
     phase_completer = _PhaseCompleter(complete, complete_deep, on_phase_change)
     loop_state = FileLoopState()
     next_content = content
+    malformed_retries = 0
 
     while "<tool_call>" in next_content.lower():
         steered, next_content, steer_err = _apply_steers(
@@ -897,6 +949,17 @@ def run_bounded_file_tool_loop(
 
         parsed = parse_tool_call(next_content)
         if parsed is None:
+            retried, next_content, malformed_retries = _retry_malformed_tool_call(
+                messages=messages,
+                next_content=next_content,
+                completer=phase_completer.select(reads=builder.budget.reads, calls=builder.budget.calls),
+                builder=builder,
+                malformed_retries=malformed_retries,
+                max_calls=policy.max_calls,
+                max_seconds=policy.max_seconds,
+            )
+            if retried:
+                continue
             return builder.build(True, "Det verktygsanropet kunde inte valideras. Ingen fil ändrades.")
         name, arguments = parsed
         if name not in ALL_FILE_TOOLS and name not in WP_TOOL_NAMES:

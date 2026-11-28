@@ -69,10 +69,10 @@ See `docs/WP_SKILL_GUARDRAILS.md` for shared loop budgets, untrusted-bytes handl
 ## Pillar 4 — Nordic SEO Strategy, Campaigns & Autonomous Pipeline (`wp_seo_autopilot`)
 
 1. Call `wp_playbook(topic="seo_strategy_and_campaigns")` when needed.
-2. Triangulate internal signals (site audit `seoa-*`, WooCommerce catalog, GA4 landing pages, Google Ads converting/waste search terms) with optional read-only web research (`web_search`, `web_research_start` using the `seo_content_radar` profile → `res-*`).
+2. Triangulate internal signals (site audit `seoa-*`, WooCommerce catalog, GA4 landing pages, Google Ads converting/waste search terms) with optional read-only web research (`web_search` for quick SERP/schema checks, `web_fetch_extract` for inspecting one competitor/doc URL, or non-blocking `web_research_start` using `seo_content_radar` → `res-*`).
 3. Persist structured market-specific strategies via `wp_seo_strategy` → `seos-*` (localized SV/NB/DA terminology — never copy-paste Swedish text onto Norwegian/Danish sites, pillar/cluster architecture, 30/60/90-day roadmap).
 4. Break strategies into executable SEO campaigns via `wp_seo_campaign` → `seoc-*` (target keywords, target URLs, funnel intent, on-page/media/schema/internal-link action checklist, linked `strategy_id` and `research_brief_id`).
-5. **End-to-end Autopilot (`wp_seo_autopilot` / `/seo autopilot [site] <topic> [budget] [count]`):** Chains site audit (`seoa-*`) → PII-free `seo_content_radar` SERP research → automated strategy (`seos-*`) → campaign (`seoc-*`) → `seo_vendor_vetting` Nordic shop ranking → order-ready draft link package (`seol-*`, pre-matched to the #1 vetted shop) → optional `seob-*` batch fix preview. Always returns `executed=false`, `external_order_placed=false`, `approval_required=true`.
+5. **End-to-end Autopilot (`wp_seo_autopilot` / `/seo autopilot [site] <topic> [budget] [count]`):** Runs site audit (`seoa-*`), then executes PII-free `seo_content_radar` SERP research and `seo_vendor_vetting` Nordic shop research **concurrently** via `seo/research_bridge.py` (`QueryTaintContext` + `OutboundQueryFirewall`) alongside automated strategy (`seos-*`) → campaign (`seoc-*`) → order-ready draft link package (`seol-*`, pre-matched to the #1 vetted shop) → optional `seob-*` batch fix preview. Always returns `executed=false`, `external_order_placed=false`, `approval_required=true`.
 
 ## Pillar 5 — Vetted Nordic SEO Shops, Link-Package Builder (`seol-*`), Verification & Cumulative Anchor Mix
 

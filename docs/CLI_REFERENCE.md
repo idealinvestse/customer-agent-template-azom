@@ -420,17 +420,30 @@ python -m ecom_ops --mock --actor oscar shop-intel schedule-set [--site mock-sho
 - Webshop Intelligence: [`SHOP_INTEL.md`](SHOP_INTEL.md)
 - System map: [`SYSTEM_OVERVIEW.md`](SYSTEM_OVERVIEW.md)
 
-## System Launcher (`ecom_ops.launcher`)
+## System Launcher (`ecom_ops.launcher`), `systemcheck` & `healthcheck`
 
-Preflight check (Python, config, `.env`, OAuth, model router, circuit breaker, dashboard ports, Telegram/Messenger allowlists) and interactive/headless launcher:
+Preflight check, deep system/live-readiness check (`systemcheck`), runtime healthcheck (`healthcheck`), and interactive/headless/systemd launcher:
 
 ```bash
 # Bash (Ubuntu/Linux/macOS) or PowerShell (Windows)
 ./bin/launch.sh
 .\bin\launch.ps1
+./bin/systemcheck.sh [--domain dashboard.azom.no --expected-ip 95.217.216.3 --check-network] [--strict] [--json]
+./bin/healthcheck.sh [--check-public] [--no-http] [--strict] [--json]
 
-# Direct CLI
+# Unified CLI subcommands (exit codes: 0=ok, 1=fail, 2=warn with --strict)
+python -m ecom_ops [--mock] systemcheck [--mode auto|mock|live] [--domain DOMAIN] [--expected-ip IP] [--check-network] [--no-port-check] [--strict] [--json]
+python -m ecom_ops [--mock] healthcheck [--mode auto|mock|live] [--local-url URL] [--public-url URL] [--no-http] [--check-public] [--timeout 4.0] [--strict] [--json]
+
+# Direct launcher CLI
 python -m ecom_ops.launcher --check [--mode mock|live] [--json]
+python -m ecom_ops.launcher --systemcheck [--mode mock|live] [--domain DOMAIN --expected-ip IP --check-network] [--strict] [--json]
+python -m ecom_ops.launcher --health [--mode mock|live] [--check-public] [--no-http] [--strict] [--json]
 python -m ecom_ops.launcher --init-env
 python -m ecom_ops.launcher --target all|dashboard|bot [--dry-run]
+python -m ecom_ops.launcher --systemd [--target all|dashboard|bot] [--service-action status|start|stop|restart|logs] [--dry-run]
 ```
+
+- `systemcheck` never prints secrets and never hits the network in `--mock` mode or unless `--check-network` is passed. On Linux, it inspects `/proc/meminfo`, free disk on `AZOM_DATA_DIR`, `.env` POSIX `0600` mode, SQLite `quick_check`/WAL status across `cases.db` / `telegram_jobs.sqlite3` / `messenger_jobs.sqlite3` / `seo_studio.sqlite3` / `shop_intel.sqlite3` / `research_jobs.sqlite3`, `TRUSTED_PROXY_COUNT`, fail-closed allowlists, and `azom-*` systemd units.
+- `healthcheck` probes local `/live`, `/health`, `/ready` (cleanly skipped when `--no-http` or in mock mode without a running server), integrates `collect_runtime_snapshot()`, checks Linux `azom-*` active states, and optionally verifies public HTTPS TLS validity + `/live` + `/health` + `/metrics` block (`403`/`404`) when `--check-public` is set.
+- `bin/launch.sh`, `bin/systemcheck.sh`, and `bin/healthcheck.sh` load `.env` safely without overriding explicit environment variables and auto-detect `/var/lib/azom` when executed from `/opt/azom-agent` if `AZOM_DATA_DIR` is unset.

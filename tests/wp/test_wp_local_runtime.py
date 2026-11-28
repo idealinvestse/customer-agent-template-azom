@@ -6,12 +6,24 @@ WordPress, or a browser. They lock the fail-closed gates and isolation rules.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from ecom_ops.integrations import wp_local_runtime
+from ecom_ops.integrations.wp import cdp_browser
+from ecom_ops.integrations.wp.cdp_browser import SANDBOX_CHROME_FLAGS, HeadlessBrowserSession
 from ecom_ops.integrations.wp_browser_smoke import assert_loopback_http_url, run_browser_render
-from ecom_ops.integrations.wp_local_runtime import LocalWordPressSandbox, build_php_child_env
+from ecom_ops.integrations.wp_local_runtime import (
+    LocalWordPressSandbox,
+    RuntimeFetchError,
+    build_php_child_env,
+    resolve_local_runtime,
+)
 from ecom_ops.runtime_env import PROTECTED_OVERLAY_KEYS, overlay_key_allowed
 from ecom_ops.wp_ops.review_runner import SandboxGate
 from ecom_ops.wp_ops.review_workspace import ReviewError
@@ -155,3 +167,102 @@ def test_browser_render_missing_binary_stays_unavailable(monkeypatch: pytest.Mon
     assert result["simulated"] is False
     assert result["availability"] == "unavailable"
     assert result["reason"] == "browser_binary_missing"
+
+
+def test_resolve_local_runtime_accepts_linux_system_php_85(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    rt = tmp_path / "rt"
+    wp_inc = rt / "wordpress" / "wp-includes"
+    wp_inc.mkdir(parents=True)
+    (wp_inc / "version.php").write_text("<?php\n$wp_version = '6.8.1';\n", encoding="utf-8")
+
+    def _raise_missing(_dir: Path) -> dict[str, Any]:
+        raise RuntimeFetchError("pinned php missing")
+
+    def _fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if cmd[-1] == "-v":
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="PHP 8.5.1 (cli) (built: Nov 20 2025 12:00:00) (NTS)\n",
+                stderr="",
+            )
+        if cmd[-1] == "-m":
+            return subprocess.CompletedProcess(cmd, 0, stdout="[PHP Modules]\nCore\npdo_sqlite\nsqlite3\n", stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(wp_local_runtime, "check_runtime", _raise_missing)
+    monkeypatch.setattr(wp_local_runtime, "os", SimpleNamespace(name="posix", environ=os.environ))
+    monkeypatch.setattr(wp_local_runtime, "shutil", SimpleNamespace(which=lambda name: "/usr/bin/php" if name == "php" else None))
+    monkeypatch.setattr(wp_local_runtime, "subprocess", SimpleNamespace(run=_fake_run, TimeoutExpired=subprocess.TimeoutExpired))
+
+    manifest = resolve_local_runtime(rt)
+    assert manifest["php_path"] == "/usr/bin/php"
+    assert manifest["php_version"] == "8.5.1"
+    assert manifest["wordpress_version"] == "6.8.1"
+    assert manifest["wordpress_path"] == str((rt / "wordpress").resolve())
+    assert manifest["system_php"] is True
+
+
+def test_headless_browser_session_isolates_linux_home_xdg_and_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WP_APP_PASSWORD", "secret-wp")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-secret")
+    monkeypatch.setenv("HOME", "/home/host-secret")
+
+    captured: dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 42424
+
+        def poll(self) -> None:
+            return None
+
+    class _FakeCdp:
+        def __init__(self, ws_url: str, timeout_s: float = 15.0) -> None:
+            del ws_url, timeout_s
+
+        def call(self, method: str, params: dict[str, Any] | None = None, *, timeout_s: float = 15.0) -> dict[str, Any]:
+            del method, params, timeout_s
+            return {}
+
+        def close(self) -> None:
+            pass
+
+    def _fake_popen(command: list[str], **kwargs: Any) -> _FakeProc:
+        captured["command"] = list(command)
+        captured["env"] = dict(kwargs.get("env") or {})
+        captured["start_new_session"] = kwargs.get("start_new_session")
+        return _FakeProc()
+
+    monkeypatch.setattr(cdp_browser, "os", SimpleNamespace(name="posix", urandom=os.urandom))
+    monkeypatch.setattr(cdp_browser.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(cdp_browser, "wait_cdp_page_ws", lambda port, proc, timeout_s=15.0: f"ws://127.0.0.1:{port}/devtools/page/1")
+    monkeypatch.setattr(cdp_browser, "LoopbackCdpClient", _FakeCdp)
+    monkeypatch.setattr(cdp_browser, "terminate_process_tree", lambda proc, timeout_s=5.0: None)
+
+    with HeadlessBrowserSession(
+        "/usr/bin/google-chrome",
+        extra_flags=SANDBOX_CHROME_FLAGS,
+        profile_prefix="azom-linux-test-",
+        timeout_s=10.0,
+    ) as session:
+        profile = session.user_data_dir
+        assert profile is not None
+        assert (profile / ".config").is_dir()
+        assert (profile / ".cache").is_dir()
+        env = captured["env"]
+        assert env["HOME"] == str(profile)
+        assert env["XDG_CONFIG_HOME"] == str(profile / ".config")
+        assert env["XDG_CACHE_HOME"] == str(profile / ".cache")
+        assert "WP_APP_PASSWORD" not in env
+        assert "OPENROUTER_API_KEY" not in env
+
+    cmd = captured["command"]
+    assert "--no-sandbox" in cmd
+    assert "--disable-dev-shm-usage" in cmd
+    assert "--remote-debugging-address=127.0.0.1" in cmd
+    assert "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1" in cmd
+    assert captured["start_new_session"] is True

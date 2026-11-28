@@ -2384,6 +2384,7 @@ class SeoStudioService:
         *,
         market: str = "no",
         entities: list[dict[str, Any]] | None = None,
+        entities_loader: Callable[[], list[dict[str, Any]]] | None = None,
         days: int = 28,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Lazily load ``ecom_ops.integrations.gsc`` and compute quick-wins (mock-safe)."""
@@ -2464,7 +2465,15 @@ class SeoStudioService:
                 }
                 rows = []
 
-        analysis = analyze_gsc_quick_wins(rows, entities=entities)
+        resolved_entities: list[dict[str, Any]]
+        if entities is not None:
+            resolved_entities = entities
+        elif rows and entities_loader is not None:
+            resolved_entities = entities_loader()
+        else:
+            resolved_entities = []
+
+        analysis = analyze_gsc_quick_wins(rows, entities=resolved_entities)
         return status_info, analysis
 
     def get_gsc_quick_wins(
@@ -2479,11 +2488,13 @@ class SeoStudioService:
         require_seo_read(actor)
         mkt = normalize_market(market)
         site = self._resolve_site(site_id, market=mkt)
-        _ov, entities, _media, _cats, _src = self._load_entities_and_media(
-            site, market=mkt, limit=50
-        )
         gsc_status_data, analysis = self._fetch_gsc_quick_wins_internal(
-            site, market=mkt, entities=entities, days=days
+            site,
+            market=mkt,
+            entities_loader=lambda: self._load_entities_and_media(
+                site, market=mkt, limit=50
+            )[1],
+            days=days,
         )
         return {
             "ok": True,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from typing import Any
 
 from ecom_ops.rbac import AccessDenied, Permission, require_permission, resolve_actor
@@ -29,6 +30,7 @@ _RESEARCH_RESULT_BYTE_CAPS: dict[str, int] = {
     "web_fetch_extract": WEB_FETCH_MAX_RESULT_BYTES,
     "web_research_get": WEB_RESEARCH_GET_MAX_RESULT_BYTES,
 }
+_WR_PLAN_ID_RE = re.compile(r"^wr-[0-9a-f]{12}$")
 
 
 def _web_search_outcome(data: dict[str, Any], _reads: int | None) -> str:
@@ -315,6 +317,16 @@ def handle_web_research_start(tools: Any, ctx: ToolContext, arguments: dict[str,
     target_ref = arguments.get("target_ref")
     if target_ref is not None and not isinstance(target_ref, str):
         return ToolOutput(error_payload("InvalidToolArguments"))
+    norm_args = dict(arguments)
+    if isinstance(target_ref, str):
+        ref = target_ref.strip()
+        if _WR_PLAN_ID_RE.fullmatch(ref) and ctx.sticky_site_id:
+            target_ref = f"wp:{ctx.sticky_site_id}:{ref}"
+        elif SITE_ID_RE.fullmatch(ref):
+            target_ref = f"wp_site:{ref}"
+        else:
+            target_ref = ref
+        norm_args["target_ref"] = target_ref
     try:
         actor_obj = resolve_actor(ctx.actor)
         require_permission(actor_obj, Permission.RESEARCH_RUN)
@@ -325,7 +337,7 @@ def handle_web_research_start(tools: Any, ctx: ToolContext, arguments: dict[str,
         err = error_payload("SearchPolicyError")
         err["message"] = str(exc)
         return ToolOutput(err)
-    return _run_research_facade("web_research_start", tools, ctx, arguments)
+    return _run_research_facade("web_research_start", tools, ctx, norm_args)
 
 
 @register_tool(

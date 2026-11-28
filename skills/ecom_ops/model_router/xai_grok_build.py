@@ -361,6 +361,8 @@ class XaiGrokBuildRoute:
             "--verbatim",
             "--tools",
             "",
+            "--disallowed-tools",
+            "search_tool,web_search,bash,read,write,edit,glob,grep",
         ]
         if effort:
             command.extend(["--reasoning-effort", effort])

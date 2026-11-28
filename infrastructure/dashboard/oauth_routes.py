@@ -3,64 +3,102 @@
 from __future__ import annotations
 
 from flask import Flask, Response, flash, jsonify, redirect, request, url_for
+from flask import session as flask_session
 
 from auth import _auth_required, _oscar_required
-from support import _is_mock
+from support import _flash, _flash_q, _is_mock
+
+_OPENAI_ERR_MSG_MAP = {
+    "incomplete_registration": "ChatGPT OAuth saknar utfärdat client_id — prova Ny registrering",
+    "client_mismatch": "ChatGPT OAuth client_id matchar inte — prova Ny registrering",
+    "invalid_grant": "ChatGPT OAuth-koden har löpt ut eller redan använts — starta om inloggningen",
+    "missing_callback_params": "ChatGPT OAuth saknar code eller state",
+    "invalid_client": "ChatGPT OAuth client_id avvisades av OpenAI — prova Ny registrering",
+    "invalid_request": "ChatGPT OAuth-begäran var ogiltig — kontrollera redirect_uri",
+    "unauthorized_client": "ChatGPT OAuth-klienten har inte behörighet — prova Ny registrering",
+    "access_denied": "ChatGPT OAuth nekades eller avbröts i webbläsaren",
+    "state_expired": "ChatGPT OAuth-sessionen löpte ut (över 10 min) — starta om inloggningen",
+    "persist_failed": "Kunde inte spara ChatGPT OAuth-sessionen till disk (behörighetsfel)",
+    "token_endpoint_unavailable": "OpenAI token-endpoint svarar inte just nu — försök igen",
+    "invalid_scope": "ChatGPT OAuth saknar nödvändig behörighet (scope)",
+    "lock_timeout": "Kunde inte låsa ChatGPT OAuth-filen (timeout) — försök igen",
+}
+
+
+def _oscar_error_redirect(message: str):
+    _flash(message, "error")
+    return redirect(url_for("oscar_home") + f"?{_flash_q(err=message)}")
+
+
+def _openai_error_message(exc: Exception) -> str:
+    from ecom_ops.model_router.errors import ModelAuthError, ModelRouteError
+
+    if isinstance(exc, ModelRouteError):
+        mapped = _OPENAI_ERR_MSG_MAP.get(exc.code)
+        if mapped:
+            return mapped
+        return "ChatGPT OAuth avvisades" if isinstance(exc, ModelAuthError) else "ChatGPT OAuth misslyckades"
+    return _OPENAI_ERR_MSG_MAP["persist_failed"]
 
 
 def register_oauth_routes(app: Flask) -> None:
     @app.route("/oauth/openai/start")
     @_oscar_required
     def oauth_openai_start():
-        from ecom_ops.model_router.errors import ModelConfigError
+        from ecom_ops.model_router.errors import ModelConfigError, ModelRouteError
         from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
 
-        route = OpenAIChatGPTOAuthRoute()
+        fresh = (request.args.get("fresh") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         try:
-            url, _state = route.start_authorization()
+            route = OpenAIChatGPTOAuthRoute()
+            url, _state = route.start_authorization(force_fresh_registration=fresh)
         except ModelConfigError:
-            flash("ChatGPT OAuth saknar konfiguration", "error")
-            return redirect(url_for("oscar_home"))
+            return _oscar_error_redirect("ChatGPT OAuth saknar konfiguration")
+        except ModelRouteError as exc:
+            return _oscar_error_redirect(_openai_error_message(exc))
+        except OSError:
+            return _oscar_error_redirect(
+                "Kunde inte spara ChatGPT OAuth-state till disk (behörighetsfel)"
+            )
         return redirect(url)
 
     @app.route("/oauth/openai/callback")
     def oauth_openai_callback():
-        import re
-
-        from ecom_ops.model_router.errors import ModelAuthError, ModelRouteError
-        from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
+        from ecom_ops.model_router.errors import ModelRouteError
+        from ecom_ops.model_router.openai_chatgpt import (
+            OpenAIChatGPTOAuthRoute,
+            _safe_error_code,
+        )
 
         err = (request.args.get("error") or "").strip()
         if err:
-            safe = err if re.fullmatch(r"[A-Za-z0-9_]{1,40}", err) else "oauth_error"
-            flash(f"ChatGPT {safe}", "error")
-            return redirect(url_for("oscar_home"))
+            safe = _safe_error_code(err) or "oauth_error"
+            msg = _OPENAI_ERR_MSG_MAP.get(safe, f"ChatGPT OAuth avvisades ({safe})")
+            return _oscar_error_redirect(msg)
         code = request.args.get("code", "").strip()
         state = request.args.get("state", "").strip()
         issued_client_id = request.args.get("client_id", "").strip()
         if not code or not state:
-            flash("ChatGPT OAuth saknar code", "error")
-            return redirect(url_for("oscar_home"))
+            return _oscar_error_redirect(_OPENAI_ERR_MSG_MAP["missing_callback_params"])
         try:
-            OpenAIChatGPTOAuthRoute().exchange_authorization_code(
+            oauth_session = OpenAIChatGPTOAuthRoute().exchange_authorization_code(
                 code=code,
                 state=state,
                 issued_client_id=issued_client_id or None,
             )
-        except ModelAuthError as exc:
-            err_msg_map = {
-                "incomplete_registration": "ChatGPT OAuth saknar utfärdat client_id",
-                "client_mismatch": "ChatGPT OAuth client_id matchar inte",
-                "invalid_grant": "ChatGPT OAuth koden har löpt ut",
-                "missing_callback_params": "ChatGPT OAuth saknar code",
-            }
-            flash(err_msg_map.get(exc.code, "ChatGPT OAuth avvisades"), "error")
-            return redirect(url_for("oscar_home"))
-        except ModelRouteError:
-            flash("ChatGPT OAuth misslyckades", "error")
-            return redirect(url_for("oscar_home"))
-        flash("ChatGPT kopplad", "ok")
-        return redirect(url_for("oscar_home"))
+        except (ModelRouteError, OSError) as exc:
+            return _oscar_error_redirect(_openai_error_message(exc))
+        msg = (
+            f"ChatGPT kopplad — ChatGPT ansluten (gen {oauth_session.generation}) "
+            "— klicka Testa modell"
+        )
+        _flash(msg, "ok")
+        return redirect(url_for("oscar_home") + f"?{_flash_q(msg)}")
 
     @app.route("/oauth/openai/complete-manual", methods=["POST"])
     @_oscar_required
@@ -68,38 +106,31 @@ def register_oauth_routes(app: Flask) -> None:
         from flask import g
 
         from ecom_ops.audit import log_action
-        from ecom_ops.model_router.errors import ModelAuthError, ModelRouteError
+        from ecom_ops.model_router.errors import ModelRouteError
         from ecom_ops.model_router.openai_chatgpt import OpenAIChatGPTOAuthRoute
 
         callback_url = (request.form.get("callback_url") or "").strip()
         if not callback_url:
-            flash("Klistra in hel callback-URL", "error")
-            return redirect(url_for("oscar_home"))
+            return _oscar_error_redirect("Klistra in hel callback-URL")
         try:
-            session = OpenAIChatGPTOAuthRoute().exchange_callback_url(callback_url)
-        except ModelAuthError as exc:
-            err_msg_map = {
-                "incomplete_registration": "ChatGPT OAuth saknar utfärdat client_id",
-                "client_mismatch": "ChatGPT OAuth client_id matchar inte",
-                "invalid_grant": "ChatGPT OAuth koden har löpt ut",
-                "missing_callback_params": "ChatGPT OAuth saknar code eller state",
-            }
-            flash(err_msg_map.get(exc.code, "ChatGPT OAuth avvisades"), "error")
-            return redirect(url_for("oscar_home"))
-        except ModelRouteError:
-            flash("ChatGPT OAuth misslyckades", "error")
-            return redirect(url_for("oscar_home"))
+            oauth_session = OpenAIChatGPTOAuthRoute().exchange_callback_url(callback_url)
+        except (ModelRouteError, OSError) as exc:
+            return _oscar_error_redirect(_openai_error_message(exc))
         log_action(
             actor=g.actor["name"],
             action="chatgpt_oauth_manual_connect",
             target="chatgpt_oauth",
             details={
-                "generation": session.generation,
-                "plan_usage": "chatgpt.tokens.use.direct" in session.scopes,
+                "generation": oauth_session.generation,
+                "plan_usage": "chatgpt.tokens.use.direct" in oauth_session.scopes,
             },
         )
-        flash("ChatGPT kopplad", "ok")
-        return redirect(url_for("oscar_home"))
+        msg = (
+            f"ChatGPT kopplad — ChatGPT ansluten (gen {oauth_session.generation}) "
+            "— klicka Testa modell"
+        )
+        _flash(msg, "ok")
+        return redirect(url_for("oscar_home") + f"?{_flash_q(msg)}")
 
     @app.route("/oauth/google/start")
     @_oscar_required
@@ -110,12 +141,21 @@ def register_oauth_routes(app: Flask) -> None:
             google_marketing_oauth_configured,
         )
 
+        if (request.args.get("next") or "").strip() == "oscar_google":
+            flask_session["google_oauth_next"] = "oscar_google"
+        else:
+            flask_session.pop("google_oauth_next", None)
+
         if _is_mock():
             exchange_code("mock")
-            flash("Google marketing kopplad (mock)", "ok")
+            _flash("Google marketing kopplad (mock)", "ok")
+            if flask_session.pop("google_oauth_next", "") == "oscar_google":
+                return redirect("/oscar/google")
             return redirect(url_for("marketing_home"))
         if not google_marketing_oauth_configured():
-            flash("GOOGLE_OAUTH_CLIENT_ID/SECRET saknas", "error")
+            _flash("GOOGLE_OAUTH_CLIENT_ID/SECRET saknas", "error")
+            if flask_session.pop("google_oauth_next", "") == "oscar_google":
+                return redirect("/oscar/google")
             return redirect(url_for("oscar_secrets"))
         url, _state = build_authorize_url()
         return redirect(url)
@@ -141,15 +181,21 @@ def register_oauth_routes(app: Flask) -> None:
             exchange_code(code)
         except Exception:
             return Response("Token exchange failed", 502, mimetype="text/plain")
-        flash("Google marketing kopplad", "ok")
+        _flash("Google marketing kopplad", "ok")
+        if flask_session.pop("google_oauth_next", "") == "oscar_google":
+            return redirect("/oscar/google")
         return redirect(url_for("marketing_home"))
 
     @app.route("/oauth/google/status")
     @_oscar_required
     def oauth_google_marketing_status():
+        from settings_store import apply_env_overlays
+
+        apply_env_overlays()
         from ecom_ops.oauth.google_marketing import (
             GoogleMarketingOAuthStore,
             google_marketing_oauth_configured,
+            google_marketing_redirect_uri,
         )
 
         store = GoogleMarketingOAuthStore()
@@ -159,6 +205,7 @@ def register_oauth_routes(app: Flask) -> None:
                 "configured": google_marketing_oauth_configured(),
                 "connected": store.has_tokens(),
                 "email": bundle.email if bundle else None,
+                "redirect_uri": google_marketing_redirect_uri(),
                 "mock_mode": _is_mock(),
             }
         )

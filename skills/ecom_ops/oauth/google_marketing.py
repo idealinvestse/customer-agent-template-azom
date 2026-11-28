@@ -47,10 +47,13 @@ def google_marketing_oauth_configured() -> bool:
 
 
 def google_marketing_redirect_uri() -> str:
-    return (
-        get_env("GOOGLE_OAUTH_REDIRECT_URI")
-        or f"http://{os.environ.get('DASHBOARD_HOST', '127.0.0.1')}:{os.environ.get('DASHBOARD_PORT', '8080')}/oauth/google/callback"
-    )
+    explicit = (get_env("GOOGLE_OAUTH_REDIRECT_URI") or "").strip()
+    if explicit:
+        return explicit
+    public_url = (get_env("AZOM_DASHBOARD_PUBLIC_URL") or "").strip()
+    if public_url:
+        return public_url.rstrip("/") + "/oauth/google/callback"
+    return "http://127.0.0.1:8080/oauth/google/callback"
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,11 @@ class GoogleMarketingOAuthStore:
     def clear_tokens(self) -> None:
         if self.token_path.is_file():
             self.token_path.unlink()
+
+    def clear(self) -> None:
+        """Clear stored marketing OAuth tokens and any pending CSRF state."""
+        self.clear_tokens()
+        self.clear_state()
 
     def create_state(self) -> str:
         state = secrets.token_urlsafe(32)

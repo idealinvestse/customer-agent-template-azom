@@ -201,11 +201,13 @@ class ProductDescService:
 
         if run_research:
             raw_query = " ".join(part for part in (product_name, sku, "specification") if part).strip()
-            clean_query = OutboundQueryFirewall().check_query(raw_query[:240])
+            fw = OutboundQueryFirewall()
+            fw.check_text(raw_query, max_chars=500)
+            clean_query = fw.check_query(raw_query[:240])
             search_res = res_svc.quick_search(
                 clean_query,
                 actor=actor_name,
-                profile_id="technical_docs",
+                profile_id="product_spec_deep",
                 max_results=3,
             )
             for src in (search_res.get("sources") or [])[:3]:

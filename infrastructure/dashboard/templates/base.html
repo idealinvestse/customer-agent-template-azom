@@ -191,8 +191,18 @@
         {% endif %}
       </nav>
 
-      <div class="border-t border-ink-700/80 px-4 py-3">
+      <div class="flex items-center justify-between gap-2 border-t border-ink-700/80 px-4 py-3">
         <p class="truncate text-xs text-mist-400">{{ actor_user }}{% if actor_role %} · {{ actor_role }}{% endif %}</p>
+        <button
+          type="button"
+          class="az-btn-secondary az-btn-sm !px-2 !py-1 text-xs shrink-0"
+          data-logout-action="/logout"
+          data-logout-csrf="{{ csrf_token }}"
+          title="Logga ut"
+        >
+          {{ icon('log-out', 'xs') }}
+          <span>Logga ut</span>
+        </button>
       </div>
     </aside>
 
@@ -249,6 +259,17 @@
           {% if null_send_active %}
           <span class="az-badge az-badge-warn" title="Kundmail skickas inte">null-send</span>
           {% endif %}
+          <button
+            type="button"
+            class="az-btn-secondary az-btn-sm"
+            data-logout-action="/logout"
+            data-logout-csrf="{{ csrf_token }}"
+            title="Logga ut från dashboarden"
+            aria-label="Logga ut"
+          >
+            {{ icon('log-out', 'xs') }}
+            <span class="hidden md:inline">Logga ut</span>
+          </button>
         </div>
       </header>
 
